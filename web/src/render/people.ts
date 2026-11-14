@@ -62,6 +62,8 @@ export class People {
   private t = 0;
   /** Workers per workplace, from the village state. */
   private staffAt = new Map<number, number>();
+  /** For each building, the direction its paths leave in. */
+  private doorAngle = new Map<number, number>();
   hidden = false;           // villagers shelter indoors during a battle
   /** Hand carts that carry goods from workplaces to the storehouse (or the hall). */
   group = new THREE.Group();
@@ -93,6 +95,13 @@ export class People {
     this.wells = this.bld.filter(b => b.kind === 16).map(b => ({ x: b.x, z: b.z }));
     this.link.clear();
     for (let o = 0; o < paths.length;) { const c = paths[o], p = paths[o + 1], m = paths[o + 2], pts: [number, number][] = []; for (let k = 0; k < m; k++) pts.push([paths[o + 3 + 2 * k], paths[o + 4 + 2 * k]]); this.parent[c] = p; this.link.set(c, pts); o += 3 + 2 * m; }
+    // the side of each building its paths leave from: where people stand when they arrive. (A random spot all round the building could be on the far side of a wall that stands beside it.)
+    this.doorAngle.clear();
+    for (const [c, pts] of this.link) {
+      const p = this.parent[c], B = this.bld[c], P = this.bld[p];
+      if (B && pts.length >= 2 && !this.doorAngle.has(c)) this.doorAngle.set(c, Math.atan2(pts[1][1] - B.z, pts[1][0] - B.x));
+      if (P && pts.length >= 2) { const q = pts[pts.length - 2]; if (!this.doorAngle.has(p)) this.doorAngle.set(p, Math.atan2(q[1] - P.z, q[0] - P.x)); }
+    }
 
     const homes: number[] = [], works: number[] = [];
     for (let i = 0; i < n; i++) {
@@ -174,7 +183,7 @@ export class People {
 
   private spot(b: number, salt: number): THREE.Vector2 {
     const B = this.bld[b]; if (!B) return new THREE.Vector2();
-    const a = (Math.sin(b * 91.7 + salt * 17.3) * 43758.5453 % 1) * Math.PI * 2, r = this.radii[B.kind] + 1.3 + Math.abs(Math.sin(b * 3.1 + salt)) * 0.8;
+    const door = this.doorAngle.get(b), jitter = (Math.sin(b * 91.7 + salt * 17.3) * 43758.5453 % 1), a = door !== undefined ? door + jitter * 1.2 : jitter * Math.PI * 2, r = this.radii[B.kind] + 1.3 + Math.abs(Math.sin(b * 3.1 + salt)) * 0.8;
     return new THREE.Vector2(B.x + Math.cos(a) * r, B.z + Math.sin(a) * r);
   }
 
@@ -195,7 +204,7 @@ export class People {
       a.aim = false;
       const t = a.target;
       if (t && t.alive) {
-        this.hooks.arrow(a.x, this.terrain.heightAt(a.x, a.z) + 1.4, a.z, t.x, this.terrain.heightAt(t.x, t.z) + 0.6, t.z);
+        this.hooks.arrow(a.x, this.terrain.walkAt(a.x, a.z) + 1.4, a.z, t.x, this.terrain.walkAt(t.x, t.z) + 0.6, t.z);
         w.kill(t); a.stage = 3; a.route = [new THREE.Vector2(a.x, a.z), new THREE.Vector2(t.x, t.z)]; a.at = 1;
       } else a.stage = 0;
     } else if (a.stage === 3) {
@@ -214,7 +223,7 @@ export class People {
       case 2: { a.fsT -= step; if (a.fsT > 0) return; const f = a.fireTo ?? this.fires[0], ang = Math.atan2(a.z - f.z, a.x - f.x) + (this.rand(a, 22) - 0.5) * 1.4, d = f.r + 2.4;
         a.carry = true; a.route = [new THREE.Vector2(a.x, a.z), new THREE.Vector2(f.x + Math.cos(ang) * d, f.z + Math.sin(ang) * d)]; a.at = 1; a.fs = 3; return; }
       case 3: { const f = a.fireTo ?? this.fires[0]; a.yaw = Math.atan2(f.x - a.x, f.z - a.z); a.fs = 4; a.fsT = 0.7;
-        this.hooks.splash(a.x, this.terrain.heightAt(a.x, a.z) + 1.3, a.z, f.x, this.terrain.heightAt(f.x, f.z) + 2.4, f.z); return; }
+        this.hooks.splash(a.x, this.terrain.walkAt(a.x, a.z) + 1.3, a.z, f.x, this.terrain.walkAt(f.x, f.z) + 2.4, f.z); return; }
       default: a.fsT -= step; if (a.fsT <= 0) { a.carry = false; a.fs = 0; }
     }
   }
@@ -295,11 +304,11 @@ export class People {
       if (a.haul !== 1 || n >= 100) continue;
       if ((a.x - cx) ** 2 + (a.z - cz) ** 2 > r2) continue;
       let dy = a.yaw - a.cartYaw; while (dy > Math.PI) dy -= 2 * Math.PI; while (dy < -Math.PI) dy += 2 * Math.PI; a.cartYaw += dy * 0.12;
-      const sx = Math.sin(a.cartYaw), sz = Math.cos(a.cartYaw), px = a.x - sx * 2.1, pz = a.z - sz * 2.1, y = this.terrain.heightAt(px, pz);
+      const sx = Math.sin(a.cartYaw), sz = Math.cos(a.cartYaw), px = a.x - sx * 2.1, pz = a.z - sz * 2.1, y = this.terrain.walkAt(px, pz);
       this.tq.setFromAxisAngle(this.ty, a.cartYaw);
       this.tp.set(px, y + 0.55, pz); this.tm.compose(this.tp, this.tq, this.ts); this.cartBody.setMatrixAt(n, this.tm);
       this.tp.set(px, y + 0.9, pz); this.tm.compose(this.tp, this.tq, this.ts); this.cartLoad.setMatrixAt(n, this.tm); this.cartLoad.setColorAt(n, this.tc.setHex(LOAD[this.bld[a.work]?.kind] ?? 0x9a7a4a));
-      this.tp.set(a.x - sx * 1.0, this.terrain.heightAt(a.x, a.z) + 0.85, a.z - sz * 1.0); this.tm.compose(this.tp, this.tq, this.ts); this.cartShaft.setMatrixAt(n, this.tm);
+      this.tp.set(a.x - sx * 1.0, this.terrain.walkAt(a.x, a.z) + 0.85, a.z - sz * 1.0); this.tm.compose(this.tp, this.tq, this.ts); this.cartShaft.setMatrixAt(n, this.tm);
       this.tq2.setFromAxisAngle(this.tx, a.gait * 0.5); this.tq2.premultiply(this.tq);
       for (const s of [-1, 1]) { this.tp.set(px + sz * 0.6 * s, y + 0.38, pz - sx * 0.6 * s); this.tm.compose(this.tp, this.tq2, this.ts); this.cartWheel.setMatrixAt(w++, this.tm); }
       n++;
@@ -320,7 +329,7 @@ export class People {
       const walking = a.route.length > 0 && a.at < a.route.length;
       const pose: Draw['pose'] = walking ? 1 : a.fight && a.fs === 4 ? 3 : a.aim ? 3 : a.fight ? 0 : a.crew ? (a.cs === 2 ? 2 : 0) : a.goingToWork && a.tool && !a.hunter ? 2 : 0;
       crowd.add({
-        x: a.x, y: this.terrain.heightAt(a.x, a.z), z: a.z, yaw: a.yaw + (walking ? 0 : Math.sin(this.t * 0.9 + a.seed) * 0.35), pose, phase: walking ? a.gait : this.t + a.seed, speed: walking ? a.pace : 0,
+        x: a.x, y: this.terrain.walkAt(a.x, a.z), z: a.z, yaw: a.yaw + (walking ? 0 : Math.sin(this.t * 0.9 + a.seed) * 0.35), pose, phase: walking ? a.gait : this.t + a.seed, speed: walking ? a.pace : 0,
         body: a.body, skin: a.skin, hat: a.hat, tool: a.fight ? TOOL.BUCKET : a.tool || undefined, dress: a.dress, scale: a.scale, swing: a.aim ? 0 : a.fight && a.fs === 4 ? Math.max(0.05, a.fsT / 0.7) : undefined,
         legs: a.dress ? a.body : 0x4a3a2a,
       });
@@ -343,7 +352,7 @@ export class People {
         const p = this.spot(b, 7 + k * 5), look = LOOKS[B.kind], seed = b * 13 + k * 7, r = (j: number) => { const x = Math.sin(seed * 12.9898 + j * 78.233) * 43758.5453; return x - Math.floor(x); };
         const woman = !look && r(1) < 0.5;
         crowd.add({
-          x: p.x, y: this.terrain.heightAt(p.x, p.y), z: p.y, yaw: Math.atan2(B.x - p.x, B.z - p.y) + Math.sin(this.t * 0.7 + seed) * 0.25, pose: 2, phase: this.t * 1.1 + seed, speed: 0,
+          x: p.x, y: this.terrain.walkAt(p.x, p.y), z: p.y, yaw: Math.atan2(B.x - p.x, B.z - p.y) + Math.sin(this.t * 0.7 + seed) * 0.25, pose: 2, phase: this.t * 1.1 + seed, speed: 0,
           body: look ? look[2][Math.floor(r(2) * look[2].length)] : woman ? DRESS[Math.floor(r(2) * DRESS.length)] : PLAIN[Math.floor(r(2) * PLAIN.length)], skin: SKIN[Math.floor(r(3) * SKIN.length)],
           hat: look?.[0], tool: look ? look[1] || undefined : undefined, dress: woman, scale: 1 + (r(4) - 0.5) * 0.1, legs: woman ? DRESS[0] : 0x4a3a2a,
         });

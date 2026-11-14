@@ -184,7 +184,7 @@ export class ArmyView {
     const nl = ladders.length / 4, nb = bridges.length / 4;
     while (this.ladderObjs.length < nl) { const g = mkLadder(); this.group.add(g); this.ladderObjs.push(g); }
     while (this.bridgeObjs.length < nb) { const g = mkBridge(); this.group.add(g); this.bridgeObjs.push(g); }
-    this.ladderObjs.forEach((g, i) => { g.visible = i < nl; if (i < nl) { const x = ladders[i * 4], z = ladders[i * 4 + 1], a = ladders[i * 4 + 2]; g.position.set(x, this.terrain.heightAt(x, z), z); g.rotation.y = Math.PI / 2 - a; } });
+    this.ladderObjs.forEach((g, i) => { g.visible = i < nl; if (i < nl) { const x = ladders[i * 4], z = ladders[i * 4 + 1], a = ladders[i * 4 + 2]; g.position.set(x, this.terrain.walkAt(x, z), z); g.rotation.y = Math.PI / 2 - a; } });
     this.bridgeObjs.forEach((g, i) => { g.visible = i < nb; if (i < nb) { const x = bridges[i * 4], z = bridges[i * 4 + 1], a = bridges[i * 4 + 2], done = bridges[i * 4 + 3]; g.position.set(x, 0.2, z); g.rotation.y = Math.PI / 2 - a; g.children.forEach((c, k) => { c.visible = done >= 1 || k / 11 <= done; }); } });
   }
 
@@ -245,7 +245,7 @@ export class ArmyView {
     const sg = new Set<THREE.Group>();
     const placeSiege = (x: number, z: number, yaw: number, fire: number, i: number) => {
       let g = this.siege[i]; if (!g) { g = buildCatapult(); g.visible = true; this.siege[i] = g; this.group.add(g); }
-      g.position.set(x, this.terrain.heightAt(x, z), z); g.rotation.y = yaw; g.visible = true; sg.add(g);
+      g.position.set(x, this.terrain.walkAt(x, z), z); g.rotation.y = yaw; g.visible = true; sg.add(g);
       // fire = seconds of the throwing motion left (1 -> 0): a quick swing forward, then the arm is winched back
       const p = 1 - fire; (g.userData.arm as THREE.Object3D).rotation.x = fire <= 0 ? -0.9 : p < 0.25 ? -0.9 + (p / 0.25) * 2.1 : 1.2 - ((p - 0.25) / 0.75) * 2.1;
     };
@@ -253,28 +253,28 @@ export class ArmyView {
     if (this.battle) {
       for (const f of this.field) {
         if (!f.alive || !near(f.x, f.z)) continue;
-        if (f.side === 1 && f.elev > 1.0 && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, f.elev + this.terrain.heightAt(f.x, f.z) - 0.1, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.05; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.04; }
+        if (f.side === 1 && f.elev > 1.0 && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, f.elev + this.terrain.walkAt(f.x, f.z) - 0.1, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.05; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.04; }
         if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
         if (f.side === 0 && f.kind === 1) {   // archers stationed in a tower shoot from its walkway
           const tw = this.towers.find(q => (q.x - f.x) ** 2 + (q.z - f.z) ** 2 < 2.6 * 2.6);
-          if (tw) { const a = Math.atan2(f.z - tw.z, f.x - tw.x), R = (tw.keep ? KEEP_RING : TOWER_RING)[tw.tier], x = tw.x + Math.cos(a) * R, z = tw.z + Math.sin(a) * R; crowd.add({ x, y: this.terrain.heightAt(tw.x, tw.z) + (tw.keep ? KEEP_TOP : TOWER_TOP)[tw.tier], z, yaw: f.anim > 0 ? f.yaw : Math.PI / 2 - a, pose: 3, phase: t + f.seed, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, ...l } as Draw); continue; }
+          if (tw) { const a = Math.atan2(f.z - tw.z, f.x - tw.x), R = (tw.keep ? KEEP_RING : TOWER_RING)[tw.tier], x = tw.x + Math.cos(a) * R, z = tw.z + Math.sin(a) * R; crowd.add({ x, y: this.terrain.walkAt(tw.x, tw.z) + (tw.keep ? KEEP_TOP : TOWER_TOP)[tw.tier], z, yaw: f.anim > 0 ? f.yaw : Math.PI / 2 - a, pose: 3, phase: t + f.seed, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, ...l } as Draw); continue; }
         }
-        crowd.add({ x: f.x, y: this.terrain.heightAt(f.x, f.z) + f.elev, z: f.z, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, scale: 0.92, ...l } as Draw);
+        crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z) + f.elev, z: f.z, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, scale: 0.92, ...l } as Draw);
       }
-      for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.heightAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
+      for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
     } else {
-      for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.heightAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
+      for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
       for (const p of this.posts) {
         if (p.mode !== 'patrol' && !near(p.x, p.z)) continue;
         const l = this.look(0, p.kind, p.x * 3.1 + p.z, true);
         if (p.kind === 4) { placeSiege(p.x, p.z, p.yaw, 0, si++); continue; }
         if (p.mode === 'drill') {
           const drilling = Math.sin(t * 0.35 + p.row * 0.9) > 0.88;
-          crowd.add({ x: p.x, y: this.terrain.heightAt(p.x, p.z), z: p.z, yaw: p.yaw, pose: drilling ? 3 : 0, phase: t + p.x, swing: drilling ? (Math.sin(t * 5 + p.x) > 0 ? 0.6 : 0) : 0, skin: 0xd9a877, ...l } as Draw);
+          crowd.add({ x: p.x, y: this.terrain.walkAt(p.x, p.z), z: p.z, yaw: p.yaw, pose: drilling ? 3 : 0, phase: t + p.x, swing: drilling ? (Math.sin(t * 5 + p.x) > 0 ? 0.6 : 0) : 0, skin: 0xd9a877, ...l } as Draw);
         } else if (p.mode === 'tower') {
           const w = p.tw;
-          if (!w) { crowd.add({ x: p.x, y: this.terrain.heightAt(p.x, p.z) + p.y, z: p.z, yaw: p.yaw, pose: 0, phase: t + p.x, skin: 0xd9a877, ...l } as Draw); continue; }
+          if (!w) { crowd.add({ x: p.x, y: this.terrain.walkAt(p.x, p.z) + p.y, z: p.z, yaw: p.yaw, pose: 0, phase: t + p.x, skin: 0xd9a877, ...l } as Draw); continue; }
           // pace an arc of the walkway: walk while the swing is fast, stop and look out over the wall near the ends of it. A walkway too cramped for a real stroll (a small tower,
           // or many archers sharing it) does not pace at all: its archers turn slowly on the spot, because a walking animation on a body that hardly moves looks like shaking.
           const ph = t * w.w + w.ph, roomy = w.amp * w.R >= 0.7;
@@ -283,7 +283,7 @@ export class ArmyView {
           const out = Math.PI / 2 - a, yaw = walking ? Math.atan2(-sg * Math.sin(a), sg * Math.cos(a)) : out + (roomy ? 0 : Math.sin(ph * 0.6) * 0.8);
           // the gait follows the distance actually walked (so the feet never move faster than the body)
           if (walking) { w.dist = (w.dist ?? 0) + Math.abs(a - (w.last ?? a)) * w.R; } w.last = a;
-          crowd.add({ x, y: this.terrain.heightAt(x, z) + p.y, z, yaw, pose: walking ? 1 : 0, phase: walking ? (w.dist ?? 0) * 4.5 : t + p.x, speed: walking ? Math.min(1.1, w.amp * w.w * Math.abs(v) * w.R) : 0, skin: 0xd9a877, ...l } as Draw);
+          crowd.add({ x, y: this.terrain.walkAt(x, z) + p.y, z, yaw, pose: walking ? 1 : 0, phase: walking ? (w.dist ?? 0) * 4.5 : t + p.x, speed: walking ? Math.min(1.1, w.amp * w.w * Math.abs(v) * w.R) : 0, skin: 0xd9a877, ...l } as Draw);
         }
       }
       for (const g of this.wallGuards) {
@@ -294,7 +294,7 @@ export class ArmyView {
       for (const g of this.guards) {
         if (!near(g.x, g.z)) continue;
         const moving = g.spd > 0.3;
-        crowd.add({ x: g.x, y: this.terrain.heightAt(g.x, g.z), z: g.z, yaw: g.yaw, pose: moving ? 1 : 0, phase: moving ? g.gait : t + g.idx, speed: g.spd, skin: 0xd9a877, ...this.look(0, 0, g.idx, true) } as Draw);
+        crowd.add({ x: g.x, y: this.terrain.walkAt(g.x, g.z), z: g.z, yaw: g.yaw, pose: moving ? 1 : 0, phase: moving ? g.gait : t + g.idx, speed: g.spd, skin: 0xd9a877, ...this.look(0, 0, g.idx, true) } as Draw);
       }
     }
     for (const g of this.shown) if (!sg.has(g)) g.visible = false;

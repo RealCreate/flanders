@@ -71,6 +71,8 @@ const LEVEL_BLEND: f32 = 9.0;  // how far a levelled patch of ground blends back
 pub(crate) const MOAT_FLOOR: f32 = 3.0;  // flat bottom radius of a moat piece
 pub(crate) const RIVER_FLOOR: f32 = 2.0; // and of a river piece
 const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
+/// How far below the rim of the land the water of a moat stands.
+const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
 const RIVER_BED: f32 = -0.7; // a river is shallower than a moat  // depth of the bottom
 const ROAD_INNER: f32 = 1.5; // fully graded half-width of a path
@@ -219,6 +221,7 @@ pub struct World {
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
+    moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
     map_ver: u32,                // changes when trees are felled or bridges built
@@ -289,7 +292,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], bridges: vec![], map_ver: 0,
+            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -430,8 +433,30 @@ impl World {
     /// Recompute derived data after the building list or tiers changed.
     fn after_change(&mut self) {
         if self.defer_roads { self.staffing(); return; }
+        self.moat_water = self.compute_moat_water();
         self.rebuild_roads();
         self.staffing();
+    }
+
+    /// Where the water stands in a moat. The ditch is dug deep so that it reads as deep water, but the sea is at height 0 and the banks are several units higher, so the plain water
+    /// plane would sit far below the brim. A moat's water is drawn at its own level instead: a little below the rim of the surrounding ground (an average of the land just outside the
+    /// bank), smoothed between neighbouring pieces so the surface is one continuous sheet. Gameplay does not use it: water is still wherever the ground is below the shore line.
+    fn compute_moat_water(&self) -> Vec<[f32; 4]> {
+        let pieces: Vec<[f32; 4]> = self.buildings.iter().filter(|b| b.kind == MOAT).map(|b| {
+            let reach = MOAT_FLOOR * moat_scale(b) + CHANNEL_BANK;
+            let rim = (0..8).map(|k| { let a = k as f32 * std::f32::consts::TAU / 8.0; self.height_core(b.x + a.cos() * (reach + 1.5), b.y + a.sin() * (reach + 1.5), false) }).sum::<f32>() / 8.0;
+            [b.x, b.y, reach, (rim - MOAT_FREEBOARD).max(0.4)]
+        }).collect();
+        pieces.iter().map(|p| {
+            let near: Vec<f32> = pieces.iter().filter(|q| (q[0] - p[0]).hypot(q[1] - p[1]) < 10.0).map(|q| q[3]).collect();
+            [p[0], p[1], p[2], near.iter().sum::<f32>() / near.len().max(1) as f32]
+        }).collect()
+    }
+    /// The surface of the water in each moat piece: [x, y, reach, level] (stride 4).
+    pub fn moat_water_flat(&self) -> Vec<f32> { self.moat_water.iter().flatten().copied().collect() }
+    /// The level of the moat water at a point, or 0 (the sea) when it is not in a moat.
+    pub(crate) fn moat_level_at(&self, x: f32, y: f32) -> f32 {
+        self.moat_water.iter().filter(|p| (p[0] - x).hypot(p[1] - y) < p[2] + 1.0).map(|p| p[3]).fold(0.0, f32::max)
     }
 
     /// Workforce efficiency, and how villagers are spread over workplaces and homes.
@@ -1517,7 +1542,7 @@ impl World {
     /// Soldiers on the field: [side, kind, x, y, hp, maxhp, alive, swinging, facing] (stride 9).
     pub fn battle_units_flat(&self) -> Vec<f32> {
         match &self.battle {
-            Some(b) => b.units.iter().flat_map(|u| [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), UNITS[u.kind as usize].hp, u.alive as u8 as f32, u.anim, u.face, if u.wading { (-self.height_at(u.x, u.y) + 0.12).max(0.0) } else { u.elev }]).collect(),
+            Some(b) => b.units.iter().flat_map(|u| [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), UNITS[u.kind as usize].hp, u.alive as u8 as f32, u.anim, u.face, if u.wading { (self.moat_level_at(u.x, u.y) - self.height_at(u.x, u.y) + 0.12).max(0.0) } else { u.elev }]).collect(),
             None => vec![],
         }
     }
@@ -2474,6 +2499,20 @@ mod road_tests {
         let wet = |w: &World| (-30..30).filter(|k| w.height_at(0.0, 24.0 + *k as f32 * 0.25) < 0.0).count();
         assert!(wet(&with) + 1 >= wet(&without), "the bridge keeps the ditch as wide: {} vs {} samples", wet(&with), wet(&without));
         assert!((with.height_at(0.0, 24.0) - without.height_at(0.0, 24.0)).abs() < 0.3, "and as deep");
+    }
+
+    #[test]
+    fn moat_water_stands_just_below_the_rim_not_down_at_the_sea() {
+        let mut w = rich();
+        ring(&mut w, 24.0, 52, MOAT);
+        let f = w.moat_water_flat(); assert!(f.len() >= 40 && f.len() % 4 == 0, "an entry per placed piece: {}", f.len() / 4);
+        for p in f.chunks(4) { assert!(p[3] >= 0.4, "never below the shore line: {}", p[3]); }
+        // the land round the moat is several units high: the water must stand well above the sea there, close under the brim
+        let land = w.height_core(0.0, 33.0, false);
+        let level = w.moat_level_at(0.0, 24.0);
+        assert!(level > 0.4 && level < land, "water {level:.1} under the rim {land:.1}");
+        assert!(land - level < 2.2 || level >= 0.4 && land < 3.0, "close to the brim: rim {land:.1}, water {level:.1}");
+        assert_eq!(w.moat_level_at(0.0, 0.0), 0.0, "no moat water at the hall");
     }
 
     #[test]

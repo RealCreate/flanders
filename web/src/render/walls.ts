@@ -6,10 +6,12 @@ import { linkWalls, GATE_HALF } from './wallgraph';
 const S = 10;
 const TILE = 2;
 const HEIGHT = [2.4, 3.0, 3.8, 4.4];     // wall height by tier
-/** Height of a gate's pillars by tier. The opening under the lintel is about 1.1 less: at least 3.7, so a mounted knight with a plume or a spearman with his spear up passes without his head going through the beam. */
-const gateTopOf = (t: number) => Math.max(HEIGHT[t] + 1.5 + t * 0.25, 4.8);
+/** Height of a gate's pillars by tier. The opening under the lintel is about 1.1 less: at least 4.3, so a mounted knight with a plume or a spearman with his spear up passes without his head going through the beam. */
+const gateTopOf = (t: number) => Math.max(HEIGHT[t] + 1.5 + t * 0.25, 5.4);
 const THICK = [0.8, 1.1, 1.5, 1.7];
 const DEPTH = 2.4;                        // foundation below ground, hides slopes
+/** Distance from a point to the line segment (ax, az)-(bx, bz). */
+const distToSegment = (px: number, pz: number, ax: number, az: number, bx: number, bz: number) => { const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1, t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)); return Math.hypot(px - (ax + dx * t), pz - (az + dz * t)); };
 const GATE_TRIM = GATE_HALF + 0.7;        // wall runs stop at the outer face of a pillar
 
 const WALL = 2, FENCE = 21, GATE = 22;
@@ -73,6 +75,8 @@ export class Walls {
     for (const [i, j] of edges) {
       const A = nodes[i], B = nodes[j], idx = Math.min(A.idx, B.idx);
       if (A.kind === FENCE) { this.fenceRun(b[0], A.x, A.z, B.x, B.z, idx); continue; }
+      // a run that would cross a gate's doorway (on a tight curve two pieces either side of a gate can link directly) is not drawn: the doorway must stay open
+      if (A.kind !== GATE && B.kind !== GATE && nodes.some(n => n.kind === GATE && distToSegment(n.x, n.z, A.x, A.z, B.x, B.z) < GATE_HALF + 0.4)) continue;
       let ax = A.x, az = A.z, bx = B.x, bz = B.z;
       const L = Math.hypot(bx - ax, bz - az), ux = (bx - ax) / (L || 1), uz = (bz - az) / (L || 1);
       if (A.kind === GATE) [ax, az] = trim(i, B);

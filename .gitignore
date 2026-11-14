@@ -4,3 +4,4 @@ web/src/wasm/
 web/tests/.wasm/
 target/
 web/dist/
+mcp/wasm/

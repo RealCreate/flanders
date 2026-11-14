@@ -448,6 +448,7 @@ export class UI {
   }
 
   enterGame() {
+    document.getElementById('data-replay')?.removeAttribute('hidden');   // watching your history needs a village: the start screen's Display settings do not offer it
     $('intro').hidden = true; $('topbar').hidden = false; $('ledger').hidden = false; $('minimap-card').hidden = false; this.applyPanels(); this.finishLoading();
     // keep the ledger below the top bar however many rows the bar wraps to
     const bar = $('topbar'), set = () => document.documentElement.style.setProperty('--top-h', bar.offsetHeight + 'px');

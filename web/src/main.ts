@@ -1216,13 +1216,13 @@ function bindInput() {
   const dropStroke = () => { down = null; penStart = null; if (penShape !== 'path') penPreview.clear(); ui.selBox(null); };
   cv.addEventListener('pointercancel', dropStroke); cv.addEventListener('lostpointercapture', () => { if (down) dropStroke(); });
   cv.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return;
+    if (e.button !== 0) { dropStroke(); return; }   // any other button (the right one turns the camera) abandons a selection or pen stroke: it must never carry on under a camera drag
     down = { x: e.clientX, y: e.clientY };
     try { cv.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
     if (!e.shiftKey && selectedKind !== null && PEN_SPACING[selectedKind] && penShape !== 'path') { const h = terrain.pick(pointerRay(e).ray); penStart = h ? { x: h.x, z: h.z } : null; }
   });
   cv.addEventListener('pointermove', e => {
-    if (down && (e.buttons & 1) && selectedKind === null && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) ui.selBox({ x0: down.x, y0: down.y, x1: e.clientX, y1: e.clientY });
+    if (down && e.buttons === 1 && selectedKind === null && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) ui.selBox({ x0: down.x, y0: down.y, x1: e.clientX, y1: e.clientY });
     updateGhost(e);
     if (selectedKind !== null && PEN_SPACING[selectedKind]) {   // the pen: preview a stroke being dragged, or the next stretch of a path
       const dragging = penStart && (e.buttons & 1) && down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8, walking = penShape === 'path' && penPath.length > 0 && !e.buttons;
