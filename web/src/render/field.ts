@@ -5,7 +5,13 @@ import { HAT, TOOL, buildCatapult, type Crowd, type Draw } from './crowd';
 export interface Obstacle { x: number; z: number; r: number }
 export interface TreeQuery { countTrees(x: number, z: number, r: number): number; nearTrees(x: number, z: number, r: number, out: { x: number; z: number }[]): void }
 
-interface Member { kind: number; x: number; z: number; px: number; pz: number; yaw: number; gait: number; spd: number; seed: number; row: number }
+interface Member { kind: number; x: number; z: number; px: number; pz: number; yaw: number; gait: number; spd: number; seed: number; row: number;
+  /** Where the soldier stood when the army set off, and whether it has been called into the column yet (see the march in `update`). */
+  rx?: number; rz?: number; rel?: boolean; slot?: number; wait?: number;
+  /** Position before the soldiers were pushed apart this frame. */
+  qx?: number; qz?: number;
+  /** The height it is drawn at: follows the ground or a deck, but never faster than a person could climb. */
+  dy?: number }
 interface Det {
   route: number[] | null; id: number; x: number; z: number; tx: number; tz: number; sx: number; sz: number; segT: number; segD: number; lastSync: number; heading: number; yaw: number; units: number[]; state: number; mode: number; prog: number; speed: number;
   members: Member[]; sig: string; width: number; siege: THREE.Group[]; banner: THREE.Group; total: number; boats: THREE.Group | null;
@@ -15,6 +21,8 @@ interface Det {
   col: number;
   /** The centre's own speed, smoothed. */
   cspd: number;
+  /** True from the moment the army sets off until it stops, and how far its centre has walked in that time. */
+  marching: boolean; walked: number;
   /** Where the centre was a frame ago (NaN before the first). */
   lx: number; lz: number;
 }
@@ -62,7 +70,7 @@ export class FieldView {
         banner.add(pole, cloth); banner.userData.detId = id; pole.userData.detId = id; cloth.userData.detId = id;
         const hit = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 4.4, 8), new THREE.MeshBasicMaterial({ visible: false })); hit.position.y = 2.2; hit.userData.detId = id; banner.add(hit);
         this.group.add(banner);
-        d = { trail: [], col: 0, cspd: 0, lx: NaN, lz: NaN, route: null, id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], sx: flat[o + 1], sz: flat[o + 2], segT: 1, segD: 1, lastSync: this.t, heading: 0, yaw: 0, units, state: 0, mode: 0, prog: 0, speed: 0, members: [], sig: '', width: 5, siege: [], banner, total: 0, boats: null };
+        d = { trail: [], col: 0, cspd: 0, marching: false, walked: 0, lx: NaN, lz: NaN, route: null, id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], sx: flat[o + 1], sz: flat[o + 2], segT: 1, segD: 1, lastSync: this.t, heading: 0, yaw: 0, units, state: 0, mode: 0, prog: 0, speed: 0, members: [], sig: '', width: 5, siege: [], banner, total: 0, boats: null };
         this.dets.set(id, d);
       }
       const nx = flat[o + 1], nz = flat[o + 2];
@@ -132,8 +140,15 @@ export class FieldView {
         if (cut > 0) d.trail.splice(0, cut);
         const px = Number.isFinite(d.lx) ? d.lx : d.x, pz = Number.isFinite(d.lz) ? d.lz : d.z; d.lx = d.x; d.lz = d.z;
         d.cspd += (Math.hypot(d.x - px, d.z - pz) / Math.max(dt, 0.001) - d.cspd) * Math.min(1, dt * 4);
-        const want = d.state === 4 ? 0 : d.cspd > 0.7 ? 1 : d.cspd < 0.25 ? 0 : d.col;   // (a boat crew sits in its boats; between the two speeds it keeps what it was doing)
-        d.col += (want - d.col) * Math.min(1, dt * (want > d.col ? 2.6 : 1.1));   // strings out quickly, draws up into ranks more slowly
+        // setting off: the army does not all break into a line at once. Everybody stays where they stand; the soldier at the front walks off, and each next one joins the line as the
+        // end of it comes past (see `rel` below). Stopping: the column draws up into ranks again, slowly.
+        const going = d.state !== 4 && (d.marching ? d.cspd > 0.25 : d.cspd > 0.7);   // (a boat crew sits in its boats; hysteresis keeps a slow patch from flipping it back and forth)
+        if (going && !d.marching) { d.marching = true; d.walked = 0; for (const m of d.members) { m.rx = m.x; m.rz = m.z; m.rel = false; m.slot = undefined; m.wait = 0; } }
+        else if (!going && d.marching) d.marching = false;
+        if (d.marching) d.walked += Math.hypot(d.x - px, d.z - pz);
+        if (d.marching) this.joinLine(d, dt);
+        const want = d.marching ? 1 : 0;
+        d.col += (want - d.col) * (want > d.col ? 1 : Math.min(1, dt * 1.1));
       }
       const y = this.terrain.walkAt(d.x, d.z);
       d.banner.position.set(d.x, Math.max(y, d.state === 4 ? 0.3 : y), d.z);
@@ -151,7 +166,10 @@ export class FieldView {
         const row = Math.floor(i / W), col = i % W, lat = (col - (W - 1) / 2) * 1.6 + (row % 2 ? 0.4 : 0), back = row * 1.5;
         const fxp = d.x - fx * back + rx * lat, fzp = d.z - fz * back + rz * lat;
         let gx = fxp, gz = fzp;
-        if (d.col > 0.002) { const [cx2, cz2] = trailAt(d.trail, d.x, d.z, i * GAP, fx, fz); gx = fxp + (cx2 - fxp) * d.col; gz = fzp + (cz2 - fzp) * d.col; }   // single file along the path the army took
+        if (d.marching) {
+          // a soldier stands where it was until the end of the line comes by (see joinLine); then it steps in and follows its place in the file
+          if (m.rel) [gx, gz] = trailAt(d.trail, d.x, d.z, (m.slot ?? i) * GAP, fx, fz); else { gx = m.rx ?? m.x; gz = m.rz ?? m.z; }
+        } else if (d.col > 0.002) { const [cx2, cz2] = trailAt(d.trail, d.x, d.z, (m.slot ?? i) * GAP, fx, fz); gx = fxp + (cx2 - fxp) * d.col; gz = fzp + (cz2 - fzp) * d.col; }   // drawing up into ranks again
         m.row = row;
         m.px = m.x; m.pz = m.z;
         const dx = gx - m.x, dz = gz - m.z, dist = Math.hypot(dx, dz);
@@ -162,8 +180,10 @@ export class FieldView {
         this.tmp.length = 0; this.trees.nearTrees(m.x, m.z, TREE_R + 0.5, this.tmp);
         for (const t of this.tmp) { const ox = m.x - t.x, oz = m.z - t.z, od = Math.hypot(ox, oz) || 0.01; if (od < TREE_R) { m.x += ox / od * (TREE_R - od); m.z += oz / od * (TREE_R - od); } }
         for (const b of obs) { const ox = m.x - b.x, oz = m.z - b.z, od = Math.hypot(ox, oz) || 0.01, rr = b.r + 0.5; if (od < rr) { m.x += ox / od * (rr - od); m.z += oz / od * (rr - od); } }
-        const onB = this.onBridge(m.x, m.z);
-        if (d.state !== 4 && !onB && this.terrain.heightAt(m.x, m.z) < 0.25) { m.x = m.px; m.z = m.pz; }          // never wade into water
+        if (d.state !== 4) { const sn = this.terrain.snapToDeck(m.x, m.z); if (sn) { m.x = sn[0]; m.z = sn[1]; } }   // beside a bridge deck: up onto it
+        // never wade into water: a step into it is undone, unless a bridge or drawbridge deck is under the soldier (the check knows how wide the deck really is)
+        if (d.state !== 4 && this.terrain.wetAt(m.x, m.z) && !this.terrain.wetAt(m.px, m.pz)) { m.x = m.px; m.z = m.pz; }
+        { const ty = d.state === 4 ? 0.35 : this.terrain.walkAt(m.x, m.z); m.dy = m.dy === undefined || !Number.isFinite(m.dy) ? ty : m.dy + Math.max(-9 * dt, Math.min(9 * dt, ty - m.dy)); }
         const moved = Math.hypot(m.x - m.px, m.z - m.pz);
         m.spd += (moved / Math.max(dt, 0.001) - m.spd) * Math.min(1, dt * 6);
         m.gait += Math.PI * moved / (0.55 + 0.13 * m.spd);
@@ -202,12 +222,27 @@ export class FieldView {
     this.ring.visible = ri > 0;
   }
 
+  /** Soldiers on the march fall into line one at a time. The head has gone; the end of the line is the next free place in the file. A soldier steps into it only when that place is
+   *  within reach of where it stands (reach grows the longer it has been left standing, so nobody is lost) and the soldier now last in the line has moved a full gap away from it. */
+  private joinLine(d: Det, dt: number) {
+    const rel = d.members.filter(m => m.rel).sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0));
+    rel.forEach((m, k) => { m.slot = k; });   // (compact: places left by soldiers who fell are closed up)
+    const left = d.members.filter(m => !m.rel); if (!left.length) return;
+    for (const m of left) m.wait = (m.wait ?? 0) + dt;
+    const k = rel.length, fx = Math.sin(d.yaw), fz = Math.cos(d.yaw), [sx, sz] = trailAt(d.trail, d.x, d.z, k * GAP, fx, fz), last = rel[k - 1];
+    if (last && Math.hypot(last.x - sx, last.z - sz) < GAP * 0.85) return;   // the place is not free yet: the soldier in front is still stepping off it
+    let best: Member | null = null, bd = Infinity;
+    for (const m of left) { const dd = Math.hypot(m.x - sx, m.z - sz); if (dd < 3.2 + 1.2 * (m.wait ?? 0) && dd < bd) { bd = dd; best = m; } }
+    if (best) { best.rel = true; best.slot = k; }
+  }
+
   /** Soldiers keep their distance from every other soldier (also from other armies), pushed apart gently rather than snapped. */
   private grid = new Map<number, Member[]>(); private sepAll: Member[] = [];
   private separate(dt: number) {
     const cell = 1.6, grid = this.grid, all = this.sepAll; all.length = 0;
     if (grid.size > 4000) grid.clear(); else for (const arr of grid.values()) arr.length = 0;   // reuse the buckets instead of allocating them every frame
     for (const d of this.dets.values()) for (const m of d.members) { all.push(m); const key = Math.floor(m.x / cell) * 73856093 ^ Math.floor(m.z / cell) * 19349663; let c = grid.get(key); if (!c) grid.set(key, c = []); c.push(m); }
+    for (const a of all) { a.qx = a.x; a.qz = a.z; }
     const R = 1.0, soft = Math.min(1, dt * 9) * 0.5;
     for (const a of all) {
       const cx = Math.floor(a.x / cell), cz = Math.floor(a.z / cell);
@@ -221,6 +256,8 @@ export class FieldView {
         }
       }
     }
+    // being pushed by a neighbour must not put a soldier into the water (the soft push has no idea where the edge of a deck is)
+    for (const a of all) if (a.qx !== undefined && this.terrain.wetAt(a.x, a.z) && !this.terrain.wetAt(a.qx, a.qz!)) { a.x = a.qx; a.z = a.qz!; }
   }
 
   draw(crowd: Crowd, cx: number, cz: number, radius: number) {
@@ -229,7 +266,7 @@ export class FieldView {
       const front = d.state === 2;
       for (const m of d.members) {
         if ((m.x - cx) ** 2 + (m.z - cz) ** 2 > r2) continue;
-        const y = d.state === 4 ? 0.35 : this.terrain.walkAt(m.x, m.z);   // (on a bridge or drawbridge: the height of its deck)
+        const y = m.dy ?? (d.state === 4 ? 0.35 : this.terrain.walkAt(m.x, m.z));   // (on a bridge or drawbridge: the height of its deck, reached smoothly)
         const look = lookOf(m.kind, this.friend), working = front && m.row === 0;
         crowd.add({ x: m.x, y, z: m.z, yaw: m.yaw, pose: working ? 2 : m.spd > 0.35 ? 1 : 0, phase: working ? this.t + m.seed : m.spd > 0.35 ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...look, ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}) } as Draw);
       }

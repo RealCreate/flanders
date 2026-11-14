@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
+import { rounded } from './polyline';
 
 const S = 10; // buildings_flat stride
 
@@ -36,6 +37,7 @@ export class Paths {
         vec2 cu = vMapUv * 5.0; float cob = step(0.1, fract(cu.x)) * step(0.1, fract(cu.y + floor(cu.x) * 0.5));
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.64, 0.62, 0.58) * (0.78 + 0.22 * cob), paved * 0.92);`);
     };
+    this.mat.customProgramCacheKey = () => 'paths' + this.mat.id;   // one program per village: each has its own clock uniform (see patchWater)
     this.tracks = new THREE.Mesh(new THREE.BufferGeometry(), this.mat);
     this.tracks.receiveShadow = true; this.tracks.renderOrder = 2; this.tracks.frustumCulled = false;
     this.group.add(this.tracks);
@@ -52,26 +54,48 @@ export class Paths {
       pos.push(x, y(x, z), z); col.push(tone.r * n, tone.g * n, tone.b * n, a); uv.push(u, v); rd.push(rb, rs, rp);
       return pos.length / 3 - 1;
     };
-    // tracks: ribbons with soft edges, from doorstep to doorstep
+    // tracks: ribbons with soft edges, from doorstep to doorstep. The pieces of one route are joined into one line first, its corners are rounded, and the ribbon follows
+    // the rounded line with the corner's own mitre, so a bend has neither a gap nor a kink; where a road ends away from a building (a road piece, a junction) a round patch fills the join.
+    const lines: { pts: number[]; child: number; parent: number }[] = [];
     for (let s = 0; s < roads.length; s += 6) {
-      const [ax, az, bx, bz] = [roads[s], roads[s + 1], roads[s + 2], roads[s + 3]], child = roads[s + 4], parent = roads[s + 5];
-      const kc = buildings[child * S], kp = buildings[parent * S];   
-      const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz) || 1, ux = dx / len, uz = dz / len;
-      // a route has several stretches: only the first steps back from its child building and the last from its parent
-      const atChild = Math.hypot(ax - buildings[child * S + 2], az - buildings[child * S + 3]) < radii[kc] + 1, atParent = Math.hypot(bx - buildings[parent * S + 2], bz - buildings[parent * S + 3]) < radii[kp] + 1;
-      // a stretch steps back from a building's walls, but not from a piece of road (they must join up, with no gaps between them)
-      const t0 = atChild && kc !== 37 ? radii[kc] * 0.6 : 0, t1 = len - (atParent && kp !== 37 ? radii[kp] * 0.6 : 0);
-      if (t1 <= t0 + 0.5) continue;
-      const half = hallTier >= 2 ? 1.45 : 1.15, steps = Math.max(2, Math.ceil((t1 - t0) / 1.0));
-      rb = Math.max(born[child] ?? 0, born[parent] ?? 0); rp = 1;
-      let prev: number[] | null = null;
+      const [ax, az, bx, bz, child, parent] = [roads[s], roads[s + 1], roads[s + 2], roads[s + 3], roads[s + 4], roads[s + 5]], last = lines[lines.length - 1];
+      if (last && last.child === child && last.parent === parent && Math.hypot(last.pts[last.pts.length - 2] - ax, last.pts[last.pts.length - 1] - az) < 0.05) last.pts.push(bx, bz);
+      else lines.push({ pts: [ax, az, bx, bz], child, parent });
+    }
+    const half = hallTier >= 2 ? 1.45 : 1.15, discs = new Map<string, [number, number]>();
+    lines.forEach((ln, li) => {
+      const kc = buildings[ln.child * S], kp = buildings[ln.parent * S];
+      const P = rounded(ln.pts, 3.2);
+      let total = 0; for (let k = 2; k < P.length; k += 2) total += Math.hypot(P[k] - P[k - 2], P[k + 1] - P[k - 1]);
+      const atChild = Math.hypot(P[0] - buildings[ln.child * S + 2], P[1] - buildings[ln.child * S + 3]) < radii[kc] + 1, atParent = Math.hypot(P[P.length - 2] - buildings[ln.parent * S + 2], P[P.length - 1] - buildings[ln.parent * S + 3]) < radii[kp] + 1;
+      const t0 = atChild && kc !== 37 ? radii[kc] * 0.6 : 0, t1 = total - (atParent && kp !== 37 ? radii[kp] * 0.6 : 0);
+      if (t1 <= t0 + 0.5) return;
+      if (!(atChild && kc !== 37)) discs.set(Math.round(P[0] / 0.8) + ':' + Math.round(P[1] / 0.8), [P[0], P[1]]);
+      if (!(atParent && kp !== 37)) discs.set(Math.round(P[P.length - 2] / 0.8) + ':' + Math.round(P[P.length - 1] / 0.8), [P[P.length - 2], P[P.length - 1]]);
+      rb = Math.max(born[ln.child] ?? 0, born[ln.parent] ?? 0); rp = 1;
+      // sample the line every unit between t0 and t1
+      const steps = Math.max(2, Math.ceil((t1 - t0) / 1.0)); let prev: number[] | null = null, seg = 0, acc = 0;
       for (let i = 0; i <= steps; i++) {
-        const t = t0 + ((t1 - t0) * i) / steps, w = 0.12 * Math.sin(t * 0.7 + s) , cx = ax + ux * t - uz * w, cz = az + uz * t + ux * w;
-        const nx = -uz, nz = ux, cap = i === 0 || i === steps ? 0.0 : 1; rs = 1 - i / steps;
+        const t = t0 + ((t1 - t0) * i) / steps;
+        while (seg + 2 < P.length - 2 && acc + Math.hypot(P[seg + 2] - P[seg], P[seg + 3] - P[seg + 1]) < t) { acc += Math.hypot(P[seg + 2] - P[seg], P[seg + 3] - P[seg + 1]); seg += 2; }
+        const sl = Math.hypot(P[seg + 2] - P[seg], P[seg + 3] - P[seg + 1]) || 1, f = Math.min(1, Math.max(0, (t - acc) / sl));
+        const px = P[seg] + (P[seg + 2] - P[seg]) * f, pz = P[seg + 1] + (P[seg + 3] - P[seg + 1]) * f;
+        // the direction here: the average of the way in and the way out (a mitre), so the ribbon turns smoothly
+        const q0 = Math.max(0, seg - (f < 0.5 ? 2 : 0)), q1 = Math.min(P.length - 4, seg + (f < 0.5 ? 0 : 2));
+        let ux = P[q1 + 2] - P[q0], uz = P[q1 + 3] - P[q0 + 1]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
+        const nx = -uz, nz = ux, wob = 0.12 * Math.sin(t * 0.7 + li * 1.7) * Math.min(1, i / 3, (steps - i) / 3);
+        const cx = px + nx * wob, cz = pz + nz * wob, cap = i === 0 || i === steps ? 0.0 : 1; rs = 1 - i / steps;
         const row = [vert(cx + nx * half * 1.6, cz + nz * half * 1.6, 0, 0, t * 0.25), vert(cx, cz, 0.95 * Math.max(cap, 0.85), 0.5, t * 0.25), vert(cx - nx * half * 1.6, cz - nz * half * 1.6, 0, 1, t * 0.25)];
         if (prev) for (let k = 0; k < 2; k++) { idx.push(prev[k], row[k], prev[k + 1], prev[k + 1], row[k], row[k + 1]); }
         prev = row;
       }
+    });
+    // junction patches
+    rb = -1e6; rs = 0.5; rp = 1;
+    for (const [dx, dz] of discs.values()) {
+      const c = vert(dx, dz, 0.95, 0.5, 0.5), n = 14, R = half * 1.6, first = pos.length / 3;
+      for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2; vert(dx + Math.cos(a) * R, dz + Math.sin(a) * R, 0, 0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5); }
+      for (let k = 0; k < n; k++) idx.push(c, first + k, first + (k + 1) % n);
     }
     rb = -1e6; rs = 0; rp = 0;
     // aprons under buildings (and the plaza under the hall)

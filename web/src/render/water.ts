@@ -75,5 +75,8 @@ export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, ti
         diffuseColor.a = clamp(mix(0.985, 0.42, shallow) * smoothstep(0.0, 0.1, depth + 0.05) + foam * 0.7, 0.0, 1.0);`)
       .replace('#include <normal_fragment_maps>', normalChunk);
   };
+  // three.js shares one compiled program between materials whose shader code is identical and calls onBeforeCompile only for the first, so a second patched material (the moat
+  // water next to the sea) would be left without its uniforms. A key of its own per material makes every one get compiled with them.
+  mat.customProgramCacheKey = () => 'water' + mat.id;
   mat.needsUpdate = true;
 }
