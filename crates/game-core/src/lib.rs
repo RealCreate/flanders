@@ -5,6 +5,7 @@ mod battle;
 mod catalog;
 mod march;
 mod military;
+mod pathnet;
 mod terrain;
 use catalog::*;
 use military::*;
@@ -221,6 +222,7 @@ pub struct World {
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
+    net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network (derived; rebuilt when the village changes)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
@@ -292,7 +294,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
+            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), moat_water: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -529,15 +531,15 @@ impl World {
             if fm > 0.0 && h > MOAT_BED { h += (MOAT_BED - h) * fm.min(1.0); }
             if fr > 0.0 && h > RIVER_BED { h += (RIVER_BED - h) * fr.min(1.0); }
         }
-        // the earth at each end of a drawbridge is levelled to the deck (after the ditch is dug, so the water stays between them)
+        // the earth at each end of a drawbridge is levelled to the deck, in a strip that runs on from the deck's ends (after the ditch is dug, so the water stays between them):
+        // the deck meets the ground flush, with no step and no slope to climb
         for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) {
-            if (x - b.x).abs() > 14.0 || (y - b.y).abs() > 14.0 { continue; }
+            if (x - b.x).abs() > 24.0 || (y - b.y).abs() > 24.0 { continue; }
             let a = (b.rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
-            for e in [-1.0f32, 1.0] {
-                let (cx, cy) = (b.x + sx * 12.4 * e, b.y + sy * 12.4 * e);   // (well back from the deck ends at 6.4: the ditch under the bridge keeps its full width and depth)
-                let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-                if d < 6.6 { h = lerp(h, b.pad_h, 1.0 - smoothstep(3.0, 6.6, d)); }
-            }
+            let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();
+            if !(5.6..22.0).contains(&s) || c > 5.2 { continue; }
+            let w = smoothstep(5.6, 6.6, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
+            h = lerp(h, b.pad_h, w);
         }
         if !built { return h; }
         for s in &self.roads {
@@ -1393,6 +1395,11 @@ impl World {
         let id = |v: u32| if v == u32::MAX { -1.0 } else { v as f32 };
         self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| [s[0], s[1], s[3], s[4], id(l.0), id(l.1)]).collect()
     }
+
+    /// The path network as [n, e, x, y (n times), a, b, road (e times)] (see pathnet.rs).
+    pub fn net_flat(&self) -> Vec<f32> { self.net_flat_inner() }
+    /// A route over the path network: [complete (1 or 0), x, y, x, y, ...], or empty when the network does not help (villagers walk it).
+    pub fn net_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.net_route_inner(sx, sy, gx, gy) }
 
     /// Walkable routes between linked buildings: [child, parent, n, x0, y0, x1, y1, ...] repeated. Unlike `roads_flat` these include the crossings of drawbridges.
     pub fn road_paths_flat(&self) -> Vec<f32> {
@@ -3538,5 +3545,52 @@ mod pathing_room_tests {
         let made = |mut w: World| { let mut n = 0; for _ in 0..550 { let b = w.stock[PL as usize]; w.step(); n += (w.stock[PL as usize] - b).max(0); w.stock[PL as usize] = 100; w.stock[W as usize] = 3000; } n };
         let (plain, awning) = (made(q(0)), made(q(4)));
         assert!(awning > plain, "an awning makes more: {awning} vs {plain}");
+    }
+}
+
+#[cfg(test)]
+mod pathnet_tests {
+    use super::*;
+    fn village() -> World {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES];
+        for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 17, 4), (HOUSE, 22, 4), (HOUSE, -12, 6), (TOWER, 0, 16), (TOWER, 8, -16)] { w.place(k, x, y, 0); }
+        w
+    }
+    fn edges(w: &World) -> Vec<(usize, usize, bool)> { let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize); (0..e).map(|k| { let o = 2 + 2 * n + 3 * k; (v[o] as usize, v[o + 1] as usize, v[o + 2] > 0.5) }).collect() }
+
+    #[test]
+    fn the_network_has_roads_and_a_ring_round_every_building_and_stays_clear_of_them() {
+        let w = village(); let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize);
+        assert!(n > 40 && e > n, "nodes {n}, edges {e}");
+        let ed = edges(&w); assert!(ed.iter().any(|e| e.2), "road edges"); assert!(ed.iter().any(|e| !e.2), "ring and link edges");
+        for k in 0..n { let (x, y) = (v[2 + 2 * k], v[3 + 2 * k]); for b in &w.buildings { assert!((b.x - x).hypot(b.y - y) > footprint(b.kind, b.tier) * 0.9, "node ({x:.1},{y:.1}) inside a {}", DEFS[b.kind as usize].name); } }
+        // every edge is walkable: never through a building's footprint
+        for (a, b, _) in ed { let (pa, pb) = ((v[2 + 2 * a], v[3 + 2 * a]), (v[2 + 2 * b], v[3 + 2 * b])); for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f); for q in &w.buildings { assert!((q.x - x).hypot(q.y - y) > footprint(q.kind, q.tier) * 0.9, "edge crosses a {}", DEFS[q.kind as usize].name); } } }
+    }
+
+    #[test]
+    fn a_route_goes_round_a_building_along_its_ring_and_the_network_follows_changes() {
+        let mut w = village();
+        let r = w.net_route(8.0, 4.0, 32.0, 4.0); assert!(!r.is_empty(), "a route exists");
+        assert_eq!(r[0], 1.0, "and it is complete");
+        let pts: Vec<(f32, f32)> = r[1..].chunks(2).map(|c| (c[0], c[1])).collect();
+        for p in &pts { for q in &w.buildings { assert!((q.x - p.0).hypot(q.y - p.1) > footprint(q.kind, q.tier) * 0.9); } }
+        let len: f32 = pts.windows(2).map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1)).sum();
+        assert!(len < 60.0, "no huge detour: {len}");
+        // a new obstacle in the way changes the network
+        let before = w.net_flat();
+        assert!(w.place(HOUSE, 28, 4, 0) >= 0);
+        let after = w.net_flat(); assert!(before != after, "the network was rebuilt");
+        let r2 = w.net_route(8.0, 4.0, 40.0, 4.0);
+        if !r2.is_empty() { for p in r2[1..].chunks(2) { assert!((28.0 - p[0]).hypot(4.0 - p[1]) > footprint(HOUSE, 0) * 0.9, "the route avoids the new house"); } }
+    }
+
+    #[test]
+    fn soldiers_walk_faster_on_a_road() {
+        let w = village();
+        let v = w.roads_flat(); assert!(!v.is_empty());
+        let (x, y) = ((v[0] + v[2]) / 2.0, (v[1] + v[3]) / 2.0);
+        assert!(w.on_road(x, y), "the middle of a road piece is on the road");
+        assert!(!w.on_road(60.0, 60.0));
     }
 }

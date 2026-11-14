@@ -115,6 +115,23 @@ export class Terrain {
     return y;
   }
 
+  /** Somebody standing just beside a deck (on the bank that falls away to the water) is drawn onto the deck's edge: returns where, or null when no deck is within `margin` of them.
+   *  Without this, the soft pushing between marching soldiers puts some of them on the slope beside the bridge, from which they pop up onto the deck. */
+  snapToDeck(x: number, z: number, margin = 1.3): [number, number] | null {
+    for (const list of this.decks.values()) for (const d of list) {
+      if (x < d.minx - margin || x > d.maxx + margin || z < d.minz - margin || z > d.maxz + margin) continue;
+      const dx = d.bx - d.ax, dz = d.bz - d.az, l2 = dx * dx + dz * dz || 1, t = ((x - d.ax) * dx + (z - d.az) * dz) / l2;
+      if (t < 0.02 || t > 0.98) continue;
+      const cx = d.ax + dx * t, cz = d.az + dz * t, off = Math.hypot(x - cx, z - cz);
+      if (off <= d.half - 0.2 || off > d.half + margin) continue;
+      const k = (d.half - 0.3) / off; return [cx + (x - cx) * k, cz + (z - cz) * k];
+    }
+    return null;
+  }
+
+  /** Is this spot water that somebody on foot would sink into: below the shore line, and with no bridge or lowered drawbridge deck over it? */
+  wetAt(x: number, z: number): boolean { return this.heightAt(x, z) < 0.25 && this.walkAt(x, z) - this.heightAt(x, z) < 0.3; }
+
   animate(t: number) {
     this.waterTime.value = t;
     if (this.heightDirty && t - this.heightAt0 > 0.4) this.uploadHeights(t);   // building changes the ground; refresh the depth texture a few times a second at most

@@ -103,7 +103,7 @@ impl NavStatic {
 fn cell_xy(i: usize) -> (f32, f32) { ((i as i32 % NC) as f32 * CELL + ORG + CELL / 2.0, (i as i32 / NC) as f32 * CELL + ORG + CELL / 2.0) }
 
 /// Per-request overlays: buildings, felled trees and bridges rasterised onto the grid.
-struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool> }
+struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool>, road: Vec<bool> }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cl { Block, Free(f32), Water }
@@ -123,7 +123,7 @@ fn stamp(grid: &mut [bool], x: f32, y: f32, r: f32) {
 impl World {
     fn overlays(&self) -> Ov {
         let n = (NC * NC) as usize;
-        let mut ov = Ov { blocked: vec![false; n], soft: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n] };
+        let mut ov = Ov { blocked: vec![false; n], soft: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n], road: vec![false; n] };
         for b in &self.buildings {
             match b.kind {
                 GATE if self.gate_shut(b) => stamp(&mut ov.blocked, b.x, b.y, 3.4),   // a barred gate: no way through
@@ -142,6 +142,10 @@ impl World {
                 }
             }
         }
+        for r in &self.roads {   // the village's roads: soldiers keep to them
+            let (dx, dy) = (r[3] - r[0], r[4] - r[1]); let l = dx.hypot(dy).max(0.1); let st = (l / 1.0).ceil() as i32;
+            for k in 0..=st { let t = k as f32 / st as f32; stamp(&mut ov.road, r[0] + dx * t, r[1] + dy * t, 1.3); }
+        }
         for f in &self.felled { stamp(&mut ov.cleared, f[0], f[1], f[2]); }
         for br in &self.bridges {
             let (dx, dy) = (br[2] - br[0], br[3] - br[1]); let l = (dx * dx + dy * dy).sqrt().max(0.1); let steps = (l / 1.0).ceil() as i32;
@@ -159,7 +163,8 @@ impl World {
         if ns.slope[i] > if siege { 0.85 } else { 1.6 } { return Cl::Block; }
         let d = if ov.cleared[i] { 0.0 } else { ns.dens[i] as f32 };
         if siege && d >= 2.0 { return Cl::Free(8.0 + d); }               // dense forest: needs felling
-        Cl::Free(1.0 + 0.2 * d + ns.slope[i] * 1.2 + if ov.soft[i] { 0.3 } else { 0.0 })
+        let c = 1.0 + 0.2 * d + ns.slope[i] * 1.2 + if ov.soft[i] { 0.3 } else { 0.0 };
+        Cl::Free(if ov.road[i] { c * crate::pathnet::ROAD_COST } else { c })
     }
 
     fn near_free(&self, ns: &NavStatic, ov: &Ov, x: f32, y: f32, siege: bool) -> Option<usize> {
@@ -174,7 +179,22 @@ impl World {
     }
 
     /// Find a route. Err codes: -2 unreachable, -3 siege engines need soldiers to clear the forest, -5 water too wide.
+    /// Inside the village the army follows the path network (roads first, round the buildings along their rings); where the network ends (or does not help) it is worked out over the open ground.
     pub(crate) fn find_path(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32) -> Result<Vec<Wp>, i32> {
+        let net = self.net();
+        if let Some((pts, complete)) = net.route((sx, sy), (tx, ty)) {
+            let mut wps = vec![Wp { x: sx, y: sy, mode: 0 }];
+            for p in &pts { wps.push(Wp { x: p.0, y: p.1, mode: 0 }); }
+            if complete {
+                if net.ok_at(tx, ty) || net.clear(*pts.last().unwrap(), (tx, ty), 1.7) { wps.push(Wp { x: tx, y: ty, mode: 0 }); return Ok(wps); }
+            } else if let Some(&(ex, ey)) = pts.last() {
+                if let Ok(rest) = self.find_path_grid(units, ex, ey, tx, ty) { for w in rest.into_iter().skip(1) { wps.push(w); } return Ok(wps); }
+            }
+        }
+        self.find_path_grid(units, sx, sy, tx, ty)
+    }
+
+    fn find_path_grid(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32) -> Result<Vec<Wp>, i32> {
         let ns = nav_static(self.seed); let ov = self.overlays();
         let siege = units[4] > 0; let workers = units[0] + units[2];
         let (Some(s), Some(g)) = (self.near_free(&ns, &ov, sx, sy, siege), self.near_free(&ns, &ov, tx, ty, siege)) else { return Err(-2) };
@@ -302,7 +322,7 @@ impl World {
                 let workers = (d.units[0] + d.units[2]) as f32;
                 let dens = ns.dens_at(d.x, d.y) as f32;
                 match wp.mode {
-                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.06 * dens); Self::advance(&mut d, wp); }
+                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.06 * dens) * if self.on_road(d.x, d.y) { crate::pathnet::ROAD_SPEED } else { 1.0 }; Self::advance(&mut d, wp); }
                     1 => {
                         d.state = S_FELL; d.speed = (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base);
                         let (ox, oy) = (d.x, d.y);

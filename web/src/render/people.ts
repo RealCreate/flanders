@@ -48,6 +48,7 @@ interface Agent {
   base: number;   // this person's own walking pace (units/s): children and the old are slower, some stride out
   gait: number;   // gait angle, advances with distance walked so feet never slide
   pace: number;   // current ground speed
+  blocked?: number;   // seconds spent stopped at the water's edge
   haul: number; store: number; cartYaw: number;   // pulling a cart of goods from the workplace to the storehouse
 }
 
@@ -65,6 +66,25 @@ export class People {
   /** For each building, the direction its paths leave in. */
   private doorAngle = new Map<number, number>();
   hidden = false;           // villagers shelter indoors during a battle
+  /** The path network of the village (see pathnet.rs): a route from one point to another as [complete, x, z, x, z, ...], or empty when it does not help. */
+  router: ((sx: number, sz: number, gx: number, gz: number) => ArrayLike<number>) | null = null;
+  private roadGrid = new Map<string, number[]>();
+  /** Dirt roads as [ax, az, bx, bz, ...] segments (World.roads_flat() without the buildings): people walk them faster. */
+  setRoads(flat: ArrayLike<number>) {
+    this.roadGrid.clear();
+    for (let i = 0; i + 5 < flat.length; i += 6) {
+      const x0 = Math.floor((Math.min(flat[i], flat[i + 2]) - 2) / 8), x1 = Math.floor((Math.max(flat[i], flat[i + 2]) + 2) / 8), z0 = Math.floor((Math.min(flat[i + 1], flat[i + 3]) - 2) / 8), z1 = Math.floor((Math.max(flat[i + 1], flat[i + 3]) + 2) / 8);
+      for (let a = x0; a <= x1; a++) for (let b = z0; b <= z1; b++) { const k = a + ':' + b; let l = this.roadGrid.get(k); if (!l) this.roadGrid.set(k, l = []); l.push(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]); }
+    }
+  }
+  private onRoad(x: number, z: number): boolean {
+    const l = this.roadGrid.get(Math.floor(x / 8) + ':' + Math.floor(z / 8)); if (!l) return false;
+    for (let i = 0; i < l.length; i += 4) {
+      const dx = l[i + 2] - l[i], dz = l[i + 3] - l[i + 1], t = Math.max(0, Math.min(1, ((x - l[i]) * dx + (z - l[i + 1]) * dz) / (dx * dx + dz * dz || 1)));
+      if (Math.hypot(x - (l[i] + dx * t), z - (l[i + 1] + dz * t)) <= 1.5) return true;
+    }
+    return false;
+  }
   /** Hand carts that carry goods from workplaces to the storehouse (or the hall). */
   group = new THREE.Group();
   private cartBody: THREE.InstancedMesh; private cartLoad: THREE.InstancedMesh; private cartWheel: THREE.InstancedMesh; private cartShaft: THREE.InstancedMesh;
@@ -155,7 +175,35 @@ export class People {
 
   private chain(i: number) { const c = [i]; let g = 0; while (this.parent[c[c.length - 1]] >= 0 && g++ < 200) c.push(this.parent[c[c.length - 1]]); return c; }
 
+  /** Does walking this route put anybody in water (a moat, river or lake) with no bridge or lowered drawbridge under them? The first few steps are forgiven, so somebody who
+   *  is already standing in the shallows can still walk out. */
+  private wades(pts: THREE.Vector2[]): boolean {
+    let walked = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i], len = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(1, Math.ceil(len / 0.8));
+      for (let k = 1; k <= n; k++) { const x = a.x + (b.x - a.x) * k / n, z = a.y + (b.y - a.y) * k / n; if (walked + len * k / n > 4 && this.terrain.wetAt(x, z)) return true; }
+      walked += len;
+    }
+    return false;
+  }
+
+  /** A route over the path network (roads first, round the buildings along their rings), or null when the network cannot take them there. */
+  private viaNet(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] | null {
+    if (!this.router || from === to || !this.bld[from] || !this.bld[to]) return null;
+    const goal = this.spot(to, 1), r = this.router(fromPos.x, fromPos.y, goal.x, goal.y);
+    if (r.length < 3 || r[0] !== 1) return null;
+    const out = [fromPos.clone()]; for (let k = 1; k + 1 < r.length; k += 2) out.push(new THREE.Vector2(r[k], r[k + 1]));
+    out.push(goal);
+    return this.wades(out) ? null : out;
+  }
+
   private route(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] {
+    const net = this.viaNet(from, to, fromPos); if (net) return net;
+    const r = this.routeRaw(from, to, fromPos);
+    return this.wades(r) ? [fromPos.clone()] : r;   // no dry way (no bridge where one is needed): they stay where they are rather than wade
+  }
+
+  private routeRaw(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] {
     if (from === to || !this.bld[from] || !this.bld[to]) return [this.spot(to, 1)];
     const ca = this.chain(from), cb = this.chain(to), setB = new Set(cb);
     const lca = ca.find(x => setB.has(x));
@@ -261,12 +309,19 @@ export class People {
     // the village clock runs slowly now; people move a little faster when the clock is sped up, but never absurdly
     const vs = Math.min(2.5, 0.8 + 0.35 * Math.max(0.5, speed || 1)), step = Math.min(dt, 0.1);
     for (const a of this.agents) {
-      const mvSp = a.base * vs * (a.hunter && a.stage >= 1 ? 1.35 : 1) * (a.carry ? 0.85 : 1) * (a.fight ? 1.7 : 1);
+      const mvSp = a.base * vs * (this.onRoad(a.x, a.z) ? 1.25 : 1) * (a.hunter && a.stage >= 1 ? 1.35 : 1) * (a.carry ? 0.85 : 1) * (a.fight ? 1.7 : 1);
       if (a.fight) this.duty(a, step); else if (a.crew) this.crewDuty(a, step);
       a.pace = 0;
       if (a.route.length && a.at < a.route.length) {
         const w = a.route[a.at], dx = w.x - a.x, dz = w.y - a.z, d = Math.hypot(dx, dz), mv = mvSp * step;
         const stride = 0.55 + 0.13 * mvSp;                  // faster walkers take longer steps
+        const tx = d <= mv ? w.x : a.x + (dx / d) * mv, tz = d <= mv ? w.y : a.z + (dz / d) * mv;
+        if (this.terrain.wetAt(tx, tz) && !this.terrain.wetAt(a.x, a.z)) {   // the next step is into the water: stop at the edge (a bridge or drawbridge deck counts as dry)
+          a.blocked = (a.blocked ?? 0) + step; a.pace = 0;
+          if (a.blocked > 1.2) { a.route = []; a.dwell = 2 + this.rand(a, 40) * 3; a.blocked = 0; a.haul = 0; }
+          continue;
+        }
+        a.blocked = 0;
         if (d <= mv) { a.x = w.x; a.z = w.y; a.at++; a.gait += Math.PI * d / stride; } else {
           a.x += (dx / d) * mv; a.z += (dz / d) * mv; a.gait += Math.PI * mv / stride;
           const want = Math.atan2(dx, dz); let da = want - a.yaw; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI;

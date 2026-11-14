@@ -640,7 +640,7 @@ const drawbridge: Model = b => {
   const m = M();
   for (const s of [-1, 1]) { b.box(0.5, 3.6, 0.5, m.darkwood, s * 1.7, 0, -6.6); b.box(0.3, 0.3, 1.5, m.darkwood, s * 1.7, 3.4, -5.9); }
   b.box(4.0, 0.4, 0.4, m.darkwood, 0, 3.5, -6.6);
-  const deck = new THREE.Group(); deck.position.set(0, 0.55, -6.4); deck.userData.deck = true;
+  const deck = new THREE.Group(); deck.position.set(0, -0.1, -6.4); deck.userData.deck = true;   // (its top lies flush with the levelled ground at both ends)
   const plank = (w: number, d: number, x: number, z: number) => { const g = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, d), m.wood); g.position.set(x, 0, z); g.castShadow = g.receiveShadow = true; deck.add(g); };
   for (let i = 0; i < 29; i++) plank(3.0, 0.42, 0, 0.3 + i * 0.44);
   for (const s of [-1, 1]) { const rail = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.5, 12.8), m.darkwood); rail.position.set(s * 1.6, 0.3, 6.4); rail.castShadow = true; deck.add(rail); }
