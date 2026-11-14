@@ -1,0 +1,21 @@
+# Flanders
+
+A medieval, serverless multiplayer village builder: a deterministic Rust/WASM core (`crates/game-core`), a three.js client (`web/`), peer-to-peer play with signed commands, and an MCP server (`mcp/`) so an AI agent can play under the same rules.
+
+## Run it
+Needs Rust with the wasm target, `wasm-pack` and Node 22:
+
+```
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack
+cd web && npm ci && npm run dev
+```
+
+`npm run dev` and `npm run build` rebuild the wasm first (it lives in `web/src/wasm/`, which is not committed), so a pull that changes `crates/` is picked up on the next start. If you run `vite` directly, run `npm run wasm` yourself first, or you get errors like "does not provide an export named …".
+
+## Tests
+```
+cargo test --release -p game-core     # the game rules
+cd web && npm test && npm run test:demo
+```
+CI (`.github/workflows/ci.yml`) runs all of these plus `tsc` and the production build.
