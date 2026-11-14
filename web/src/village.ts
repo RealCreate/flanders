@@ -103,7 +103,7 @@ export class Village {
       const f = w.buildings_flat();
       this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
       this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
-      this.walls.update(f, w.terrain_version(), w.options_flat()); this.spans.update(w.bridge_spans_flat()); this.army.syncWalls(this.walls.walks);
+      this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat()); this.spans.update(w.bridge_spans_flat()); this.army.syncWalls(this.walls.walks);
       this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     }
     this.fireData = w.fires_flat(); this.people.setFires(this.fireData); this.paths.setTick(Number(w.tick()));

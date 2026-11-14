@@ -380,7 +380,7 @@ impl World {
         mix(a.x.to_bits() as u64); mix(a.y.to_bits() as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
         for q in &self.buildings {
             if q.x < x0 || q.x > x1 || q.y < y0 || q.y > y1 { continue; }
-            mix(q.kind as u64); mix(q.x.to_bits() as u64); mix(q.y.to_bits() as u64); mix(q.rot as u64); if q.kind == DRAWBRIDGE { mix(q.status as u64); }
+            mix(q.kind as u64); mix(q.x.to_bits() as u64); mix(q.y.to_bits() as u64); mix(q.rot as u64); if matches!(q.kind, DRAWBRIDGE | GATE) { mix(q.status as u64); }
         }
         for l in &self.levels { if l[0] + l[2] + LEVEL_BLEND > x0 && l[0] - l[2] - LEVEL_BLEND < x1 && l[1] + l[2] + LEVEL_BLEND > y0 && l[1] - l[2] - LEVEL_BLEND < y1 { mix(l[0].to_bits() as u64); mix(l[1].to_bits() as u64); mix(l[2].to_bits() as u64); mix(l[3].to_bits() as u64); } }
         for c in &self.craters { if c[0] > x0 && c[0] < x1 && c[1] > y0 && c[1] < y1 { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); } }
@@ -1310,6 +1310,20 @@ impl World {
         b.status = if up { 5 } else { 4 };
         0
     }
+    /// Close (true) or open (false) the doors of a stone gatehouse (tier 3 up). A closed gate cannot be passed by your own armies; every stone gatehouse is shut while a battle is on and
+    /// opens again afterwards. 0 ok, -1 not a gate, -2 a wooden gate has no doors.
+    pub fn gate_set(&mut self, idx: u32, closed: bool) -> i32 {
+        let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
+        if b.kind != GATE { return -1; }
+        if b.tier < 2 { return -2; }
+        b.status = if closed { 5 } else { 4 };
+        self.after_change();
+        0
+    }
+    /// Is this gate's door shut right now: closed by the player, or shut because raiders are attacking (stone gatehouses only)?
+    pub(crate) fn gate_shut(&self, b: &Building) -> bool { b.kind == GATE && b.tier >= 2 && (b.status == 5 || self.battle.is_some()) }
+    /// Which gates are shut right now, by building index (for drawing the doors).
+    pub fn gates_shut_flat(&self) -> Vec<u32> { self.buildings.iter().enumerate().filter(|(_, b)| self.gate_shut(b)).map(|(i, _)| i as u32).collect() }
     /// Archers stationed in every building (zero except in towers), in building order.
     /// Tick at which each building was founded (roads to it grow in over the following days).
     pub fn birth_flat(&self) -> Vec<u32> { self.buildings.iter().map(|b| b.born).collect() }
@@ -3119,5 +3133,27 @@ mod footprint_tests {
         assert!(w.demolish(near as u32)); assert!(w.upgrade_blockers(farm as u32).is_empty()); assert_eq!(w.upgrade(farm as u32), 0);
         // a new building must respect the grown farm
         let dx = (spot.0 - 30) as f32; let dy = (spot.1 - 20) as f32; let dist = (dx * dx + dy * dy).sqrt(); assert!(dist < footprint(FARM, 1) + 3.2 - 0.4, "the grown farm now reaches where the house stood");
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    #[test]
+    fn stone_gatehouses_have_doors_that_block_armies_until_opened() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
+        let g = w.place(GATE, 0, 30, 0); assert!(g >= 0);
+        assert_eq!(w.gate_set(g as u32, true), -2, "a wooden gate has no doors");
+        for _ in 0..2 { assert_eq!(w.upgrade(g as u32), 0); }
+        assert!(w.gates_shut_flat().is_empty(), "open by default");
+        let open = w.plan_march(&[5, 0, 0, 0, 0], 0.0, 18.0, 0.0, 44.0);
+        assert_eq!(w.gate_set(g as u32, true), 0); assert_eq!(w.gates_shut_flat(), vec![g as u32]);
+        let shut = w.plan_march(&[5, 0, 0, 0, 0], 0.0, 18.0, 0.0, 44.0);
+        assert!(shut.len() != open.len() || shut != open, "the route changes (or fails) when the gate is barred");
+        assert_eq!(w.gate_set(g as u32, false), 0); assert!(w.gates_shut_flat().is_empty());
+        assert_eq!(w.gate_set(99, true), -1);
+        // raiders attacking shut every stone gatehouse by themselves
+        w.cheat(4, 90, 300); assert!(w.battle_active()); assert_eq!(w.gates_shut_flat(), vec![g as u32]);
     }
 }

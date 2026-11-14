@@ -126,6 +126,7 @@ impl World {
         let mut ov = Ov { blocked: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n] };
         for b in &self.buildings {
             match b.kind {
+                GATE if self.gate_shut(b) => stamp(&mut ov.blocked, b.x, b.y, 3.4),   // a barred gate: no way through
                 GATE | ROAD => {}                                             // an opening in the wall, or a road: nothing blocks it
                 BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); let st = (l / 1.0).ceil() as i32; for k in 0..=st { let t = k as f32 - l / 2.0; stamp(&mut ov.bridge, b.x + ux * t, b.y + uy * t, 1.8); } }   // a way over the water
                 MOAT | RIVER => stamp(&mut ov.moat, b.x, b.y, if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + 0.5),           // water to cross

@@ -161,6 +161,7 @@ function applyCmd(w: World, c: Cmd) {
     case 'marriage': w.marriage(c.idx!); break;
     case 'war': w.declare_war(c.idx!); break;
     case 'clear': w.clear_deposit(c.idx!); break;
+    case 'gate': w.gate_set(c.idx!, (c.kind ?? 0) === 1); break;
     case 'caravan': w.caravan_send(c.kind ?? 0, c.x ?? 0, c.idx ?? 0, c.y ?? 0, c.ax ?? 0); break;
     case 'rebuild': w.rebuild(c.idx!); break;
     case 'form': w.det_form(Uint32Array.from(c.units ?? [])); break;
@@ -967,6 +968,14 @@ function updateSelection() {
       <div class="btnrow"><button class="pbtn primary" data-act="bridge">${up ? 'Lower the drawbridge' : 'Draw it up'}</button></div>
       <p class="muted">${up ? 'Nobody crosses while it is up, your own armies included.' : 'Your people and armies cross freely.'} It is drawn up automatically when raiders attack, and lowered again afterwards.</p></div>`;
   }
+  if (kind === 22) {
+    if (tier >= 2) {
+      const shut = f[o + 6] === 5, inBattle = lv.world.battle_active();
+      html += `<div><h3>Gate doors</h3><div class="stats"><div class="stat"><b>${shut || inBattle ? 'Shut' : 'Open'}</b><span>State</span></div></div>
+        <div class="btnrow"><button class="pbtn primary" data-act="gate">${shut ? 'Open the gate' : 'Close the gate'}</button></div>
+        <p class="muted">${shut ? 'Barred: nobody marches through, your own armies included.' : 'People and armies pass freely.'} The doors shut by themselves when raiders attack, and open again afterwards (unless you closed them).</p></div>`;
+    } else html += `<p class="muted">A wooden gate has no doors. Upgrade it to a stone gatehouse to get doors that can be closed.</p>`;
+  }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.cycle) {
     html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>👷 ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
@@ -1022,6 +1031,12 @@ function onAct(a: string) {
     if (code === 0) { commit({ op: 'repair', idx: selectedIdx }); sound.upgrade(); ui.toast('Repaired.', 'good'); afterLocalChange(); } else ui.toast(PLACE_ERRORS[code] ?? 'Cannot repair that.', 'bad');
     return;
   }
+  if (a === 'gate') {
+    const closed = lv.world.buildings_flat()[selectedIdx * 10 + 6] === 5, code = lv.world.gate_set(selectedIdx, !closed);
+    if (code === 0) { commit({ op: 'gate', idx: selectedIdx, kind: closed ? 0 : 1 }); sound.click(); ui.toast(closed ? 'The gate is opened.' : 'The gate is shut and barred.', 'info'); afterLocalChange(); }
+    else if (code === -2) ui.toast('Only a stone gatehouse has doors: upgrade the gate.', 'bad');
+    return;
+  }
   if (a === 'bridge') {
     const up = lv.world.buildings_flat()[selectedIdx * 10 + 6] === 5;   // status 5 = drawn up
     if (lv.world.drawbridge_set(selectedIdx, !up) === 0) { commit({ op: 'bridge', idx: selectedIdx, kind: up ? 0 : 1 }); sound.click(); ui.toast(up ? 'The drawbridge is lowered.' : 'The drawbridge is drawn up.', 'info'); afterLocalChange(); }
@@ -1062,6 +1077,7 @@ function openContext(e: PointerEvent) {
     title = tierName(kind, tier);
     if (tier < defs[kind].maxTier) items.push({ label: 'Upgrade', run: () => { selectBuilding(idx); onAct('upgrade'); } });
     if (hurt) items.push({ label: 'Repair', run: () => { selectBuilding(idx); onAct('repair'); } });
+    if (kind === 22 && tier >= 2) items.push({ label: f[o + 6] === 5 ? 'Open the gate' : 'Close the gate', run: () => { selectBuilding(idx); onAct('gate'); } });
     if (kind === 23) items.push({ label: f[o + 6] === 5 ? 'Lower the drawbridge' : 'Draw up the drawbridge', run: () => { selectBuilding(idx); onAct('bridge'); } });
     if (kind === 3 || kind === 26) items.push({ label: 'Fill with archers', run: () => { selectBuilding(idx); onAct('garfill'); } }, { label: 'Empty the tower', run: () => { selectBuilding(idx); onAct('garempty'); } });
     if (kind !== 15) items.push('-', { label: 'Demolish', run: () => { selectBuilding(idx); onAct('demolish'); } });

@@ -101,14 +101,19 @@ export class UI {
     <button class="btn on" data-s="1" title="Normal speed (calm)"><svg viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg></button>
     <button class="btn" data-s="2" title="Fast x2"><svg viewBox="0 0 16 16"><path d="M1 2l7 6-7 6zM8 2l7 6-7 6z"/></svg></button>
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
-  <button class="btn" id="btn-display" title="Display settings: quality, shadows, anti-aliasing…">⚙ Display</button>
-  <button class="btn" id="btn-sound" title="Sound on / off"><svg viewBox="0 0 16 16" id="snd-on"><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 5.2a4 4 0 0 1 0 5.6M12.8 3.6a6.3 6.3 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><svg viewBox="0 0 16 16" id="snd-off" hidden><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
-  <button class="btn" id="btn-res" aria-pressed="false" title="Show ore and stone deposits (V)">⛏ Deposits</button>
   <button class="btn" id="btn-mp" title="Players in this world">🌍 <span id="mp-count">Online</span></button>
-  <button class="btn" id="btn-cheat" hidden title="Testing tools">🛠 Test</button>
   <button class="btn" id="btn-map" title="Full-screen map (M)">🗺 Map</button>
-  <button class="btn" id="btn-full" title="Full-screen mode (F11)">⛶</button>
-  <button class="btn" id="btn-help">?</button>
+  <div class="menuwrap">
+    <button class="btn" id="btn-menu" title="Menu: display settings, sound, deposits, full screen, help" aria-haspopup="true" aria-expanded="false">☰ Menu</button>
+    <div id="menu" hidden>
+      <button class="btn" id="btn-display" title="Quality, shadows, anti-aliasing…">⚙ Display settings</button>
+  <button class="btn" id="btn-sound" title="Sound on / off"><svg viewBox="0 0 16 16" id="snd-on"><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 5.2a4 4 0 0 1 0 5.6M12.8 3.6a6.3 6.3 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><svg viewBox="0 0 16 16" id="snd-off" hidden><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span class="ml">Sound on / off</span></button>
+      <button class="btn" id="btn-res" aria-pressed="false" title="Show ore and stone deposits (V)">⛏ Show deposits</button>
+      <button class="btn" id="btn-full" title="Full-screen mode (F11)">⛶ Full screen</button>
+      <button class="btn" id="btn-help">? Help and keys</button>
+      <button class="btn" id="btn-cheat" hidden title="Testing tools">🛠 Test tools</button>
+    </div>
+  </div>
   </div>
 </header>
 <div id="battle" hidden></div>
@@ -253,6 +258,11 @@ export class UI {
       this.cards.forEach((el, id) => { el.hidden = this.filter >= 0 && defs[id].cat !== this.filter; });
     };
     $('speed').onclick = e => { const s = (e.target as HTMLElement).dataset.s; if (s !== undefined) this.h.speed(Number(s)); };
+    { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+      btn.onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); };
+      menu.addEventListener('click', e => { if ((e.target as HTMLElement).closest('.btn') && !(e.target as HTMLElement).closest('#btn-sound,#btn-res')) close(); });   // choosing something closes the menu (sound and deposits are toggles: it stays)
+      document.addEventListener('pointerdown', e => { if (!menu.hidden && !(e.target as HTMLElement).closest('.menuwrap')) close(); });
+      addEventListener('keydown', e => { if (e.key === 'Escape') close(); }); }
     $('btn-res').onclick = () => this.h.toggleResources();
     $('btn-sound').onclick = () => this.h.toggleMute();
     $('btn-help').onclick = () => this.modal('help', true);
@@ -273,7 +283,7 @@ export class UI {
     addEventListener('pointerdown', e => { if (!(e.target as HTMLElement).closest?.('#ctxmenu')) this.closeCtx(); }, true);
     addEventListener('wheel', () => this.closeCtx(), { passive: true }); addEventListener('blur', () => this.closeCtx());
     addEventListener('keydown', e => { if (e.key === 'Escape') this.closeCtx(); });
-    document.addEventListener('fullscreenchange', () => { $('btn-full').textContent = document.fullscreenElement ? '🗗' : '⛶'; });
+    document.addEventListener('fullscreenchange', () => { $('btn-full').textContent = document.fullscreenElement ? '🗗 Leave full screen' : '⛶ Full screen'; });
     $('minimap').onclick = e => {
       const r = this.minimap.getBoundingClientRect();
       this.h.minimapClick(((e.clientX - r.left) / r.width - 0.5) * HALF * 2, ((e.clientY - r.top) / r.height - 0.5) * HALF * 2);
@@ -575,7 +585,7 @@ export class UI {
     const t = document.createElement('div'); t.className = 'toast ' + tone; t.textContent = text; $('toasts').appendChild(t);
     setTimeout(() => { t.style.transition = 'opacity .5s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 6000);
   }
-  hint(text: string | null, bad = false) { const h = $('hint'); h.hidden = !text; if (text) { h.textContent = text; h.classList.toggle('bad', bad); } }
+  hint(text: string | null, bad = false) { const h = $('hint'); h.hidden = !text; if (text) { h.innerHTML = esc(text).replace(/&lt;kbd&gt;(.*?)&lt;\/kbd&gt;/g, '<kbd>$1</kbd>'); h.classList.toggle('bad', bad); } }   // key names come as <kbd> tags: keep those, escape the rest
   tip(html: string | null, x = 0, y = 0) {
     const t = $('tooltip'); t.hidden = !html; if (!html) return;
     t.innerHTML = html; t.style.left = Math.min(innerWidth - 280, x + 16) + 'px'; t.style.top = (y + 18) + 'px';
