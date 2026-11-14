@@ -118,6 +118,7 @@ export class Village {
     this.army.syncWalls(this.walls.walks);
     this.ruins.sync(w.ruins_flat(), w.terrain_version());
     this.sh.wildlife.syncDomestic(this.key, f);
+    this.clearBase = this.clear.slice();   // (what clears the ground apart from felled trees and scorch marks, which change on their own)
     const fl = w.felled_flat(); for (let i = 0; i < fl.length; i += 3) this.clear.push({ x: fl[i], z: fl[i + 1], r: fl[i + 2] });
     this.keep = []; const gv = w.groves_flat(); for (let i = 0; i < gv.length; i += 3) this.keep.push({ x: gv[i], z: gv[i + 1], r: gv[i + 2] });
     this.mapVersion = w.map_version();
@@ -126,13 +127,23 @@ export class Village {
     this.sh.forestDirty();
   }
 
+  private clearBase: { x: number; z: number; r: number }[] = []; private lastFelled = -Infinity;
+  private refreshFelled(w: World) {
+    this.lastFelled = performance.now();
+    this.clear = this.clearBase.slice();
+    const fl = w.felled_flat(); for (let i = 0; i < fl.length; i += 3) this.clear.push({ x: fl[i], z: fl[i + 1], r: fl[i + 2] });
+    const sc = w.scorch_flat(); for (let i = 0; i < sc.length; i += 3) this.clear.push({ x: sc[i], z: sc[i + 1], r: sc[i + 2] * 0.95 });
+    this.mapVersion = w.map_version(); this.sh.forestDirty();
+  }
+
   /** Cheap per-tick refresh: statuses, fire damage, battle positions, projectiles. */
   afterTick() {
     const w = this.world;
-    if (w.building_count() !== this.count || w.terrain_version() !== this.version || w.map_version() !== this.mapVersion) {
+    if (w.building_count() !== this.count || w.terrain_version() !== this.version) {
       if (w.terrain_version() !== this.version) this.sh.terrainChanged(this);
       this.syncFull();
     } else {
+      if (w.map_version() !== this.mapVersion && performance.now() - this.lastFelled > 1200) this.refreshFelled(w);   // trees felled by marching soldiers: only the clearings are redone, and not more than about once a second
       const f = w.buildings_flat();
       this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
       this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());

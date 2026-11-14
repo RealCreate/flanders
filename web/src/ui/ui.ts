@@ -33,6 +33,8 @@ export interface Handlers {
   minimapClick(x: number, z: number): void;
   train(kind: number, n: number): void;
   attack(peerKey: string, units: number[]): void;
+  /** March the armies that are selected on the map on a rival village. */
+  attackSelected(peerKey: string): void;
   trade(peerKey: string, action: string, res: number, amount: number, escort: number): void;
   focusPeer(key: string): void;
   /** Watch a player's history ('' = your own). */
@@ -51,7 +53,7 @@ export interface Hud {
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
 }
 
-export interface PeerRow { key: string; name: string; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
+export interface PeerRow { key: string; name: string; where?: string; online?: boolean; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
 
 const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
@@ -136,13 +138,18 @@ export class UI {
     <div><div class="eyebrow">Military</div><h2>Army</h2></div>
     <div class="stats five" id="army-stats"></div>
     <p class="muted" id="army-info"></p>
-    <div class="cards" id="unit-cards"></div>
-    <div id="muster-box"><h3>Field armies</h3>
-      <p class="muted">Muster soldiers into a field army (or <b>everyone</b> with one click). <b>Click its banner</b> or press <b>Tab</b> to select it, then <b>right-click</b> the ground to march; <b>G</b> halts, <b>B</b> sends it home. Armies walk round buildings and trees, file through dense forest, fell trees for catapults and bridge or ferry over water.</p>
-      <div class="atk-row" id="muster-row"></div><div class="btnrow"><button class="pbtn" id="muster-go">⚑ Muster</button><button class="pbtn primary" id="muster-all">Muster everyone <span class="key">F</span></button></div>
-      <div id="det-list" class="cards"></div></div>
-    <div id="attack-box"><h3>March on a rival village</h3><div id="attack-form"></div></div>
-    <p class="muted">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
+    <div class="sect"><h3>Field armies</h3>
+      <div id="det-list" class="armies"></div>
+      <p class="muted tiny">Click an army's banner (or press <b>Tab</b>) to select it, then <b>right-click</b> the ground to march. <b>G</b> halts it, <b>B</b> sends it home. Armies walk round buildings, fell trees in their way and bridge or ferry over water.</p>
+    </div>
+    <div class="sect" id="attack-box"><h3>Rival villages</h3><div id="attack-form"></div></div>
+    <details class="sect" id="muster-box"><summary>Muster a new army</summary>
+      <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
+      <div class="mrows" id="muster-row"></div>
+      <div class="btnrow"><button class="pbtn" id="muster-go">⚑ Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
+    </details>
+    <details class="sect" open><summary>Train soldiers</summary><div class="cards" id="unit-cards"></div></details>
+    <p class="muted tiny">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
   </section>
   <section class="pane" id="pane-village">
     <div><div class="eyebrow" id="v-sub">Your settlement</div><h2>The Village</h2></div>
@@ -373,7 +380,13 @@ export class UI {
 
   // ---- field armies ----
   private buildMuster() {
-    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<label title="${u.name}">${UNIT_ICON[u.id]}<input type="number" min="0" value="0" id="mus-${u.id}"></label>`).join('');
+    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<div class="mrow"><span class="mi">${UNIT_ICON[u.id]}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
+      <span class="step"><button type="button" data-step="-5" data-u="${u.id}" title="Five fewer">−5</button><button type="button" data-step="-1" data-u="${u.id}">−</button><input type="number" min="0" value="0" id="mus-${u.id}" aria-label="${u.name}"><button type="button" data-step="1" data-u="${u.id}">+</button><button type="button" data-step="5" data-u="${u.id}" title="Five more">+5</button></span></div>`).join('');
+    $('muster-row').onclick = e => {
+      const b = (e.target as HTMLElement).closest<HTMLElement>('[data-step]'); if (!b) return;
+      const input = $(`mus-${b.dataset.u}`) as HTMLInputElement, max = Number(input.max) || 0, v = Math.max(0, Math.min(max, (Number(input.value) || 0) + Number(b.dataset.step)));
+      input.value = String(v);
+    };
     $('muster-all').onclick = () => { const u = units.slice(0, 5).map(x => this.armyNow[x.id] ?? 0); if (u.some(n => n > 0)) this.h.muster(u); };
     $('muster-go').onclick = () => { const u = units.slice(0, 5).map(x => Number(($(`mus-${x.id}`) as HTMLInputElement).value) || 0); if (u.some(n => n > 0)) { this.h.muster(u); units.slice(0, 5).forEach(x => (($(`mus-${x.id}`) as HTMLInputElement).value = '0')); } };
     $('det-list').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-da]'); if (b) this.h.detAction(b.dataset.da!, Number(b.dataset.id)); };
@@ -383,9 +396,16 @@ export class UI {
   setDets(list: { id: number; units: number[]; text: string; selected: boolean; leftWp: number }[]) {
     const sig = JSON.stringify(list);
     if (sig === this.detSig) return; this.detSig = sig;
-    $('det-list').innerHTML = list.length ? list.map(d => `<div class="card det ${d.selected ? 'sel' : ''}"><div class="ico">⚑</div><div><div class="nm"><span>Army ${d.id}</span><span class="key">${d.units.reduce((a, b) => a + b, 0)} soldiers</span></div>
-      <div class="ds">${d.units.map((n, i) => (n ? `${UNIT_ICON[i]} ${n}` : '')).filter(Boolean).join(' &nbsp; ')}</div><div class="io">${esc(d.text)}</div>
-      <div class="btnrow" style="margin-top:6px;flex-wrap:wrap"><button class="pbtn" data-da="select" data-id="${d.id}">Select</button><button class="pbtn" data-da="split" data-id="${d.id}">Split</button><button class="pbtn" data-da="merge" data-id="${d.id}">Merge</button><button class="pbtn" data-da="halt" data-id="${d.id}">Halt</button><button class="pbtn" data-da="recall" data-id="${d.id}">Recall</button></div></div></div>`).join('') : '<p class="muted">No field armies yet.</p>';
+    $('det-list').innerHTML = list.length ? list.map(d => {
+      const n = d.units.reduce((s, v) => s + v, 0), mix = d.units.map((c, i) => (c ? `<span class="uc" title="${units[i].name}">${UNIT_ICON[i]} <b>${c}</b></span>` : '')).join('');
+      return `<div class="army ${d.selected ? 'sel' : ''}">
+        <div class="army-h"><span class="army-n">⚑ Army ${d.id}</span><span class="badge">${n} soldier${n === 1 ? '' : 's'}</span></div>
+        <div class="army-u">${mix}</div>
+        <div class="army-s">${esc(d.text)}</div>
+        <div class="army-b"><button class="pbtn ${d.selected ? 'primary' : ''}" data-da="select" data-id="${d.id}">${d.selected ? 'Selected' : 'Select'}</button>
+          <button class="pbtn" data-da="halt" data-id="${d.id}" title="Stop where it stands (G)">Halt</button><button class="pbtn" data-da="recall" data-id="${d.id}" title="Send it home (B)">Home</button>
+          <button class="pbtn" data-da="split" data-id="${d.id}" title="Split the army in two halves">Split</button><button class="pbtn" data-da="merge" data-id="${d.id}" title="Join the army next to it">Merge</button></div></div>`;
+    }).join('') : '<p class="muted">No field armies yet. Muster one below.</p>';
   }
 
   private listening: Action | null = null;
@@ -581,27 +601,25 @@ export class UI {
     const list = rows.length ? rows.map(r => `<li><b>${esc(r.name)}</b> — ${r.pop} villagers, ${r.buildings} buildings · ${r.sync} <button class="chip" data-peer="${esc(r.key)}">Visit</button> <button class="chip" data-watch="${esc(r.key)}" title="Replay this player's history">Watch history</button></li>`).join('') : '<li class="muted">Nobody else is here yet.</li>';
     $('peer-list').innerHTML = list; $('mp-peers').innerHTML = list;
     const form = $('attack-form');
-    const sig = rows.map(r => r.key + r.busy).join(',');
+    const sig = rows.map(r => r.key + r.busy + r.name + r.where).join(',');
     if (sig !== this.armyShown) {
       this.armyShown = sig;
       form.innerHTML = rows.length
-        ? `<select id="atk-target">${rows.map(r => `<option value="${esc(r.key)}">${esc(r.name)}</option>`).join('')}</select>
-           <div class="atk-row">${units.slice(0, 5).map(u => `<label title="${u.name}">${UNIT_ICON[u.id]}<input type="number" min="0" value="0" id="atk-${u.id}"></label>`).join('')}</div>
-           <button class="pbtn danger" id="atk-go">⚔ March!</button>
+        ? `<select id="atk-target">${rows.map(r => `<option value="${esc(r.key)}">${esc(r.name)}${r.where ? ' · ' + esc(r.where) : ''} · ${r.buildings} buildings</option>`).join('')}</select>
+           <button class="pbtn danger" id="atk-sel" hidden></button>
+           <p class="muted" id="atk-hint"></p>
            <h4>Trade</h4>
-           <div class="atk-row"><select id="trd-res">${RES.map((r, i) => `<option value="${i}">${r.icon} ${r.name}</option>`).join('')}</select><label title="Amount">#<input type="number" min="1" max="500" value="50" id="trd-amt"></label><label title="Spearmen as escort">🛡<input type="number" min="0" value="0" id="trd-esc"></label></div>
+           <div class="trade-row"><select id="trd-res" aria-label="Goods">${RES.map((r, i) => `<option value="${i}">${r.icon} ${r.name}</option>`).join('')}</select><label class="tfield" title="Amount"><span>#</span><input type="number" min="1" max="500" value="50" id="trd-amt"></label><label class="tfield" title="Spearmen as escort"><span>🛡</span><input type="number" min="0" value="0" id="trd-esc"></label></div>
            <div class="btnrow"><button class="pbtn" id="trd-send">🐴 Send caravan</button><button class="pbtn" id="trd-pact">🤝 Trade pact</button><button class="pbtn" id="trd-peace">🕊 Peace</button></div>
            <h4>Diplomacy</h4><p class="muted" id="dip-rel"></p>
            <div class="btnrow"><button class="pbtn" id="dip-envoy" title="Send an envoy with gifts (20 gold, once every 3 days)">📜 Envoy</button><button class="pbtn" id="dip-ally" title="An alliance needs a trade pact and warm relations">🛡 Alliance</button><button class="pbtn" id="dip-marry" title="Marry into their house: 150 gold, needs good relations">💍 Marriage</button><button class="pbtn danger" id="dip-war" title="Declare war: treaties end and relations collapse">🔥 Declare war</button></div>`
         : '<p class="muted">No other villages to attack yet — invite someone, or wait for neighbours to arrive.</p>';
       const trade = (action: string) => { const key = ($('atk-target') as HTMLSelectElement).value; this.h.trade(key, action, Number(($('trd-res') as HTMLSelectElement).value), Number(($('trd-amt') as HTMLInputElement).value) || 0, Number(($('trd-esc') as HTMLInputElement).value) || 0); };
       for (const [id, a] of [['trd-send', 'caravan'], ['trd-pact', 'pact'], ['trd-peace', 'peace'], ['dip-envoy', 'envoy'], ['dip-ally', 'alliance'], ['dip-marry', 'marriage'], ['dip-war', 'war']] as const) { const b = document.getElementById(id); if (b) b.onclick = () => trade(a); }
-      const go = document.getElementById('atk-go');
-      if (go) go.onclick = () => {
-        const key = ($('atk-target') as HTMLSelectElement).value, u = units.slice(0, 5).map(x => Number(($(`atk-${x.id}`) as HTMLInputElement).value) || 0);
-        if (u.some(n => n > 0)) this.h.attack(key, u);
-      };
+      const goSel = document.getElementById('atk-sel');
+      if (goSel) goSel.onclick = () => this.h.attackSelected(($('atk-target') as HTMLSelectElement).value);
     }
+    this.showAttackMode();
     const sel = document.getElementById('atk-target') as HTMLSelectElement | null, rel = document.getElementById('dip-rel');
     if (sel && rel) {
       const show = () => { const r = rows.find(x => x.key === sel.value); rel.textContent = r ? `${r.name}: ${relWord(r.rel ?? 0)} (${r.rel ?? 0})${r.married ? ' · married into our house' : ''}${(r.treaties ?? 0) & 4 ? ' · allies' : ''}${(r.treaties ?? 0) & 2 ? ' · at peace' : ''}${(r.treaties ?? 0) & 1 ? ' · trade pact' : ''}` : ''; };
@@ -609,10 +627,21 @@ export class UI {
     }
   }
 
+  private selectedArmies = 0;
+  /** How many armies are selected on the map: with one or more, the attack box marches those; without, it musters soldiers from the barracks. */
+  setSelectedArmies(n: number) { this.selectedArmies = n; this.showAttackMode(); }
+  private showAttackMode() {
+    const go = document.getElementById('atk-sel') as HTMLButtonElement | null, hint = document.getElementById('atk-hint');
+    if (!go || !hint) return;
+    const n = this.selectedArmies;
+    go.hidden = n === 0; go.textContent = n > 1 ? `⚔ March the ${n} selected armies` : '⚔ March the selected army';
+    hint.textContent = n ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.';
+  }
+
   /** The red banner while a fight is on. */
   battle(text: string | null) { const b = $('battle'); b.hidden = !text; if (text) b.innerHTML = text; }
   private armyNow: number[] = [];
-  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 5).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) i.max = String(army[u.id]); } }); }
+  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 5).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
 
   setSelectedPane(html: string | null) {
     const tab = $('tab-sel');

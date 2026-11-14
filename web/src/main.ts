@@ -81,6 +81,7 @@ const ui: UI = new UI({
   minimapClick: (x, z) => rig?.focus(x, z),
   train: (k, n) => doTrain(k, n),
   attack: (key, u) => doAttack(key, u),
+  attackSelected: key => doAttackSelected(key),
   trade: (key, action, res, amount, escort) => doTrade(key, action, res, amount, escort),
   watch: key => startReplay(key),
   focusPeer: key => { const r = rivals.get(key); if (r) rig.focus(r.village.ox, r.village.oz, 80); },
@@ -410,18 +411,34 @@ function doTrain(kind: number, n: number) {
   commit({ op: 'train', kind, x: n }); sound.train(); ui.toast(`${n} × ${units[kind].name} queued at the barracks.`, 'good'); lv.afterTick(); updateHud();
 }
 
-function doAttack(key: string, u: number[]) {
-  const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
-  if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
-  const id = lv.world.det_form(Uint32Array.from(u));
-  if (!id) { ui.toast('You do not have that many soldiers.', 'bad'); return; }
-  commit({ op: 'form', units: u });
-  const dx = lv.ox - r.village.ox, dz = lv.oz - r.village.oz, dl = Math.hypot(dx, dz) || 1, stand = r.village.radius + 12;   // halt just outside their border, on our side
+/** Send a field army against a rival village: it halts just outside their border (on our side) and attacks once it gets there. */
+function marchOn(id: number, key: string, r: Rival): boolean {
+  const dx = lv.ox - r.village.ox, dz = lv.oz - r.village.oz, dl = Math.hypot(dx, dz) || 1, stand = r.village.radius + 12;
   const tx = r.village.ox + dx / dl * stand, tz = r.village.oz + dz / dl * stand;
   const res = lv.world.det_march(id, tx, tz, true, r.village.ox, r.village.oz);
-  if (res !== 0) { ui.toast(MARCH_ERRORS[res] ?? 'No route there.', 'bad'); return; }
+  if (res !== 0) { ui.toast(MARCH_ERRORS[res] ?? 'No route there.', 'bad'); return false; }
   attackTargets.set(id, key); commit({ op: 'march', idx: id, x: tx, y: tz, to: key, ax: r.village.ox, ay: r.village.oz });
+  return true;
+}
+
+function doAttack(key: string, u: number[]) {
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
+  const id = lv.world.det_form(Uint32Array.from(u));
+  if (!id) { ui.toast('You do not have that many soldiers in the barracks. To send an army you already have in the field, select it on the map first.', 'bad'); return; }
+  commit({ op: 'form', units: u });
+  if (!marchOn(id, key, r)) return;
   selectDet(id); ui.toast(`Your army sets out for ${r.name}. It attacks when it arrives.`, 'good'); updateHud();
+}
+
+/** The armies you have selected march on the village. */
+function doAttackSelected(key: string) {
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
+  const ids = multiDets.length ? multiDets : selectedDet !== null ? [selectedDet] : [];
+  if (!ids.length) { ui.toast('Select an army first.', 'info'); return; }
+  let sent = 0; for (const id of ids) if (detUnits(id) && marchOn(id, key, r)) sent++;
+  if (sent) { ui.toast(sent > 1 ? `${sent} armies set out for ${r.name}. They attack when they arrive.` : `Your army sets out for ${r.name}. It attacks when it arrives.`, 'good'); lv.afterTick(); showRoute(); updateDets(); updateHud(); }
 }
 
 // ---------- field armies: muster, select, order ----------
@@ -436,7 +453,7 @@ function doMuster(u: number[]) {
 let multiDets: number[] = [];   // every selected army; selectedDet is the first
 function selectDet(id: number | null) { selectDets(id === null ? [] : [id]); }
 function selectDets(ids: number[]) {
-  multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids);
+  multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids); ui.setSelectedArmies(ids.length);
   if (ids.length) { selectKind(null); selectBuilding(null); selectRuin(null); ui.setTab('army'); ui.hint(`${ids.length > 1 ? ids.length + ' armies' : 'Army ' + ids[0]} selected · right-click the ground to march · Shift+click adds or removes one · drag a box to select several · ${keyNames('haltArmy')} halt · ${keyNames('recallArmy')} send home · ${keyNames('cancel')} deselect`); }
   else if (selectedKind === null) ui.hint(null);
   showRoute(); updateDets();
@@ -512,10 +529,23 @@ function checkArrivals() {
   for (let o = 0; o < f.length; o += 16) {
     if (f[o + 8] !== 5) continue;
     const id = f[o], key = attackTargets.get(id), r = key ? rivals.get(key) : null;
-    if (!key || !r || !r.online) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer there.', 'info'); continue; }
+    if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
     const u = detUnits(id)!, sent = lv.world.det_send(id);
-    if (sent.length) { attackTargets.delete(id); commit({ op: 'sendatk', idx: id, to: key, units: u }); ui.toast(`Your army attacks ${r.name}!`, 'good'); }
+    if (sent.length) {
+      attackTargets.delete(id); commit({ op: 'sendatk', idx: id, to: key, units: u });
+      if (r.online) ui.toast(`Your army attacks ${r.name}!`, 'good');
+      else attackAway(r, u);
+    }
   }
+}
+
+/** Villages whose owner has left but whose village stays in the world are fought over here, on our copy of it: the fight is against their towers, walls and soldiers as they stood
+ *  when they left. The battle runs a tick at a time (see `stepLocal`), and the report that ends it brings our survivors home with the loot, as with an online defender. */
+const awayFights = new Set<string>();
+function attackAway(r: Rival, u: number[]) {
+  const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
+  if (r.village.world.start_raid(angle, Uint32Array.from(u), myTag())) { awayFights.add(r.key); r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
+  else { lv.world.return_army(Uint32Array.from(u), new Int32Array(RES.length)); commit({ op: 'return', units: u, loot: new Array(RES.length).fill(0) }); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'bad'); updateHud(); }
 }
 
 /** A rival sent soldiers against us: start the fight in our own (authoritative) village. */
@@ -547,8 +577,31 @@ function onLocalReport(rep: number[]) {
   if (tag !== 0 && !won) ui.toast('Your village was sacked!', 'bad');
 }
 
+/** Villages whose owner left stay in the world, but only one village can stand on a site: when somebody (the same player under a new key, or a newcomer) settles where an away village
+ *  is, or two away villages share a site, the old copies are dropped and the one that is lived in (or the most built) stays. */
+function pruneGhosts() {
+  const bySite = new Map<number, Rival[]>();
+  for (const r of rivals.values()) { const l = bySite.get(r.site); if (l) l.push(r); else bySite.set(r.site, [r]); }
+  for (const list of bySite.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => Number(b.online) - Number(a.online) || b.village.world.building_count() - a.village.world.building_count() || b.tick - a.tick);
+    for (const r of list.slice(1)) {
+      if (r.online) continue;   // never drop somebody who is here
+      r.village.dispose(); rivals.delete(r.key); awayFights.delete(r.key);
+      for (const [peer, key] of [...byPeer]) if (key === r.key) byPeer.delete(peer);
+    }
+  }
+}
+
 function updatePeers() {
-  ui.setPeers([...rivals.values()].map(r => ({ key: r.key, name: r.name + (r.online ? '' : ' (away)'), pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), ...relOf(r.key) })), worldName);
+  pruneGhosts();
+  const compass = (dx: number, dz: number) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'][((Math.round(Math.atan2(dz, dx) / (Math.PI / 4)) % 8) + 8) % 8];
+  const rows = [...rivals.values()].map(r => {
+    const dx = r.village.ox - lv.ox, dz = r.village.oz - lv.oz, dist = Math.hypot(dx, dz);
+    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
+  });
+  rows.sort((a, b) => Number(b.row.online) - Number(a.row.online) || a.dist - b.dist);   // villages with somebody at home first, then by distance
+  ui.setPeers(rows.map(x => x.row), worldName);
 }
 
 // ---------- replay and spectating ----------
@@ -700,7 +753,7 @@ async function startGame(name: string, username: string) {
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
   if (DEBUG_HOOKS) (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
-  last = performance.now(); requestAnimationFrame(frame);
+  last = performance.now(); startBackgroundClock(); requestAnimationFrame(frame);
 }
 
 /** Compile every shader and draw a few real frames (shadow map, textures, trees) behind the loading screen,
@@ -726,10 +779,12 @@ async function warmUp() {
 
 // ---------- scene sync ----------
 let forestDirtyFlag = false;
-function rebuildForest() {
+function rebuildForest(later = false) {
   const all = [lv, ...[...rivals.values()].map(r => r.village)];
   const rocks: { x: number; z: number; r: number }[] = []; { const d = lv.world.deposits_flat(); for (let i = 0; i + 4 < d.length; i += 5) if (d[i + 4] > 0) rocks.push({ x: d[i + 1], z: d[i + 2], r: 5 }); }   // trees do not grow through ore and rock
-  forest.rebuild([...all.flatMap(v => v.clear), ...rocks], all.flatMap(v => v.clearLines), all.flatMap(v => v.keep)); forestDirtyFlag = false;
+  const clear = [...all.flatMap(v => v.clear), ...rocks], lines = all.flatMap(v => v.clearLines), keep = all.flatMap(v => v.keep);
+  if (later) forest.rebuildLater(clear, lines, keep); else forest.rebuild(clear, lines, keep);
+  forestDirtyFlag = false;
   obstCache = all.flatMap(v => v.obstacles);
 }
 
@@ -739,12 +794,31 @@ function allScorch() {
 }
 
 /** Re-level the ground of a whole village: pads, graded paths, craters and burn scars. */
-function refreshTerrain(w: World) {
+function refreshTerrain(w: World, box: [number, number, number, number] | null = null) {
   terrain.scorch = allScorch();
   const ox = w.origin_x(), oz = w.origin_y();
   const others = [...rivals.values()].map(r => ({ x: r.village.ox, z: r.village.oz })).concat(lv ? [{ x: lv.ox, z: lv.oz }] : []).filter(p => Math.hypot(p.x - ox, p.z - oz) > 1);
-  terrain.refresh(w, ox, oz, w.build_radius() + 12, others);
+  if (box) terrain.refreshBox(w, box[0], box[1], box[2], box[3], ox, oz, others);
+  else terrain.refresh(w, ox, oz, w.build_radius() + 12, others);
   deposits?.refit();
+}
+/** The ground that changes when this building is put up or upgraded: the building and its levelled pad, and the paths that run to it. (Everything else is brought up to date a moment later: see `settleTerrain`.) */
+function focusBox(idx: number): [number, number, number, number] | null {
+  const w = lv.world, f = w.buildings_flat(), o = idx * 10; if (idx < 0 || o + 3 >= f.length) return null;
+  const kind = f[o]; if (kind === 24 || kind === 32 || kind === 33 || kind === 34 || kind === 2 || kind === 21 || kind === 22) return null;   // earthworks and walls reshape more ground than that
+  const r = (shared.radii[kind] ?? 4) * 1.4 + 10; let x0 = f[o + 2] - r, x1 = f[o + 2] + r, z0 = f[o + 3] - r, z1 = f[o + 3] + r;
+  const rd = w.roads_flat();
+  for (let i = 0; i + 5 < rd.length; i += 6) if (rd[i + 4] === idx || rd[i + 5] === idx) { x0 = Math.min(x0, rd[i] - 7, rd[i + 2] - 7); x1 = Math.max(x1, rd[i] + 7, rd[i + 2] + 7); z0 = Math.min(z0, rd[i + 1] - 7, rd[i + 3] - 7); z1 = Math.max(z1, rd[i + 1] + 7, rd[i + 3] + 7); }
+  return [x0, z0, x1, z1];
+}
+/** After a local refresh, the rest of the village's ground is re-read in a few slices over the next moments (in case a path elsewhere was re-routed), not all in one frame. */
+let settleTimer: number | undefined;
+function settleTerrain() {
+  clearTimeout(settleTimer);
+  settleTimer = window.setTimeout(() => {
+    const w = lv.world, R = w.build_radius() + 12, ox = w.origin_x(), oz = w.origin_y();
+    for (let k = 0; k < 4; k++) window.setTimeout(() => { if (lv.world === w) refreshTerrain(w, [ox - R, oz - R + (2 * R * k) / 4, ox + R, oz - R + (2 * R * (k + 1)) / 4]); }, 70 * k);
+  }, 1500);
 }
 function refreshAll() { refreshTerrain(lv.world); for (const r of rivals.values()) refreshTerrain(r.village.world); lv.syncFull(); for (const r of rivals.values()) r.village.syncFull(); }
 
@@ -762,7 +836,9 @@ function applyFlag(f: Flag) {
   if (lv.world.set_style(n)) { commit({ op: 'style', kind: n }); lv.syncFull(); }
 }
 
-function afterLocalChange() { refreshTerrain(lv.world); lv.syncFull(); deposits?.attach(lv.world.buildings_flat()); lv.afterTick(); if (forestDirtyFlag) rebuildForest(); updateSelection(); updateHud(); }
+function afterLocalChange(focus?: number) {
+  const box = focus !== undefined ? focusBox(focus) : null;
+  refreshTerrain(lv.world, box); if (box) settleTerrain(); lv.syncFull(); deposits?.attach(lv.world.buildings_flat()); lv.afterTick(); if (forestDirtyFlag) rebuildForest(true); updateSelection(); updateHud(); }
 
 /** How we stand with another village: feeling, marriage and treaties (1 trade pact, 2 peace, 4 alliance). */
 function relOf(key: string) {
@@ -804,6 +880,14 @@ function battleBanner() {
   ui.battle(null);
 }
 
+function stepAwayFights() {
+  for (const key of [...awayFights]) {
+    const r = rivals.get(key); if (!r || r.online) { awayFights.delete(key); continue; }   // (an owner who comes back takes the village over again)
+    const w = r.village.world;
+    if (w.battle_active()) { w.step(); r.village.afterTick(); if (!w.battle_active()) { awayFights.delete(key); r.village.afterTick(); } } else { awayFights.delete(key); r.village.afterTick(); }
+  }
+}
+
 function stepLocal() {
   const w = lv.world;
   w.step();
@@ -813,12 +897,12 @@ function stepLocal() {
   for (let i = 0; i < ev.length; i += 4) { const e = EVENT_TEXT(ev[i], ev[i + 1], ev[i + 2]); ui.toast(e.text, e.tone); ui.log(e.text, e.tone, ev[i + 3]); if (e.tone === 'bad') sound.alert(); else if (e.tone === 'good') sound.coin(); }
   const t = Number(w.tick());
   if (t % 4 === 0) updateGoals();
-  pollTrade(); checkArrivals(); updateDets(); if (selectedDet !== null) showRoute();
+  pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
   room?.broadcastHash(t, w.state_hash().toString());
   if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
-  if (forestDirtyFlag) rebuildForest();
+  if (forestDirtyFlag) rebuildForest(true);
 }
 
 function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r => r.online)) n = Math.min(n, 1); speed = n; ui.setSpeed(n); }
@@ -1095,7 +1179,7 @@ function onAct(a: string) {
     const code = w.upgrade(selectedIdx);
     if (code === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit({ op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
     else if (code === -3) { ui.toast('Not enough room to grow: demolish the buildings in the way (hover Upgrade to see them).', 'bad'); sound.error(); }
-    afterLocalChange();
+    afterLocalChange(selectedIdx ?? undefined);
   } else if (a === 'demolish') {
     if (w.demolish(selectedIdx)) { const f = w.buildings_flat(); void f; commit({ op: 'demolish', idx: selectedIdx }); sound.demolish(); selectedIdx = null; afterLocalChange(); rig.shake(0.25); }
   }
@@ -1287,7 +1371,7 @@ function bindInput() {
       }
       const sn = depositSnap(kind, dx, dy), px = sn ? sn.dx : dx, py = sn ? sn.dy : dy, prot = sn ? sn.rot : rot;
       const res = lv.world.place(kind, px, py, prot);
-      if (res >= 0) { commit({ op: 'place', kind, x: px, y: py, rot: prot }); ghostCode = 99; previewKey = ''; afterLocalChange(); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e); }
+      if (res >= 0) { commit({ op: 'place', kind, x: px, y: py, rot: prot }); ghostCode = 99; previewKey = ''; afterLocalChange(res); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e); }
       else { ui.hint(PLACE_ERRORS[res] ?? 'Cannot build here', true); sound.error(); }
     } else {
       const det = pickArmy(e) ?? lv.field.pick(pointerRay(e));
@@ -1459,7 +1543,24 @@ function lightLamps(all: Village[], now: number) {
   for (const l of lampLights) l.intensity = l.userData.on ? k * 26 : 0;
 }
 
+/** A page that is not on screen gets no animation frames, and a village that stopped ticking when its tab went to the background stalled everything that depended on it (a fight in it, the
+ *  other players' copies of it). So the clock also runs from a worker's timer, which the browser does not slow down, and it steps the village only while no frames are coming (the page is hidden). */
+let bgLast = 0, frameAt = 0;
+function startBackgroundClock() {
+  try {
+    const src = 'setInterval(() => postMessage(0), 200);';
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    w.onmessage = () => {
+      const now = performance.now();
+      if (now - frameAt < 400 || !lv) { bgLast = now; return; }   // frames are coming (the page is on screen): they run the clock
+      const dt = Math.max(0, Math.min(0.5, (now - (bgLast || now)) / 1000)); bgLast = now;
+      if (replay?.target !== lv && speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
+    };
+  } catch { /* no workers (a locked-down browser): the village simply waits while its tab is hidden, as before */ }
+}
+
 function frame(now: number) {
+  frameAt = performance.now();
   { const cap = settings().fpsCap; if (cap && now - last < 1000 / cap - 2) { requestAnimationFrame(frame); return; } }   // frame rate limit
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last); last = now;   // never negative, never a big jump
   perf.start('simulation');

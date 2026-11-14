@@ -62,13 +62,17 @@ export class Paths {
       if (last && last.child === child && last.parent === parent && Math.hypot(last.pts[last.pts.length - 2] - ax, last.pts[last.pts.length - 1] - az) < 0.05) last.pts.push(bx, bz);
       else lines.push({ pts: [ax, az, bx, bz], child, parent });
     }
+    // a road stops where it meets the building: at its door for a house, but for a building with fields or beds round it (a farm, a garden, a market) at the ring of path that runs round all of
+    // that, never in among the crops
+    const FIELDS: Record<number, number> = { 1: 0.25, 28: 0.1, 30: 0, 31: 0 };
+    const stepBack = (kind: number, tier: number) => (kind in FIELDS ? radii[kind] * (1 + FIELDS[kind] * tier) + 1.6 : radii[kind] * 0.6);
     const half = hallTier >= 2 ? 1.45 : 1.15, discs = new Map<string, [number, number]>();
     lines.forEach((ln, li) => {
       const kc = buildings[ln.child * S], kp = buildings[ln.parent * S];
       const P = rounded(ln.pts, 3.2);
       let total = 0; for (let k = 2; k < P.length; k += 2) total += Math.hypot(P[k] - P[k - 2], P[k + 1] - P[k - 1]);
       const atChild = Math.hypot(P[0] - buildings[ln.child * S + 2], P[1] - buildings[ln.child * S + 3]) < radii[kc] + 1, atParent = Math.hypot(P[P.length - 2] - buildings[ln.parent * S + 2], P[P.length - 1] - buildings[ln.parent * S + 3]) < radii[kp] + 1;
-      const t0 = atChild && kc !== 37 ? radii[kc] * 0.6 : 0, t1 = total - (atParent && kp !== 37 ? radii[kp] * 0.6 : 0);
+      const t0 = atChild && kc !== 37 ? stepBack(kc, buildings[ln.child * S + 1]) : 0, t1 = total - (atParent && kp !== 37 ? stepBack(kp, buildings[ln.parent * S + 1]) : 0);
       if (t1 <= t0 + 0.5) return;
       if (!(atChild && kc !== 37)) discs.set(Math.round(P[0] / 0.8) + ':' + Math.round(P[1] / 0.8), [P[0], P[1]]);
       if (!(atParent && kp !== 37)) discs.set(Math.round(P[P.length - 2] / 0.8) + ':' + Math.round(P[P.length - 1] / 0.8), [P[P.length - 2], P[P.length - 1]]);

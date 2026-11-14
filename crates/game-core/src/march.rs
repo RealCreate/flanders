@@ -260,7 +260,7 @@ impl World {
                 for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                     let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { continue; }
                     let k = (b * NC + a) as usize; let Some(kl) = local(k) else { continue };
-                    let step = match self.classify(&ns, &ov, k, siege) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 40.0 } };
+                    let step = match self.classify(&ns, &ov, k, siege) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 16.0 } };
                     if di != 0 && dj != 0 {   // no cutting corners through blocked cells
                         if self.classify(&ns, &ov, (cj * NC + a) as usize, siege) == Cl::Block || self.classify(&ns, &ov, (b * NC + ci) as usize, siege) == Cl::Block { continue; }
                     }
@@ -416,7 +416,28 @@ impl World {
                 let workers = (d.units[0] + d.units[2]) as f32;
                 let dens = ns.dens_at(d.x, d.y) as f32;
                 match wp.mode {
-                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.06 * dens) * if self.on_road(d.x, d.y) { crate::pathnet::ROAD_SPEED } else { 1.0 }; let _ = wp; Self::advance_path(&mut d); }
+                    0 => {
+                        d.state = if d.home { S_HOME } else { S_MARCH };
+                        // soldiers push through woods by cutting the trees that stand in their way: every tree within reach of the ground they are about to cover (and not already cut) is felled,
+                        // which slows them a little, and the cleared strip stays open for the next army
+                        let on_road = self.on_road(d.x, d.y);
+                        let mut cut = false;
+                        if !on_road && dens >= 1.0 && self.felled.len() < 4000 {
+                            let base_speed = base / (1.0 + 0.06 * dens);
+                            let (dx, dy) = (wp.x - d.x, wp.y - d.y); let dl = dx.hypot(dy).max(1e-3); let reach = base_speed.min(dl);
+                            for f in [0.0f32, 0.5, 1.0] {
+                                let (px, py) = (d.x + dx / dl * reach * f, d.y + dy / dl * reach * f);
+                                let ts = terrain::trees(self.seed, px - 2.6, py - 2.6, px + 2.6, py + 2.6);
+                                for k in (0..ts.len()).step_by(5) {
+                                    let (tx, ty) = (ts[k], ts[k + 1]);
+                                    if (tx - px).hypot(ty - py) <= 2.4 && !self.felled.iter().any(|q| (q[0] - tx).hypot(q[1] - ty) < q[2]) { self.felled.push([tx, ty, 1.6]); cut = true; }
+                                }
+                            }
+                            if cut { self.map_ver += 1; }
+                        }
+                        d.speed = base / (1.0 + 0.06 * dens) * if on_road { crate::pathnet::ROAD_SPEED } else { 1.0 } * if cut { 0.8 } else { 1.0 };
+                        let _ = wp; Self::advance_path(&mut d);
+                    }
                     1 => {
                         d.state = S_FELL; d.speed = (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base);
                         let (ox, oy) = (d.x, d.y);

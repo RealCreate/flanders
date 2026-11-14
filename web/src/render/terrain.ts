@@ -200,10 +200,16 @@ export class Terrain {
 
   /** Apply core heights (with building pads) around a world-space disc. */
   refresh(world: World, cx: number, cz: number, radius: number, others: { x: number; z: number }[] = []) {
+    this.refreshBox(world, cx - radius, cz - radius, cx + radius, cz + radius, cx, cz, others);
+  }
+
+  /** Re-read the ground from the core inside a rectangle of the world (x0, z0)-(x1, z1). `cx`, `cz` is the village it belongs to: where another village is nearer a point, that point is not ours. */
+  refreshBox(world: World, x0: number, z0: number, x1: number, z1: number, cx: number, cz: number, others: { x: number; z: number }[] = []) {
     this.clearPreview();
-    const i0 = Math.floor((cx - radius + HALF) / STEP), i1 = Math.ceil((cx + radius + HALF) / STEP);
-    const j0 = Math.floor((cz - radius + HALF) / STEP), j1 = Math.ceil((cz + radius + HALF) / STEP);
+    const i0 = Math.floor((x0 + HALF) / STEP), i1 = Math.ceil((x1 + HALF) / STEP);
+    const j0 = Math.floor((z0 + HALF) / STEP), j1 = Math.ceil((z1 + HALF) / STEP);
     const a = Math.max(0, i0), b = Math.max(0, j0), c = Math.min(NV - 1, i1), d = Math.min(NV - 1, j1);
+    if (c < a || d < b) return;
     const nx = c - a + 1, ny = d - b + 1;
     const out = world.terrain_region(-HALF + a * STEP, -HALF + b * STEP, nx, ny, STEP);
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {

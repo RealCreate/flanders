@@ -76,7 +76,7 @@ pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank ru
 /// How far below the rim of the land the water of a moat stands.
 const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
-const RIVER_BED: f32 = -0.7; // a river is shallower than a moat  // depth of the bottom
+const RIVER_BED: f32 = -2.0; // a river is shallower than a moat, but holds real water  // depth of the bottom
 const ROAD_INNER: f32 = 1.5; // fully graded half-width of a path
 const ROAD_OUTER: f32 = 4.4; // terrain blends back to the natural slope by here
 
@@ -3726,6 +3726,40 @@ mod pathnet_tests {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
         for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 7); }
         assert!(w.drawbridge_snap(3, 17).is_empty(), "the broadest moat is wider than a drawbridge");
+    }
+
+    #[test]
+    fn marching_soldiers_cut_the_trees_in_their_way() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES];
+        let ns = march::nav_static(1337);
+        // a stretch of wood within reach of the village: look for a spot with thick trees, and march across it
+        let mut spot = None;
+        'find: for r in (60..260).step_by(10) { for k in 0..48 { let a = k as f32 / 48.0 * std::f32::consts::TAU; let (x, y) = (a.cos() * r as f32, a.sin() * r as f32); let (ux, uy) = (a.cos(), a.sin()); if (0..=6).all(|q| ns.dens_at(x + ux * q as f32 * 4.0, y + uy * q as f32 * 4.0) >= 3 && w.height_at(x + ux * q as f32 * 4.0, y + uy * q as f32 * 4.0) > 1.0) { spot = Some((x + ux * 24.0, y + uy * 24.0)); break 'find; } } }
+        let (fx, fy) = spot.expect("there is thick wood near the village");
+        w.army = [8, 0, 0, 0, 0]; let id = w.det_form(&[8, 0, 0, 0, 0]); assert!(id > 0);
+        let r = w.det_march(id, fx, fy, false, 0.0, 0.0); assert_eq!(r, 0, "a way to the wood");
+        let before = w.felled.len();
+        for _ in 0..1200 { w.step(); w.stock[GR as usize] = 3000; if w.det_flat().len() >= 9 && w.det_flat()[8] as u8 != march::S_MARCH { break; } }
+        assert!(w.felled.len() > before, "the soldiers felled trees on their way ({} -> {})", before, w.felled.len());
+        assert!(w.felled.iter().any(|f| (f[0] - fx).hypot(f[1] - fy) < 40.0), "and the cleared strip reaches the wood they walked into");
+    }
+
+    #[test]
+    fn every_building_is_chained_to_the_castle_through_the_network() {
+        let comps = |w: &World| -> (usize, usize) {   // (nodes outside the hall's network, nodes)
+            let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize);
+            let mut c: Vec<usize> = (0..n).collect();
+            fn f(c: &mut Vec<usize>, x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } r }
+            for k in 0..e { let o = 2 + 2 * n + 3 * k; let (a, b) = (f(&mut c, v[o] as usize), f(&mut c, v[o + 1] as usize)); if a != b { c[a] = b; } }
+            let hall = f(&mut c, (0..n).min_by(|&a, &b| (v[2 + 2 * a].hypot(v[3 + 2 * a])).partial_cmp(&(v[2 + 2 * b].hypot(v[3 + 2 * b]))).unwrap()).unwrap());
+            ((0..n).filter(|&i| f(&mut c, i) != hall).count(), n)
+        };
+        // houses spread wide apart (further than the links reach) with a tower and a wall piece between
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 34, 4), (HOUSE, 56, 10), (TOWER, 0, 20), (HOUSE, -22, 6), (HOUSE, -44, -6), (WALL, 24, 20), (WALL, 30, 20), (HOUSE, 30, 36)] { w.place(k, x, y, 0); }
+        let (apart, total) = comps(&w);
+        assert!(total > 40, "{total} nodes");
+        assert_eq!(apart, 0, "every building's lines join the castle's: {apart} of {total} nodes are cut off");
     }
 
     #[test]
