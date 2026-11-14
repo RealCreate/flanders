@@ -231,6 +231,7 @@ function connect() {
         r = { key: h.pub, peerId, name: h.name, site: h.site, village, online: true, sync: 'syncing…', tick: 0, log: [] };
         rivals.set(h.pub, r); ui.toast(`${h.name} has joined the world.`, 'good');
         refreshTerrain(village.world); village.syncFull();
+        chainTo(r);
       } else if (r.site !== h.site) {
         // they moved to another site: rebuild their replica there once their log arrives
         const o = siteOrigin(h.site); r.site = h.site; r.village.setWorld(new World(seedBig, o.x, o.z)); terrain.resetPads(); refreshAll();
@@ -591,6 +592,13 @@ function pruneGhosts() {
       for (const [peer, key] of [...byPeer]) if (key === r.key) byPeer.delete(peer);
     }
   }
+}
+
+/** A new neighbour: an invisible path is chained from the edge of our city to theirs, which armies then march along (the core works it out from our own paths and the land between). */
+function chainTo(r: Rival) {
+  const x = r.village.ox, z = r.village.oz;
+  if (lv.world.link_exists(x, z)) return;
+  if (lv.world.link_village(x, z) === 0) commit({ op: 'link', x, y: z });
 }
 
 function updatePeers() {

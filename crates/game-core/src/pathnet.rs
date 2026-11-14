@@ -33,7 +33,33 @@ impl Ord for Q { fn cmp(&self, o: &Self) -> Ordering { o.f.partial_cmp(&self.f).
 impl PartialOrd for Q { fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) } }
 
 /// How much room a building keeps clear for the network: its solid part plus a little, and never less than its footprint with a margin (so a path never grazes the yard).
-fn net_radius(b: &Building) -> f32 { (crate::solid_radius(b.kind, b.tier) + 0.4).max(crate::footprint(b.kind, b.tier) + 0.6) }
+fn net_radius(b: &Building) -> f32 { net_radius_kt(b.kind, b.tier) }
+fn net_radius_kt(kind: u8, tier: u8) -> f32 { (crate::solid_radius(kind, tier) + 0.4).max(crate::footprint(kind, tier) + 0.6) }
+
+/// The ground that a building's fields and yards cover, as rectangles in the building's own frame: (centre x, centre z, half width, half depth), the same ones its model draws
+/// (web/src/render/buildings.ts). People and soldiers never walk across them: they are blocked as the rectangles they are, not as a circle.
+pub fn field_rects(kind: u8, tier: u8) -> Vec<(f32, f32, f32, f32)> {
+    if kind != FARM { return vec![]; }
+    let mut v = vec![(0.0, 1.4, 5.2, 4.2), (-1.2, -2.6, 2.2, 1.7), (2.6, -3.0, 2.2, 1.7)];   // the field, the barn, the silo and haystacks
+    let extra = [(7.9f32, 1.4f32, 2.5f32, 4.2f32), (0.0, 8.0, 5.2, 2.3), (7.9, 8.0, 2.5, 2.3)];   // a bigger farm works more fields
+    for e in extra.iter().take((tier as usize).min(3)) { v.push(*e); }
+    v
+}
+
+/// How far from a building's middle the ring of path round it runs.
+pub fn ring_radius(kind: u8, tier: u8) -> f32 {
+    let rects = field_rects(kind, tier);
+    if rects.is_empty() { return net_radius_kt(kind, tier) + 1.2; }
+    rects.iter().flat_map(|r| [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sx, sz)| (r.0 + sx * r.2).hypot(r.1 + sz * r.3))).fold(0.0f32, f32::max) + 1.6
+}
+
+/// Does the point lie in one of the building's field rectangles (grown by `margin`)? `rot` is the building's turn in 45-degree steps.
+pub fn in_fields(b: &Building, x: f32, y: f32, margin: f32) -> bool {
+    let th = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (c, s) = (th.cos(), th.sin());
+    let (dx, dy) = (x - b.x, y - b.y);
+    let (lx, lz) = (dx * c - dy * s, dx * s + dy * c);   // back into the building's own frame (the model is turned by th about the vertical)
+    field_rects(b.kind, b.tier).iter().any(|r| (lx - r.0).abs() <= r.2 + margin && (lz - r.1).abs() <= r.3 + margin)
+}
 
 impl Net {
     fn empty() -> Net { Net { x0: 0.0, y0: 0.0, nx: 0, ny: 0, ok: vec![], nodes: vec![], adj: vec![] } }
@@ -118,6 +144,7 @@ impl World {
         for l in &self.levels { for v in l { mix(v.to_bits() as u64); } }
         for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
         mix(self.battle.is_some() as u64); mix(self.terrain_ver as u64); mix(self.road_paths.len() as u64);
+        for pl in &self.links { mix(pl.len() as u64); for q in pl { mix(q.0.to_bits() as u64); mix(q.1.to_bits() as u64); } }
         h
     }
 
@@ -141,6 +168,7 @@ impl World {
             x0 = hx - half; x1 = hx + half; y0 = hy - half; y1 = hy + half;
         }
         let (nx, ny) = (((x1 - x0) / RC).ceil() as i32 + 1, ((y1 - y0) / RC).ceil() as i32 + 1);
+        let (nx0, ny0) = (x0, y0);
         let cxy = |i: i32, j: i32| (x0 + (i as f32 + 0.5) * RC, y0 + (j as f32 + 0.5) * RC);
         let cnt = (nx * ny) as usize;
         let mut h = vec![0.0f32; cnt];
@@ -160,6 +188,12 @@ impl World {
                     if q.status == 5 || self.battle.is_some() { continue; }   // drawn up: no way across
                     let an = q.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
                     for t in -9..=9 { let t = t as f32 * 0.8; mark(&mut deck, q.x + sx * t, q.y + sy * t, 1.7); }
+                }
+                FARM => {   // the fields: the rectangles they are
+                    let (x0, x1, y0, y1) = (q.x - 18.0, q.x + 18.0, q.y - 18.0, q.y + 18.0);
+                    let (i0, i1) = ((((x0 - nx0) / RC).floor() as i32).max(0), (((x1 - nx0) / RC).ceil() as i32).min(nx - 1));
+                    let (j0, j1) = ((((y0 - ny0) / RC).floor() as i32).max(0), (((y1 - ny0) / RC).ceil() as i32).min(ny - 1));
+                    for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cxy(i, j); if in_fields(q, cx, cy, 0.9) { blocked[(j * nx + i) as usize] = true; } } }
                 }
                 _ => mark(&mut blocked, q.x, q.y, net_radius(q)),
             }
@@ -210,7 +244,7 @@ impl World {
                 continue;
             }
             if matches!(b.kind, WALL | FENCE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE) { continue; }
-            let r = net_radius(b) + 1.2;
+            let r = ring_radius(b.kind, b.tier);
             let k = ((std::f32::consts::TAU * r / 3.5).ceil() as usize).clamp(10, 32);
             for q in 0..k {
                 let a = q as f32 * std::f32::consts::TAU / k as f32; let (px, py) = (b.x + a.cos() * r, b.y + a.sin() * r);
@@ -246,6 +280,16 @@ impl World {
             for w in chain.windows(2) {
                 if w[0] == u32::MAX || w[1] == u32::MAX { continue; }
                 if net.clear(net.nodes[w[0] as usize], net.nodes[w[1] as usize], 0.0) { net.link(w[0], w[1], true); }
+            }
+        }
+        // the paths chained out to other villages: their points are nodes too (they were found over open ground, so they need no check against the village's own grid)
+        for pl in &self.links {
+            let mut prev = u32::MAX;
+            for q in pl {
+                let key = ((q.0 / 1.2).round() as i32, (q.1 / 1.2).round() as i32);
+                let id = *shared.entry(key).or_insert_with(|| { let id = net.add(q.0, q.1); road_node.push(id); id });
+                if prev != u32::MAX && prev != id { net.link(prev, id, true); }
+                prev = id;
             }
         }
         road_node.extend(road_pre);

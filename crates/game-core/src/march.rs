@@ -158,6 +158,11 @@ impl World {
                     for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.bridge, b.x + sx * t, b.y + sy * t, 1.6); }
                 }
                 _ => {
+                    if b.kind == FARM {   // its fields are blocked as the rectangles they are (nobody walks across a crop)
+                        let (i0, i1) = ((((b.x - 18.0 - ORG) / CELL).floor() as i32).max(0), (((b.x + 18.0 - ORG) / CELL).ceil() as i32).min(NC - 1));
+                        let (j0, j1) = ((((b.y - 18.0 - ORG) / CELL).floor() as i32).max(0), (((b.y + 18.0 - ORG) / CELL).ceil() as i32).min(NC - 1));
+                        for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cell_xy((j * NC + i) as usize); if crate::pathnet::in_fields(b, cx, cy, 0.9) { ov.blocked[(j * NC + i) as usize] = true; } } }
+                    }
                     stamp(&mut ov.blocked, b.x, b.y, crate::solid_radius(b.kind, b.tier));   // the solid part: no way through
                     if !matches!(b.kind, WALL | FENCE) { stamp(&mut ov.soft, b.x, b.y, crate::footprint(b.kind, b.tier) + 0.7); }   // the margin round it: allowed, but avoided
                 }
@@ -220,7 +225,7 @@ impl World {
         }
     }
 
-    fn route_on_graph(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
+    pub(crate) fn route_on_graph(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
         let margins: [f32; 3] = if no_water { [30.0, 90.0, 500.0] } else { [45.0, 180.0, 2500.0] };
         let mut last = Err(-2);
         for m in margins {

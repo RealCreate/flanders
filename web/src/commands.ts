@@ -42,6 +42,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'merge': w.det_merge(c.idx!, c.kind!); break;
     case 'halt': w.det_halt(c.idx!); break;
     case 'sendatk': w.det_send(c.idx!); break;
+    case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
     case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;
     default: break; // 'refuse' has no effect on the issuer's own world
   }
