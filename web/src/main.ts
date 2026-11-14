@@ -577,7 +577,24 @@ function onLocalReport(rep: number[]) {
   if (tag !== 0 && !won) ui.toast('Your village was sacked!', 'bad');
 }
 
+/** Villages whose owner left stay in the world, but only one village can stand on a site: when somebody (the same player under a new key, or a newcomer) settles where an away village
+ *  is, or two away villages share a site, the old copies are dropped and the one that is lived in (or the most built) stays. */
+function pruneGhosts() {
+  const bySite = new Map<number, Rival[]>();
+  for (const r of rivals.values()) { const l = bySite.get(r.site); if (l) l.push(r); else bySite.set(r.site, [r]); }
+  for (const list of bySite.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => Number(b.online) - Number(a.online) || b.village.world.building_count() - a.village.world.building_count() || b.tick - a.tick);
+    for (const r of list.slice(1)) {
+      if (r.online) continue;   // never drop somebody who is here
+      r.village.dispose(); rivals.delete(r.key); awayFights.delete(r.key);
+      for (const [peer, key] of [...byPeer]) if (key === r.key) byPeer.delete(peer);
+    }
+  }
+}
+
 function updatePeers() {
+  pruneGhosts();
   const compass = (dx: number, dz: number) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'][((Math.round(Math.atan2(dz, dx) / (Math.PI / 4)) % 8) + 8) % 8];
   const rows = [...rivals.values()].map(r => {
     const dx = r.village.ox - lv.ox, dz = r.village.oz - lv.oz, dist = Math.hypot(dx, dz);
