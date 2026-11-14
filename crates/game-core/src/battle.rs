@@ -494,7 +494,7 @@ impl World {
         let fr = d.r * 0.8;
         let pad_h = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)].iter().map(|(px, py)| self.height_at(x + px, y + py)).sum::<f32>() / 5.0;
         let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg).map_or(-1, |i| i as i32) } else { -1 };
-        self.buildings.push(Building { kind, tier, x, y, rot, pad_h, progress: 0, status: if d.cycle > 0 { 1 } else { 4 }, aux, staff: 0, residents: 0, hp: max_hp(kind, tier), burning: 0.0, garrison: 0, born: self.tick as u32 });
+        self.buildings.push(Building { kind, tier, x, y, rot, pad_h, progress: 0, status: if d.cycle > 0 { 1 } else { 4 }, aux, staff: 0, residents: 0, hp: max_hp(kind, tier), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0 });
         self.terrain_ver += 1;
         self.after_change();
         self.push_event(EV_REBUILT, kind as i32, 0);

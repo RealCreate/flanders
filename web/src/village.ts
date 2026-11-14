@@ -63,16 +63,17 @@ export class Village {
   /** Rebuild everything that depends on the building list. */
   syncFull() {
     const w = this.world, f = w.buildings_flat(), roads = w.roads_flat();
-    this.clear = this.view.sync(f, this.sh.radii, w.building_health());
+    this.clear = this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
     for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 24) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 6.4 * (1 + 0.13 * (f[i + 4] & 7)) }); else if (k === 32 || k === 33 || k === 34) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 5.6 }); }   // no trees on the banks of a moat or river or on earthworks
     this.obstacles = []; for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 22 || k === 24 || k === 23 || k === 32 || k === 33 || k === 34) continue; this.obstacles.push({ x: f[i + 2], z: f[i + 3], r: k === 2 ? 3 : k === 21 ? 1.6 : this.sh.radii[k] + 0.3 }); }
     this.paths.update(f, roads, this.sh.radii, w.birth_flat());
-    this.walls.update(f, w.terrain_version());
+    this.walls.update(f, w.terrain_version(), w.options_flat());
     this.props.update(f, roads, this.sh.radii);
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
-    this.people.sync(f, roads, this.sh.radii, w.population());
+    this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
     this.rivers.sync(f); this.boats.sync(f);
     this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
+    this.army.syncWalls(this.walls.walks);
     this.ruins.sync(w.ruins_flat(), w.terrain_version());
     this.sh.wildlife.syncDomestic(this.key, f);
     const fl = w.felled_flat(); for (let i = 0; i < fl.length; i += 3) this.clear.push({ x: fl[i], z: fl[i + 1], r: fl[i + 2] });
@@ -90,8 +91,9 @@ export class Village {
       this.syncFull();
     } else {
       const f = w.buildings_flat();
-      this.view.sync(f, this.sh.radii, w.building_health());
-      this.people.sync(f, w.roads_flat(), this.sh.radii, w.population());
+      this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
+      this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
+      this.walls.update(f, w.terrain_version(), w.options_flat()); this.army.syncWalls(this.walls.walks);
       this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     }
     this.fireData = w.fires_flat(); this.people.setFires(this.fireData); this.paths.setTick(Number(w.tick()));

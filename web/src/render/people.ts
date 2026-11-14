@@ -56,6 +56,7 @@ export class People {
   private agents: Agent[] = [];
   private sig = '';
   private parent: number[] = [];
+  private link: Map<number, [number, number][]> = new Map();   // child building -> its walkable route to its parent (doorstep to doorstep, over drawbridges)
   private bld: { kind: number; x: number; z: number }[] = [];
   private radii: number[] = [];
   private t = 0;
@@ -83,12 +84,13 @@ export class People {
 
   private rand(a: Agent, k: number) { const x = Math.sin(a.seed * 12.9898 + k * 78.233) * 43758.5453; return x - Math.floor(x); }
 
-  sync(buildings: Float32Array, roads: Float32Array, radii: number[], population: number) {
+  sync(buildings: Float32Array, paths: Float32Array, radii: number[], population: number) {
     const n = buildings.length / S;
     this.radii = radii; this.bld = []; this.parent = new Array(n).fill(-1);
     for (let i = 0; i < n; i++) this.bld.push({ kind: buildings[i * S], x: buildings[i * S + 2], z: buildings[i * S + 3] });
     this.wells = this.bld.filter(b => b.kind === 16).map(b => ({ x: b.x, z: b.z }));
-    for (let s = 0; s < roads.length; s += 6) this.parent[roads[s + 4]] = roads[s + 5];
+    this.link.clear();
+    for (let o = 0; o < paths.length;) { const c = paths[o], p = paths[o + 1], m = paths[o + 2], pts: [number, number][] = []; for (let k = 0; k < m; k++) pts.push([paths[o + 3 + 2 * k], paths[o + 4 + 2 * k]]); this.parent[c] = p; this.link.set(c, pts); o += 3 + 2 * m; }
 
     const homes: number[] = [], works: number[] = [];
     for (let i = 0; i < n; i++) {
@@ -99,7 +101,7 @@ export class People {
     const total = Math.min(MAX, population, Math.max(homes.length, 0));
     const roster: { home: number; work: number }[] = [];
     for (let i = 0; i < total; i++) roster.push({ home: homes[(i * 7) % Math.max(1, homes.length)] ?? 0, work: i < works.length ? works[i] : 0 });
-    const sig = roster.map(r => r.home * 64 + r.work).join(',') + '|' + n;
+    const sig = roster.map(r => r.home * 64 + r.work).join(',') + '|' + n + '|' + paths.length;
     if (sig === this.sig) return;
     this.sig = sig;
 
@@ -143,20 +145,23 @@ export class People {
     if (from === to || !this.bld[from] || !this.bld[to]) return [this.spot(to, 1)];
     const ca = this.chain(from), cb = this.chain(to), setB = new Set(cb);
     const lca = ca.find(x => setB.has(x));
-    if (lca === undefined) return [this.spot(to, 1)];
+    if (lca === undefined) return [fromPos.clone()];   // no path joins them (a house behind a moat with no drawbridge): nobody wades through
     const nodes = [...ca.slice(0, ca.indexOf(lca) + 1), ...cb.slice(0, cb.indexOf(lca)).reverse()];
     const out: THREE.Vector2[] = [fromPos.clone()];
     const door = (b: number, dx: number, dz: number, extra = 1.0) => { const r = this.radii[this.bld[b].kind] + extra, l = Math.hypot(dx, dz) || 1; return new THREE.Vector2(this.bld[b].x + (dx / l) * r, this.bld[b].z + (dz / l) * r); };
     for (let i = 0; i < nodes.length - 1; i++) {
       const A = this.bld[nodes[i]], B = this.bld[nodes[i + 1]], dx = B.x - A.x, dz = B.z - A.z;
-      const exit = door(nodes[i], dx, dz), enter = door(nodes[i + 1], -dx, -dz);
+      // the walkable route between the two linked buildings (it goes through gates and over drawbridges, never across water)
+      const fwd = this.parent[nodes[i]] === nodes[i + 1], raw = (fwd ? this.link.get(nodes[i]) : this.link.get(nodes[i + 1])) ?? [[A.x, A.z], [B.x, B.z]];
+      const pts = fwd ? raw : [...raw].reverse(), mid = pts.slice(1, -1);
+      const exit = door(nodes[i], (pts[1]?.[0] ?? B.x) - A.x, (pts[1]?.[1] ?? B.z) - A.z), enter = door(nodes[i + 1], (pts[pts.length - 2]?.[0] ?? A.x) - B.x, (pts[pts.length - 2]?.[1] ?? A.z) - B.z);
       if (i > 0) {
         const prev = out[out.length - 1], c = new THREE.Vector2(A.x, A.z), a1 = Math.atan2(prev.y - c.y, prev.x - c.x), a2 = Math.atan2(exit.y - c.y, exit.x - c.x);
         let d = a2 - a1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
         const R = this.radii[A.kind] + 1.0, steps = Math.floor(Math.abs(d) / 0.5);
         for (let k = 1; k <= steps; k++) out.push(new THREE.Vector2(c.x + Math.cos(a1 + (d * k) / (steps + 1)) * R, c.y + Math.sin(a1 + (d * k) / (steps + 1)) * R));
       }
-      out.push(exit, enter);
+      out.push(exit); for (const q of mid) out.push(new THREE.Vector2(q[0], q[1])); out.push(enter);
     }
     out.push(this.spot(to, 1));
     return out;

@@ -5,7 +5,7 @@ await init(); // the building catalog comes from the Rust core, so wasm must be 
 export interface BuildingDef {
   id: number; name: string; cat: number; r: number; weight: number;
   cost: [number, number][]; jobs: number; inputs: [number, number][]; outputs: [number, number][];
-  cycle: number; req: number; reqArg: number; housing: number; maxTier: number; desc: string;
+  cycle: number; req: number; reqArg: number; housing: number; maxTier: number; opts?: { n: string; d: string; t: number }[]; desc: string;
 }
 
 export const RES = [

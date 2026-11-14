@@ -21,6 +21,9 @@ interface Post { kind: number; x: number; z: number; y: number; yaw: number; row
 
 interface Guard { idx: number; wps: { x: number; z: number }[]; wi: number; route: number[]; ri: number; x: number; z: number; yaw: number; wait: number; gait: number; spd: number }
 
+/** A guard on a wall walk: climbs the stair, walks the top of the wall to its far end and back, and comes down again. */
+interface WallGuard { pts: [number, number, number][]; i: number; dir: 1 | -1; x: number; z: number; y: number; yaw: number; wait: number; gait: number; spd: number; id: number }
+
 /** Soldiers: the standing army drilling at the barracks, guards on patrol and in the towers, and the live battle. */
 export class ArmyView {
   private field: Field[] = [];
@@ -36,6 +39,8 @@ export class ArmyView {
   private shown = new Set<THREE.Group>();
   private quiet = 0;
   private guards: Guard[] = [];
+  private wallGuards: WallGuard[] = [];
+  private wallSig = '';
   private towers: { x: number; z: number; tier: number; keep?: boolean }[] = [];
   private legs = new Map<string, number[]>();
   /** Route finder from the village's pathfinding: [ax, az, bx, bz] -> [x, z, mode, ...] or null when there is no plain walking route. */
@@ -73,9 +78,13 @@ export class ArmyView {
     this.posts = posts;
     // the guard patrols a loop through the village: the outermost building in each direction, found with the village's pathfinding
     const hallTier = buildings[1], n = 2 * (hallTier + 1), nSec = 6, best: ({ d: number; x: number; z: number; k: number } | null)[] = Array(nSec).fill(null);
+    // guards stay inside the walls: in a sector with a curtain wall, only buildings nearer the hall than the wall count (and walls, gates, fences and moats never do)
+    const wallR: number[] = Array(nSec).fill(Infinity);
+    for (let i = S; i < buildings.length; i += S) if (buildings[i] === 2 || buildings[i] === 22) { const a = Math.atan2(buildings[i + 3] - hall.z, buildings[i + 2] - hall.x), sec = ((Math.floor((a + Math.PI) / (Math.PI * 2) * nSec)) % nSec + nSec) % nSec; wallR[sec] = Math.min(wallR[sec], Math.hypot(buildings[i + 2] - hall.x, buildings[i + 3] - hall.z)); }
     for (let i = S; i < buildings.length; i += S) {
-      const kind = buildings[i], x = buildings[i + 2], z = buildings[i + 3]; if (kind === 2) continue;
+      const kind = buildings[i], x = buildings[i + 2], z = buildings[i + 3]; if (kind === 2 || kind === 21 || kind === 22 || kind === 23 || kind === 24 || kind === 32 || kind === 33 || kind === 34) continue;
       const a = Math.atan2(z - hall.z, x - hall.x), sec = ((Math.floor((a + Math.PI) / (Math.PI * 2) * nSec)) % nSec + nSec) % nSec, d = Math.hypot(x - hall.x, z - hall.z);
+      if (d > wallR[sec] - 2.5) continue;
       if (d > 7 && (!best[sec] || d > best[sec]!.d)) best[sec] = { d, x, z, k: kind };
     }
     let pts = best.filter(Boolean).map(b => { const dx = hall.x - b!.x, dz = hall.z - b!.z, dl = Math.hypot(dx, dz) || 1, off = (this.radii[b!.k] ?? 3) + 2; return { x: b!.x + dx / dl * off, z: b!.z + dz / dl * off }; });
@@ -86,6 +95,34 @@ export class ArmyView {
       const wps = pts.map((_, i) => pts[(i + g) % pts.length]); if (g % 2) wps.reverse();
       const prev = old[g], start = wps[0];
       this.guards.push({ idx: g, wps, wi: 0, route: [], ri: 0, x: prev ? prev.x : start.x + Math.sin(g) * 2, z: prev ? prev.z : start.z + Math.cos(g) * 2, yaw: prev ? prev.yaw : 0, wait: g * 1.3, gait: prev ? prev.gait : g, spd: 0 });
+    }
+  }
+
+  /** Guards for the wall walks (see Walls.walks): two on each stretch of wall that has a stair, one walking each way. */
+  syncWalls(walks: { stair: [number, number, number][]; walk: [number, number, number][] }[]) {
+    const sig = walks.map(w => w.walk.length + ':' + w.stair[0].map(v => v.toFixed(1)).join(',') + ':' + w.walk[0]?.map(v => v.toFixed(1)).join(',')).join('|');
+    if (sig === this.wallSig) return; this.wallSig = sig;
+    const old = this.wallGuards; this.wallGuards = [];
+    walks.forEach((w, k) => {
+      const pts = [...w.stair, ...w.walk];
+      for (let g = 0; g < (w.walk.length > 3 ? 2 : 1); g++) {
+        const id = k * 2 + g, prev = old[id], i0 = g === 0 ? 0 : Math.floor(pts.length / 2), p0 = pts[i0];
+        this.wallGuards.push({ pts, i: prev && prev.pts.length === pts.length ? prev.i : i0, dir: prev && prev.pts.length === pts.length ? prev.dir : (g === 0 ? 1 : -1), x: prev ? prev.x : p0[0], z: prev ? prev.z : p0[1], y: prev ? prev.y : p0[2], yaw: prev?.yaw ?? 0, wait: g * 3, gait: prev?.gait ?? id, spd: 0, id });
+      }
+    });
+  }
+
+  private patrolWalls(dt: number) {
+    for (const g of this.wallGuards) {
+      if (g.wait > 0) { g.wait -= dt; g.spd *= 0.8; continue; }
+      const tgt = g.pts[Math.max(0, Math.min(g.pts.length - 1, g.i))], dx = tgt[0] - g.x, dz = tgt[1] - g.z, dy = tgt[2] - g.y, dist = Math.hypot(dx, dz), step = Math.min(dist, 1.5 * dt);
+      if (dist < 0.12) {
+        if (g.i + g.dir < 0 || g.i + g.dir >= g.pts.length) { g.dir = (g.dir === 1 ? -1 : 1); g.wait = 4 + (g.id * 1.3) % 3; } else g.i += g.dir;
+        continue;
+      }
+      g.x += dx / dist * step; g.z += dz / dist * step; g.y += dy * Math.min(1, step / Math.max(dist, 0.001));
+      let d = Math.atan2(dx, dz) - g.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; g.yaw += d * Math.min(1, dt * 6);
+      g.spd += (step / Math.max(dt, 0.001) - g.spd) * Math.min(1, dt * 5); g.gait += Math.PI * step / (0.55 + 0.13 * g.spd);
     }
   }
 
@@ -139,7 +176,8 @@ export class ArmyView {
   private leg(ax: number, az: number, bx: number, bz: number): number[] {
     const key = `${Math.round(ax / 3)},${Math.round(az / 3)}>${Math.round(bx / 3)},${Math.round(bz / 3)}`, hit = this.legs.get(key); if (hit) return hit;
     const p = this.plan(ax, az, bx, bz);
-    const route = p && p.length >= 6 && p.every((v, i) => i % 3 !== 2 || v === 0) ? smoothPath(p) : smoothPath([ax, az, 0, bx, bz, 0]);
+    if (!(p && p.length >= 6 && p.every((v, i) => i % 3 !== 2 || v === 0))) { this.legs.set(key, []); return []; }   // no way on foot (a moat in between): the guard does not wade, it stays on its side
+    const route = smoothPath(p);
     const out: number[] = []; for (let i = 3; i < route.length; i += 3) out.push(route[i], route[i + 1]);   // the first point is where the guard already stands
     this.legs.set(key, out); return out;
   }
@@ -158,7 +196,7 @@ export class ArmyView {
 
   update(dt: number) {
     this.t += dt;
-    if (!this.battle) this.patrol(Math.min(dt, 0.2));
+    if (!this.battle) { this.patrol(Math.min(dt, 0.2)); this.patrolWalls(Math.min(dt, 0.2)); }
     const lp = 1 - Math.exp(-dt * 12);
     for (const f of this.field) {
       f.segT += dt; const k = Math.min(1.25, f.segT / Math.max(0.05, f.segD));
@@ -218,6 +256,11 @@ export class ArmyView {
         } else if (p.mode === 'tower') {
           crowd.add({ x: p.x, y: this.terrain.heightAt(p.x, p.z) + p.y, z: p.z, yaw: p.yaw, pose: 0, phase: t + p.x, skin: 0xd9a877, ...l } as Draw);
         }
+      }
+      for (const g of this.wallGuards) {
+        if (!near(g.x, g.z)) continue;
+        const moving = g.spd > 0.3;
+        crowd.add({ x: g.x, y: g.y, z: g.z, yaw: g.yaw, pose: moving ? 1 : 0, phase: moving ? g.gait : t + g.id, speed: g.spd, skin: 0xd9a877, ...this.look(0, 0, g.id + 3, true) } as Draw);
       }
       for (const g of this.guards) {
         if (!near(g.x, g.z)) continue;

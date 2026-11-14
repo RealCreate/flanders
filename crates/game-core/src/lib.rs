@@ -40,6 +40,7 @@ struct Building {
     burning: f32,   // seconds of fire left (0 = not burning)
     garrison: u8,   // archers stationed inside (towers and keeps)
     born: u32,      // tick when it was founded: roads to it grow in over the following days
+    opts: u16,      // optional design upgrades chosen for this building (bit per option, see catalog::OPTIONS)
 }
 
 /// A moat piece's width: its rotation value (0..7) widens the ditch from 1x to 1.9x, so a moat can be thin in places and broad in others.
@@ -97,6 +98,8 @@ pub struct World {
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
     road_links: Vec<(u32, u32)>,  // (child, parent) building indices for each segment
+    road_paths: Vec<(u32, u32, Vec<(f32, f32)>)>,   // full walkable route of each link, child doorstep to parent doorstep (crosses drawbridges)
+    road_cache: std::collections::HashMap<(u32, u32), (u64, Option<Vec<(f32, f32)>>)>,   // routes already found, valid while nothing changed round them
     army: [u32; 5],
     queue: [u32; 5],
     train_prog: u32,
@@ -126,6 +129,10 @@ pub fn units() -> String { military::units_json() }
 #[wasm_bindgen]
 pub fn terrain_grid(seed: u64, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> { terrain::grid(seed, x0, y0, nx, ny, step) }
 
+/// Mountain tunnels: [x0, y0, x1, y1] per tunnel.
+#[wasm_bindgen]
+pub fn tunnels_flat(seed: u64) -> Vec<f32> { terrain::tunnels(seed).into_iter().flatten().collect() }
+
 #[wasm_bindgen]
 pub fn trees_in(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> { terrain::trees(seed, x0, y0, x1, y1) }
 
@@ -147,7 +154,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, eff: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
             army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
@@ -158,32 +165,86 @@ impl World {
         w.stock[GD as usize] = 30;
         let (x, y) = (ox as f32, oy as f32);
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0 });
+        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0, opts: 0 });
         w.after_change();
         w
     }
 
     fn base(&self, x: f32, y: f32) -> f32 { terrain::base_height_s(self.seed, &self.sites, x, y) }
 
-    /// Link every building to the nearest earlier one (a village path network rooted at the town hall).
+    /// Link every building to the nearest earlier one it can actually walk to. The route is found with the army's pathfinding (buildings and walls block, gates
+    /// and lowered drawbridges let you through, open water stops you), so a path never runs through a wall or across a moat. A building with no route gets no path.
     fn rebuild_roads(&mut self) {
         self.roads.clear();
         self.road_links.clear();
-        for i in 1..self.buildings.len() {
-            if is_barrier(self.buildings[i].kind) { continue; }
+        self.road_paths.clear();
+        let n = self.buildings.len();
+        let ends: Vec<usize> = (0..n).filter(|&i| i == 0 || !(is_barrier(self.buildings[i].kind) || self.buildings[i].kind == DRAWBRIDGE)).collect();
+        let mut used: std::collections::HashSet<(u32, u32)> = Default::default();
+        for (pos, &i) in ends.iter().enumerate() {
+            if pos == 0 { continue; }
             let (bx, by) = (self.buildings[i].x, self.buildings[i].y);
-            let mut best: Option<(usize, f32)> = None;
-            for j in 0..i {
-                if is_barrier(self.buildings[j].kind) { continue; }
-                let d = ((self.buildings[j].x - bx).powi(2) + (self.buildings[j].y - by).powi(2)).sqrt() * if j == 0 { 0.8 } else { 1.0 };
-                if best.map_or(true, |(_, bd)| d < bd) { best = Some((j, d)); }
-            }
-            if let Some((j, _)) = best {
-                let (a, b) = (&self.buildings[i], &self.buildings[j]);
-                self.roads.push([a.x, a.y, a.pad_h, b.x, b.y, b.pad_h]);
-                self.road_links.push((i as u32, j as u32));
+            let mut cand: Vec<(usize, f32)> = ends[..pos].iter().map(|&j| (j, ((self.buildings[j].x - bx).powi(2) + (self.buildings[j].y - by).powi(2)).sqrt() * if j == 0 { 0.8 } else { 1.0 })).filter(|c| c.1 < 80.0).collect();
+            cand.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            for &(j, _) in cand.iter().take(4) {
+                let key = (i as u32, j as u32);
+                let stamp = self.route_stamp(i, j);
+                let cached = match self.road_cache.get(&key) { Some((h, r)) if *h == stamp => Some(r.clone()), _ => None };
+                let route = match cached { Some(r) => r, None => { let r = self.route_local(i, j); self.road_cache.insert(key, (stamp, r.clone())); r } };
+                let Some(pts) = route else { continue };
+                // graded segments: only the stretches over dry ground (a road across a moat or river must never fill it in)
+                let (ha, hb) = (self.buildings[i].pad_h, self.buildings[j].pad_h);
+                let total: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
+                let mut run = 0.0f32;
+                for w in pts.windows(2) {
+                    let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+                    if self.leg_is_dry(w[0], w[1]) {
+                        let (t0, t1) = (run / total, (run + l) / total);
+                        let (ci, pj) = (i as u32, j as u32);
+                        self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
+                        self.road_links.push((ci, pj));
+                    }
+                    run += l;
+                }
+                if used.insert(key) { self.road_paths.push((i as u32, j as u32, pts)); }
+                break;
             }
         }
+        // drop cache entries that point at buildings which no longer exist
+        if self.road_cache.len() > 4 * n + 64 { self.road_cache.retain(|k, _| (k.0 as usize) < n && (k.1 as usize) < n); }
+    }
+
+    /// Is a straight leg of a route over dry, ordinary ground (not water and not a drawbridge deck)?
+    fn leg_is_dry(&self, a: (f32, f32), b: (f32, f32)) -> bool {
+        let l = (b.0 - a.0).hypot(b.1 - a.1); let st = (l / 1.5).ceil().max(1.0) as i32;
+        (0..=st).all(|q| { let t = q as f32 / st as f32; let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t); self.height_ground(x, y) >= 0.2 && !self.on_deck(x, y) })
+    }
+
+    /// Is the point on the deck of a lowered drawbridge?
+    fn on_deck(&self, x: f32, y: f32) -> bool {
+        self.buildings.iter().any(|b| {
+            if b.kind != DRAWBRIDGE || b.status == 5 { return false; }
+            let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
+            let (dx, dy) = (x - b.x, y - b.y); let along = dx * sx + dy * sy; let across = dx * sy - dy * sx;
+            along.abs() <= 7.4 && across.abs() <= 1.9
+        })
+    }
+
+    /// A fingerprint of everything that could change the route between two buildings: what stands (or was dug) round them, and the levelled ground.
+    fn route_stamp(&self, i: usize, j: usize) -> u64 {
+        let (a, b) = (&self.buildings[i], &self.buildings[j]);
+        let (x0, x1, y0, y1) = (a.x.min(b.x) - 18.0, a.x.max(b.x) + 18.0, a.y.min(b.y) - 18.0, a.y.max(b.y) + 18.0);
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
+        mix(a.x.to_bits() as u64); mix(a.y.to_bits() as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
+        for q in &self.buildings {
+            if q.x < x0 || q.x > x1 || q.y < y0 || q.y > y1 { continue; }
+            mix(q.kind as u64); mix(q.x.to_bits() as u64); mix(q.y.to_bits() as u64); mix(q.rot as u64); if q.kind == DRAWBRIDGE { mix(q.status as u64); }
+        }
+        for l in &self.levels { if l[0] + l[2] + LEVEL_BLEND > x0 && l[0] - l[2] - LEVEL_BLEND < x1 && l[1] + l[2] + LEVEL_BLEND > y0 && l[1] - l[2] - LEVEL_BLEND < y1 { mix(l[0].to_bits() as u64); mix(l[1].to_bits() as u64); mix(l[2].to_bits() as u64); mix(l[3].to_bits() as u64); } }
+        for c in &self.craters { if c[0] > x0 && c[0] < x1 && c[1] > y0 && c[1] < y1 { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); } }
+        mix(self.battle.is_some() as u64);
+        h
     }
 
     /// Recompute derived data after the building list or tiers changed.
@@ -227,8 +288,13 @@ impl World {
         self.after_change(); 0
     }
 
+    /// Ground height as the road router sees it: natural land, levelled ground, ditches and the banks at each end of a drawbridge, but no paths and no building pads.
+    fn height_ground(&self, x: f32, y: f32) -> f32 { self.height_inner(x, y, true, false) }
+
     /// Height with or without the ditches dug by moat pieces (placing a moat piece looks at the ground as it was).
-    fn height_core(&self, x: f32, y: f32, moats: bool) -> f32 {
+    fn height_core(&self, x: f32, y: f32, moats: bool) -> f32 { self.height_inner(x, y, moats, true) }
+
+    fn height_inner(&self, x: f32, y: f32, moats: bool, built: bool) -> f32 {
         let mut h = self.base(x, y);
         for l in &self.levels {   // ground levelled flat on purpose
             let (dx, dy) = (x - l[0], y - l[1]); let reach = l[2] + LEVEL_BLEND;
@@ -252,6 +318,17 @@ impl World {
                 }
             }
         }
+        // the earth at each end of a drawbridge is levelled to the deck (after the ditch is dug, so the water stays between them)
+        for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) {
+            if (x - b.x).abs() > 14.0 || (y - b.y).abs() > 14.0 { continue; }
+            let a = (b.rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
+            for e in [-1.0f32, 1.0] {
+                let (cx, cy) = (b.x + sx * 8.4 * e, b.y + sy * 8.4 * e);
+                let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
+                if d < 6.6 { h = lerp(h, b.pad_h, 1.0 - smoothstep(3.0, 6.6, d)); }
+            }
+        }
+        if !built { return h; }
         for s in &self.roads {
             let (minx, maxx) = (s[0].min(s[3]) - ROAD_OUTER, s[0].max(s[3]) + ROAD_OUTER);
             let (miny, maxy) = (s[1].min(s[4]) - ROAD_OUTER, s[1].max(s[4]) + ROAD_OUTER);
@@ -288,7 +365,10 @@ impl World {
             let (dx, dy) = (x - b.x, y - b.y);
             if dx.abs() > r1 || dy.abs() > r1 { continue; }
             let dist = (dx * dx + dy * dy).sqrt();
-            if dist < r1 { h = lerp(h, b.pad_h, 1.0 - smoothstep(r0, r1, dist)); }
+            if matches!(b.kind, WALL | GATE | FENCE) {   // a wall builds the ground it stands on: earth is heaped up where it is missing (never dug away), so no wall hangs over a drop or a ditch
+                let r1 = r0 + 2.2;
+                if dist < r1 && h < b.pad_h { h += (b.pad_h - h) * (1.0 - smoothstep(r0 * 0.8, r1, dist)); }
+            } else if dist < r1 { h = lerp(h, b.pad_h, 1.0 - smoothstep(r0, r1, dist)); }
         }
         for c in &self.craters {
             let (dx, dy) = (x - c[0], y - c[1]);
@@ -333,7 +413,7 @@ impl World {
         let pts = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for (px, py) in pts {
-            let h = self.height_core(x + px, y + py, !is_edit(kind));
+            let h = self.height_core(x + px, y + py, !is_edit(kind) && !matches!(kind, WALL | GATE | FENCE));
             lo = lo.min(h);
             hi = hi.max(h);
         }
@@ -386,16 +466,19 @@ impl World {
         let fr = d.r * 0.8;
         let samples = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
         let mut pad_h = samples.iter().map(|(px, py)| self.height_at(x + px, y + py)).sum::<f32>() / 5.0;
+        if matches!(kind, WALL | GATE | FENCE) {   // a wall stands level on its highest side and heaps earth under the low side
+            let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
+            pad_h = hi.max(0.3);
+        }
         if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
             let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
             let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
-            pad_h = match gate { Some((d, h)) if d < 24.0 => h, _ => bank(sx, sy).max(bank(-sx, -sy)).max(0.8) };
-            for e in [-1.0f32, 1.0] { self.levels.push([x + sx * 8.2 * e, y + sy * 8.2 * e, 3.2, pad_h]); }
+            pad_h = match gate { Some((d, h)) if d < 30.0 => h, _ => bank(sx, sy).max(bank(-sx, -sy)).max(0.8) };
         }
         let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg).map_or(-1, |i| i as i32) } else { -1 };
         let status = if d.cycle > 0 { 1 } else { 4 };
-        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32 });
+        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0 });
         if is_edit(kind) { self.terrain_ver += 1; }   // the ground changed: everything standing on it must be re-fitted
         if kind == DRAWBRIDGE {   // clear a way through the trees on the far side so a path can run out from the gate
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
@@ -420,6 +503,27 @@ impl World {
         self.after_change();
         0
     }
+
+    /// Switch one optional design upgrade of a building on (or off again, without refund). 0 ok, -1 invalid, -6 cannot afford, -10 not available yet (needs a better tier).
+    pub fn set_option(&mut self, idx: u32, bit: u8, on: bool) -> i32 {
+        let Some(b) = self.buildings.get(idx as usize) else { return -1 };
+        let opts = options(b.kind);
+        let Some(o) = opts.get(bit as usize) else { return -1 };
+        let have = b.opts & (1 << bit) != 0;
+        if have == on { return 0; }
+        if on {
+            if b.tier < o.2 { return -10; }
+            let cost = option_cost(DEFS[b.kind as usize].weight);
+            if cost.iter().any(|&(r, n)| self.stock[r as usize] < n) { return -6; }
+            for &(r, n) in &cost { self.stock[r as usize] -= n; }
+            self.buildings[idx as usize].opts |= 1 << bit;
+        } else { self.buildings[idx as usize].opts &= !(1 << bit); }
+        0
+    }
+    /// Chosen optional upgrades per building (a bit mask each), in building order.
+    pub fn options_flat(&self) -> Vec<u32> { self.buildings.iter().map(|b| b.opts as u32).collect() }
+    /// Flat [resource, amount, ...] cost of one optional upgrade of this kind of building.
+    pub fn option_cost_flat(kind: u8) -> Vec<i32> { match DEFS.get(kind as usize) { Some(d) => option_cost(d.weight).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(), None => vec![] } }
 
     /// Remove a building, refunding half of its base cost.
     pub fn demolish(&mut self, idx: u32) -> bool {
@@ -613,7 +717,15 @@ impl World {
 
     /// Path segments as [ax, ay, bx, by, child, parent] (stride 6). Child and parent are building indices.
     pub fn roads_flat(&self) -> Vec<f32> {
-        self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| [s[0], s[1], s[3], s[4], l.0 as f32, l.1 as f32]).collect()
+        let id = |v: u32| if v == u32::MAX { -1.0 } else { v as f32 };
+        self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| [s[0], s[1], s[3], s[4], id(l.0), id(l.1)]).collect()
+    }
+
+    /// Walkable routes between linked buildings: [child, parent, n, x0, y0, x1, y1, ...] repeated. Unlike `roads_flat` these include the crossings of drawbridges.
+    pub fn road_paths_flat(&self) -> Vec<f32> {
+        let mut v = vec![];
+        for (c, p, pts) in &self.road_paths { v.extend_from_slice(&[*c as f32, *p as f32, pts.len() as f32]); for q in pts { v.extend_from_slice(&[q.0, q.1]); } }
+        v
     }
 
     /// Flat [kind, x, y, remaining, max, ...] (stride 5).
@@ -823,7 +935,7 @@ impl World {
         for s in &self.stock { mix(*s as i64 as u64); }
         for b in &self.buildings {
             mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
-            mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64);
+            mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64);
         }
         for d in &self.deposits { mix(d.rem as i64 as u64); }
         for k in 0..5 { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); }
@@ -857,7 +969,7 @@ mod tests {
     #[test]
     fn terrain_is_sane() {
         for seed in [1u64, 7, 1337, 99999] {
-            let g = terrain::grid(seed, -720.0, -720.0, 289, 289, 5.0);
+            let g = terrain::grid(seed, -1200.0, -1200.0, 481, 481, 5.0);
             assert!(g.iter().all(|h| h.is_finite()));
             let (lo, hi) = g.iter().fold((f32::MAX, f32::MIN), |(l, h), &v| (l.min(v), h.max(v)));
             let water = g.iter().filter(|&&h| h < 0.0).count() as f32 / g.len() as f32;
@@ -1063,7 +1175,7 @@ mod tests {
         assert!(with >= without, "a well never makes things worse: {with} vs {without}");
     }
 
-    fn nav_cell_centre(i: usize) -> (f32, f32) { (((i as i32 % march::NC) as f32) * march::CELL - 720.0 + 1.0, ((i as i32 / march::NC) as f32) * march::CELL - 720.0 + 1.0) }
+    fn nav_cell_centre(i: usize) -> (f32, f32) { (((i as i32 % march::NC) as f32) * march::CELL - 1200.0 + march::CELL / 2.0, ((i as i32 / march::NC) as f32) * march::CELL - 1200.0 + march::CELL / 2.0) }
 
     #[test]
     fn armies_march_around_buildings() {
@@ -1171,7 +1283,7 @@ mod tests {
 
     fn put(w: &mut World, kind: u8, x: f32, y: f32, rot: u8) {
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0 });
+        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0 });
     }
 
     #[test]
@@ -1266,13 +1378,16 @@ mod tests {
     #[test]
     fn raising_and_lowering_can_share_a_spot_and_pads_stay_put() {
         let mut w = village();
-        let base = w.base(-30.0, 10.0);
-        assert!(w.place(RAISE, -30, 10, 0) >= 0);
-        let up = w.height_at(-30.0, 10.0); assert!(up > base + 1.5);
+        // find a free spot for the earthworks (deposits sit in different places on each map)
+        let (px, py) = [(-30, 10), (-34, 14), (-26, 22), (30, 24), (-30, -26), (34, -30), (-38, 0)].into_iter().find(|&(x, y)| w.can_place(RAISE, x, y) == 0).expect("a spot for earthworks");
+        let (fx, fy) = (px as f32, py as f32);
+        let base = w.base(fx, fy);
+        assert!(w.place(RAISE, px, py, 0) >= 0);
+        let up = w.height_at(fx, fy); assert!(up > base + 1.5);
         let v0 = w.terrain_ver;
-        assert!(w.place(LOWER, -30, 10, 0) >= 0, "a lowering can go on the same spot as a raising");
+        assert!(w.place(LOWER, px, py, 0) >= 0, "a lowering can go on the same spot as a raising");
         assert!(w.terrain_ver > v0, "earthworks bump the terrain version so everything refits");
-        assert!((w.height_at(-30.0, 10.0) - base).abs() < 0.3, "raise and lower cancel out");
+        assert!((w.height_at(fx, fy) - base).abs() < 0.3, "raise and lower cancel out");
         // a building's levelled pad is not moved by earthworks beside it
         let h = w.buildings[1].pad_h; let (bx, by) = (w.buildings[1].x, w.buildings[1].y);
         w.place(RAISE, (bx - w.ox as f32) as i32 + 7, (by - w.oy as f32) as i32, 0);
@@ -1457,5 +1572,110 @@ mod tests {
         for _ in 0..400 { w.step(); w.stock[W as usize] = 2000; w.stock[GR as usize] = 2000; }
         assert!(w.stock[IO as usize] > 0 || w.stock[IR as usize] > 0, "ore flows");
         assert!(w.stock[TL as usize] > 0, "tools forged");
+    }
+}
+
+#[cfg(test)]
+mod map_tests {
+    use super::*;
+    #[test]
+    fn map_stats() {
+        for seed in [1u64, 7, 1337, 99999] {
+            let g = terrain::grid(seed, -1200.0, -1200.0, 241, 241, 10.0);
+            let hi = g.iter().filter(|&&h| h > 30.0).count() as f32 / g.len() as f32;
+            let water = g.iter().filter(|&&h| h < 0.0).count() as f32 / g.len() as f32;
+            // the flat ground round the origin: how far is the nearest steep mountain?
+            let mut near = 1e9f32; for j in -80..=80 { for i in -80..=80 { let (x, y) = (i as f32 * 5.0, j as f32 * 5.0); if terrain::base_height(seed, x, y) > 24.0 { near = near.min(x.hypot(y)); } } }
+            println!("seed {seed}: >30 {:.1}% water {:.0}% nearest mountain to start {near:.0} tunnels {} sites {}", hi * 100.0, water * 100.0, terrain::tunnels(seed).len(), terrain::sites(seed).len());
+        }
+    }
+}
+
+#[cfg(test)]
+mod road_tests {
+    use super::*;
+
+    fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w }
+
+    fn ring(w: &mut World, r: f32, n: usize, kind: u8) {
+        for i in 0..n { let a = i as f32 / n as f32 * std::f32::consts::TAU; let (x, y) = ((a.cos() * r).round() as i32, (a.sin() * r).round() as i32); w.place(kind, x, y, 0); }
+    }
+
+    #[test]
+    fn roads_do_not_cross_moats_and_use_drawbridges() {
+        let mut w = rich();
+        ring(&mut w, 20.0, 44, MOAT);
+        let outside = [(0, 36), (6, 38), (-8, 40), (12, 36), (-14, 36)].into_iter().map(|(x, y)| w.place(HOUSE, x, y, 0)).find(|&i| i >= 0).unwrap_or(-1);
+        let (ox, oy) = if outside >= 0 { (w.buildings[outside as usize].x, w.buildings[outside as usize].y) } else { (0.0, 36.0) };
+        let _ = (ox, oy);
+        assert!(outside >= 0, "house outside the moat: {outside}");
+        let links = |w: &World| w.road_paths_flat().chunks(1).len();
+        let has_link = |w: &World, child: u32| { let v = w.road_paths_flat(); let mut i = 0; let mut found = false; while i < v.len() { let n = v[i + 2] as usize; if v[i] as u32 == child { found = true; } i += 3 + 2 * n; } found };
+        let _ = links;
+        assert!(!has_link(&w, outside as u32), "a house behind an unbroken moat gets no path at all");
+        // no drawn segment may lie in water
+        for s in w.roads_flat().chunks(6) { for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f); assert!(w.height_at(x, y) > 0.1, "path in water at {x},{y}"); } }
+        let bridge = w.place(DRAWBRIDGE, 0, 20, 0);
+        assert!(bridge >= 0, "drawbridge: {bridge}");
+        assert!(has_link(&w, outside as u32), "with a lowered drawbridge the house is connected");
+        // the walking route crosses the moat on the deck; the graded (drawn) segments never do
+        for s in w.roads_flat().chunks(6) { for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f); assert!(w.height_at(x, y) > 0.1, "graded path in water at {x},{y}"); } }
+        w.drawbridge_set(bridge as u32, true); w.after_change();
+        assert!(!has_link(&w, outside as u32), "raise the bridge and the path is gone again");
+    }
+
+    #[test]
+    fn drawbridge_deck_is_level_with_the_gate_and_both_banks() {
+        let mut w = rich();
+        for x in [-8, 8] { w.place(WALL, x, 14, 0); }
+        let gate = w.place(GATE, 0, 14, 0); assert!(gate >= 0);
+        ring(&mut w, 24.0, 52, MOAT);
+        let br = w.place(DRAWBRIDGE, 0, 24, 0); assert!(br >= 0, "bridge {br}");
+        let (gh, bh) = (w.buildings[gate as usize].pad_h, w.buildings[br as usize].pad_h);
+        assert!((gh - bh).abs() < 0.01, "deck {bh} at gate height {gh}");
+        for e in [-1.0f32, 1.0] { let y = 24.0 + 8.4 * e; assert!((w.height_at(0.0, y) - bh).abs() < 0.1, "bank at {y}: {} vs {bh}", w.height_at(0.0, y)); }
+        assert!(w.height_at(0.0, 24.0) < 0.2, "water between the banks");
+    }
+
+    #[test]
+    fn walls_build_the_ground_under_themselves() {
+        let mut w = rich();
+        // a wall on the shore of a dug moat: the earth under the wall is heaped up, never left as a drop
+        ring(&mut w, 26.0, 40, MOAT);
+        let i = w.place(WALL, 0, 22, 0); assert!(i >= 0, "wall beside the moat: {i}");
+        let b = w.buildings[i as usize].clone();
+        for (px, py) in [(0.0, 0.0), (2.0, 0.0), (-2.0, 0.0), (0.0, 2.0), (0.0, -2.0)] { assert!(w.height_at(b.x + px, b.y + py) >= b.pad_h - 0.05, "ground under the wall at {px},{py}"); }
+    }
+
+    #[test]
+    fn options_cost_resources_and_respect_tiers() {
+        let mut w = rich();
+        let i = w.place(WALL, 18, 0, 0); assert!(i >= 0);
+        assert_eq!(w.set_option(i as u32, 0, true), -10, "stairs need a stone wall");
+        w.upgrade(i as u32);
+        let before = w.stocks()[PL as usize];
+        assert_eq!(w.set_option(i as u32, 0, true), 0);
+        assert!(w.stocks()[PL as usize] < before);
+        assert_eq!(w.options_flat()[i as usize], 1);
+        assert_eq!(w.set_option(i as u32, 9, true), -1);
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+    #[test]
+    fn many_buildings_stay_fast() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for _ in 0..3 { w.upgrade(0); }
+        w.flatten(72);
+        let t = std::time::Instant::now();
+        let mut n = 0;
+        for (r, k, kind) in [(24.0f32, 24, WALL), (44.0, 40, WALL), (61.0, 60, MOAT)] {
+            for i in 0..k { let a = i as f32 / k as f32 * std::f32::consts::TAU; if w.place(kind, (a.cos() * r).round() as i32, (a.sin() * r).round() as i32, 0) >= 0 { n += 1; } }
+        }
+        for i in 0..50 { let a = i as f32 * 0.7; let r = 28.0 + (i % 5) as f32 * 3.0; if w.place(HOUSE, (a.cos() * r).round() as i32, (a.sin() * r).round() as i32, 0) >= 0 { n += 1; } }
+        println!("placed {n} in {:?}, roads {}", t.elapsed(), w.roads.len());
+        assert!(t.elapsed().as_secs_f32() < 8.0);
     }
 }

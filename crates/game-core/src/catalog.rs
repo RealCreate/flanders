@@ -41,6 +41,7 @@ pub const CHAPEL: u8 = 17;
 pub const WALL: u8 = 2;
 pub const TOWER: u8 = 3;
 pub const HOUSE: u8 = 0;
+pub const FARM: u8 = 1;
 pub const LODGE: u8 = 18;
 pub const BARRACKS: u8 = 19;
 pub const BUILDERS: u8 = 20;
@@ -115,12 +116,41 @@ pub fn upgrade_cost(weight: u32, new_tier: u8) -> Vec<Amount> {
     }
 }
 
+/// An optional design upgrade: (name, what it adds, lowest tier it can be added at).
+pub type Opt = (&'static str, &'static str, u8);
+
+/// Optional upgrades that slightly change a building's look and use (at most four per building). Each one is drawn inside the footprint of the building itself, so it can never run into a neighbour.
+pub fn options(kind: u8) -> &'static [Opt] {
+    match kind {
+        HOUSE => &[("Chimney", "A brick chimney with a curl of smoke.", 0), ("Flower boxes", "Shutters and window boxes full of flowers.", 0), ("Woodshed", "A lean-to for firewood against the wall.", 0), ("Dovecote", "A little tower for doves on the roof.", 1)],
+        FARM => &[("Scarecrow", "Keeps the crows off the crop.", 0), ("Haystacks", "Golden stacks beside the field.", 0), ("Fenced yard", "A fence round the yard.", 0), ("Barn", "A small timber barn at the field's edge.", 1)],
+        WALL => &[("Stairs", "A stone stair up to the wall walk, so guards can climb on to the wall.", 1), ("Banners", "Pennants on the parapet.", 0), ("Hoarding", "A timber gallery projecting over the outer face.", 2), ("Braziers", "Iron fire baskets for the night watch.", 1)],
+        TOWER => &[("Banner", "A pennant on a pole.", 0), ("Hoarding", "A timber gallery round the top.", 1), ("Roof cap", "A conical roof.", 1), ("Beacon", "A signal fire basket.", 0)],
+        GATE => &[("Banners", "Pennants either side of the gate.", 0), ("Braziers", "Fire baskets on the pillars.", 0), ("Spikes", "Iron spikes along the lintel.", 1), ("Guard hut", "A little lean-to for the gate guard.", 1)],
+        DRAWBRIDGE => &[("Banners", "Pennants on the bridge posts.", 0), ("Lanterns", "Lanterns at both ends.", 0)],
+        BARRACKS => &[("Banner pole", "A tall standard.", 0), ("Training dummies", "Straw dummies in the yard.", 0), ("Armoury rack", "Racks of spears and shields.", 1), ("Stable", "A lean-to stable.", 1)],
+        KEEP => &[("Banner", "The lord's standard.", 0), ("Hoarding", "Wooden galleries on the battlements.", 1), ("Corner turrets", "Round turrets at the corners.", 2), ("Beacon", "A signal fire.", 0)],
+        TOWN_HALL => &[("Banner", "The village standard.", 0), ("Bell turret", "A bell for alarms.", 1), ("Clock", "A clock face on the front.", 2), ("Garden court", "Hedges and flower beds.", 0)],
+        CHAPEL => &[("Bell tower", "A small bell tower.", 0), ("Stained glass", "Coloured windows.", 1), ("Graveyard", "A walled burial ground.", 0), ("Lych gate", "A roofed gate at the churchyard.", 0)],
+        WELL => &[("Roof", "A little roof over the well.", 0), ("Trough", "A stone trough beside it.", 0)],
+        MOAT | RIVER | RAISE | LOWER | FENCE => &[],
+        _ => &[("Banner", "A pennant on a pole.", 0), ("Lanterns", "Lanterns at the door.", 0), ("Awning", "A cloth awning.", 0), ("Stone footing", "A stone plinth.", 1)],
+    }
+}
+
+/// What one optional upgrade costs.
+pub fn option_cost(weight: u32) -> Vec<Amount> { let w = weight as i32; vec![(PL, 4 + 4 * w), (ST, 3 + 3 * w)] }
+
+fn options_json(kind: u8) -> String {
+    options(kind).iter().map(|o| format!("{{\"n\":\"{}\",\"d\":\"{}\",\"t\":{}}}", o.0, o.1, o.2)).collect::<Vec<_>>().join(",")
+}
+
 pub fn catalog_json() -> String {
     let amt = |a: &[Amount]| a.iter().map(|(r, n)| format!("[{},{}]", r, n)).collect::<Vec<_>>().join(",");
     let items: Vec<String> = DEFS.iter().enumerate().map(|(i, d)| {
         format!(
-            "{{\"id\":{},\"name\":\"{}\",\"cat\":{},\"r\":{},\"weight\":{},\"cost\":[{}],\"jobs\":{},\"inputs\":[{}],\"outputs\":[{}],\"cycle\":{},\"req\":{},\"reqArg\":{},\"housing\":{},\"maxTier\":{},\"desc\":\"{}\"}}",
-            i, d.name, d.cat, d.r, d.weight, amt(d.cost), d.jobs, amt(d.inputs), amt(d.outputs), d.cycle, d.req, d.req_arg, d.housing, max_tier(i as u8), d.desc
+            "{{\"id\":{},\"name\":\"{}\",\"cat\":{},\"r\":{},\"weight\":{},\"cost\":[{}],\"jobs\":{},\"inputs\":[{}],\"outputs\":[{}],\"cycle\":{},\"req\":{},\"reqArg\":{},\"housing\":{},\"maxTier\":{},\"opts\":[{}],\"desc\":\"{}\"}}",
+            i, d.name, d.cat, d.r, d.weight, amt(d.cost), d.jobs, amt(d.inputs), amt(d.outputs), d.cycle, d.req, d.req_arg, d.housing, max_tier(i as u8), options_json(i as u8), d.desc
         )
     }).collect();
     format!("[{}]", items.join(","))
