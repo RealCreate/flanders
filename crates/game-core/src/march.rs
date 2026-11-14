@@ -416,7 +416,7 @@ impl World {
                 let workers = (d.units[0] + d.units[2]) as f32;
                 let dens = ns.dens_at(d.x, d.y) as f32;
                 match wp.mode {
-                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.06 * dens) * if self.on_road(d.x, d.y) { crate::pathnet::ROAD_SPEED } else { 1.0 }; Self::advance(&mut d, wp); }
+                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.06 * dens) * if self.on_road(d.x, d.y) { crate::pathnet::ROAD_SPEED } else { 1.0 }; let _ = wp; Self::advance_path(&mut d); }
                     1 => {
                         d.state = S_FELL; d.speed = (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base);
                         let (ox, oy) = (d.x, d.y);
@@ -458,6 +458,17 @@ impl World {
             }
             if !remove { let (rx, ry) = (d.x, d.y); let scouts = d.units.iter().sum::<u32>() <= 4; self.reveal(rx, ry, if scouts { 120.0 } else { 70.0 }); }   // a small party travels light and sees further   // an army on the march lifts the fog round it
             if remove { self.dets.remove(i); } else { self.dets[i] = d; i += 1; }
+        }
+    }
+
+    /// Walk along the route for one tick's worth of distance, carrying on round the corners (what is left of the step after reaching a waypoint is walked towards the next), so the pace is the
+    /// same whatever the route does. Only over ordinary ground: felling, bridging and ferrying have their own pace.
+    fn advance_path(d: &mut Det) {
+        let mut left = d.speed;
+        while left > 1e-4 && d.wi < d.path.len() && d.path[d.wi].mode == 0 {
+            let wp = d.path[d.wi]; let (dx, dy) = (wp.x - d.x, wp.y - d.y); let dist = (dx * dx + dy * dy).sqrt();
+            if dist > 0.01 { d.heading = dy.atan2(dx); }
+            if dist <= left { d.x = wp.x; d.y = wp.y; d.wi += 1; left -= dist; } else { d.x += dx / dist * left; d.y += dy / dist * left; left = 0.0; }
         }
     }
 
