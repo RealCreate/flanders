@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat } from './wasm/game_core.js';
-import { BANNER_NAMES, BANNER_STYLES, CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
+import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
 import { PenPreview } from './render/pen';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
@@ -28,6 +28,10 @@ import { Sound } from './audio';
 import { Minimap, type MapVillage } from './ui/minimap';
 import { Tunnels } from './render/tunnels';
 import { startAgentBridge } from './agent';
+import { nearestWithin } from './render/camerafx';
+import { mountFlagDesigner } from './ui/flagdesigner';
+import { keyNames } from './ui/ui';
+import { loadFlag, saveFlag, packFlag, unpackFlag, hasSavedFlag, type Flag } from './flag';
 import { territoryOutline } from './render/border';
 import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
@@ -146,6 +150,9 @@ function applyCmd(w: World, c: Cmd) {
     case 'settle': w.settle(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;
     case 'choose': w.choose(c.kind ?? 0); break;
     case 'treaty': if ((c.y ?? 1) === 0) w.treaty_end(c.idx!, c.kind ?? 0); else w.treaty_set(c.idx!, c.kind ?? 0, c.x ?? 10); break;
+    case 'envoy': w.envoy(c.idx!); break;
+    case 'marriage': w.marriage(c.idx!); break;
+    case 'war': w.declare_war(c.idx!); break;
     case 'caravan': w.caravan_send(c.kind ?? 0, c.x ?? 0, c.idx ?? 0, c.y ?? 0, c.ax ?? 0); break;
     case 'rebuild': w.rebuild(c.idx!); break;
     case 'form': w.det_form(Uint32Array.from(c.units ?? [])); break;
@@ -368,7 +375,13 @@ function onTrade(r: Rival, c: Cmd) {
     const got = w.settle(c.kind ?? 0, c.x ?? 0, their);
     if (got > 0) { commit({ op: 'settle', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} paid ${got} gold for the goods.`, 'good'); updateHud(); }
   } else if (c.op === 'treaty' && (c.y ?? 1) !== 0) {   // an offer: we agree, and tell them with our own signed copy (without `to`, so it is not answered again)
-    if (w.treaty_set(their, c.kind ?? 0, c.x ?? 10)) { commit({ op: 'treaty', idx: their, kind: c.kind, x: c.x }); ui.toast(`${r.name} offers ${c.kind === 1 ? 'peace' : 'a trade pact'} for ${c.x} days. Agreed.`, 'good'); }
+    const what = c.kind === 2 ? 'an alliance' : c.kind === 1 ? 'peace' : 'a trade pact';
+    if (w.treaty_acceptable(their, c.kind ?? 0) && w.treaty_set(their, c.kind ?? 0, c.x ?? 10)) { commit({ op: 'treaty', idx: their, kind: c.kind, x: c.x }); ui.toast(`${r.name} offers ${what} for ${c.x} days. Agreed.`, 'good'); }
+    else { commit({ op: 'treaty', idx: their, kind: c.kind, y: 0, to: r.key }); ui.toast(`${r.name} offers ${what}, but we do not trust them enough. Refused.`, 'info'); }
+  } else if (c.op === 'treaty' && c.y === 0) {   // they turned our offer down: it is void on our side too
+    w.treaty_end(their, c.kind ?? 0); commit({ op: 'treaty', idx: their, kind: c.kind, y: 0 }); ui.toast(`${r.name} refused your offer.`, 'info'); afterLocalChange();
+  } else if (c.op === 'war') {
+    ui.toast(`${r.name} has declared war on you!`, 'bad');
   }
 }
 
@@ -381,8 +394,12 @@ function doTrade(key: string, action: string, res: number, amount: number, escor
     if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : 'Cannot send that.', 'bad'); return; }
     commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud();
   } else {
-    const kind = action === 'peace' ? 1 : 0, days = 30;
-    if (w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days, to: key }); ui.toast(`You offer ${r.name} ${kind ? 'peace' : 'a trade pact'} for ${days} days.`, 'info'); }
+    if (action === 'envoy') { const code = w.envoy(their); if (code === 0) { commit({ op: 'envoy', idx: their }); ui.toast(`An envoy with gifts rides to ${r.name}.`, 'good'); updateHud(); } else ui.toast(code === -20 ? 'An envoy went recently: wait a few days.' : 'An envoy costs 20 gold.', 'bad'); return; }
+    if (action === 'marriage') { const code = w.marriage(their); if (code === 0) { commit({ op: 'marriage', idx: their }); ui.toast(`A royal marriage binds your house to ${r.name}'s.`, 'good'); updateHud(); } else ui.toast(code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -1 ? 'You are already married into that house.' : 'A wedding costs 150 gold.', 'bad'); return; }
+    if (action === 'war') { w.declare_war(their); commit({ op: 'war', idx: their, to: key }); ui.toast(`You declared war on ${r.name}.`, 'bad'); return; }
+    const kind = action === 'alliance' ? 2 : action === 'peace' ? 1 : 0, days = 30;
+    if (!w.treaty_acceptable(their, kind)) { ui.toast(kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.', 'bad'); return; }
+    if (w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days, to: key }); ui.toast(`You offer ${r.name} ${kind === 2 ? 'an alliance' : kind ? 'peace' : 'a trade pact'} for ${days} days.`, 'info'); }
   }
 }
 
@@ -436,16 +453,28 @@ let multiDets: number[] = [];   // every selected army; selectedDet is the first
 function selectDet(id: number | null) { selectDets(id === null ? [] : [id]); }
 function selectDets(ids: number[]) {
   multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids);
-  if (ids.length) { selectKind(null); selectBuilding(null); selectRuin(null); ui.setTab('army'); }
+  if (ids.length) { selectKind(null); selectBuilding(null); selectRuin(null); ui.setTab('army'); ui.hint(`${ids.length > 1 ? ids.length + ' armies' : 'Army ' + ids[0]} selected · right-click the ground to march · Shift+click adds or removes one · drag a box to select several · ${keyNames('haltArmy')} halt · ${keyNames('recallArmy')} send home · ${keyNames('cancel')} deselect`); }
+  else if (selectedKind === null) ui.hint(null);
   showRoute(); updateDets();
 }
 
 /** Armies whose banner is inside the dragged rectangle (screen pixels). */
-function boxSelect(x0: number, y0: number, x1: number, y1: number) {
+function boxSelect(x0: number, y0: number, x1: number, y1: number, add = false) {
   const a = Math.min(x0, x1), b = Math.max(x0, x1), c = Math.min(y0, y1), d = Math.max(y0, y1), v = new THREE.Vector3();
   const ids = lv.field.ids().filter(id => { const p = lv.field.position(id)!; v.set(p.x, terrain.heightAt(p.x, p.z) + 2, p.z).project(rig.cam); const sx = (v.x * 0.5 + 0.5) * innerWidth, sy = (-v.y * 0.5 + 0.5) * innerHeight; return v.z < 1 && sx >= a && sx <= b && sy >= c && sy <= d; });
-  if (ids.length) { selectDets(ids); ui.toast(ids.length > 1 ? `${ids.length} armies selected — right-click to march them all.` : 'Army selected.', 'info'); }
+  if (ids.length) { const all = add ? [...new Set([...multiDets, ...ids])] : ids; selectDets(all); ui.toast(all.length > 1 ? `${all.length} armies selected — right-click to march them all.` : 'Army selected.', 'info'); }
+  else if (!add && multiDets.length) selectDets([]);   // a box round nothing lets go of the selection
 }
+
+/** Armies shown on the screen, with where. */
+function armiesOnScreen() {
+  const v = new THREE.Vector3(), out: { id: number; sx: number; sy: number }[] = [];
+  for (const id of lv.field.ids()) { const p = lv.field.position(id); if (!p) continue; v.set(p.x, terrain.heightAt(p.x, p.z) + 1.5, p.z).project(rig.cam); if (v.z < 1) out.push({ id, sx: (v.x * 0.5 + 0.5) * innerWidth, sy: (-v.y * 0.5 + 0.5) * innerHeight }); }
+  return out;
+}
+/** The army under (or near: banners are small) the pointer. */
+function pickArmy(e: { clientX: number; clientY: number }): number | null { const hit = nearestWithin(armiesOnScreen(), e.clientX, e.clientY, 34); return hit ? hit.id : null; }
+let lastArmyClick = { t: 0, id: -1 };
 
 /** Draw the selected army's remaining route. */
 function showRoute() {
@@ -533,7 +562,7 @@ function onLocalReport(rep: number[]) {
 }
 
 function updatePeers() {
-  ui.setPeers([...rivals.values()].map(r => ({ key: r.key, name: r.name + (r.online ? '' : ' (away)'), pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active() })), worldName);
+  ui.setPeers([...rivals.values()].map(r => ({ key: r.key, name: r.name + (r.online ? '' : ' (away)'), pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), ...relOf(r.key) })), worldName);
 }
 
 // ---------- start ----------
@@ -622,6 +651,7 @@ async function startGame(name: string, username: string) {
   }, agentPort, agentToken);
   setInterval(() => { save(); updatePeers(); }, 8000);
   updateGoals();
+  if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
   (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; } };
   last = performance.now(); requestAnimationFrame(frame);
@@ -669,25 +699,39 @@ function refreshTerrain(w: World) {
 }
 function refreshAll() { refreshTerrain(lv.world); for (const r of rivals.values()) refreshTerrain(r.village.world); lv.syncFull(); for (const r of rivals.values()) r.village.syncFull(); }
 
-/** The banner colours in the Village pane: pick the colour your village flies. */
-function showBannerChips() {
-  const el = document.getElementById('banner-chips'); if (!el) return;
-  const cur = lv.world.style();
-  el.innerHTML = BANNER_NAMES.map((n, i) => `<button class="chip" data-banner="${i}" title="${n}" style="border:2px solid ${i === cur ? '#ffe08a' : '#6d5a38'};background:${i === 0 ? '#555' : '#' + BANNER_STYLES[i].toString(16).padStart(6, '0')};width:26px;height:26px;border-radius:50%;cursor:pointer"></button>`).join(' ');
-  el.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-banner]'); if (b) onAct('banner:' + b.dataset.banner); };
+/** The flag designer in the Village pane: change your village's flag whenever you like. */
+let flagDesigner: ReturnType<typeof mountFlagDesigner> | null = null;
+function showFlagDesigner() {
+  const el = document.getElementById('flag-design'); if (!el) return;
+  const cur = unpackFlag(lv.world.style()) ?? loadFlag();
+  if (!flagDesigner) flagDesigner = mountFlagDesigner(el, cur, f => { saveFlag(f); applyFlag(f); });
+  else if (!el.firstChild) flagDesigner = mountFlagDesigner(el, cur, f => { saveFlag(f); applyFlag(f); });
+}
+/** Fly this flag from now on: part of the village's state, so everyone sees it. */
+function applyFlag(f: Flag) {
+  const n = packFlag(f); if (lv.world.style() === n) return;
+  if (lv.world.set_style(n)) { commit({ op: 'style', kind: n }); lv.syncFull(); }
 }
 
 function afterLocalChange() { refreshTerrain(lv.world); lv.syncFull(); lv.afterTick(); if (forestDirtyFlag) rebuildForest(); updateSelection(); updateHud(); }
 
+/** How we stand with another village: feeling, marriage and treaties (1 trade pact, 2 peace, 4 alliance). */
+function relOf(key: string) {
+  const tag = tagOf(key), f = lv.world.relations_flat();
+  for (let i = 0; i + 3 < f.length; i += 4) if (f[i] === tag) return { rel: f[i + 1], married: f[i + 2] === 1, treaties: f[i + 3] };
+  return { rel: 0, married: false, treaties: 0 };
+}
+
 function updateHud() {
   const w = lv.world;
   let barracks = -1; const f = w.buildings_flat(); for (let i = 0; i < f.length; i += 10) if (f[i] === 19) barracks = Math.max(barracks, f[i + 1]);
-  showPopulationInfo(w); if (!document.getElementById('banner-chips')?.firstChild) showBannerChips();
+  showPopulationInfo(w); if (!document.getElementById('flag-design')?.firstChild) showFlagDesigner();
   showChoice(w, doDecide);
   ui.update({
     tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, pop: w.population(), cap: w.capacity(), sick: w.sick(),
     joy: w.happiness(), eff: w.efficiency(), jobs: w.jobs(), radius: w.build_radius(), buildings: w.building_count(), storage: w.storage(),
     army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
+    vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(),
   });
   ui.maxAttack(Array.from(w.army())); updateDets();
   { // the border follows what has been built; redrawn only when the land changed
@@ -954,7 +998,6 @@ function onAct(a: string) {
     if (code === 0) { commit({ op: 'option', idx: selectedIdx, kind: bit, x: on ? 1 : 0 }); sound.upgrade(); afterLocalChange(); } else ui.toast(code === -6 ? 'Not enough resources.' : code === -10 ? 'This building needs a better tier first.' : 'Cannot do that.', 'bad');
     return;
   }
-  if (a.startsWith('banner:')) { const n = Number(a.slice(7)); if (lv.world.set_style(n)) { commit({ op: 'style', kind: n }); lv.syncFull(); sound.click(); showBannerChips(); } return; }
   if (a === 'hero') { const code = lv.world.hero_hire(); if (code === 0) { commit({ op: 'hero' }); sound.upgrade(); afterLocalChange(); } else ui.toast(code === -6 ? 'Not enough coin (150).' : code === -4 ? 'You already have a lord.' : 'Cannot do that.', 'bad'); return; }
   if (a === 'deselect') { selectBuilding(null); return; }
   const w = lv.world;
@@ -1082,9 +1125,11 @@ function bindInput() {
       const idx = lv.pick(pointerRay(e));
       let hit: { r: Rival; i: number } | null = null;
       if (idx === null) for (const r of rivals.values()) { const i = r.village.pick(ray); if (i !== null) { hit = { r, i }; break; } }
-      if (idx !== null) { const f = lv.world.buildings_flat(), o = idx * 10; ui.tip(`<b>${tierName(f[o], f[o + 1])}</b><small>${defs[f[o]].name} · ${STATUS[f[o + 6]]}</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
+      const armyId = idx === null ? pickArmy(e) : null;
+      if (armyId !== null) { const u = detUnits(armyId), n = u ? u.reduce((a, b) => a + b, 0) : 0; ui.tip(`<b>Army ${armyId}</b><small>${n} soldiers · click to select · Shift+click adds · double-click selects every army in view</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
+      else if (idx !== null) { const f = lv.world.buildings_flat(), o = idx * 10; ui.tip(`<b>${tierName(f[o], f[o + 1])}</b><small>${defs[f[o]].name} · ${STATUS[f[o + 6]]}</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
       else if (hit) { const f = hit.r.village.world.buildings_flat(), o = hit.i * 10; ui.tip(`<b>${esc(hit.r.name)}: ${tierName(f[o], f[o + 1])}</b><small>${defs[f[o]].name} · click to open the Army tab</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
-      else { ui.tip(null); cv.style.cursor = 'default'; }
+      else { ui.tip(null); cv.style.cursor = multiDets.length ? 'crosshair' : 'default'; }   // with armies selected the ground is where they are sent
     }
   });
   cv.addEventListener('pointerleave', () => ui.tip(null));
@@ -1104,7 +1149,7 @@ function bindInput() {
       else penPath.push(penPath.length && !e.altKey ? snap45(last, p) : p);
       penLastClick = now; ui.hint(placeHint(selectedKind)); return;
     }
-    if (moved > 5) { ui.selBox(null); if (moved > 8 && selectedKind === null && !e.shiftKey) boxSelect(d0.x, d0.y, e.clientX, e.clientY); return; }
+    if (moved > 5) { ui.selBox(null); if (moved > 8 && selectedKind === null && !e.shiftKey) boxSelect(d0.x, d0.y, e.clientX, e.clientY, e.ctrlKey); return; }
     if (selectedKind !== null) {
       const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
       const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), kind = selectedKind;
@@ -1122,8 +1167,14 @@ function bindInput() {
       if (res >= 0) { commit({ op: 'place', kind, x: dx, y: dy, rot }); ghostCode = 99; previewKey = ''; afterLocalChange(); placedFx(kind, lv.ox + dx, lv.oz + dy); updateGhost(e); }
       else { ui.hint(PLACE_ERRORS[res] ?? 'Cannot build here', true); sound.error(); }
     } else {
-      const det = lv.field.pick(pointerRay(e));
-      if (det !== null) { selectDet(det); return; }
+      const det = pickArmy(e) ?? lv.field.pick(pointerRay(e));
+      if (det !== null) {
+        const now = performance.now();
+        if (now - lastArmyClick.t < 350 && lastArmyClick.id === det) { const all = armiesOnScreen().map(a => a.id); selectDets(all); ui.toast(`${all.length} armies selected.`, 'info'); lastArmyClick = { t: 0, id: -1 }; return; }   // double-click: every army on the screen
+        lastArmyClick = { t: now, id: det };
+        if (e.shiftKey || e.ctrlKey) selectDets(multiDets.includes(det) ? multiDets.filter(i => i !== det) : [...multiDets, det]); else selectDet(det);   // Shift or Ctrl: add to the selection, or take out
+        return;
+      }
       const idx = lv.pick(pointerRay(e));
       if (idx === null) { const ri = lv.ruins.pick(pointerRay(e)); if (ri !== null) { selectRuin(ri); return; } }
       if (idx !== null) selectBuilding(idx);
