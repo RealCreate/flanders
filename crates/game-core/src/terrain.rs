@@ -1,6 +1,6 @@
 //! Procedural terrain, deposits and trees. Pure functions of (seed, x, y): every peer derives the same map.
 
-pub const HALF: f32 = 720.0; // map spans [-HALF, HALF] on both axes
+pub const HALF: f32 = 1200.0; // map spans [-HALF, HALF] on both axes
 pub const SITE_SPACING: f32 = 300.0;
 
 #[inline]
@@ -76,11 +76,11 @@ fn dry_round(seed: u64, x: f32, y: f32) -> bool {
 /// lakes, sea or rivers round it is dropped.
 fn sites_uncached(seed: u64) -> Vec<(f32, f32)> {
     let mut v = vec![];
-    for j in -2i32..=2 {
-        for i in -2i32..=2 {
+    for j in -3i32..=3 {
+        for i in -3i32..=3 {
             // villages sit on the inner land only: the outer ring of the map is coast and sea
             let (px, py) = (i as f32 * SITE_SPACING, j as f32 * SITE_SPACING);
-            let inland = ((px / HALF).powi(4) + (py / HALF).powi(4)).powf(0.25) < 0.62;
+            let inland = ((px / HALF).powi(4) + (py / HALF).powi(4)).powf(0.25) < 0.7;
             if inland && ((i == 0 && j == 0) || (i == 1 && j == 0) || (h01(seed ^ 0x51, i, j) < 0.55 && dry_round(seed, px, py))) {
                 v.push((px, py));
             }
@@ -112,9 +112,9 @@ pub fn base_height_s(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
         r * r
     };
     // fewer, lower mountains, and none near a village site
-    let calm = 1.0 - smoothstep(110.0, 200.0, site_dist(sites, x, y));
-    let mask = smoothstep(0.54, 0.80, cont) * (1.0 - calm);
-    let mut h = (cont - 0.25) * 24.0 + (hills - 0.5) * (13.0 - 6.0 * calm) + mask * ridge * 58.0;
+    let calm = 1.0 - smoothstep(190.0, 330.0, site_dist(sites, x, y));
+    let mask = smoothstep(0.62, 0.86, cont) * (1.0 - calm);
+    let mut h = (cont - 0.25) * 24.0 + (hills - 0.5) * (13.0 - 6.0 * calm) + mask * ridge * 50.0;
     // passes: narrow valleys cut through the mountains, the way through for roads and armies
     let pass = 1.0 - smoothstep(0.0, 0.014, (fbm(seed + 8, wx * 0.0048, wy * 0.0048, 3) - 0.5).abs());
     h = lerp(h, 14.0 + (hills - 0.5) * 6.0, pass * smoothstep(26.0, 44.0, h) * 0.9);
@@ -124,7 +124,7 @@ pub fn base_height_s(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
     let rmask = 1.0 - smoothstep(16.0, 38.0, h);
     h = lerp(h, -1.1, river * rmask * 0.95);   // shallow rivers: they do not cut deep gorges
     // a few broad lakes, big enough to sail on
-    let lake = fbm(seed + 6, wx * 0.006, wy * 0.006, 3);
+    let lake = fbm(seed + 6, wx * 0.005, wy * 0.005, 3);
     h = lerp(h, -2.0, smoothstep(0.70, 0.78, lake) * (1.0 - smoothstep(10.0, 30.0, h)));
     // gentle valleys around village sites
     let sw = site_weight(sites, x, y);
@@ -141,6 +141,55 @@ pub fn base_height_s(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
     let d = 0.65 * round + 0.35 * boxy + (fbm(seed + 7, x * 0.0045, y * 0.0045, 3) - 0.5) * 0.42;   // mostly round, a little square, with bays and headlands
     let land = 1.0 - smoothstep(0.88, 1.12, d);
     lerp(-9.0, h, land)
+}
+
+/// Tunnels bored through mountain ridges: [x0, y0, x1, y1] per tunnel (the two portals). Worked out once per seed from the natural terrain: from a village
+/// site, walk outwards in 24 directions; where the way climbs into a mountain and comes out the far side within a few hundred units, bore through it.
+pub fn tunnels(seed: u64) -> Vec<[f32; 4]> {
+    thread_local! { static T: std::cell::RefCell<Vec<(u64, Vec<[f32; 4]>)>> = const { std::cell::RefCell::new(Vec::new()) }; }
+    T.with(|c| {
+        if let Some((_, v)) = c.borrow().iter().find(|(s, _)| *s == seed) { return v.clone(); }
+        let v = tunnels_uncached(seed);
+        let mut b = c.borrow_mut(); if b.len() > 8 { b.remove(0); } b.push((seed, v.clone()));
+        v
+    })
+}
+
+fn tunnels_uncached(seed: u64) -> Vec<[f32; 4]> {
+    let s = sites(seed);
+    let hh = |x: f32, y: f32| base_height_s(seed, &s, x, y);
+    let mut out: Vec<[f32; 4]> = vec![];
+    for &(sx, sy) in &s {
+        for k in 0..24 {
+            let a = k as f32 * std::f32::consts::TAU / 24.0 + 0.13 * h01(seed ^ 0x7B, k, (sx as i32) / 50);
+            let (ux, uy) = (a.cos(), a.sin());
+            let mut t = 60.0f32;
+            let mut enter: Option<f32> = None;
+            while t < 520.0 {
+                let (x, y) = (sx + ux * t, sy + uy * t);
+                if x.abs() > HALF - 60.0 || y.abs() > HALF - 60.0 { break; }
+                let h = hh(x, y);
+                match enter {
+                    None => { if h > 17.0 && hh(x - ux * 5.0, y - uy * 5.0) > 1.5 { enter = Some(t - 5.0); } else if h < 0.0 { break; } }
+                    Some(e) => {
+                        if h < 12.0 && h > 1.5 {
+                            let len = t - e;
+                            if (45.0..=300.0).contains(&len) {
+                                let p = [sx + ux * e, sy + uy * e, x, y];
+                                let far = |q: &[f32; 4]| ((q[0] - p[0]).hypot(q[1] - p[1])) < 160.0 || ((q[2] - p[0]).hypot(q[3] - p[1])) < 160.0;
+                                if !out.iter().any(far) { out.push(p); }
+                            }
+                            break;
+                        }
+                        if h < 0.0 { break; }
+                    }
+                }
+                t += 5.0;
+            }
+            if out.len() >= 10 { return out; }
+        }
+    }
+    out
 }
 
 pub fn base_height(seed: u64, x: f32, y: f32) -> f32 { base_height_s(seed, &sites(seed), x, y) }

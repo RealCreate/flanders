@@ -8,9 +8,9 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::rc::Rc;
 
-pub const CELL: f32 = 2.0;
-pub const NC: i32 = 720; // cells per side, covering [-720, 720)
-const ORG: f32 = -720.0;
+pub const CELL: f32 = 2.5;
+pub const NC: i32 = 960; // cells per side, covering [-1200, 1200)
+const ORG: f32 = -1200.0;
 const MAX_FERRY: f32 = 64.0;
 const BRIDGE_MAX: f32 = 12.0;
 
@@ -47,7 +47,7 @@ pub struct Det {
     pub since_fell: f32,
 }
 
-pub struct NavStatic { h: Vec<f32>, slope: Vec<f32>, dens: Vec<u8> }
+pub struct NavStatic { h: Vec<f32>, slope: Vec<f32>, dens: Vec<u8>, tun: Vec<bool> }
 
 thread_local! { static NAV: RefCell<Option<(u64, Rc<NavStatic>)>> = const { RefCell::new(None) }; }
 
@@ -78,7 +78,13 @@ pub fn nav_static(seed: u64) -> Rc<NavStatic> {
             for dj in -1i32..=1 { for di in -1i32..=1 { let (a, b) = (i as i32 + di, j as i32 + dj); if a >= 0 && b >= 0 && a < NC && b < NC { s += cnt[b as usize * n + a as usize] as u32; } } }
             dens[j * n + i] = s.min(9) as u8;
         } }
-        let ns = Rc::new(NavStatic { h, slope, dens });
+        // tunnels bored through mountains: a corridor that is always passable, whatever the ground above it does
+        let mut tun = vec![false; n * n];
+        for t in terrain::tunnels(seed) {
+            let l = ((t[2] - t[0]).powi(2) + (t[3] - t[1]).powi(2)).sqrt(); let st = (l / 1.0).ceil() as i32;
+            for k in 0..=st { let f = k as f32 / st as f32; stamp(&mut tun, t[0] + (t[2] - t[0]) * f, t[1] + (t[3] - t[1]) * f, 3.6); }
+        }
+        let ns = Rc::new(NavStatic { h, slope, dens, tun });
         *c.borrow_mut() = Some((seed, ns.clone()));
         ns
     })
@@ -141,7 +147,8 @@ impl World {
 
     fn classify(&self, ns: &NavStatic, ov: &Ov, i: usize, siege: bool) -> Cl {
         let (x, y) = cell_xy(i);
-        if x.abs() > 712.0 || y.abs() > 712.0 || ov.blocked[i] { return Cl::Block; }
+        if x.abs() > 1192.0 || y.abs() > 1192.0 || ov.blocked[i] { return Cl::Block; }
+        if ns.tun[i] && !ov.moat[i] { return Cl::Free(1.3); }
         if (ns.h[i] < 0.2 || ov.moat[i]) && !ov.bridge[i] { return Cl::Water; }
         if ns.slope[i] > if siege { 0.85 } else { 1.6 } { return Cl::Block; }
         let d = if ov.cleared[i] { 0.0 } else { ns.dens[i] as f32 };
@@ -360,5 +367,89 @@ impl World {
                 v
             }
         }
+    }
+
+    /// A walkable route between two buildings for the village's paths, found like an army route (same blocking rules) but only over a small window round them.
+    /// Buildings and walls block, gates are open, lowered drawbridges carry you over water, open water stops you. None if there is no way.
+    pub(crate) fn route_local(&self, ia: usize, ib: usize) -> Option<Vec<(f32, f32)>> {
+        const RC: f32 = 2.0;
+        let (a, b) = (&self.buildings[ia], &self.buildings[ib]);
+        let m = 16.0;
+        let (x0, y0) = (a.x.min(b.x) - m, a.y.min(b.y) - m);
+        let (nx, ny) = ((((a.x.max(b.x) + m) - x0) / RC).ceil() as i32 + 1, (((a.y.max(b.y) + m) - y0) / RC).ceil() as i32 + 1);
+        if nx * ny > 12000 { return None; }
+        let cxy = |i: i32, j: i32| (x0 + (i as f32 + 0.5) * RC, y0 + (j as f32 + 0.5) * RC);
+        let n = (nx * ny) as usize;
+        let mut h = vec![0.0f32; n];
+        for j in 0..ny { for i in 0..nx { let (x, y) = cxy(i, j); h[(j * nx + i) as usize] = self.height_ground(x, y); } }
+        let mut blocked = vec![false; n]; let mut deck = vec![false; n];
+        let mark = |g: &mut [bool], x: f32, y: f32, r: f32| {
+            let (i0, i1) = ((((x - r - x0) / RC).floor() as i32).max(0), (((x + r - x0) / RC).ceil() as i32).min(nx - 1));
+            let (j0, j1) = ((((y - r - y0) / RC).floor() as i32).max(0), (((y + r - y0) / RC).ceil() as i32).min(ny - 1));
+            for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cxy(i, j); if (cx - x).powi(2) + (cy - y).powi(2) <= r * r { g[(j * nx + i) as usize] = true; } } }
+        };
+        for (k, q) in self.buildings.iter().enumerate() {
+            if k == ia || k == ib { continue; }
+            match q.kind {
+                GATE | MOAT | RIVER | RAISE | LOWER => {}
+                DRAWBRIDGE => {
+                    if q.status == 5 || self.battle.is_some() { continue; }
+                    let an = q.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
+                    for t in -9..=9 { let t = t as f32 * 0.8; mark(&mut deck, q.x + sx * t, q.y + sy * t, 1.7); }
+                }
+                _ => { let r = DEFS[q.kind as usize].r + if q.kind == WALL || q.kind == FENCE { 1.0 } else { 0.7 }; mark(&mut blocked, q.x, q.y, r); }
+            }
+        }
+        let free = |i: i32, j: i32| -> Option<f32> {
+            if i < 0 || j < 0 || i >= nx || j >= ny { return None; }
+            let k = (j * nx + i) as usize;
+            if blocked[k] && !deck[k] { return None; }
+            if h[k] < 0.2 && !deck[k] { return None; }
+            let mut sl = 0.0f32;
+            if !deck[k] { for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] { let (p, q) = (i + di, j + dj); if p >= 0 && q >= 0 && p < nx && q < ny { sl = sl.max((h[(q * nx + p) as usize] - h[k]).abs() / RC); } } }
+            if sl > 1.6 { return None; }
+            Some(if deck[k] { 0.8 } else { 1.0 + sl * 1.2 })
+        };
+        let near = |x: f32, y: f32| -> Option<(i32, i32)> {
+            let (ci, cj) = (((x - x0) / RC).floor() as i32, ((y - y0) / RC).floor() as i32);
+            for r in 0..7i32 { for dj in -r..=r { for di in -r..=r { if di.abs().max(dj.abs()) != r { continue; } if free(ci + di, cj + dj).is_some() { return Some((ci + di, cj + dj)); } } } }
+            None
+        };
+        let (s, g) = (near(a.x, a.y)?, near(b.x, b.y)?);
+        let (si, gi) = ((s.1 * nx + s.0) as usize, (g.1 * nx + g.0) as usize);
+        let mut gc = vec![f32::MAX; n]; let mut from = vec![u32::MAX; n];
+        let mut heap = BinaryHeap::new();
+        let hf = |i: usize| { let (ci, cj) = (i as i32 % nx, i as i32 / nx); let (dx, dy) = ((ci - g.0).abs() as f32, (cj - g.1).abs() as f32); dx.max(dy) + 0.414 * dx.min(dy) };
+        gc[si] = 0.0; heap.push(Node { f: hf(si), i: si as u32 });
+        let mut found = false;
+        while let Some(Node { i, .. }) = heap.pop() {
+            let i = i as usize; if i == gi { found = true; break; }
+            let (ci, cj) = (i as i32 % nx, i as i32 / nx);
+            for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                let (p, q) = (ci + di, cj + dj);
+                let Some(step) = free(p, q) else { continue };
+                if di != 0 && dj != 0 && (free(ci + di, cj).is_none() || free(ci, cj + dj).is_none()) { continue; }
+                let k = (q * nx + p) as usize; let ng = gc[i] + step * if di != 0 && dj != 0 { 1.414 } else { 1.0 };
+                if ng < gc[k] { gc[k] = ng; from[k] = i as u32; heap.push(Node { f: ng + hf(k), i: k as u32 }); }
+            }
+        }
+        if !found { return None; }
+        let mut cells = vec![gi]; let mut c = gi; while from[c] != u32::MAX { c = from[c] as usize; cells.push(c); } cells.reverse();
+        let pts: Vec<(f32, f32)> = cells.iter().map(|&i| cxy(i as i32 % nx, i as i32 / nx)).collect();
+        // simplify by line of sight, but never cut across a different kind of ground (deck vs land)
+        let kind_at = |x: f32, y: f32| -> Option<bool> { let (i, j) = (((x - x0) / RC).floor() as i32, ((y - y0) / RC).floor() as i32); if free(i, j).is_none() { None } else { Some(deck[(j * nx + i) as usize]) } };
+        let los = |p: (f32, f32), q: (f32, f32), dk: bool| -> bool {
+            let l = (q.0 - p.0).hypot(q.1 - p.1); let st = (l / (RC * 0.5)).ceil().max(1.0) as i32;
+            (0..=st).all(|t| { let f = t as f32 / st as f32; kind_at(p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f) == Some(dk) })
+        };
+        let dk = |p: (f32, f32)| kind_at(p.0, p.1).unwrap_or(false);
+        let mut out = vec![(a.x, a.y)]; let mut i = 0usize;
+        while i < pts.len() - 1 {
+            let d0 = dk(pts[i]); let mut j = pts.len() - 1;
+            while j > i + 1 && !(dk(pts[j]) == d0 && los(pts[i], pts[j], d0)) { j -= 1; }
+            out.push(pts[j]); i = j;
+        }
+        if let Some(l) = out.last_mut() { *l = (b.x, b.y); }
+        Some(out)
     }
 }
