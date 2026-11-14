@@ -105,8 +105,9 @@ impl World {
             }
         }
         let ladders = if atk[0] + atk[2] > 0 { ((atk[0] + atk[2]) / 4).max(1) } else { 0 };
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; 5] });
-        if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } }
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; 5], fixed: vec![] });
+        let fixed = self.bridge_points();
+        if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);
         true
     }
@@ -403,7 +404,7 @@ impl World {
         }
         for &(wx, wy, wr) in wet {
             let (dn, d0) = (((nx - wx).powi(2) + (ny - wy).powi(2)).sqrt(), ((ox - wx).powi(2) + (oy - wy).powi(2)).sqrt());
-            if dn < wr && dn < d0 && !b.bridges.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) { b.units[i].face = my.atan2(mx); return Some(Block::Wet); }
+            if dn < wr && dn < d0 && !b.bridges.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) && !b.fixed.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) { b.units[i].face = my.atan2(mx); return Some(Block::Wet); }
         }
         b.units[i].x = nx; b.units[i].y = ny; b.units[i].face = my.atan2(mx);
         None
@@ -500,8 +501,8 @@ impl World {
         v
     }
 
-    fn can_afford(&self, c: &[Amount]) -> bool { c.iter().all(|&(r, n)| self.stock[r as usize] >= n) }
-    fn pay(&mut self, c: &[Amount]) { for &(r, n) in c { self.stock[r as usize] -= n; } }
+    pub(crate) fn can_afford(&self, c: &[Amount]) -> bool { c.iter().all(|&(r, n)| self.stock[r as usize] >= n) }
+    pub(crate) fn pay(&mut self, c: &[Amount]) { for &(r, n) in c { self.stock[r as usize] -= n; } }
 
     /// Repair the whole building. 0 ok, -1 invalid, -6 cannot afford, -14 it is burning, -15 nothing to repair.
     pub(crate) fn do_repair(&mut self, idx: usize) -> i32 {

@@ -127,6 +127,7 @@ impl World {
         for b in &self.buildings {
             match b.kind {
                 GATE | ROAD => {}                                             // an opening in the wall, or a road: nothing blocks it
+                BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); let st = (l / 1.0).ceil() as i32; for k in 0..=st { let t = k as f32 - l / 2.0; stamp(&mut ov.bridge, b.x + ux * t, b.y + uy * t, 1.8); } }   // a way over the water
                 MOAT | RIVER => stamp(&mut ov.moat, b.x, b.y, if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + 0.5),           // water to cross
                 RAISE | LOWER => {}
                 DRAWBRIDGE if b.status == 5 || self.battle.is_some() => {}   // drawn up: no way across
@@ -393,6 +394,7 @@ impl World {
             if k == ia || k == ib { continue; }
             match q.kind {
                 GATE | MOAT | RIVER | RAISE | LOWER | ROAD => {}
+                BRIDGE => { let (ux, uy, l) = Self::bridge_dir(q); let st = (l / 0.8) as i32; for t in 0..=st { let t = t as f32 * 0.8 - l / 2.0; mark(&mut deck, q.x + ux * t, q.y + uy * t, 1.7); } }
                 DRAWBRIDGE => {
                     if q.status == 5 || self.battle.is_some() { continue; }
                     let an = q.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());

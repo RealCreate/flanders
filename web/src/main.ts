@@ -103,7 +103,7 @@ let obstCache: { x: number; z: number; r: number }[] = [];
 let selectedDet: number | null = null;
 let selectedRuin: number | null = null;
 const attackTargets = new Map<number, string>();   // field army id -> the rival it is marching on
-let ghostRing!: THREE.Mesh, previewKey = '';
+let ghostRing!: THREE.Mesh, previewKey = '', previewKey2 = '';
 
 /** Bumped whenever the map generator changes: every world gets a fresh map and old saves are discarded. */
 const MAP_VERSION = 7;
@@ -881,6 +881,7 @@ function updateSelection() {
       <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="gar+" ${cur >= cap || avail < 1 ? 'disabled' : ''}>+ Archer</button><button class="pbtn" data-act="gar-" ${cur < 1 ? 'disabled' : ''}>− Archer</button><button class="pbtn" data-act="garfill" ${cur >= cap || avail < 1 ? 'disabled' : ''}>Fill</button><button class="pbtn" data-act="garempty" ${cur < 1 ? 'disabled' : ''}>Empty</button></div>
       <p class="muted">${cur === 0 ? 'The tower is empty — it only defends once you station archers in it. Train archers at a barracks.' : 'Archers fire from the walkway at the top. They come from the barracks and go back when you empty the tower.'}</p></div>`;
   }
+  if (kind === 38) { const sp = w.bridge_spans_flat(); for (let i = 0; i + 9 < sp.length; i += 10) if (sp[i] === selectedIdx) html += `<p class="muted">${sp[i + 4].toFixed(0)} units long. A footbridge spans up to 14 units of water, a timber bridge 22, a stone bridge 34 and a great bridge 50. Supports stand in the middle wherever the water is wide.</p>`; }
   if (kind === 23) {
     const up = f[o + 6] === 5;
     html += `<div><h3>Drawbridge</h3><div class="stats"><div class="stat"><b>${up ? 'Drawn up' : 'Lowered'}</b><span>State</span></div></div>
@@ -1011,6 +1012,21 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   const hit = terrain.pick(pointerRay(e).ray);
   if (!hit) { ghost.visible = false; return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
+  if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
+    const bp = w.bridge_preview(dx, dy), code = bp[0];
+    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
+    const [, cx, cz, ang, len, span, planks, wood] = Array.from(bp), ux = Math.cos(ang), uz = Math.sin(ang), hA = terrain.heightAt(cx - ux * len / 2, cz - uz * len / 2), hB = terrain.heightAt(cx + ux * len / 2, cz + uz * len / 2);
+    terrain.clearPreview(); previewKey = '';
+    ghost.visible = true; ghostRing.visible = false; ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
+    const key = `${code}:${cx.toFixed(1)}:${cz.toFixed(1)}`;
+    if (key !== previewKey2) {
+      previewKey2 = key; ghostCode = code;
+      ghost.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) { const mm = m.material as THREE.MeshStandardMaterial; mm.emissive.setHex(code === 0 ? 0x22cc55 : 0xdd2a1a); mm.emissiveIntensity = code === 0 ? 0.32 : 0.5; } });
+      ui.hint(code === 0 ? `Bridge · ${span.toFixed(0)} units of water, ${len.toFixed(0)} long · ${planks} planks, ${wood} wood · supports go in the middle where needed · click to build` : PLACE_ERRORS[code] ?? 'Cannot build here', code !== 0);
+    }
+    return;
+  }
+  if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
   let code = w.can_place(selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
