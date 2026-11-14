@@ -63,19 +63,21 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   api.fill();
   const wallRing = (R: number, gateAngle: number, phase: number) => {
     const pieces: number[] = [], ring = outline(R, 5.6, gateAngle, phase), placed: ([number, number] | null)[] = [];
+    let gate = -1;
     ring.forEach((p, k) => {
-      if (k === 0) { api.place(GATE, p.x, p.y, 0, 0); placed.push([p.x, p.y]); wallPts.push([p.x, p.y]); return; }
+      if (k === 0) { placed.push([p.x, p.y]); return; }   // the gate goes in last, between its two walls (a gate only ever stands in a wall)
       const i = api.place(WALL, p.x, p.y, 0, 4); if (i >= 0) { pieces.push(i); placed.push(api.at(i)); wallPts.push(api.at(i)); } else placed.push(null);
     });
+    gate = api.place(GATE, ring[0].x, ring[0].y, 0, 0); if (gate >= 0) wallPts.push([ring[0].x, ring[0].y]);
     // close any gap: where neighbours stand too far apart, put a piece between them (or retry the missing spot wider)
     for (let k = 0; k < ring.length; k++) {
       const a = placed[k], b = placed[(k + 1) % ring.length];
       if (a && b && Math.hypot(a[0] - b[0], a[1] - b[1]) > 7.5) { const i = api.place(WALL, Math.round((a[0] + b[0]) / 2), Math.round((a[1] + b[1]) / 2), 0, 3); if (i >= 0) { pieces.push(i); wallPts.push(api.at(i)); } }
       if (!placed[k]) { const i = api.place(WALL, ring[k].x, ring[k].y, 0, 7); if (i >= 0) { pieces.push(i); wallPts.push(api.at(i)); } }
     }
-    return pieces;
+    return { pieces, gate };
   };
-  const innerWall = wallRing(R1, 0, 0), outerWall = wallRing(R2, Math.PI / 2, 0.3);
+  const inner = wallRing(R1, 0, 0), outer = wallRing(R2, Math.PI / 2, 0.3), innerWall = inner.pieces, outerWall = outer.pieces;
   api.fill();
 
   // a spot in the bailey: halfway between the inner and outer curtain wall in this direction (the walls swell and narrow, so the bailey does too)
@@ -130,9 +132,9 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   }
 
   // 7. improvements: stone walls (the inner ring battlemented), stone towers, the keep, nicer houses
-  const up = (i: number, times: number) => { for (let t = 0; t < times; t++) { if (!api.upgrade(i)) { api.fill(); if (!api.upgrade(i)) break; } } };
-  innerWall.forEach(i => up(i, 3)); api.fill();
-  outerWall.forEach(i => up(i, 2)); api.fill();
+  const up = (i: number, times: number) => { if (i < 0) return; for (let t = 0; t < times; t++) { if (!api.upgrade(i)) { api.fill(); if (!api.upgrade(i)) break; } } };
+  innerWall.forEach(i => up(i, 3)); up(inner.gate, 3); api.fill();   // the gatehouses match the walls they stand in
+  outerWall.forEach(i => up(i, 2)); up(outer.gate, 2); api.fill();
   for (const i of innerTowers) if (i >= 0) up(i, 3);
   for (const i of outerTowers) if (i >= 0) up(i, 2);
   if (keep >= 0) up(keep, 3);

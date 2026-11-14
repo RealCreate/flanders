@@ -23,3 +23,12 @@ for (const seed of SEEDS.slice(0, 3)) test(`seed ${seed}: buildings keep clear o
   for (const o of others) assert.ok(gap(o) >= (o.k === 3 ? 1.0 : 2.5), `${defs[o.k].name} at ${o.x.toFixed(0)},${o.y.toFixed(0)} is only ${gap(o).toFixed(1)} from a wall`);
   assert.ok(others.filter(o => o.k === 0).length >= 12, 'the bailey has its houses');
 });
+
+import { wallGraphReport } from './demo.mjs';
+for (const seed of SEEDS.slice(0, 4)) test(`seed ${seed}: every wall piece links up, each ring is one loop, and the gatehouses match their walls`, () => {
+  const r = wallGraphReport(buildDemo(seed));
+  for (const ring of ['inner', 'outer']) {
+    assert.deepEqual(r[ring].dangling, [], `${ring}: pieces with fewer than two neighbours`); assert.equal(r[ring].parts, 0, `${ring} wall is in several parts`);
+    assert.equal(r[ring].gateTiers.length, 1, `${ring} has one gate`); assert.ok(r[ring].gateTiers[0] >= r[ring].minWallTier, `${ring} gate is tier ${r[ring].gateTiers[0]} in tier ${r[ring].minWallTier} walls`);
+  }
+});

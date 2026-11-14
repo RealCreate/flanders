@@ -33,7 +33,9 @@ export class Terrain {
   scorch: Float32Array = new Float32Array(0); // burnt ground discs [x, z, r, ...] from every village
   heights: Float32Array;       // current (with pads, with coast drop)
   base: Float32Array;          // base terrain
-  mesh: THREE.Mesh;
+  /** The ground, cut into square chunks that share one set of vertices: each chunk is culled on its own when it is off screen. */
+  mesh: THREE.Group;
+  private chunks: { mesh: THREE.Mesh; i0: number; j0: number; i1: number; j1: number }[] = [];
   water: THREE.Mesh;
   geo: THREE.PlaneGeometry;
   /** Ground height, one texel per vertex (half floats): the water shader reads it to tell how deep the water is, so shallows are pale and the shore foams. */
@@ -63,8 +65,16 @@ export class Terrain {
     this.updateRegion(0, 0, NV - 1, NV - 1);
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: grainTexture(), roughness: 0.96, metalness: 0 });
     patchGround(mat, groundDetailTexture());
-    this.mesh = new THREE.Mesh(this.geo, mat);
-    this.mesh.receiveShadow = true;
+    this.mesh = new THREE.Group();
+    const CH = 64;   // cells per chunk side
+    for (let j0 = 0; j0 < NV - 1; j0 += CH) for (let i0 = 0; i0 < NV - 1; i0 += CH) {
+      const i1 = Math.min(NV - 1, i0 + CH), j1 = Math.min(NV - 1, j0 + CH), idx: number[] = [];
+      for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) { const a = i + NV * j, b = i + NV * (j + 1), c = i + 1 + NV * (j + 1), d = i + 1 + NV * j; idx.push(a, b, d, b, c, d); }
+      const g = new THREE.BufferGeometry(); for (const [name, attr] of Object.entries(this.geo.attributes)) g.setAttribute(name, attr);
+      g.setIndex(idx);
+      const m = new THREE.Mesh(g, mat); m.receiveShadow = true; this.mesh.add(m); this.chunks.push({ mesh: m, i0, j0, i1, j1 });
+    }
+    this.fitChunks(0, 0, NV - 1, NV - 1);
 
     this.heightData = new Uint16Array(NV * NV);
     this.heightTex = new THREE.DataTexture(this.heightData, NV, NV, THREE.RedFormat, THREE.HalfFloatType);
@@ -132,7 +142,17 @@ export class Terrain {
       this.col.setXYZ(k, col.r * 1.18, col.g * 1.18, col.b * 1.18);
     }
     this.pos.needsUpdate = this.nor.needsUpdate = this.col.needsUpdate = true;
-    if (i0 === 0 && j0 === 0 && i1 === NV - 1) { this.geo.computeBoundingSphere(); this.geo.computeBoundingBox(); }
+    if (this.chunks.length) this.fitChunks(i0, j0, i1, j1);
+  }
+
+  /** Re-measure the chunks touched by an edit so culling stays right (a sphere round the highest and lowest ground in the chunk). */
+  private fitChunks(i0: number, j0: number, i1: number, j1: number) {
+    for (const c of this.chunks) {
+      if (c.i1 < i0 || c.i0 > i1 || c.j1 < j0 || c.j0 > j1) continue;
+      let lo = 1e9, hi = -1e9; for (let j = c.j0; j <= c.j1; j++) for (let i = c.i0; i <= c.i1; i++) { const h = this.heights[j * NV + i]; if (h < lo) lo = h; if (h > hi) hi = h; }
+      const w = (c.i1 - c.i0) * STEP, d = (c.j1 - c.j0) * STEP, cx = -HALF + (c.i0 + c.i1) / 2 * STEP, cz = -HALF + (c.j0 + c.j1) / 2 * STEP;
+      c.mesh.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, (lo + hi) / 2, cz), Math.hypot(w / 2, d / 2, (hi - lo) / 2) + 1);
+    }
   }
 
   /** Apply core heights (with building pads) around a world-space disc. */

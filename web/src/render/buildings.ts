@@ -886,7 +886,11 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
     case 3: case 26: { // tower, keep
       const R = Math.max(hw, hd);
       const bit = (n: number) => has(n);
-      if (bit(1)) { ring(R + 0.35, top - 1.6, 1.1, m.wood, 20); ring(R + 0.35, top - 0.5, 0.12, m.darkwood, 20); }
+      if (bit(1)) {   // wooden hoardings hang from the parapet, never above the roofs
+        const wt = (kind === 26 ? [6.4, 8.9, 11.5, 14.1] : [5.2, 4.6, 7.3, 9.1])[b.t];
+        if (kind === 3) { const rr = [1.9, 2.3, 2.3, 2.7][b.t]; ring(rr, wt - 1.7, 1.1, m.wood, 20); ring(rr, wt - 0.6, 0.12, m.darkwood, 20); }
+        else { const half = ([5.2, 7.2, 8.4, 9.4][b.t] + 0.8) / 2 + 0.3, len = half * 2 - 0.4; for (const [x, z, rot] of [[0, half, 0], [0, -half, 0], [half, 0, 1], [-half, 0, 1]] as const) { const p1 = b.box(len, 1.1, 0.35, m.wood, x, wt - 1.7, z), p2 = b.box(len, 0.12, 0.45, m.darkwood, x, wt - 0.6, z); if (rot) { p1.rotation.y = p2.rotation.y = Math.PI / 2; } } }
+      }
       if (kind === 3 && bit(2)) { b.cone(R + 0.5, R * 1.3 + 1.2, m.slate, cx, top, cz, 16); top += R * 1.3 + 1.2; }
       if (kind === 26 && bit(2)) for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const tx = cx + sx * (hw - 0.2), tz = cz + sz * (hd - 0.2); b.cyl(1.0, 1.1, top + 0.8, m.stone, tx, 0, tz, 12); b.cone(1.3, 1.9, m.slate, tx, top + 0.8, tz, 12); }
       if (bit(0)) b.flag(cx, top, cz, 2.6);
@@ -957,7 +961,10 @@ class Smoke {
 }
 
 // ---------- scene sync ----------
-interface Item { sig: string; group: THREE.Group; status: number; pop?: number }
+interface Item { sig: string; group: THREE.Group; status: number; pop?: number; cell: string }
+/** Static parts are merged per square of this many units, so a change re-merges one square (not the whole village) and the GPU can skip squares that are off screen. */
+const CELL = 36;
+const cellOf = (x: number, z: number) => `${Math.floor(x / CELL)}:${Math.floor(z / CELL)}`;
 
 export class VillageView {
   root = new THREE.Group();
@@ -965,16 +972,16 @@ export class VillageView {
   batchRoot = new THREE.Group();
   /** Drawbridges are drawn up while a battle is on. */
   raised = false;
-  private hiddenMeshes: THREE.Mesh[] = [];
-  private batched = false; private dirty = true; private idle = 0;
+  private cells = new Map<string, { hidden: THREE.Mesh[]; merged: THREE.Mesh[] }>();
+  private dirtyCells = new Set<string>(); private idle = 0;
   /** New buildings pop into place with a little overshoot once the village has finished loading. */
   animateNew = false;
   private items = new Map<number, Item>();
-  get isBatched() { return this.batched; }
+  get isBatched() { return this.dirtyCells.size === 0; }
   constructor(private banner: number) {}
   private flag: Flag | undefined;
   /** Change the flag every banner flies (or go back to the plain colour with null): the buildings are rebuilt with it. */
-  setFlag(f: Flag | null, color: number) { const key = f ? packFlag(f) : 0, old = this.flag ? packFlag(this.flag) : 0; if (key === old && color === this.banner) return; this.flag = f ?? undefined; this.banner = color; for (const it of this.items.values()) this.dispose(it.group); this.items.clear(); this.touch(); }
+  setFlag(f: Flag | null, color: number) { const key = f ? packFlag(f) : 0, old = this.flag ? packFlag(this.flag) : 0; if (key === old && color === this.banner) return; this.flag = f ?? undefined; this.banner = color; for (const it of this.items.values()) this.dispose(it.group); this.items.clear(); this.touchAll(); }
   get bannerColor() { return this.banner; }
 
   /** flat = World.buildings_flat() (stride 8). Returns discs [x, z, r] that should be cleared of trees. */
@@ -985,29 +992,30 @@ export class VillageView {
       const opt = options?.[i] ?? 0, sig = `${kind}:${tier}:${x}:${z}:${rot}:${opt}`;
       let it = this.items.get(i);
       if (!it || it.sig !== sig) {
-        if (it) this.dispose(it.group);
+        if (it) { this.touch(it.cell); this.dispose(it.group); }
         // walls are drawn by the Walls renderer as one connected structure; keep an empty placeholder so indices line up
         const g = PLAIN.has(kind) ? Object.assign(new THREE.Group(), { userData: { smoke: [], spin: [] } }) : buildModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), opt, this.flag);
         g.userData.variant = Math.floor(Math.abs(x * 7.3 + z * 13.1)) % 4;
         g.position.set(x, pad, z); g.rotation.y = rot * Math.PI / 4;
         g.userData.idx = i; g.userData.kind = kind;
-        this.root.add(g); it = { sig, group: g, status };
-        this.items.set(i, it); this.touch();
+        this.root.add(g); it = { sig, group: g, status, cell: cellOf(x, z) };
+        this.items.set(i, it); this.touch(it.cell);
         if (this.animateNew) { g.scale.setScalar(0.02); it.pop = 0; }
       }
       it.status = status; it.group.userData.status = status;
       if (health) {
         const burning = health[i * 3 + 2] > 0, hurt = health[i * 3 + 1] > 0 && health[i * 3] / health[i * 3 + 1] < 0.4, ch = burning || hurt;
-        if (!!it.group.userData.charred !== ch) { it.group.userData.charred = ch; setCharred(it.group, ch, it.group.userData.variant ?? 0); this.touch(); }
+        if (!!it.group.userData.charred !== ch) { it.group.userData.charred = ch; setCharred(it.group, ch, it.group.userData.variant ?? 0); this.touch(it.cell); }
       }
       clear.push({ x, z, r: radii[kind] * 1.15 + 3.5 });
     }
-    for (const [i, it] of [...this.items]) if (i >= n) { this.dispose(it.group); this.items.delete(i); this.touch(); }
+    for (const [i, it] of [...this.items]) if (i >= n) { this.dispose(it.group); this.items.delete(i); this.touch(it.cell); }
     return clear;
   }
 
-  /** Something changed: go back to individual meshes and restart the idle timer. */
-  private touch() { if (this.batched) this.unbatch(); this.dirty = true; this.idle = 0; }
+  /** Something changed in this square: its merged meshes give way to the individual parts again, and it is merged afresh once things have been quiet for a moment. */
+  private touch(cell: string) { this.unbatch(cell); this.dirtyCells.add(cell); this.idle = 0; }
+  private touchAll() { for (const c of [...this.cells.keys()]) this.unbatch(c); for (const it of this.items.values()) this.dirtyCells.add(it.cell); this.dirtyCells.add('*'); this.idle = 0; }
 
   /** Call every frame. */
   update(dt: number) {
@@ -1017,34 +1025,43 @@ export class VillageView {
       it.group.scale.set(k, Math.max(0.02, k * (1 + 0.1 * Math.sin(t * Math.PI))), k);
       if (t >= 1) { it.group.scale.setScalar(1); it.pop = undefined; this.idle = Math.min(this.idle, 0.9); }
     }
-    if (this.dirty && !this.batched) { this.idle += dt; if (this.idle > 1.5) this.batch(); }
+    if (this.dirtyCells.size) {
+      this.idle += dt;
+      if (this.idle > 1.5) {   // at most a few squares a frame, so a whole new village does not stall one frame
+        let n = 0; for (const c of this.dirtyCells) { this.dirtyCells.delete(c); if (c !== '*') this.batchCell(c); if (++n >= 3) break; }
+      }
+    }
   }
 
-  private batch() {
-    const per = new Map<THREE.Material, THREE.BufferGeometry[]>(); this.hiddenMeshes = [];
+  private batchCell(cell: string) {
+    const per = new Map<THREE.Material, THREE.BufferGeometry[]>(), hidden: THREE.Mesh[] = [];
     for (const it of this.items.values()) {
-      const g = it.group; if (PLAIN.has(g.userData.kind) || g.userData.charred) continue;
+      if (it.cell !== cell) continue;
+      const g = it.group; if (PLAIN.has(g.userData.kind) || g.userData.charred || it.pop !== undefined) continue;
       g.updateMatrixWorld(true);
       g.traverse(o => {
         const m = o as THREE.Mesh;
         if (!m.isMesh || !m.userData.baked || !m.visible) return;
         const geo = m.geometry.clone(); geo.applyMatrix4(m.matrixWorld);
         let list = per.get(m.material as THREE.Material); if (!list) { list = []; per.set(m.material as THREE.Material, list); }
-        list.push(geo); this.hiddenMeshes.push(m);
+        list.push(geo); hidden.push(m);
       });
     }
+    const merged: THREE.Mesh[] = [];
     for (const [mat, geos] of per) {
-      const merged = mergeGeometries(geos); geos.forEach(x => x.dispose()); if (!merged) continue;
-      const mesh = new THREE.Mesh(merged, mat); mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false; this.batchRoot.add(mesh);
+      const geo = mergeGeometries(geos); geos.forEach(x => x.dispose()); if (!geo) continue;
+      geo.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = mesh.receiveShadow = true; this.batchRoot.add(mesh); merged.push(mesh);   // frustum culling stays on: off-screen squares cost nothing
     }
-    this.hiddenMeshes.forEach(m => (m.visible = false));   // still pickable: raycasting ignores visibility
-    this.batched = true; this.dirty = false;
+    hidden.forEach(m => (m.visible = false));   // still pickable: raycasting ignores visibility
+    this.cells.set(cell, { hidden, merged });
   }
 
-  private unbatch() {
-    this.hiddenMeshes.forEach(m => (m.visible = true)); this.hiddenMeshes = [];
-    for (const c of this.batchRoot.children.slice()) { this.batchRoot.remove(c); (c as THREE.Mesh).geometry.dispose(); }
-    this.batched = false;
+  private unbatch(cell: string) {
+    const c = this.cells.get(cell); if (!c) return;
+    c.hidden.forEach(m => (m.visible = true));
+    for (const m of c.merged) { this.batchRoot.remove(m); m.geometry.dispose(); }
+    this.cells.delete(cell);
   }
   private dispose(g: THREE.Group) { this.root.remove(g); g.traverse(o => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); }); }
   groupOf(i: number) { return this.items.get(i)?.group; }

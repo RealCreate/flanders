@@ -43,3 +43,18 @@ export function wallReport(w) {
   return out;
 }
 if (process.argv[1]?.endsWith('demo.mjs')) { const w = buildDemo(); console.log(JSON.stringify({ buildings: w.building_count(), ...wallReport(w) })); }
+/** The wall graph the renderer really builds (see render/wallgraph.ts): every wall or gate piece should have two neighbours and each ring be one closed loop. */
+import { linkWalls } from '../src/render/wallgraph.ts';
+export function wallGraphReport(w) {
+  const f = w.buildings_flat(), nodes = [];
+  for (let i = 0; i < f.length / 10; i++) if (f[i * 10] === 2 || f[i * 10] === 22) nodes.push({ x: f[i * 10 + 2], z: f[i * 10 + 3], kind: f[i * 10], tier: f[i * 10 + 1] });
+  const { adj } = linkWalls(nodes), out = {};
+  for (const [name, test] of [['inner', p => Math.hypot(p.x, p.z) < 36], ['outer', p => Math.hypot(p.x, p.z) >= 36]]) {
+    const ids = nodes.map((p, i) => i).filter(i => test(nodes[i]));
+    const dangling = ids.filter(i => adj[i].size < 2).map(i => `${Math.round(nodes[i].x)},${Math.round(nodes[i].z)}`);
+    const seen = new Set(), q = [ids[0]]; seen.add(ids[0]); while (q.length) { const c = q.pop(); for (const j of adj[c]) if (!seen.has(j)) { seen.add(j); q.push(j); } }
+    const gates = ids.filter(i => nodes[i].kind === 22).map(i => nodes[i].tier), walls = ids.filter(i => nodes[i].kind === 2).map(i => nodes[i].tier);
+    out[name] = { pieces: ids.length, dangling, parts: ids.length - seen.size, gateTiers: gates, minWallTier: Math.min(...walls) };
+  }
+  return out;
+}

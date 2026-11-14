@@ -16,9 +16,9 @@ export class Atmosphere {
     scene.add(this.sky, this.sun, this.sun.target, this.hemi);
 
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(4096, 4096);
-    const c = this.sun.shadow.camera; c.left = -90; c.right = 90; c.top = 90; c.bottom = -90; c.near = 10; c.far = 500;
-    this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.35;
+    this.sun.shadow.mapSize.set(2048, 2048);   // 4096 cost four times the fill for a barely sharper edge
+    const c = this.sun.shadow.camera; c.left = -80; c.right = 80; c.top = 80; c.bottom = -80; c.near = 10; c.far = 500;
+    this.sun.shadow.bias = -0.0005; this.sun.shadow.normalBias = 0.4;
 
     scene.fog = new THREE.FogExp2(this.fogCol, 0.0023);
     this.setTime(0.3);

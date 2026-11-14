@@ -580,7 +580,7 @@ async function startGame(name: string, username: string) {
 
   renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // the shadow map is redrawn every other frame (see frame())
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.78;
   scene = new THREE.Scene();
   ui.progress(10, 'Painting the sky…'); await nextFrame();
@@ -639,6 +639,7 @@ async function startGame(name: string, username: string) {
   ui.hint('Choose a building on the right, then click the ground. Start with houses and a farm.');
   setTimeout(() => ui.hint(null), 7000);
   addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); });
+  basePixelRatio = Math.min(devicePixelRatio, 2);
   bindInput();
   connect();
   setupPerf();
@@ -653,7 +654,8 @@ async function startGame(name: string, username: string) {
   updateGoals();
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
-  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; } };
+  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; } };
+  basePixelRatio = Math.min(devicePixelRatio, 2);
   last = performance.now(); requestAnimationFrame(frame);
 }
 
@@ -669,7 +671,7 @@ async function warmUp() {
   for (let i = 0; i < 4; i++) {
     rig.update(0.016); atmo.follow(rig.target); forest.tick(0, rig.cam.position);
     crowd.begin(); lv.draw(crowd, rig.target.x, rig.target.z, view); crowd.end();
-    renderer.render(scene, rig.cam);                              // the first frames compile and fill the shadow map
+    renderer.shadowMap.needsUpdate = true; renderer.render(scene, rig.cam);   // the first frames compile and fill the shadow map
     (renderer.getContext() as WebGL2RenderingContext).finish();
     ui.progress(86 + i * 3, i < 3 ? 'Baking shadows…' : 'Almost ready…'); await nextFrame();
   }
@@ -1284,13 +1286,25 @@ let worldShips: WorldShips | null = null;
 let tideLevel = 0;   // the water rises and falls a little, slowly
 let sCount = 0, sT = 0, fireBuf = new Float32Array(256);
 let last = 0, miniT = 0, scareT = 0, scares: { x: number; z: number }[] = [];
+// ---------- adaptive resolution: when frames run long, draw fewer pixels; when there is room again, win them back ----------
+let basePixelRatio = 1, resScale = 1, slowMs = 0, resFrames = 0, shadowFrame = 0;
+function adaptResolution(frameMs: number) {
+  slowMs = slowMs * 0.94 + frameMs * 0.06;
+  if (++resFrames < 90 || resFrames % 45 !== 0) return;   // let things settle after loading, then adjust a little at a time
+  const was = resScale;
+  if (slowMs > 24 && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.15);
+  else if (slowMs < 13 && resScale < 1) resScale = Math.min(1, resScale + 0.1);
+  if (resScale !== was) renderer.setPixelRatio(basePixelRatio * resScale);
+}
+
 function frame(now: number) {
-  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); last = now;   // never negative, never a big jump
+  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last); last = now;   // never negative, never a big jump
   perf.start('simulation');
   if (speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
   perf.stop('simulation');
   const all = allVillages();
-  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) { v.boats.level = tideLevel; v.rivers.setTide(tideLevel); }   // open water ebbs and flows; sealed moats stay full forest.tick(now / 1000, rig.cam.position); perf.stop('camera + world');
+  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) { v.boats.level = tideLevel; v.rivers.setTide(tideLevel); }   // open water ebbs and flows; sealed moats stay full
+  forest.tick(now / 1000, rig.cam.position); perf.stop('camera + world');
   perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1)); perf.stop('villages (people, army)');
   perf.start('animals');
   if (now - scareT > 250) { scareT = now; scares = all.flatMap(v => [...v.people.positions(), ...v.army.positions()]); }
@@ -1323,6 +1337,7 @@ function frame(now: number) {
   }
   perf.stop('labels + minimap');
   perf.start('render (CPU side)');
+  renderer.shadowMap.needsUpdate = (shadowFrame++ & 1) === 0;   // shadows drift slowly: redraw them every other frame
   perf.render(renderer, scene, rig.cam);
   perf.stop('render (CPU side)');
   perf.counts({ Villagers: lv.people.count, Animals: wildlife.visible, Buildings: lv.world.building_count(), Soldiers: (now - sT > 500 ? (sT = now, sCount = lv.army.positions().length) : sCount) });

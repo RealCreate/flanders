@@ -543,6 +543,7 @@ impl World {
         if kind == BRIDGE { return self.bridge_check(dx, dy, 0).0; }
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         if !self.in_territory(x, y) { return -2; }
+        if kind == GATE && !self.buildings.iter().any(|b| b.kind == WALL && (b.x - x).hypot(b.y - y) <= 9.0) { return -20; }   // a gate only ever stands in a wall
         for b in &self.buildings {
             let bd = &DEFS[b.kind as usize];
             if (matches!(kind, DRAWBRIDGE | BRIDGE) && matches!(b.kind, MOAT | RIVER)) || (matches!(kind, MOAT | RIVER) && matches!(b.kind, DRAWBRIDGE | BRIDGE)) { continue; }   // a bridge spans the water   // a drawbridge spans the water
