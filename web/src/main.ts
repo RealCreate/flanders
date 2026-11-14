@@ -6,7 +6,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites } from './wasm/game_core.js';
+import init, { World, upgrade_cost_flat, village_sites, tunnels_flat } from './wasm/game_core.js';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
 import { PenPreview } from './render/pen';
 import { WorldShips } from './render/ships';
@@ -25,6 +25,8 @@ import { keys, digitOf } from './keys';
 import { Perf } from './perf';
 import { Sound } from './audio';
 import { Minimap, type MapVillage } from './ui/minimap';
+import { Tunnels } from './render/tunnels';
+import { startAgentBridge } from './agent';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { Village, type Shared } from './village';
 import { PathLine, STATE_TEXT } from './render/field';
@@ -68,6 +70,7 @@ let bigMap!: Minimap;
 let penPreview!: PenPreview;
 let moatWidth = 0;   // 0..7: how broad the moat you dig is (the R key changes it)
 let penStart: { x: number; z: number } | null = null;   // the wall pen: where the stroke began
+let tunnels!: Tunnels;
 let deposits!: Deposits, minimap!: Minimap, effects!: Effects, crowd!: Crowd, fx!: Effects2, wildlife!: Wildlife, shared!: Shared;
 let lv!: Village;                           // your village
 interface Rival { key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number }
@@ -93,7 +96,7 @@ const attackTargets = new Map<number, string>();   // field army id -> the rival
 let ghostRing!: THREE.Mesh, previewKey = '';
 
 /** Bumped whenever the map generator changes: every world gets a fresh map and old saves are discarded. */
-const MAP_VERSION = 6;
+const MAP_VERSION = 7;
 /** The map layout comes from the world name plus this salt. It stays at 3 (the layout of the earlier maps that players liked) even when MAP_VERSION moves on; change it only to deliberately roll new continents. */
 const SEED_SALT = 3;
 const hashSeed = (s: string) => { if (/^\d{1,15}$/.test(s)) return BigInt(s) + BigInt(SEED_SALT) * 1000003n; let h = 1469598103934665603n; for (const c of (s.toLowerCase() + '|map' + SEED_SALT)) h = ((h ^ BigInt(c.charCodeAt(0))) * 1099511628211n) & 0xffffffffffffn; return h; };
@@ -122,6 +125,8 @@ function applyCmd(w: World, c: Cmd) {
     case 'repair': w.repair(c.idx!); break;
     case 'garrison': w.garrison_set(c.idx!, c.kind ?? 0); break;
     case 'bridge': w.drawbridge_set(c.idx!, (c.kind ?? 0) === 1); break;
+    case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
+    case 'flatten': w.flatten(c.x ?? 60); break;
     case 'rebuild': w.rebuild(c.idx!); break;
     case 'form': w.det_form(Uint32Array.from(c.units ?? [])); break;
     case 'march': w.det_march(c.idx!, c.x!, c.y!, !!c.to, c.ax ?? 0, c.ay ?? 0); break;
@@ -208,7 +213,7 @@ function connect() {
     onCmd: (peerId, c) => {
       const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r) return;
       r.village.advanceTo(c.tick); applyCmd(r.village.world, c);
-      if (c.op === 'place' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'cheat' || c.op === 'upgrade') refreshTerrain(r.village.world);
+      if (c.op === 'place' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'cheat' || c.op === 'upgrade' || c.op === 'flatten') refreshTerrain(r.village.world);
       r.village.syncFull(); r.village.afterTick(); r.tick = c.tick;
       if ((c.op === 'attack' || c.op === 'sendatk') && c.to === identity.pub) defendAgainst(r, c);
       else if (c.op === 'refuse' && c.to === identity.pub) {
@@ -274,6 +279,7 @@ function fullReset() {
 }
 
 /** Clear every building except the town hall and build the planned model village (see modelvillage.ts). Everything goes through signed commands. */
+const MODEL_FLAT_RADIUS = 72;
 function runModelVillage(ask: boolean) {
   if (ask && !confirm('This clears every building except the town hall and builds a model village in its place. Continue?')) return;
   const w = lv.world;
@@ -281,6 +287,9 @@ function runModelVillage(ask: boolean) {
   if (w.cheat(8, 0, 0)) commit({ op: 'cheat', kind: 8, x: 0, y: 0 });   // clear old earthworks, craters, scorch and ruins first
   w.cheat(7, 0, 0) && commit({ op: 'cheat', kind: 7, x: 0, y: 0 });
   for (let i = w.building_count() - 1; i >= 1; i--) if (w.demolish(i)) commit({ op: 'demolish', idx: i });
+  // level the whole site first: the castle is only raised once the ground under it is flat
+  if (w.flatten(MODEL_FLAT_RADIUS) === 0) commit({ op: 'flatten', x: MODEL_FLAT_RADIUS });
+  afterLocalChange(); refreshTerrain(w);
   const fill = () => { if (w.cheat(3, 0, 0)) commit({ op: 'cheat', kind: 3, x: 0, y: 0 }); };
   const api: ModelApi = {
     place(kind, x, y, rot = 0, search = 8) {
@@ -292,6 +301,7 @@ function runModelVillage(ask: boolean) {
       return -1;
     },
     upgrade(i) { let c = w.upgrade(i); if (c === -6) { fill(); c = w.upgrade(i); } if (c === 0) { commit({ op: 'upgrade', idx: i }); return true; } return false; },
+    option(i, bit) { let c = w.set_option(i, bit, true); if (c === -6) { fill(); c = w.set_option(i, bit, true); } if (c === 0) { commit({ op: 'option', idx: i, kind: bit, x: 1 }); return true; } return false; },
     garrison(i, n) { if (w.garrison_set(i, n) === 0) commit({ op: 'garrison', idx: i, kind: n }); },
     wet(x, y) { return w.height_at(w.origin_x() + x, w.origin_y() + y) < 0; },
     at(i) { const f = w.buildings_flat(); return [f[i * 10 + 2] - w.origin_x(), f[i * 10 + 3] - w.origin_y()]; },
@@ -307,6 +317,7 @@ function runModelVillage(ask: boolean) {
 function doCheat(action: number, a: number, b: number) {
   if (action === 100) { runModelVillage(true); return; }
   if (action === 101) { fullReset(); return; }
+  if (action === 102) { if (lv.world.flatten(a) === 0) { commit({ op: 'flatten', x: a }); afterLocalChange(); refreshTerrain(lv.world); ui.toast('The ground is levelled.', 'good'); } return; }
   if (action === 5) a = selectedIdx ?? -1;           // "burn selected building"
   if (action === 5 && a < 0) { ui.toast('Select a building first.', 'info'); return; }
   if (!lv.world.cheat(action, a, b)) return;
@@ -473,6 +484,7 @@ async function startGame(name: string, username: string) {
   ui.progress(22, 'Raising the mountains…'); await nextFrame();
   terrain = new Terrain(seedBig);
   scene.add(terrain.mesh, terrain.water);
+  tunnels = new Tunnels(terrain, tunnels_flat(seedBig)); scene.add(tunnels.group);
   rig = new CameraRig(ui.canvas, terrain);
   ui.progress(38, 'Planting the forests…'); await nextFrame();
   forest = new Forest(seedBig, terrain); scene.add(forest.group);
@@ -485,7 +497,7 @@ async function startGame(name: string, username: string) {
   pathLine = new PathLine(terrain); scene.add(pathLine.mesh);
   penPreview = new PenPreview(terrain); scene.add(...penPreview.objects);
   worldShips = new WorldShips(terrain); scene.add(worldShips.group);
-  minimap = new Minimap(ui.minimap, terrain); bigMap = new Minimap(ui.bigmap, terrain, 900);
+  minimap = new Minimap(ui.minimap, terrain); bigMap = new Minimap(ui.bigmap, terrain, 900); minimap.tunnels = bigMap.tunnels = tunnels.list;
   ghostRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 56).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x66ff88, transparent: true, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
   ghostRing.visible = false; ghostRing.renderOrder = 9; scene.add(ghostRing);
 
@@ -526,9 +538,17 @@ async function startGame(name: string, username: string) {
   bindInput();
   connect();
   setupPerf();
+  const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
+  if (agentPort > 0 && agentToken) startAgentBridge({
+    world: () => lv.world, commit: c => commit(c as Omit<Cmd, 'tick' | 'n'>), afterChange: () => { afterLocalChange(); },
+    toast: (m, k) => ui.toast(m, k ?? 'info'),
+    rivals: () => [...rivals.entries()].map(([key, r]) => ({ key, name: r.name, x: r.village.ox, z: r.village.oz, online: r.online })),
+    attack: (key, u) => { const r = rivals.get(key); if (!r || !r.online) return false; doAttack(key, u); return true; },
+  }, agentPort, agentToken);
   setInterval(() => { save(); updatePeers(); }, 8000);
   updateGoals();
   ui.enterGame();                       // everything is ready: reveal the game
+  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i) };
   last = performance.now(); requestAnimationFrame(frame);
 }
 
@@ -760,6 +780,15 @@ function updateSelection() {
     const ok = cost.every(([r, n]) => stocks[r] >= n);
     html += `<div><h3>Upgrade to ${tierName(kind, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div><button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button>`;
   } else html += `<p><b>Fully upgraded.</b></p>`;
+  const opts = d.opts ?? [];
+  if (opts.length) {   // optional designs: small changes to the look and use of this one building
+    const have = w.options_flat()[selectedIdx] ?? 0, oc = World.option_cost_flat(kind), ocost: [number, number][] = []; for (let i = 0; i < oc.length; i += 2) ocost.push([oc[i], oc[i + 1]]);
+    const afford = ocost.every(([r, n]) => stocks[r] >= n);
+    html += `<div><h3>Design options</h3><div class="optlist">` + opts.map((op, i) => {
+      const on = (have & (1 << i)) !== 0, locked = tier < op.t;
+      return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${on ? '☑' : '☐'} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
+    }).join('') + `</div></div>`;
+  }
   html += `<div class="btnrow">${kind !== 15 ? '<button class="pbtn danger" data-act="demolish">Demolish (50% refund)</button>' : ''}<button class="pbtn" data-act="deselect">Close</button></div>`;
   ui.setSelectedPane(html);
 }
@@ -791,6 +820,12 @@ function onAct(a: string) {
   if (a === 'bridge') {
     const up = lv.world.buildings_flat()[selectedIdx * 10 + 6] === 5;   // status 5 = drawn up
     if (lv.world.drawbridge_set(selectedIdx, !up) === 0) { commit({ op: 'bridge', idx: selectedIdx, kind: up ? 0 : 1 }); sound.click(); ui.toast(up ? 'The drawbridge is lowered.' : 'The drawbridge is drawn up.', 'info'); afterLocalChange(); }
+    return;
+  }
+  if (a.startsWith('opt:')) {
+    const bit = Number(a.slice(4)), on = ((lv.world.options_flat()[selectedIdx] ?? 0) & (1 << bit)) === 0;
+    const code = lv.world.set_option(selectedIdx, bit, on);
+    if (code === 0) { commit({ op: 'option', idx: selectedIdx, kind: bit, x: on ? 1 : 0 }); sound.upgrade(); afterLocalChange(); } else ui.toast(code === -6 ? 'Not enough resources.' : code === -10 ? 'This building needs a better tier first.' : 'Cannot do that.', 'bad');
     return;
   }
   if (a === 'deselect') { selectBuilding(null); return; }

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { terrain_grid, type World } from '../wasm/game_core.js';
 
-export const HALF = 720;
-export const STEP = 2.0;
+export const HALF = 1200;
+export const STEP = 2.5;
 export const NV = Math.round((HALF * 2) / STEP) + 1; // vertices per side
 
 function grainTexture() {

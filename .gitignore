@@ -2925,3 +2925,7 @@ web/node_modules/vite/types/internal/cssPreprocessorOptions.d.ts
 web/node_modules/vite/types/internal/lightningcssOptions.d.ts
 web/node_modules/vite/types/internal/terserOptions.d.ts
 .vscode/settings.json
+node_modules/
+dist/
+web/node_modules/
+web/src/wasm/

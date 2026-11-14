@@ -35,6 +35,9 @@ export class Minimap {
     g.putImageData(img, 0, 0);
   }
 
+  /** Mountain tunnels [x0, z0, x1, z1], drawn as short dashed lines. */
+  tunnels: [number, number, number, number][] = [];
+
   private p(x: number, z: number): [number, number] { return [((x + HALF) / (HALF * 2)) * this.S, ((z + HALF) / (HALF * 2)) * this.S]; }
 
   private static tint(kind: number, base: string): string {
@@ -50,6 +53,9 @@ export class Minimap {
     if (o.showDeposits) for (let i = 0; i < o.deposits.length; i += 5) {
       const [x, y] = this.p(o.deposits[i + 1], o.deposits[i + 2]); c.fillStyle = DEPOSIT[o.deposits[i]].color; c.strokeStyle = '#000a'; c.beginPath(); c.arc(x, y, big ? 4 : 2.6, 0, 7); c.fill(); c.stroke();
     }
+    c.strokeStyle = '#ffe9a8'; c.lineWidth = big ? 2.4 : 1.6; c.setLineDash([3, 2]);
+    for (const t of this.tunnels) { const [a, b] = this.p(t[0], t[1]), [d, e] = this.p(t[2], t[3]); c.beginPath(); c.moveTo(a, b); c.lineTo(d, e); c.stroke(); }
+    c.setLineDash([]);
     for (const v of o.villages) {
       const [x, y] = this.p(v.x, v.z);
       c.strokeStyle = v.color; c.lineWidth = big ? 2 : 1.2; c.globalAlpha = 0.8; c.beginPath(); c.arc(x, y, Math.max(3, v.r * f), 0, 7); c.stroke(); c.globalAlpha = 1;

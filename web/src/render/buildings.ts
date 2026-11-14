@@ -774,15 +774,100 @@ function bake(g: THREE.Group, animated: Set<THREE.Object3D>) {
   }
 }
 
-export function buildModel(kind: number, tier: number, banner = 0x2f5fa8, seed = 0) {
+export function buildModel(kind: number, tier: number, banner = 0x2f5fa8, seed = 0, opts = 0) {
   const b = new B(tier, banner);
   MODELS[kind](b);
+  addOptions(b, kind, opts, seed);
   if (seed >= 0) applyVariant(b.g, ((seed % 4) + 4) % 4);
   b.g.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh && m.geometry.attributes.position && !m.geometry.attributes.color) { const n = m.geometry.attributes.position.count; m.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3)); } });
   const animated = new Set<THREE.Object3D>(); b.spin.forEach(o => o.traverse(c => animated.add(c))); b.deck.forEach(o => o.traverse(c => animated.add(c)));
   bake(b.g, animated);
   b.g.userData.smoke = b.smoke; b.g.userData.spin = b.spin.concat(b.deck);
   return b.g;
+}
+
+// ---------- optional design upgrades ----------
+/** Each building can take up to four optional upgrades (see the catalog) that change its look a little: a chimney, a banner, a barn, hoardings, turrets. Every extra is placed
+ *  on a spot that is checked against what the building already has, so an addition never grows through a wall, a roof or another addition. */
+function addOptions(b: B, kind: number, opts: number, seed: number) {
+  if (!opts) return;
+  const m = M();
+  b.g.updateMatrixWorld(true);
+  const solid: THREE.Box3[] = [];
+  b.g.traverse(o => { const me = o as THREE.Mesh; if (me.isMesh) { const bb = new THREE.Box3().setFromObject(me); if (bb.max.y - bb.min.y > 0.3) solid.push(bb); } });
+  const all = new THREE.Box3(); solid.forEach(s => all.union(s));
+  if (all.isEmpty()) return;
+  const cx = (all.min.x + all.max.x) / 2, cz = (all.min.z + all.max.z) / 2, hw = (all.max.x - all.min.x) / 2, hd = (all.max.z - all.min.z) / 2, reach = Math.hypot(hw, hd);
+  let top = all.max.y;
+  /** A free spot (centre) for a w x d x h item standing on the ground at height y0: the first place on a widening spiral round the building that touches nothing. */
+  const spot = (w: number, d: number, h: number, y0 = 0): [number, number] | null => {
+    for (let k = 0; k < 90; k++) {
+      const a = seed * 0.83 + k * 0.62, rad = Math.max(hw, hd) * 0.55 + k * 0.1;
+      if (rad > reach * 1.25 + 2.2) break;
+      const x = cx + Math.cos(a) * rad, z = cz + Math.sin(a) * rad, bb = new THREE.Box3(new THREE.Vector3(x - w / 2 - 0.12, y0, z - d / 2 - 0.12), new THREE.Vector3(x + w / 2 + 0.12, y0 + h, z + d / 2 + 0.12));
+      if (solid.some(s => s.intersectsBox(bb))) continue;
+      solid.push(bb); return [x, z];
+    }
+    return null;
+  };
+  const pole = (h: number) => { const p = spot(0.5, 0.5, h); if (p) b.flag(p[0], 0, p[1], h); };
+  const lantern = () => { const p = spot(0.4, 0.4, 1.7); if (p) { b.cyl(0.05, 0.06, 1.5, m.darkwood, p[0], 0, p[1], 6); b.box(0.24, 0.3, 0.24, m.glow, p[0], 1.45, p[1]); b.pyramid(0.34, 0.34, 0.2, m.iron, p[0], 1.75, p[1]); } };
+  const awning = () => { const p = spot(2.2, 1.5, 2.2); if (p) { b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] - 1.0, 0, p[1] - 0.6, 6); b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] + 1.0, 0, p[1] - 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] - 1.0, 0, p[1] + 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] + 1.0, 0, p[1] + 0.6, 6); const c = b.box(2.3, 0.07, 1.5, m.shutterRed, p[0], 1.95, p[1]); c.rotation.x = 0.12; } };
+  const footing = () => { b.box(hw * 2 + 0.5, 0.3, hd * 2 + 0.5, m.stone, cx, 0, cz); };
+  const ring = (rad: number, y: number, h: number, mat: THREE.Material, n = 16) => { for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; const p = b.box(2 * Math.PI * rad / n + 0.1, h, 0.35, mat, cx + Math.cos(a) * rad, y, cz + Math.sin(a) * rad); p.rotation.y = -a + Math.PI / 2; } };
+  const generic = (bit: number) => { if (bit === 0) pole(2.8); else if (bit === 1) { lantern(); lantern(); } else if (bit === 2) awning(); else if (bit === 3) footing(); };
+  const has = (bit: number) => (opts & (1 << bit)) !== 0;
+  switch (kind) {
+    case 0: // house
+      if (has(0)) b.chimney(cx - hw * 0.45, Math.max(1.2, top - 1.1), cz, 1.7, m.stone);
+      if (has(1)) { const p = spot(1.6, 0.4, 0.8); if (p) { b.box(1.6, 0.34, 0.4, m.darkwood, p[0], 0, p[1]); for (let i = 0; i < 6; i++) b.sphere(0.12, new THREE.MeshStandardMaterial({ color: [0xe04a5a, 0xf2c14e, 0xf0f0f0, 0xd070d0][i % 4] }), p[0] - 0.65 + i * 0.26, 0.5, p[1]); } }
+      if (has(2)) { const p = spot(1.8, 1.2, 1.3); if (p) { for (let r = 0; r < 3; r++) for (let c = 0; c < 4 - r; c++) b.logH(1.5, 0.15, m.log, p[0], 0.18 + r * 0.3, p[1] - 0.4 + c * 0.3 + r * 0.15, 'x'); b.box(1.9, 0.07, 1.3, m.darkwood, p[0], 1.2, p[1]); } }
+      if (has(3)) { b.box(0.7, 0.7, 0.7, m.plaster, cx + hw * 0.45, top - 0.35, cz); b.pyramid(0.95, 0.95, 0.5, m.tile, cx + hw * 0.45, top + 0.35, cz); b.box(0.12, 0.12, 0.05, m.door, cx + hw * 0.45, top - 0.1, cz + 0.36); }
+      break;
+    case 1: // farm
+      if (has(0)) { const p = spot(1.2, 1.2, 2.1, 0); if (p) { b.cyl(0.05, 0.05, 1.9, m.darkwood, p[0], 0, p[1], 6); const arm = b.box(1.2, 0.07, 0.07, m.darkwood, p[0], 1.45, p[1]); arm.rotation.y = 0.4; b.sphere(0.2, m.hay, p[0], 1.95, p[1]); b.pyramid(0.6, 0.6, 0.3, m.darkwood, p[0], 2.1, p[1]); } }
+      if (has(1)) for (let i = 0; i < 2; i++) { const p = spot(1.5, 1.5, 1.4); if (p) { b.dome(0.75, m.hay, p[0], 0, p[1], 1.3); b.cone(0.18, 0.5, m.hay, p[0], 0.95, p[1], 6); } }
+      if (has(2)) { const n = Math.ceil((hw * 2) / 0.9); for (let i = 0; i <= n; i++) b.box(0.1, 0.9, 0.1, m.darkwood, all.min.x + i * (hw * 2) / n, 0, all.max.z + 0.5); b.box(hw * 2, 0.08, 0.06, m.wood, cx, 0.55, all.max.z + 0.5); b.box(hw * 2, 0.08, 0.06, m.wood, cx, 0.8, all.max.z + 0.5); }
+      if (has(3)) { const p = spot(3.4, 2.6, 3.4); if (p) { b.box(3.2, 2.0, 2.4, m.wood, p[0], 0, p[1]); b.gable(3.4, 2.6, 1.4, m.thatch, p[0], 2.0, p[1], 0.3); b.box(1.2, 1.6, 0.1, m.door, p[0], 0, p[1] + 1.22); } }
+      break;
+    case 3: case 26: { // tower, keep
+      const R = Math.max(hw, hd);
+      const bit = (n: number) => has(n);
+      if (bit(1)) { ring(R + 0.35, top - 1.6, 1.1, m.wood, 20); ring(R + 0.35, top - 0.5, 0.12, m.darkwood, 20); }
+      if (kind === 3 && bit(2)) { b.cone(R + 0.5, R * 1.3 + 1.2, m.slate, cx, top, cz, 16); top += R * 1.3 + 1.2; }
+      if (kind === 26 && bit(2)) for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const tx = cx + sx * (hw - 0.2), tz = cz + sz * (hd - 0.2); b.cyl(1.0, 1.1, top + 0.8, m.stone, tx, 0, tz, 12); b.cone(1.3, 1.9, m.slate, tx, top + 0.8, tz, 12); }
+      if (bit(0)) b.flag(cx, top, cz, 2.6);
+      if (bit(3)) { b.cyl(0.35, 0.22, 0.4, m.iron, cx + (bit(0) ? 1.0 : 0), top, cz, 8); b.cone(0.28, 0.6, m.glow, cx + (bit(0) ? 1.0 : 0), top + 0.4, cz, 8); }
+      break;
+    }
+    case 19: // barracks
+      if (has(0)) pole(4.2);
+      if (has(1)) for (let i = 0; i < 2; i++) { const p = spot(1.2, 1.2, 2.0); if (p) { b.cyl(0.07, 0.07, 1.7, m.darkwood, p[0], 0, p[1], 6); b.box(1.0, 0.1, 0.1, m.darkwood, p[0], 1.35, p[1]); b.sphere(0.22, m.hay, p[0], 1.85, p[1]); } }
+      if (has(2)) { const p = spot(2.4, 0.7, 2.0); if (p) { b.box(2.4, 0.08, 0.3, m.darkwood, p[0], 0.35, p[1]); b.box(2.4, 0.08, 0.3, m.darkwood, p[0], 1.2, p[1]); for (let i = 0; i < 6; i++) { b.cyl(0.03, 0.03, 2.0, m.darkwood, p[0] - 1.0 + i * 0.4, 0, p[1], 5); b.cone(0.07, 0.22, m.iron, p[0] - 1.0 + i * 0.4, 2.0, p[1], 5); } } }
+      if (has(3)) { const p = spot(3.4, 2.2, 2.4); if (p) { b.box(3.2, 1.5, 2.0, m.wood, p[0], 0, p[1]); b.gable(3.4, 2.2, 1.0, m.thatch, p[0], 1.5, p[1], 0.3); b.box(0.9, 1.1, 0.1, m.darkwood, p[0], 0, p[1] + 1.02); } }
+      break;
+    case 15: // town hall
+      if (has(0)) b.flag(cx, top, cz, 3.2);
+      if (has(1)) { const x = cx + hw * 0.5; b.box(1.0, 1.0, 1.0, m.stone, x, top, cz); b.pyramid(1.3, 1.3, 1.0, m.slate, x, top + 1.0, cz); b.cyl(0.18, 0.2, 0.4, m.gold, x, top + 0.3, cz, 8); }
+      if (has(2)) { const d = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.1, 20), m.gold); d.rotation.x = Math.PI / 2; (b as unknown as { g: THREE.Group }).g.add(d); d.position.set(cx, Math.min(top - 0.8, 5.5), all.max.z + 0.04); d.castShadow = true; }
+      if (has(3)) for (let i = 0; i < 4; i++) { const p = spot(2.6, 0.7, 0.7); if (p) { b.box(2.6, 0.7, 0.7, new THREE.MeshStandardMaterial({ color: 0x3f7a35, roughness: 1 }), p[0], 0, p[1]); b.sphere(0.12, new THREE.MeshStandardMaterial({ color: 0xe04a5a }), p[0], 0.8, p[1]); } }
+      break;
+    case 17: // chapel
+      if (has(0)) { b.box(1.3, 3.0, 1.3, m.stone, all.max.x - 0.2, 0, cz); b.pyramid(1.8, 1.8, 1.5, m.slate, all.max.x - 0.2, 3.0, cz); }
+      if (has(1)) for (const z of [-1, 1]) b.box(0.08, 1.1, 0.5, m.stained, cx, Math.min(top * 0.35, 1.4), cz + z * (hd + 0.02));
+      if (has(2)) for (let i = 0; i < 5; i++) { const p = spot(0.5, 0.2, 0.8); if (p) b.box(0.45, 0.8, 0.14, m.stone, p[0], 0, p[1]); }
+      if (has(3)) { const p = spot(2.2, 1.2, 2.3); if (p) { b.box(0.22, 2.0, 0.22, m.darkwood, p[0] - 1, 0, p[1]); b.box(0.22, 2.0, 0.22, m.darkwood, p[0] + 1, 0, p[1]); b.gable(2.4, 1.4, 0.8, m.tile, p[0], 2.0, p[1], 0.2); } }
+      break;
+    case 16: // well
+      if (has(0)) { b.cyl(0.07, 0.07, 1.9, m.darkwood, cx - 0.7, 0, cz, 6); b.cyl(0.07, 0.07, 1.9, m.darkwood, cx + 0.7, 0, cz, 6); b.gable(1.8, 1.8, 0.7, m.thatch, cx, 1.9, cz, 0.2); }
+      if (has(1)) { const p = spot(1.4, 0.6, 0.5); if (p) b.box(1.4, 0.45, 0.6, m.stone, p[0], 0, p[1]); }
+      break;
+    case 23: // drawbridge
+      if (has(0)) for (const s of [-1, 1]) b.flag(cx + s * (hw - 0.4), 0, cz + hd + 0.5, 2.6);
+      if (has(1)) for (const s of [-1, 1]) { b.cyl(0.05, 0.06, 1.5, m.darkwood, cx + s * (hw - 0.4), 0, cz - hd - 0.5, 6); b.box(0.24, 0.3, 0.24, m.glow, cx + s * (hw - 0.4), 1.45, cz - hd - 0.5); }
+      break;
+    default: for (let bit = 0; bit < 4; bit++) if (has(bit)) generic(bit);
+  }
 }
 
 // ---------- smoke particles ----------
@@ -836,16 +921,16 @@ export class VillageView {
   constructor(private banner: number) {}
 
   /** flat = World.buildings_flat() (stride 8). Returns discs [x, z, r] that should be cleared of trees. */
-  sync(flat: Float32Array, radii: number[], health?: Float32Array) {
+  sync(flat: Float32Array, radii: number[], health?: Float32Array, options?: ArrayLike<number>) {
     const n = flat.length / 10, clear: { x: number; z: number; r: number }[] = [];
     for (let i = 0; i < n; i++) {
       const [kind, tier, x, z, rot, pad, status] = [flat[i * 10], flat[i * 10 + 1], flat[i * 10 + 2], flat[i * 10 + 3], flat[i * 10 + 4], flat[i * 10 + 5], flat[i * 10 + 6]];
-      const sig = `${kind}:${tier}:${x}:${z}:${rot}`;
+      const opt = options?.[i] ?? 0, sig = `${kind}:${tier}:${x}:${z}:${rot}:${opt}`;
       let it = this.items.get(i);
       if (!it || it.sig !== sig) {
         if (it) this.dispose(it.group);
         // walls are drawn by the Walls renderer as one connected structure; keep an empty placeholder so indices line up
-        const g = PLAIN.has(kind) ? Object.assign(new THREE.Group(), { userData: { smoke: [], spin: [] } }) : buildModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)));
+        const g = PLAIN.has(kind) ? Object.assign(new THREE.Group(), { userData: { smoke: [], spin: [] } }) : buildModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), opt);
         g.userData.variant = Math.floor(Math.abs(x * 7.3 + z * 13.1)) % 4;
         g.position.set(x, pad, z); g.rotation.y = rot * Math.PI / 4;
         g.userData.idx = i; g.userData.kind = kind;

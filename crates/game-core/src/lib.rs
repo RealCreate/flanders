@@ -129,6 +129,10 @@ pub fn units() -> String { military::units_json() }
 #[wasm_bindgen]
 pub fn terrain_grid(seed: u64, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> { terrain::grid(seed, x0, y0, nx, ny, step) }
 
+/// Mountain tunnels: [x0, y0, x1, y1] per tunnel.
+#[wasm_bindgen]
+pub fn tunnels_flat(seed: u64) -> Vec<f32> { terrain::tunnels(seed).into_iter().flatten().collect() }
+
 #[wasm_bindgen]
 pub fn trees_in(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> { terrain::trees(seed, x0, y0, x1, y1) }
 
@@ -192,11 +196,11 @@ impl World {
                 let (ha, hb) = (self.buildings[i].pad_h, self.buildings[j].pad_h);
                 let total: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
                 let mut run = 0.0f32;
-                for (k, w) in pts.windows(2).enumerate() {
+                for w in pts.windows(2) {
                     let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
                     if self.leg_is_dry(w[0], w[1]) {
                         let (t0, t1) = (run / total, (run + l) / total);
-                        let ci = if k == 0 { i as u32 } else { u32::MAX }; let pj = if k + 2 == pts.len() { j as u32 } else { u32::MAX };
+                        let (ci, pj) = (i as u32, j as u32);
                         self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
                         self.road_links.push((ci, pj));
                     }
@@ -1654,5 +1658,24 @@ mod road_tests {
         assert!(w.stocks()[PL as usize] < before);
         assert_eq!(w.options_flat()[i as usize], 1);
         assert_eq!(w.set_option(i as u32, 9, true), -1);
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+    #[test]
+    fn many_buildings_stay_fast() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for _ in 0..3 { w.upgrade(0); }
+        w.flatten(72);
+        let t = std::time::Instant::now();
+        let mut n = 0;
+        for (r, k, kind) in [(24.0f32, 24, WALL), (44.0, 40, WALL), (61.0, 60, MOAT)] {
+            for i in 0..k { let a = i as f32 / k as f32 * std::f32::consts::TAU; if w.place(kind, (a.cos() * r).round() as i32, (a.sin() * r).round() as i32, 0) >= 0 { n += 1; } }
+        }
+        for i in 0..50 { let a = i as f32 * 0.7; let r = 28.0 + (i % 5) as f32 * 3.0; if w.place(HOUSE, (a.cos() * r).round() as i32, (a.sin() * r).round() as i32, 0) >= 0 { n += 1; } }
+        println!("placed {n} in {:?}, roads {}", t.elapsed(), w.roads.len());
+        assert!(t.elapsed().as_secs_f32() < 8.0);
     }
 }

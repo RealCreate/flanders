@@ -55,9 +55,11 @@ export class Paths {
     // tracks: ribbons with soft edges, from doorstep to doorstep
     for (let s = 0; s < roads.length; s += 6) {
       const [ax, az, bx, bz] = [roads[s], roads[s + 1], roads[s + 2], roads[s + 3]], child = roads[s + 4], parent = roads[s + 5];
-      const kc = buildings[child * S], kp = buildings[parent * S];
+      const kc = buildings[child * S], kp = buildings[parent * S];   
       const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz) || 1, ux = dx / len, uz = dz / len;
-      const t0 = radii[kc] * 0.6, t1 = len - radii[kp] * 0.6;
+      // a route has several stretches: only the first steps back from its child building and the last from its parent
+      const atChild = Math.hypot(ax - buildings[child * S + 2], az - buildings[child * S + 3]) < radii[kc] + 1, atParent = Math.hypot(bx - buildings[parent * S + 2], bz - buildings[parent * S + 3]) < radii[kp] + 1;
+      const t0 = atChild ? radii[kc] * 0.6 : 0, t1 = len - (atParent ? radii[kp] * 0.6 : 0);
       if (t1 <= t0 + 0.5) continue;
       const half = hallTier >= 2 ? 1.45 : 1.15, steps = Math.max(2, Math.ceil((t1 - t0) / 1.0));
       rb = Math.max(born[child] ?? 0, born[parent] ?? 0); rp = 1;

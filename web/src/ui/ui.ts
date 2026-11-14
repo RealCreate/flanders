@@ -186,6 +186,7 @@ export class UI {
     </div>
     <h3>Soldiers</h3><div class="btnrow" style="flex-wrap:wrap" id="cheat-army"></div>
     <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">🏘 Build a model village</button></div>
+    <h3>Ground</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="102,30,0">▭ Level 30</button><button class="pbtn" data-ch="102,50,0">▭ Level 50</button><button class="pbtn" data-ch="102,72,0">▭ Level 72</button></div>
     <h3>Repair</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="7,0,0">🧯 Extinguish all fires</button><button class="pbtn" data-ch="8,0,0">⛰ Reset terrain</button><button class="pbtn danger" data-ch="101,0,0">♻ Full reset (all villages)</button></div>
     <h3>Trouble</h3>
     <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn danger" data-ch="4,90,200">Small raid</button><button class="pbtn danger" data-ch="4,200,700">Big raid</button><button class="pbtn danger" data-ch="5,-1,0">Burn selected building</button></div>

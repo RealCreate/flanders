@@ -7,6 +7,8 @@ export interface ModelApi {
   /** Place a building near the wanted spot (searching a little around it); returns its index or -1. */
   place(kind: number, x: number, y: number, rot?: number, search?: number): number;
   upgrade(idx: number): boolean;
+  /** Switch on an optional design upgrade of a building (after the building has reached the tier it needs). */
+  option(idx: number, bit: number): boolean;
   garrison(idx: number, n: number): void;
   /** Where a placed building ended up (relative to the hall). */
   at(idx: number): [number, number];
@@ -49,7 +51,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   put(COURTHOUSE, 13, -10, 4.5, 0, 3); put(BARRACKS, 12, 11, 5, 0, 3); put(WELL, -2, 10, 2, 0, 2); put(GARDEN, -12, 12, 3.4, 0, 3);
 
   // 2. the mural towers of the inner and outer walls, standing a little inside the curtain
-  const R1 = 24, R2 = 44, R3 = 56;
+  const R1 = 24, R2 = 44, R3 = 61;
   const innerTowers: number[] = [], outerTowers: number[] = [];
   for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3, p = pt(R1 - 6.4, a); innerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
   for (let k = 0; k < 8; k++) { const a = Math.PI / 8 + (k * Math.PI) / 4, p = pt(R2 - 6.4, a); outerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
@@ -95,7 +97,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   const moatPts = outline(R3, 3.9, Math.PI / 2, 0.3), wet: ([number, number] | null)[] = [];
   moatPts.forEach(p => {
     const dAng = Math.abs(((p.a - Math.PI / 2 + Math.PI * 3) % (Math.PI * 2)) - Math.PI);   // distance from the gate
-    const width = dAng < 0.32 ? 1 : Math.max(0, Math.min(5, Math.round(2.6 + 2.4 * Math.sin(p.a * 2.3 + 1.0))));   // narrow at the drawbridge, varied elsewhere
+    const width = dAng < 0.32 ? 1 : Math.max(0, Math.min(4, Math.round(2.2 + 1.8 * Math.sin(p.a * 2.3 + 1.0))));   // narrow at the drawbridge, varied elsewhere
     const i = api.place(MOAT, p.x, p.y, width, 0); wet.push(i >= 0 ? api.at(i) : null);
   });
   for (let k = 0; k < wet.length; k++) {
@@ -121,6 +123,15 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   if (keep >= 0) up(keep, 3);
   if (chapel >= 0) up(chapel, 2);
   houses.forEach((i, k) => { if (k % 2 === 0) up(i, 1); });
+  api.fill();
+
+  // 7b. optional designs: stairs up to the wall walks (every few pieces, so the guards can climb), banners, braziers, hoardings, chimneys
+  innerWall.forEach((i, k) => { if (k % 5 === 1) { api.option(i, 0); } if (k % 7 === 3) api.option(i, 3); if (k % 9 === 4) api.option(i, 1); });
+  outerWall.forEach((i, k) => { if (k % 6 === 2) { api.option(i, 0); } if (k % 8 === 5) api.option(i, 2); if (k % 5 === 4) api.option(i, 1); });
+  outerTowers.forEach((i, k) => { if (i >= 0) { api.option(i, k % 2 ? 0 : 3); if (k % 3 === 0) api.option(i, 1); } });
+  innerTowers.forEach((i, k) => { if (i >= 0) api.option(i, k % 2 ? 2 : 0); });
+  if (keep >= 0) { api.option(keep, 0); api.option(keep, 1); api.option(keep, 2); }
+  houses.forEach((i, k) => { if (k % 3 === 0) api.option(i, 0); else if (k % 3 === 1) api.option(i, 1); });
   api.fill();
 
   // 8. a garrison to man it

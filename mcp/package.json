@@ -1,0 +1,14 @@
+{
+  "name": "flanders-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server that lets an AI agent play Flanders through a browser tab, under the same rules as a human player",
+  "bin": { "flanders-mcp": "server.mjs" },
+  "scripts": { "start": "node server.mjs", "test": "node test/guardrails.test.mjs" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  }
+}
