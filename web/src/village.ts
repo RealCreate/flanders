@@ -1,3 +1,5 @@
+import { NetView } from './render/netview';
+import { settings } from './settings';
 import { deck, type Deck } from './render/terrain';
 import { MoatWater } from './render/moatwater';
 import { WIDTH, deckHeight } from './render/spanplan';
@@ -31,7 +33,7 @@ export interface Shared {
 /** One village: its simulation plus everything that draws it. Used for your own village and for every rival replica. */
 export class Village {
   private defaultBanner = 0;
-  moats: MoatWater;
+  moats: MoatWater; nets: NetView;
   view: VillageView; paths: Paths; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; rivers: RiverFlow; boats: Boats;
   clear: { x: number; z: number; r: number }[] = [];
   /** Groves kept standing inside a big cleared area. */
@@ -46,10 +48,11 @@ export class Village {
   constructor(public world: World, public key: string, public name: string, public mine: boolean, private sh: Shared, color: number) {
     this.defaultBanner = color; this.view = new VillageView(color); this.paths = new Paths(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
     this.moats = new MoatWater(sh.terrain); sh.scene.add(this.moats.group);
+    this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
     this.army.friend = color; this.army.radii = sh.radii;
-    this.people.router = (a, b, c, d) => this.world.net_route(a, b, c, d);
+    this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
     this.army.plan = (ax, az, bx, bz) => { const p = this.world.plan_march(Uint32Array.from([1, 0, 0, 0, 0]), ax, az, bx, bz); return p[0] === 1 ? Array.from(p.slice(5)) : null; };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
     sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
@@ -70,7 +73,7 @@ export class Village {
   dispose() {
     this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.walls.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
     this.view.root.traverse(o => (o as THREE.Mesh).geometry?.dispose());
-    this.sh.scene.remove(this.moats.group); this.moats.dispose(); this.sh.terrain.setDecks(this, []);
+    this.sh.scene.remove(this.moats.group, this.nets.group); this.moats.dispose(); this.nets.dispose(); this.sh.terrain.setDecks(this, []);
     this.walls.dispose(); this.spans.dispose(); this.paths.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());
   }
 
@@ -136,6 +139,7 @@ export class Village {
       this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat()); this.spans.update(w.bridge_spans_flat()); this.updateDecks(w, f); this.army.syncWalls(this.walls.walks);
       this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     }
+    { const t = Number(w.tick()); if (!settings().showPaths) this.nets.update(null); else if (t - this.lastNet >= 8 || t < this.lastNet) { this.lastNet = t; this.nets.update(w.net_flat()); } }
     this.fireData = w.fires_flat(); this.people.setFires(this.fireData); this.paths.setTick(Number(w.tick()));
     { // work for builders: damaged buildings (not burning) and ruins
       const f = w.buildings_flat(), hp = w.building_health(), jobs: { x: number; z: number; r: number }[] = [];
@@ -161,7 +165,7 @@ export class Village {
     if (r.length && r[0] !== this.reportSeq) { this.reportSeq = r[0]; if (!this.fresh) this.onReport?.(Array.from(r)); }
   }
   /** Reports older than the moment we started watching are ignored. */
-  private lastShotTick = -Infinity;
+  private lastShotTick = -Infinity; private lastNet = -Infinity;
   fresh = true;
   markCaughtUp() { this.view.animateNew = true; this.fresh = false; const r = this.world.last_report(); if (r.length) this.reportSeq = r[0]; }
 

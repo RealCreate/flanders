@@ -15,16 +15,17 @@ export interface Settings {
   crowds: boolean;                   // villagers, soldiers, animals
   fpsCap: 0 | 30 | 60;
   showFps: boolean;
+  showPaths: boolean;                // draw the invisible path network (red lines), to see where soldiers and villagers may walk
 }
 
-type Preset = Omit<Settings, 'quality' | 'antialias' | 'fpsCap' | 'showFps' | 'adaptive' | 'resolution'>;
+type Preset = Omit<Settings, 'quality' | 'antialias' | 'fpsCap' | 'showFps' | 'showPaths' | 'adaptive' | 'resolution'>;
 export const PRESETS: Record<Exclude<Quality, 'custom'>, Preset> = {
   low:    { shadows: 0,    pixelCap: 1,    drawDistance: 450,  treeDetail: false, trees: true, waterFx: false, particles: true, crowds: true },
   medium: { shadows: 1024, pixelCap: 1.25, drawDistance: 750,  treeDetail: false, trees: true, waterFx: true,  particles: true, crowds: true },
   high:   { shadows: 2048, pixelCap: 2,    drawDistance: 1300, treeDetail: true,  trees: true, waterFx: true,  particles: true, crowds: true },
   ultra:  { shadows: 4096, pixelCap: 2,    drawDistance: 2600, treeDetail: true,  trees: true, waterFx: true,  particles: true, crowds: true },
 };
-export const DEFAULTS: Settings = { quality: 'high', antialias: true, resolution: 1, adaptive: true, fpsCap: 0, showFps: false, ...PRESETS.high };
+export const DEFAULTS: Settings = { quality: 'high', antialias: true, resolution: 1, adaptive: true, fpsCap: 0, showFps: false, showPaths: false, ...PRESETS.high };
 
 const KEY = 'flanders:display';
 let current: Settings = load();

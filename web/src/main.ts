@@ -762,7 +762,7 @@ function applyFlag(f: Flag) {
   if (lv.world.set_style(n)) { commit({ op: 'style', kind: n }); lv.syncFull(); }
 }
 
-function afterLocalChange() { refreshTerrain(lv.world); lv.syncFull(); lv.afterTick(); if (forestDirtyFlag) rebuildForest(); updateSelection(); updateHud(); }
+function afterLocalChange() { refreshTerrain(lv.world); lv.syncFull(); deposits?.attach(lv.world.buildings_flat()); lv.afterTick(); if (forestDirtyFlag) rebuildForest(); updateSelection(); updateHud(); }
 
 /** How we stand with another village: feeling, marriage and treaties (1 trade pact, 2 peace, 4 alliance). */
 function relOf(key: string) {
@@ -815,7 +815,7 @@ function stepLocal() {
   if (t % 4 === 0) updateGoals();
   pollTrade(); checkArrivals(); updateDets(); if (selectedDet !== null) showRoute();
   room?.broadcastHash(t, w.state_hash().toString());
-  if (t % 3 === 0) deposits.sync(w.deposits_flat());
+  if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
   if (forestDirtyFlag) rebuildForest();
@@ -1152,8 +1152,9 @@ function pickBuilding(r: THREE.Raycaster): number | null {
 function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, rig.cam); return ray; }
 
 /** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
- *  facing your hall, turned so its door faces the village. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
+ *  the pointer is on (anywhere round it), turned so its door faces away from the deposit. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
 function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
+  if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
   const d = defs[kind]; if (d.req !== 1) return null;
   const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
   let best = -1, bd = 18 * 18;
@@ -1163,7 +1164,9 @@ function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: nu
   }
   if (best < 0) return null;
   const nx = f[best + 1], nz = f[best + 2];
-  let ux = lv.ox - nx, uz = lv.oz - nz; const len = Math.hypot(ux, uz) || 1; ux /= len; uz /= len;
+  // it stands on the side of the deposit the pointer is on (in 24 steps all the way round), not just the side facing the village
+  let ux = px - nx, uz = pz - nz; if (Math.hypot(ux, uz) < 0.8) { ux = lv.ox - nx; uz = lv.oz - nz; }
+  const ang = Math.round(Math.atan2(uz, ux) / (Math.PI / 12)) * (Math.PI / 12); ux = Math.cos(ang); uz = Math.sin(ang);
   const off = kind === 6 ? 4.6 : 3.8, a = Math.atan2(ux, uz);   // (the model's door looks along +z; a turn of r steps points it at (sin, cos) of r * 45 degrees)
   return { dx: Math.round(nx + ux * off - lv.ox), dy: Math.round(nz + uz * off - lv.oz), rot: ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8 };
 }

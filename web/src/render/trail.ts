@@ -18,3 +18,29 @@ function trailAt(trail: number[], hx: number, hz: number, s: number, fx: number,
   if (trail.length >= 4) { const k = 0, ex = trail[k] - trail[k + 2], ez = trail[k + 1] - trail[k + 3], l = Math.hypot(ex, ez); if (l > 1e-6) { dx = ex / l; dz = ez / l; } }
   return [ax + dx * (s - acc), az + dz * (s - acc)];
 }
+
+/** Points spaced `spacing` apart along a polyline [x, z, x, z, ...], starting `phase` (0..spacing) in, at most `max` of them: the dots of a dotted line. */
+export function dotsAlong(pts: number[], spacing: number, phase: number, max: number): number[] {
+  const out: number[] = []; let next = ((phase % spacing) + spacing) % spacing, acc = 0;
+  for (let k = 2; k < pts.length && out.length < max * 2; k += 2) {
+    const ax = pts[k - 2], az = pts[k - 1], len = Math.hypot(pts[k] - ax, pts[k + 1] - az);
+    if (len < 1e-9) continue;
+    while (next <= acc + len + 1e-9 && out.length < max * 2) { const f = (next - acc) / len; out.push(ax + (pts[k] - ax) * f, az + (pts[k + 1] - az) * f); next += spacing; }
+    acc += len;
+  }
+  return out;
+}
+
+/** Where on the trail (head first, then newest to oldest) a spot is nearest: how far back along it (`s`) and how far the spot is from it (`d`). */
+export function nearestOnTrail(trail: number[], hx: number, hz: number, px: number, pz: number): { s: number; d: number } {
+  let ax = hx, az = hz, acc = 0, best = { s: 0, d: Math.hypot(px - hx, pz - hz) };
+  for (let k = trail.length - 2; k >= 0; k -= 2) {
+    const bx = trail[k], bz = trail[k + 1], dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz);
+    if (l > 1e-6) {
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / (l * l))), d = Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
+      if (d < best.d) best = { s: acc + l * t, d };
+      acc += l; ax = bx; az = bz;
+    }
+  }
+  return best;
+}

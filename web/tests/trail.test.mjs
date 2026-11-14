@@ -28,3 +28,21 @@ test('the head itself is at distance zero and a standing army (zero-length trail
   assert.deepEqual(trailAt([5, 5, 5, 5], 5, 5, 0, 1, 0), [5, 5]);
   const [x, z] = trailAt([5, 5, 5, 5, 5, 5], 5, 5, 0, 0, 1); assert.ok(near(x, 5) && near(z, 5));
 });
+
+import { dotsAlong } from '../src/render/trail.ts';
+test('a dotted line has its dots evenly spaced along the path, also round a corner', () => {
+  const d = dotsAlong([0, 0, 10, 0, 10, 10], 2, 0, 100);
+  assert.equal(d.length / 2, 11);   // 0..20 along the path in steps of 2
+  for (let i = 1; i < d.length / 2; i++) { const g = Math.hypot(d[2 * i] - d[2 * i - 2], d[2 * i + 1] - d[2 * i - 1]); assert.ok(g <= 2 + 1e-9 && g > 1.99, `gap ${g}`); }
+  assert.equal(dotsAlong([0, 0, 100, 0], 2, 0, 5).length / 2, 5, 'capped');
+  assert.deepEqual(dotsAlong([0, 0], 2, 0, 5), []);
+});
+
+import { nearestOnTrail } from '../src/render/trail.ts';
+test('the nearest point on a trail tells how far back along it a spot is, and how far off', () => {
+  const trail = [0, 0, 10, 0, 10, 10];   // east, then south; the head is at (10, 10)
+  const n = nearestOnTrail(trail, 10, 10, 4, 1);
+  assert.ok(near(n.s, 10 + 6, 1e-9) && near(n.d, 1), `${n.s} ${n.d}`);
+  const m = nearestOnTrail(trail, 10, 10, 11, 7);
+  assert.ok(near(m.s, 3) && near(m.d, 1));
+});

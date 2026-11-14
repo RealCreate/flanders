@@ -6,6 +6,7 @@ mod catalog;
 mod march;
 mod military;
 mod pathnet;
+mod wallnet;
 mod terrain;
 use catalog::*;
 use military::*;
@@ -71,7 +72,7 @@ const ARMY_MAX: u32 = 100_000;
 const LEVEL_BLEND: f32 = 9.0;  // how far a levelled patch of ground blends back into the land
 pub(crate) const MOAT_FLOOR: f32 = 3.0;  // flat bottom radius of a moat piece
 pub(crate) const RIVER_FLOOR: f32 = 2.0; // and of a river piece
-const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
+pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
 /// How far below the rim of the land the water of a moat stands.
 const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
@@ -222,6 +223,7 @@ pub struct World {
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
+    ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
     net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network (derived; rebuilt when the village changes)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
@@ -294,7 +296,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), moat_water: vec![], bridges: vec![], map_ver: 0,
+            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), moat_water: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -539,7 +541,7 @@ impl World {
             let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();
             if !(5.6..22.0).contains(&s) || c > 5.2 { continue; }
             let w = smoothstep(5.6, 6.6, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
-            h = lerp(h, b.pad_h, w);
+            h = lerp(h, b.pad_h, w * smoothstep(-0.2, 0.6, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
         }
         if !built { return h; }
         for s in &self.roads {
@@ -727,6 +729,35 @@ impl World {
         self.defer_roads = false;
         self.after_change();
         out
+    }
+
+    /// Where a drawbridge clicked at (dx, dy) goes: snapped onto the nearest piece of moat or river (its middle line) and turned square across it, so the deck spans the water from bank to bank.
+    /// [x, y, turn] relative to the origin (the turn is in 45-degree steps, as `place` takes it), or nothing when no moat is within reach.
+    pub fn drawbridge_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (px, py) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        // the ditch is the chain of its pieces: the spot is the nearest point on the line joining neighbouring pieces, so a bridge can go anywhere along it, not only on a piece
+        let pieces: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|b| matches!(b.kind, MOAT | RIVER)).map(|b| (b.x, b.y, if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + CHANNEL_BANK)).collect();
+        let mut best: Option<(f32, f32, f32, f32, f32, f32)> = None;   // (distance, x, y, tangent x, tangent y, reach)
+        for (i, a) in pieces.iter().enumerate() {
+            let d0 = (a.0 - px).hypot(a.1 - py);
+            if d0 <= 16.0 && best.map_or(true, |b| d0 < b.0) { best = Some((d0, a.0, a.1, 1.0, 0.0, a.2)); }
+            for b in &pieces[i + 1..] {
+                let (sx, sy) = (b.0 - a.0, b.1 - a.1); let sl = sx.hypot(sy);
+                if sl < 0.3 || sl > 8.0 { continue; }
+                let t = (((px - a.0) * sx + (py - a.1) * sy) / (sl * sl)).clamp(0.0, 1.0);
+                let (qx, qy) = (a.0 + sx * t, a.1 + sy * t); let d = (qx - px).hypot(qy - py);
+                if d <= 16.0 && best.map_or(true, |o| d < o.0 - 0.01) { best = Some((d, qx, qy, sx, sy, a.2.max(b.2))); }
+            }
+        }
+        let Some((_, qx, qy, mut tx, mut ty, reach)) = best else { return vec![] };
+        if 2.0 * reach > 12.4 { return vec![]; }   // too wide for the deck to reach from bank to bank
+        if tx == 1.0 && ty == 0.0 {   // a lone piece: the way the nearest neighbour lies, if any
+            if let Some(n) = pieces.iter().filter(|p| (p.0 - qx).hypot(p.1 - qy) > 0.3).min_by(|a, b| (a.0 - qx).hypot(a.1 - qy).partial_cmp(&(b.0 - qx).hypot(b.1 - qy)).unwrap_or(std::cmp::Ordering::Equal)) { tx = n.0 - qx; ty = n.1 - qy; }
+        }
+        let tl = tx.hypot(ty).max(1e-6); let (nx, ny) = (-ty / tl, tx / tl);   // square across the ditch
+        let a = nx.atan2(ny);   // the deck runs along (sin a, cos a)
+        let rot = ((a / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8);
+        vec![qx.round() - self.ox as f32, qy.round() - self.oy as f32, rot as f32]
     }
 
     // ---------- bridges ----------
@@ -1400,6 +1431,9 @@ impl World {
     pub fn net_flat(&self) -> Vec<f32> { self.net_flat_inner() }
     /// A route over the path network: [complete (1 or 0), x, y, x, y, ...], or empty when the network does not help (villagers walk it).
     pub fn net_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.net_route_inner(sx, sy, gx, gy) }
+
+    /// A walking route over the invisible lines (the grid of the world plus the village's paths), for villagers: [1, x, y, x, y, ...], or empty when there is no dry way.
+    pub fn walk_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.walk_route_inner(sx, sy, gx, gy) }
 
     /// Walkable routes between linked buildings: [child, parent, n, x0, y0, x1, y1, ...] repeated. Unlike `roads_flat` these include the crossings of drawbridges.
     pub fn road_paths_flat(&self) -> Vec<f32> {
@@ -3583,6 +3617,115 @@ mod pathnet_tests {
         let after = w.net_flat(); assert!(before != after, "the network was rebuilt");
         let r2 = w.net_route(8.0, 4.0, 40.0, 4.0);
         if !r2.is_empty() { for p in r2[1..].chunks(2) { assert!((28.0 - p[0]).hypot(4.0 - p[1]) > footprint(HOUSE, 0) * 0.9, "the route avoids the new house"); } }
+    }
+
+    /// The x at which a route crosses the horizontal line y = `line`, for each crossing.
+    fn cross_x(r: &[f32], line: f32) -> Vec<f32> {
+        let mut pts: Vec<(f32, f32)> = vec![(0.0, 22.0)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1]))); pts.push((0.0, 38.0));   // (the route's own points, between the start and the goal)
+        pts.windows(2).filter(|p| (p[0].1 - line) * (p[1].1 - line) <= 0.0 && (p[0].1 - p[1].1).abs() > 1e-6).map(|p| p[0].0 + (p[1].0 - p[0].0) * (line - p[0].1) / (p[1].1 - p[0].1)).collect()
+    }
+    fn crossings(r: &[f32], f: impl Fn(f32, f32) -> bool) -> bool {   // does any sampled point of the route satisfy f?
+        let pts: Vec<(f32, f32)> = r[1..].chunks(2).map(|c| (c[0], c[1])).collect();
+        pts.windows(2).any(|p| (0..=40).any(|t| { let k = t as f32 / 40.0; f(p[0].0 + (p[1].0 - p[0].0) * k, p[0].1 + (p[1].1 - p[0].1) * k) }))
+    }
+
+    #[test]
+    fn the_network_respects_closed_gates_and_drawbridges() {
+        // a wall with a gatehouse: the way through is open until the doors are shut
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
+        let g = w.place(GATE, 0, 30, 0); assert!(g >= 0);
+        for _ in 0..2 { assert_eq!(w.upgrade(g as u32), 0); }
+        let open = w.net_route(0.0, 22.0, 0.0, 38.0);
+        assert!(!open.is_empty() && open[0] == 1.0, "a route through the open gate");
+        let xs = cross_x(&open, 30.0); assert!(!xs.is_empty() && xs.iter().all(|x| x.abs() < 0.6), "it goes through the middle of the gate: {xs:?}");
+        assert_eq!(w.gate_set(g as u32, true), 0);
+        let shut = w.net_route(0.0, 22.0, 0.0, 38.0);
+        assert!(shut.is_empty() || shut[0] == 0.0 || cross_x(&shut, 30.0).iter().all(|x| x.abs() > 12.5), "nobody passes the shut doors or squeezes round them: {shut:?}");
+        assert_eq!(w.gate_set(g as u32, false), 0);
+        let again = w.net_route(0.0, 22.0, 0.0, 38.0); assert!(!again.is_empty() && again[0] == 1.0, "open again");
+
+        // a moat: only a lowered drawbridge gets you across, and only along its deck
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let br = w.place(DRAWBRIDGE, 0, 20, 0); assert!(br >= 0);
+        let across = w.net_route(0.0, 8.0, 0.0, 36.0);
+        assert!(!across.is_empty() && across[0] == 1.0, "a route over the lowered drawbridge");
+        assert!(!crossings(&across, |x, y| w.height_at(x, y) < 0.2 && !(x.abs() <= 2.0 && (y - 20.0).abs() <= 7.5)), "it never wades: it is in water only on the deck");
+        assert!(crossings(&across, |x, y| (y - 20.0).abs() < 4.0 && x.abs() < 2.0), "and it uses the deck");
+        w.drawbridge_set(br as u32, true);
+        let up = w.net_route(0.0, 8.0, 0.0, 36.0);
+        assert!(up.is_empty() || up[0] == 0.0, "drawn up: no complete route");
+        assert!(up.is_empty() || !crossings(&up, |x, y| w.height_at(x, y) < 0.2), "and none through the water");
+    }
+
+    #[test]
+    fn nobody_walks_through_a_fence_between_its_posts_and_armies_march_through_the_middle_of_a_gate() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for x in (-10..=10).step_by(5) { assert!(w.place(FENCE, x, 24, 0) >= 0, "fence at {x}"); }
+        let u = [5u32, 0, 0, 0, 0];
+        for sx in [-9.0f32, -3.0, 0.0, 2.5, 8.0] {
+            let p = w.find_path(&u, sx, 18.0, sx, 30.0).expect("a way round the fence");
+            let mut all = vec![(sx, 18.0)]; all.extend(p.iter().map(|q| (q.x, q.y))); all.push((sx, 30.0));
+            for pair in all.windows(2) { for t in 0..=40 { let f = t as f32 / 40.0; let (x, y) = (pair[0].0 + (pair[1].0 - pair[0].0) * f, pair[0].1 + (pair[1].1 - pair[0].1) * f); assert!(!((y - 24.0).abs() < 0.5 && x.abs() <= 10.0), "walked through the fence at {x:.1},{y:.1} (from x = {sx})"); } }
+        }
+        // a gate in a wall: the marching route goes through the middle of the doorway
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
+        assert!(w.place(GATE, 0, 30, 0) >= 0);
+        let p = w.find_path(&u, 1.0, 22.0, -1.0, 40.0).expect("through the gate");
+        let mut all = vec![(1.0f32, 22.0f32)]; all.extend(p.iter().map(|q| (q.x, q.y)));
+        let xs: Vec<f32> = all.windows(2).filter(|q| (q[0].1 - 30.0) * (q[1].1 - 30.0) <= 0.0 && (q[0].1 - q[1].1).abs() > 1e-6).map(|q| q[0].0 + (q[1].0 - q[0].0) * (30.0 - q[0].1) / (q[1].1 - q[0].1)).collect();
+        assert!(!xs.is_empty() && xs.iter().all(|x| x.abs() < 1.0), "through the middle of the gate: {xs:?}");
+    }
+
+    #[test]
+    fn villagers_and_soldiers_share_the_lines_and_nobody_wades() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let dry = w.walk_route(0.0, 8.0, 0.0, 36.0); assert!(dry.is_empty(), "no dry way across an unbroken moat: {dry:?}");
+        let br = w.place(DRAWBRIDGE, 0, 20, 0); assert!(br >= 0);
+        let r = w.walk_route(0.0, 8.0, 0.0, 36.0);
+        assert!(!r.is_empty() && r[0] == 1.0, "a dry way over the drawbridge");
+        let mut pts = vec![(0.0f32, 8.0f32)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1])));
+        for p in pts.windows(2) { for t in 0..=40 { let f = t as f32 / 40.0; let (x, y) = (p[0].0 + (p[1].0 - p[0].0) * f, p[0].1 + (p[1].1 - p[0].1) * f); assert!(w.height_at(x, y) > 0.1 || (x.abs() <= 2.0 && (y - 20.0).abs() <= 7.5), "waded at {x:.1},{y:.1}"); } }
+        // an army goes the same way, over the deck
+        let a = w.find_path(&[5, 0, 0, 0, 0], 0.0, 8.0, 0.0, 36.0).expect("a route");
+        assert!(a.iter().all(|q| q.mode == 0), "no ferry where there is a drawbridge");
+        // the roads are the cheap lines: two houses with a road between them are joined along it
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES];
+        for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 30, 4)] { w.place(k, x, y, 0); }
+        let p = w.find_path(&[5, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
+        assert!(p.len() >= 2 && p.last().map_or(false, |q| (q.x - 30.0).abs() < 3.0));
+    }
+
+    #[test]
+    fn a_drawbridge_snaps_onto_the_moat_and_lies_square_across_it() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        // near the south of the ring the ditch runs east-west, so the deck runs north-south (turn 0 or 4); near the east it runs the other way (turn 2 or 6)
+        let s = w.drawbridge_snap(3, 17); assert_eq!(s.len(), 3, "a moat is near");
+        assert!((s[0].hypot(s[1]) - 20.0).abs() < 1.5, "snapped onto the ring: {s:?}");
+        assert!(s[2] == 0.0 || s[2] == 4.0, "square across a ditch that runs east-west: {s:?}");
+        let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
+        assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
+        let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
+    }
+
+    #[test]
+    fn a_drawbridge_can_go_anywhere_along_a_moat_that_is_not_too_wide() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let placed = w.buildings.iter().filter(|b| b.kind == MOAT).count();
+        assert!(placed >= 10, "{placed} moat pieces");
+        // pointing at many different places along the ditch gives many different spots, each on the ditch and each turned square across it
+        let mut spots = std::collections::BTreeSet::new();
+        for k in 0..36 { let a = k as f32 / 36.0 * std::f32::consts::TAU; let (dx, dy) = ((a.cos() * 18.0).round() as i32, (a.sin() * 18.0).round() as i32); let s = w.drawbridge_snap(dx, dy); if s.len() == 3 { assert!((s[0].hypot(s[1]) - 20.0).abs() < 2.5, "on the ditch: {s:?}"); spots.insert((s[0] as i32, s[1] as i32)); } }
+        assert!(spots.len() >= 8, "many places to put it: {}", spots.len());
+        // a very wide moat is too wide for the deck
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 7); }
+        assert!(w.drawbridge_snap(3, 17).is_empty(), "the broadest moat is wider than a drawbridge");
     }
 
     #[test]
