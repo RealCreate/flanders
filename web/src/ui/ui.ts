@@ -138,13 +138,18 @@ export class UI {
     <div><div class="eyebrow">Military</div><h2>Army</h2></div>
     <div class="stats five" id="army-stats"></div>
     <p class="muted" id="army-info"></p>
-    <div class="cards" id="unit-cards"></div>
-    <div id="muster-box"><h3>Field armies</h3>
-      <p class="muted">Muster soldiers into a field army (or <b>everyone</b> with one click). <b>Click its banner</b> or press <b>Tab</b> to select it, then <b>right-click</b> the ground to march; <b>G</b> halts, <b>B</b> sends it home. Armies walk round buildings and trees, file through dense forest, fell trees for catapults and bridge or ferry over water.</p>
-      <div class="atk-row" id="muster-row"></div><div class="btnrow"><button class="pbtn" id="muster-go">⚑ Muster</button><button class="pbtn primary" id="muster-all">Muster everyone <span class="key">F</span></button></div>
-      <div id="det-list" class="cards"></div></div>
-    <div id="attack-box"><h3>March on a rival village</h3><div id="attack-form"></div></div>
-    <p class="muted">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
+    <div class="sect"><h3>Field armies</h3>
+      <div id="det-list" class="armies"></div>
+      <p class="muted tiny">Click an army's banner (or press <b>Tab</b>) to select it, then <b>right-click</b> the ground to march. <b>G</b> halts it, <b>B</b> sends it home. Armies walk round buildings, fell trees in their way and bridge or ferry over water.</p>
+    </div>
+    <div class="sect" id="attack-box"><h3>Rival villages</h3><div id="attack-form"></div></div>
+    <details class="sect" id="muster-box"><summary>Muster a new army</summary>
+      <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
+      <div class="mrows" id="muster-row"></div>
+      <div class="btnrow"><button class="pbtn" id="muster-go">⚑ Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
+    </details>
+    <details class="sect" open><summary>Train soldiers</summary><div class="cards" id="unit-cards"></div></details>
+    <p class="muted tiny">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
   </section>
   <section class="pane" id="pane-village">
     <div><div class="eyebrow" id="v-sub">Your settlement</div><h2>The Village</h2></div>
@@ -375,7 +380,13 @@ export class UI {
 
   // ---- field armies ----
   private buildMuster() {
-    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<label title="${u.name}">${UNIT_ICON[u.id]}<input type="number" min="0" value="0" id="mus-${u.id}"></label>`).join('');
+    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<div class="mrow"><span class="mi">${UNIT_ICON[u.id]}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
+      <span class="step"><button type="button" data-step="-5" data-u="${u.id}" title="Five fewer">−5</button><button type="button" data-step="-1" data-u="${u.id}">−</button><input type="number" min="0" value="0" id="mus-${u.id}" aria-label="${u.name}"><button type="button" data-step="1" data-u="${u.id}">+</button><button type="button" data-step="5" data-u="${u.id}" title="Five more">+5</button></span></div>`).join('');
+    $('muster-row').onclick = e => {
+      const b = (e.target as HTMLElement).closest<HTMLElement>('[data-step]'); if (!b) return;
+      const input = $(`mus-${b.dataset.u}`) as HTMLInputElement, max = Number(input.max) || 0, v = Math.max(0, Math.min(max, (Number(input.value) || 0) + Number(b.dataset.step)));
+      input.value = String(v);
+    };
     $('muster-all').onclick = () => { const u = units.slice(0, 5).map(x => this.armyNow[x.id] ?? 0); if (u.some(n => n > 0)) this.h.muster(u); };
     $('muster-go').onclick = () => { const u = units.slice(0, 5).map(x => Number(($(`mus-${x.id}`) as HTMLInputElement).value) || 0); if (u.some(n => n > 0)) { this.h.muster(u); units.slice(0, 5).forEach(x => (($(`mus-${x.id}`) as HTMLInputElement).value = '0')); } };
     $('det-list').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-da]'); if (b) this.h.detAction(b.dataset.da!, Number(b.dataset.id)); };
@@ -385,9 +396,16 @@ export class UI {
   setDets(list: { id: number; units: number[]; text: string; selected: boolean; leftWp: number }[]) {
     const sig = JSON.stringify(list);
     if (sig === this.detSig) return; this.detSig = sig;
-    $('det-list').innerHTML = list.length ? list.map(d => `<div class="card det ${d.selected ? 'sel' : ''}"><div class="ico">⚑</div><div><div class="nm"><span>Army ${d.id}</span><span class="key">${d.units.reduce((a, b) => a + b, 0)} soldiers</span></div>
-      <div class="ds">${d.units.map((n, i) => (n ? `${UNIT_ICON[i]} ${n}` : '')).filter(Boolean).join(' &nbsp; ')}</div><div class="io">${esc(d.text)}</div>
-      <div class="btnrow" style="margin-top:6px;flex-wrap:wrap"><button class="pbtn" data-da="select" data-id="${d.id}">Select</button><button class="pbtn" data-da="split" data-id="${d.id}">Split</button><button class="pbtn" data-da="merge" data-id="${d.id}">Merge</button><button class="pbtn" data-da="halt" data-id="${d.id}">Halt</button><button class="pbtn" data-da="recall" data-id="${d.id}">Recall</button></div></div></div>`).join('') : '<p class="muted">No field armies yet.</p>';
+    $('det-list').innerHTML = list.length ? list.map(d => {
+      const n = d.units.reduce((s, v) => s + v, 0), mix = d.units.map((c, i) => (c ? `<span class="uc" title="${units[i].name}">${UNIT_ICON[i]} <b>${c}</b></span>` : '')).join('');
+      return `<div class="army ${d.selected ? 'sel' : ''}">
+        <div class="army-h"><span class="army-n">⚑ Army ${d.id}</span><span class="badge">${n} soldier${n === 1 ? '' : 's'}</span></div>
+        <div class="army-u">${mix}</div>
+        <div class="army-s">${esc(d.text)}</div>
+        <div class="army-b"><button class="pbtn ${d.selected ? 'primary' : ''}" data-da="select" data-id="${d.id}">${d.selected ? 'Selected' : 'Select'}</button>
+          <button class="pbtn" data-da="halt" data-id="${d.id}" title="Stop where it stands (G)">Halt</button><button class="pbtn" data-da="recall" data-id="${d.id}" title="Send it home (B)">Home</button>
+          <button class="pbtn" data-da="split" data-id="${d.id}" title="Split the army in two halves">Split</button><button class="pbtn" data-da="merge" data-id="${d.id}" title="Join the army next to it">Merge</button></div></div>`;
+    }).join('') : '<p class="muted">No field armies yet. Muster one below.</p>';
   }
 
   private listening: Action | null = null;
@@ -623,7 +641,7 @@ export class UI {
   /** The red banner while a fight is on. */
   battle(text: string | null) { const b = $('battle'); b.hidden = !text; if (text) b.innerHTML = text; }
   private armyNow: number[] = [];
-  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 5).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) i.max = String(army[u.id]); } }); }
+  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 5).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
 
   setSelectedPane(html: string | null) {
     const tab = $('tab-sel');
