@@ -26,6 +26,8 @@ export class Deposits {
   group = new THREE.Group();
   private groups: THREE.Group[] = [];
   private flat: Float32Array;
+  /** Every rock with the ore chips on it, so each can be seated on the ground under it (a deposit on a slope would otherwise hang in the air on its downhill side). */
+  private parts: { g: THREE.Group; rock: THREE.Mesh; ore: { o: THREE.Mesh; dy: number }[]; lift: number }[] = [];
 
   constructor(flat: Float32Array, private terrain: Terrain) {
     this.flat = flat;
@@ -39,11 +41,13 @@ export class Deposits {
         m.scale.setScalar(kind === 1 ? s * 1.3 : s); if (kind === 1) m.scale.y *= 0.45;
         m.position.set(Math.cos(a) * d, 0.35 * s, Math.sin(a) * d); m.rotation.y = a;
         m.castShadow = m.receiveShadow = true; g.add(m);
+        const part = { g, rock: m, ore: [] as { o: THREE.Mesh; dy: number }[], lift: 0.35 * (m.scale.y) };
+        this.parts.push(part);
         const ore = oreMats[kind];
         if (ore) for (let v = 0; v < 3; v++) {
           const o = new THREE.Mesh(new THREE.OctahedronGeometry(0.28 + rand(i + k + v) * 0.2, 0), ore);
           const aa = a + (v - 1) * 0.6; o.position.set(m.position.x + Math.cos(aa) * s * 0.7, m.position.y + 0.2 + v * 0.18, m.position.z + Math.sin(aa) * s * 0.7);
-          o.rotation.set(rand(v) * 3, rand(v + 3) * 3, 0); o.castShadow = true; g.add(o);
+          o.rotation.set(rand(v) * 3, rand(v + 3) * 3, 0); o.castShadow = true; g.add(o); part.ore.push({ o, dy: o.position.y - m.position.y });
         }
       }
       this.groups.push(g); this.group.add(g);
@@ -54,15 +58,23 @@ export class Deposits {
   refit() {
     for (let i = 0; i < this.groups.length; i++) {
       const g = this.groups[i], h = this.terrain.heightAt(this.flat[i * 5 + 1], this.flat[i * 5 + 2]);
-      g.position.y = h - 0.15; g.userData.sub = h < 0.3; g.visible = !g.userData.sub;
+      g.position.y = h - 0.15; g.userData.sub = h < 0.3; g.visible = !g.userData.sub && !g.userData.gone;
+    }
+    for (const p of this.parts) {   // each rock rests on the ground right under it, sunk a little so no edge floats
+      const gx = p.g.position.x + p.rock.position.x, gz = p.g.position.z + p.rock.position.z, r = p.rock.scale.x * 0.6;
+      const ground = Math.min(this.terrain.heightAt(gx, gz), this.terrain.heightAt(gx + r, gz), this.terrain.heightAt(gx - r, gz), this.terrain.heightAt(gx, gz + r), this.terrain.heightAt(gx, gz - r));
+      p.rock.position.y = ground - p.g.position.y + p.lift - 0.2;
+      for (const c of p.ore) c.o.position.y = p.rock.position.y + c.dy;
     }
   }
 
   /** Shrink deposits as they are mined out. */
   sync(flat: Float32Array) {
     for (let i = 0; i < this.groups.length; i++) {
-      const rem = flat[i * 5 + 3], max = flat[i * 5 + 4], f = max > 0 ? rem / max : 0;
-      this.groups[i].scale.setScalar(rem <= 0 ? 0.2 : 0.55 + 0.45 * f);
+      const rem = flat[i * 5 + 3], max = flat[i * 5 + 4], f = max > 0 ? rem / max : 0, g = this.groups[i];
+      g.scale.setScalar(rem <= 0 ? 0.2 : 0.55 + 0.45 * f);
+      const gone = max <= 0;   // cleared by the villagers
+      if (!!g.userData.gone !== gone) { g.userData.gone = gone; g.visible = !gone && !g.userData.sub; }
     }
   }
 

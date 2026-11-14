@@ -38,10 +38,11 @@ export class Spans {
   }
 
   /** The building index of the bridge under the pointer, if any. */
-  pick(ray: THREE.Raycaster): number | null {
+  pick(ray: THREE.Raycaster): number | null { return this.pickHit(ray)?.idx ?? null; }
+  pickHit(ray: THREE.Raycaster): { idx: number; d: number } | null {
     if (!this.ranges.length) return null;
     const hit = ray.intersectObject(this.mesh, false)[0]; if (!hit || hit.faceIndex == null) return null;
-    for (const r of this.ranges) if (hit.faceIndex >= r.start && hit.faceIndex < r.end) return r.idx;
+    for (const r of this.ranges) if (hit.faceIndex >= r.start && hit.faceIndex < r.end) return { idx: r.idx, d: hit.distance };
     return null;
   }
 

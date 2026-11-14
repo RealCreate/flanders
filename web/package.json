@@ -8,6 +8,7 @@
     "dev": "vite",
     "prebuild": "npm run wasm",
     "build": "vite build",
+    "share": "npm run build && vite preview",
     "test": "node --experimental-strip-types --test tests/penshapes.test.mjs",
     "test:demo": "wasm-pack build ../crates/game-core --target nodejs --release --no-opt --out-dir ../../web/tests/.wasm; node -e \"require('fs').writeFileSync('tests/.wasm/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node --experimental-strip-types --test tests/demo.test.mjs"
   },

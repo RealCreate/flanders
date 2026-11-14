@@ -221,6 +221,7 @@ fn neutrals_uncached(seed: u64) -> Vec<(u8, f32, f32)> {
     out
 }
 
+#[allow(dead_code)]
 pub fn base_height(seed: u64, x: f32, y: f32) -> f32 { base_height_s(seed, &sites(seed), x, y) }
 
 /// Row-major grid of nx*ny heights starting at (x0,y0) with spacing `step`.

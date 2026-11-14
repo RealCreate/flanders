@@ -42,6 +42,7 @@ pub const WALL: u8 = 2;
 pub const TOWER: u8 = 3;
 pub const HOUSE: u8 = 0;
 pub const FARM: u8 = 1;
+#[allow(dead_code)]
 pub const LODGE: u8 = 18;
 pub const BARRACKS: u8 = 19;
 pub const BUILDERS: u8 = 20;
@@ -53,6 +54,7 @@ pub const STOREHOUSE: u8 = 25;
 pub const KEEP: u8 = 26;
 pub const COURTHOUSE: u8 = 27;
 pub const MARKET: u8 = 28;
+#[allow(dead_code)]
 pub const WATERWHEEL: u8 = 29;
 pub const GARDEN: u8 = 30;
 pub const PARK: u8 = 31;
@@ -135,11 +137,11 @@ pub fn options(kind: u8) -> &'static [Opt] {
         HOUSE => &[("Chimney", "A brick chimney with a curl of smoke.", 0), ("Flower boxes", "Shutters and window boxes full of flowers.", 0), ("Woodshed", "A lean-to for firewood against the wall.", 0), ("Dovecote", "A little tower for doves on the roof.", 1)],
         FARM => &[("Scarecrow", "Keeps the crows off the crop.", 0), ("Haystacks", "Golden stacks beside the field.", 0), ("Fenced yard", "A fence round the yard.", 0), ("Barn", "A small timber barn at the field's edge.", 1)],
         WALL => &[("Stairs", "A stone stair up to the wall walk, so guards can climb on to the wall.", 1), ("Banners", "Pennants on the parapet.", 0), ("Hoarding", "A timber gallery over the outer face. Pours boiling oil on anyone on a ladder against it.", 2), ("Braziers", "Iron fire baskets for the night watch.", 1)],
-        TOWER => &[("Banner", "A pennant on a pole.", 0), ("Hoarding", "A timber gallery round the top. Pours boiling oil on anyone climbing the wall below.", 1), ("Roof cap", "A conical roof.", 1), ("Beacon", "A signal fire basket.", 0)],
+        TOWER => &[("Banner", "A pennant on a pole.", 0), ("Hoarding", "A timber gallery round the top. Pours boiling oil on anyone climbing the wall below.", 1), ("Spire", "A tall slate spire with a gilded tip on the roof.", 1), ("Beacon", "A signal fire basket.", 0)],
         GATE => &[("Banners", "Pennants either side of the gate.", 0), ("Braziers", "Fire baskets on the pillars.", 0), ("Spikes", "Iron spikes along the lintel.", 1), ("Guard hut", "A little lean-to for the gate guard.", 1)],
         DRAWBRIDGE => &[("Banners", "Pennants on the bridge posts.", 0), ("Lanterns", "Lanterns at both ends.", 0)],
         BARRACKS => &[("Banner pole", "A tall standard.", 0), ("Training dummies", "Straw dummies in the yard.", 0), ("Armoury rack", "Racks of spears and shields.", 1), ("Stable", "A lean-to stable.", 1)],
-        KEEP => &[("Banner", "The lord's standard.", 0), ("Hoarding", "Wooden galleries on the battlements. They pour boiling oil on ladders.", 1), ("Corner turrets", "Round turrets at the corners.", 2), ("Beacon", "A signal fire.", 0)],
+        KEEP => &[("Banner", "The lord's standard.", 0), ("Hoarding", "Wooden galleries on the battlements. They pour boiling oil on ladders.", 1), ("Turrets", "Round turrets: at the corners of a small keep, halfway along the walls of a great one.", 2), ("Beacon", "A signal fire.", 0)],
         TOWN_HALL => &[("Banner", "The village standard.", 0), ("Bell turret", "A bell for alarms.", 1), ("Clock", "A clock face on the front.", 2), ("Garden court", "Hedges and flower beds.", 0)],
         CHAPEL => &[("Bell tower", "A small bell tower.", 0), ("Stained glass", "Coloured windows.", 1), ("Graveyard", "A walled burial ground.", 0), ("Lych gate", "A roofed gate at the churchyard.", 0)],
         WELL => &[("Roof", "A little roof over the well.", 0), ("Trough", "A stone trough beside it.", 0)],

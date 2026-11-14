@@ -32,6 +32,9 @@ export class Perf {
     this.btn.onclick = () => this.startProfile();
   }
 
+  /** Show or hide the small frame-rate counter. */
+  setBadge(on: boolean) { this.badge.style.display = on ? '' : 'none'; }
+
   toggle(on = !this.open) { this.open = on; this.panel.hidden = !on; }
 
   attachGpu(gl: WebGL2RenderingContext) { this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2'); }

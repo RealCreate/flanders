@@ -96,8 +96,8 @@ impl NavStatic {
         let (i, j) = (((x - ORG) / CELL).floor() as i32, ((y - ORG) / CELL).floor() as i32);
         if i < 0 || j < 0 || i >= NC || j >= NC { None } else { Some((j * NC + i) as usize) }
     }
-    pub fn height(&self, i: usize) -> f32 { self.h[i] }
-    pub fn dens(&self, i: usize) -> u8 { self.dens[i] }
+    #[allow(dead_code)] pub fn height(&self, i: usize) -> f32 { self.h[i] }
+    #[allow(dead_code)] pub fn dens(&self, i: usize) -> u8 { self.dens[i] }
 }
 
 fn cell_xy(i: usize) -> (f32, f32) { ((i as i32 % NC) as f32 * CELL + ORG + CELL / 2.0, (i as i32 / NC) as f32 * CELL + ORG + CELL / 2.0) }
@@ -135,7 +135,7 @@ impl World {
                     let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
                     for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.bridge, b.x + sx * t, b.y + sy * t, 1.6); }
                 }
-                _ => { let r = DEFS[b.kind as usize].r + if b.kind == WALL || b.kind == FENCE { 1.0 } else { 0.7 }; stamp(&mut ov.blocked, b.x, b.y, r); }
+                _ => { let r = crate::footprint(b.kind, b.tier) + if b.kind == WALL || b.kind == FENCE { 1.0 } else { 0.7 }; stamp(&mut ov.blocked, b.x, b.y, r); }
             }
         }
         for f in &self.felled { stamp(&mut ov.cleared, f[0], f[1], f[2]); }
@@ -400,7 +400,7 @@ impl World {
                     let an = q.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
                     for t in -9..=9 { let t = t as f32 * 0.8; mark(&mut deck, q.x + sx * t, q.y + sy * t, 1.7); }
                 }
-                _ => { let r = DEFS[q.kind as usize].r + if q.kind == WALL || q.kind == FENCE { 1.0 } else { 0.7 }; mark(&mut blocked, q.x, q.y, r); }
+                _ => { let r = crate::footprint(q.kind, q.tier) + if q.kind == WALL || q.kind == FENCE { 1.0 } else { 0.7 }; mark(&mut blocked, q.x, q.y, r); }
             }
         }
         let free = |i: i32, j: i32| -> Option<f32> {

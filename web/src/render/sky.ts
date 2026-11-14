@@ -16,9 +16,9 @@ export class Atmosphere {
     scene.add(this.sky, this.sun, this.sun.target, this.hemi);
 
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(4096, 4096);
-    const c = this.sun.shadow.camera; c.left = -90; c.right = 90; c.top = 90; c.bottom = -90; c.near = 10; c.far = 500;
-    this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.35;
+    this.sun.shadow.mapSize.set(2048, 2048);   // 4096 cost four times the fill for a barely sharper edge
+    const c = this.sun.shadow.camera; c.left = -80; c.right = 80; c.top = 80; c.bottom = -80; c.near = 10; c.far = 500;
+    this.sun.shadow.bias = -0.0005; this.sun.shadow.normalBias = 0.4;
 
     scene.fog = new THREE.FogExp2(this.fogCol, 0.0023);
     this.setTime(0.3);
@@ -36,6 +36,13 @@ export class Atmosphere {
     this.sun.intensity = 2.6 + (1 - warm) * 1.2;
     this.fogCol.setRGB(0.72 + warm * 0.18, 0.80 + warm * 0.02 - warm * 0.1, 0.88 - warm * 0.18);
     (this.scene.fog as THREE.FogExp2).color.copy(this.fogCol);
+  }
+
+  /** Shadow quality from the display settings: a map size, or 0 for no shadows at all. */
+  setShadows(size: number) {
+    this.sun.castShadow = size > 0;
+    if (size > 0 && this.sun.shadow.mapSize.x !== size) { this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; this.sun.shadow.mapSize.set(size, size); }
+    if (size === 0) { this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; }
   }
 
   /** Move the shadow frustum so it follows the camera focus. */
