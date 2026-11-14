@@ -117,6 +117,7 @@ export class UI {
   </div>
 </header>
 <div id="battle" hidden></div>
+<button id="hall-exit" class="btn go" hidden>← Leave the test hall</button>
 <aside id="ledger" hidden>
   <div class="tabs" id="tabs">
     <button class="tab on" data-t="build">Build</button><button class="tab" data-t="army">Army</button><button class="tab" data-t="village">Village</button><button class="tab" data-t="stock">Stock</button><button class="tab" data-t="sel" id="tab-sel" hidden>Selected</button><button class="tabmin" id="ledger-min" title="Hide the panel (H)">▸</button>
@@ -199,6 +200,10 @@ export class UI {
     <div id="display-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="display">Done</button></div></div>
 </div>
+<div class="overlay" id="confirm" hidden style="z-index:40">
+  <div class="sheet"><h2 id="confirm-title">Are you sure?</h2><p id="confirm-text"></p>
+    <div class="btnrow"><button class="pbtn" id="confirm-no">Cancel</button><button class="pbtn primary" id="confirm-yes">Yes</button></div></div>
+</div>
 <div class="overlay clear" id="help" hidden>
   <div class="sheet">
     <h2>How to rule</h2>
@@ -218,7 +223,7 @@ export class UI {
       <button class="pbtn" data-ch="3,0,0">Fill every store</button><button class="pbtn" data-ch="1,10,0">+10 villagers</button><button class="pbtn" data-ch="6,0,0">Cure plague</button>
     </div>
     <h3>Soldiers</h3><div class="btnrow" style="flex-wrap:wrap" id="cheat-army"></div>
-    <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">🏘 Build a model village</button><button class="pbtn" data-ch="101,0,0" title="Every building at every tier, plus the design options">🏛 Test hall: all buildings</button></div>
+    <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">🏘 Build a model village</button><button class="pbtn" data-ch="103,0,0" title="Every building at every tier, plus the design options">🏛 Test hall: all buildings</button></div>
     <h3>Ground</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="102,30,0">▭ Level 30</button><button class="pbtn" data-ch="102,50,0">▭ Level 50</button><button class="pbtn" data-ch="102,72,0">▭ Level 72</button></div>
     <h3>Repair</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="7,0,0">🧯 Extinguish all fires</button><button class="pbtn" data-ch="8,0,0">⛰ Reset terrain</button><button class="pbtn danger" data-ch="101,0,0">♻ Full reset (all villages)</button></div>
     <h3>Trouble</h3>
@@ -265,6 +270,7 @@ export class UI {
       addEventListener('keydown', e => { if (e.key === 'Escape') close(); }); }
     $('btn-res').onclick = () => this.h.toggleResources();
     $('btn-sound').onclick = () => this.h.toggleMute();
+    this.initTitleTips();
     $('btn-help').onclick = () => this.modal('help', true);
     $('btn-display').onclick = () => this.modal('display', true);
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'));
@@ -320,6 +326,8 @@ export class UI {
   }
   /** Set while the panel is folded away but opened for a selected building; it folds away again when the selection ends. */
   private tempOpen = false;
+  /** The button that leaves the test hall, shown while inside it. */
+  hallExit(on: boolean, leave: () => void) { const b = $('hall-exit'); b.hidden = !on; b.onclick = leave; }
   toggleLedger() { if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); return; } this.pref.ledger = !this.pref.ledger; this.savePrefs(); }
   toggleMinimap() { this.pref.map = !this.pref.map; this.savePrefs(); }
   get bigmap() { return $('bigmap') as HTMLCanvasElement; }
@@ -402,6 +410,33 @@ export class UI {
   }
 
   modal(id: string, show: boolean) { $(id).hidden = !show; }
+
+  /** The game's own yes/no question (in place of the browser's confirm box). Resolves true on yes; Esc, the backdrop and Cancel mean no. */
+  confirm(text: string, yes = 'Yes', title = 'Are you sure?', no = 'Cancel'): Promise<boolean> {
+    return new Promise(resolve => {
+      const box = $('confirm'); $('confirm-title').textContent = title; $('confirm-text').textContent = text; $('confirm-yes').textContent = yes; $('confirm-no').textContent = no; box.hidden = false;
+      const done = (v: boolean) => { box.hidden = true; box.removeEventListener('pointerdown', back); removeEventListener('keydown', key, true); resolve(v); };
+      const back = (e: Event) => { if (e.target === box) done(false); }, key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } else if (e.key === 'Enter') { e.stopPropagation(); done(true); } };
+      $('confirm-yes').onclick = () => done(true); $('confirm-no').onclick = () => done(false); box.addEventListener('pointerdown', back); addEventListener('keydown', key, true);
+      ($('confirm-yes') as HTMLButtonElement).focus();
+    });
+  }
+
+  /** Browser tooltips (the title attribute) look out of place: show them in the game's own style instead. */
+  private initTitleTips() {
+    let timer = 0, cur: HTMLElement | null = null;
+    const hide = () => { clearTimeout(timer); cur = null; if ($('tooltip').dataset.from === 'title') { this.tip(null); $('tooltip').dataset.from = ''; } };
+    document.addEventListener('mouseover', e => {
+      const t = (e.target as HTMLElement).closest?.('[title],[data-tip]') as HTMLElement | null;
+      if (!t || t === cur || t.closest('#tooltip')) return;
+      const title = t.getAttribute('title'); if (title) { t.dataset.tip = title; t.removeAttribute('title'); }   // take the title over so the browser does not draw its own
+      const text = t.dataset.tip; if (!text) return;
+      hide(); cur = t;
+      timer = window.setTimeout(() => { const r = t.getBoundingClientRect(); this.tip(`<small style="color:#f3ead2">${esc(text)}</small>`, Math.max(8, Math.min(innerWidth - 280, r.left)) - 16, r.bottom > innerHeight - 80 ? r.top - 56 : r.bottom - 6); $('tooltip').dataset.from = 'title'; }, 380);
+    });
+    document.addEventListener('mouseout', e => { if (cur && !cur.contains(e.relatedTarget as Node)) hide(); });
+    document.addEventListener('pointerdown', hide, true); document.addEventListener('wheel', hide, { passive: true });
+  }
 
   enterGame() {
     $('intro').hidden = true; $('topbar').hidden = false; $('ledger').hidden = false; $('minimap-card').hidden = false; this.applyPanels(); this.finishLoading();

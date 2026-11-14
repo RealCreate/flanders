@@ -309,8 +309,8 @@ function updateGoals() {
 
 // ---------- testing tools ----------
 /** Test tool: forget every saved village (all worlds) in this browser and start again from the empty map. Your identity and settings are kept. */
-function fullReset() {
-  if (!confirm('This deletes every saved village in this browser, in every world, and restarts from the empty map. Other players keep their own copies of your old village until they leave. Continue?')) return;
+async function fullReset() {
+  if (!(await ui.confirm('This deletes every saved village in this browser, in every world, and restarts from the empty map. Other players keep their own copies of your old village until they leave.', 'Delete everything', 'Reset the whole map?'))) return;
   resetting = true;
   try { for (const k of Object.keys(localStorage)) if (k.startsWith('flanders:save:')) localStorage.removeItem(k); } catch { /* blocked */ }
   location.reload();
@@ -320,16 +320,17 @@ function fullReset() {
 let showroom: THREE.Group | null = null;
 function toggleShowroom() {
   const hide = (on: boolean) => { terrain.mesh.visible = on; deposits.group.visible = on; forest.group.visible = on && settings().trees; wildlife.group.visible = on && settings().crowds; };   // the hall stands on its own platform: the land and its trees would clip through it
-  if (showroom) { scene.remove(showroom); showroom = null; hide(true); rig.focus(lv.ox, lv.oz, 75); ui.toast('Back at your village.', 'info'); return; }
+  if (showroom) { scene.remove(showroom); showroom = null; hide(true); ui.hallExit(false, toggleShowroom); rig.focus(lv.ox, lv.oz, 75); ui.toast('Back at your village.', 'info'); return; }
   const x0 = 960, z0 = -560, sr = buildShowroom(defs.map(d => ({ id: d.id, name: d.name, maxTier: d.maxTier })), tierName, x0, z0);
   showroom = sr.group; showroom.position.y = Math.max(1, terrain.heightAt(sr.spawn.x, sr.spawn.z)); scene.add(showroom); hide(false); rig.focus(sr.spawn.x, sr.spawn.z, 70);
+  ui.hallExit(true, toggleShowroom);
   ui.toast('Test hall: one row per building, tiers left to right, then tier 2 and the top tier with every design option. Pan along the rows; press the button again to leave.', 'info');
 }
 
 /** Clear every building except the town hall and build the planned model village (see modelvillage.ts). Everything goes through signed commands. */
 const MODEL_FLAT_RADIUS = 90;
-function runModelVillage(ask: boolean) {
-  if (ask && !confirm('This clears every building except the town hall and builds a model village in its place. Continue?')) return;
+async function runModelVillage(ask: boolean) {
+  if (ask && !(await ui.confirm('This clears every building except the town hall and builds a model village in its place.', 'Build it', 'Build the model village?'))) return;
   const w = lv.world;
   if (w.battle_active()) { ui.toast('Not during a battle.', 'bad'); return; }
   if (w.cheat(8, 0, 0)) commit({ op: 'cheat', kind: 8, x: 0, y: 0 });   // clear old earthworks, craters, scorch and ruins first
@@ -364,8 +365,9 @@ function runModelVillage(ask: boolean) {
 }
 
 function doCheat(action: number, a: number, b: number) {
+  if (action === 103) { toggleShowroom(); return; }
+  if (showroom) toggleShowroom();   // any other test action takes you back to your village first (the hall is only a drawing)
   if (action === 100) { runModelVillage(true); return; }
-  if (action === 101) { toggleShowroom(); return; }
   if (action === 101) { fullReset(); return; }
   if (action === 102) { if (lv.world.flatten(a) === 0) { commit({ op: 'flatten', x: a }); afterLocalChange(); refreshTerrain(lv.world); ui.toast('The ground is levelled.', 'good'); } return; }
   if (action === 5) a = selectedIdx ?? -1;           // "burn selected building"
@@ -674,7 +676,7 @@ async function startGame(name: string, username: string) {
   updateGoals();
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
-  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
+  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
   last = performance.now(); requestAnimationFrame(frame);
 }
 

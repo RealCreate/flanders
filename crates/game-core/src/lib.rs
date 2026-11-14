@@ -234,6 +234,20 @@ pub fn footprint(kind: u8, tier: u8) -> f32 {
 #[wasm_bindgen]
 pub fn footprint_of(kind: u8, tier: u8) -> f32 { footprint(kind, tier) }
 
+/// The part of a building soldiers cannot walk through: its solid mass, smaller than the footprint (which also holds yards, fields and elbow room). Between that and the
+/// footprint plus a margin lies a strip they can use but would rather avoid. Walls and fences are all solid; open ground such as fields and gardens only blocks at its middle.
+pub fn solid_radius(kind: u8, tier: u8) -> f32 {
+    let fp = footprint(kind, tier);
+    match kind {
+        WALL | FENCE => fp + 1.0,
+        FARM | GARDEN | PARK | MARKET => fp * 0.42,
+        TOWER | KEEP | TOWN_HALL | CHAPEL | BARRACKS => fp * 0.85 + 0.3,
+        _ => fp * 0.72 + 0.3,
+    }
+}
+#[wasm_bindgen]
+pub fn solid_radius_of(kind: u8, tier: u8) -> f32 { solid_radius(kind, tier) }
+
 #[wasm_bindgen]
 pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
     match DEFS.get(kind as usize) {
@@ -3155,5 +3169,21 @@ mod gate_tests {
         assert_eq!(w.gate_set(99, true), -1);
         // raiders attacking shut every stone gatehouse by themselves
         w.cheat(4, 90, 300); assert!(w.battle_active()); assert_eq!(w.gates_shut_flat(), vec![g as u32]);
+    }
+}
+
+#[cfg(test)]
+mod pathing_room_tests {
+    use super::*;
+    #[test]
+    fn soldiers_pass_through_the_gaps_between_buildings_and_prefer_open_ground() {
+        assert!(solid_radius(HOUSE, 0) < footprint(HOUSE, 0), "the solid core is smaller than the footprint"); assert!(solid_radius(FARM, 0) < footprint(FARM, 0) * 0.5, "a field is mostly walkable");
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        let mut placed = 0; for k in -3..=3 { if w.place(HOUSE, k * 9, 30, 0) >= 0 { placed += 1; } }
+        assert!(placed >= 5, "a row of houses with gaps of about 2.8: {placed}");
+        let p = w.plan_march(&[5, 0, 0, 0, 0], 0.0, 12.0, 0.0, 48.0);
+        assert_eq!(p[0], 1.0, "a route exists: {:?}", &p[..5.min(p.len())]);
+        let mut len = 0.0; let mut prev = (0.0f32, 12.0f32); for q in p[5..].chunks(3) { len += ((q[0] - prev.0).powi(2) + (q[1] - prev.1).powi(2)).sqrt(); prev = (q[0], q[1]); }
+        assert!(len < 70.0, "it goes through the gaps, not all the way round the row: {len:.0} units");
     }
 }
