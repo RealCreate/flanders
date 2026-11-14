@@ -28,9 +28,9 @@ export interface AgentHost {
 }
 
 /** Tools the agent may call. Anything else is refused. */
-export const AGENT_TOOLS = ['observe', 'catalog', 'buildings', 'probe', 'can_place', 'place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'rivals', 'attack'] as const;
+export const AGENT_TOOLS = ['observe', 'catalog', 'buildings', 'probe', 'can_place', 'place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'rivals', 'attack', 'prices', 'choice', 'decide'] as const;
 
-const MUTATING = new Set(['place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'attack']);
+const MUTATING = new Set(['place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'attack', 'decide']);
 const NEVER_BUILD = new Set([15]);   // the town hall cannot be built (the game refuses it too)
 
 /** A token-bucket-ish limiter: a minimum gap between calls plus a budget per minute. */
@@ -157,6 +157,9 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
       const code = world.det_march(id, ox + dx, oy + dy, false, 0, 0); if (code === 0) host.commit({ op: 'march', idx: id, x: ox + dx, y: oy + dy }); return { ok: code === 0, code };
     },
     recall_army(a) { const id = int(a.army_id, 1, 100000, 'army_id'), code = w().det_recall(id); if (code === 0) host.commit({ op: 'recall', idx: id }); return { ok: code === 0, code }; },
+    prices() { return Object.fromEntries(RES.map((r, i) => [r.key, w().prices()[i] / 100])); },
+    choice() { const c = Array.from(w().choice_flat()); return c.length ? { waiting: true, kind: c[0], options: c[1], days_left: c[2] } : { waiting: false }; },
+    decide(a) { const opt = int(a.option, 0, 2, 'option'), code = w().choose(opt); if (code === 0) { host.commit({ op: 'choose', kind: opt }); host.afterChange(); } return { ok: code === 0, code }; },
     rivals() { const h = hall(); return host.rivals().map(r => ({ key: r.key, name: r.name, online: r.online, dx: Math.round(r.x - h.x), dy: Math.round(r.z - h.z) })); },
     attack(a) {
       if (!allowAttack) throw new Error('attacking other players is switched off. The human must open the game with allow_attack=1 to allow it.');

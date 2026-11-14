@@ -91,7 +91,7 @@ function makeMats() {
 const M = () => (_m ??= makeMats());
 /** Wall materials by tier: palisade, timber, stone, battlemented stone. */
 /** Kinds drawn by something else (walls, fences and gates by the Walls mesh, moats by the terrain): an empty placeholder keeps the indices lined up. */
-const PLAIN = new Set([2, 21, 22, 24, 32, 33, 34]);
+const PLAIN = new Set([2, 21, 22, 24, 32, 33, 34, 37, 38]);
 export const wallMats = (): THREE.MeshStandardMaterial[] => [M().wood, M().timber, M().stone, M().stone];
 
 // ---------- geometry helpers ----------
@@ -745,7 +745,28 @@ const port: Model = b => {
   if (t >= 2) { b.cyl(1.0, 1.2, 5.5, m.stone, -4.8, -0.2, 1.4, 12); b.cone(1.3, 1.8, m.slate, -4.8, 5.3, 1.4, 12); b.flag(-4.8, 7.0, 1.4, 2.2); }
 };
 
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port];
+/** A toll post: a keeper's hut beside the road and a striped barrier pole across it; better tiers add a stone gatehouse and a flag. */
+const toll: Model = b => {
+  const t = b.t, m = M();
+  b.box(2.2, 1.9, 1.8, t >= 2 ? m.stone : m.wood, 1.8, 0.1, -0.2); b.gable(2.4, 2.0, 0.9, t >= 1 ? m.tile : m.thatch, 1.8, 2.0, -0.2, 0.25);
+  b.box(0.5, 1.0, 0.1, m.door, 1.8, 0.1, 0.72);
+  b.box(0.3, 1.5, 0.3, m.darkwood, -0.6, 0, 0.6); b.box(0.3, 1.5, 0.3, m.darkwood, 0.2, 0, 0.6);
+  for (let i = 0; i < 6; i++) b.box(0.6, 0.18, 0.18, i % 2 ? m.shutterRed : m.plaster, -0.6 + 0.1 + i * 0.12 - 0.3, 1.25, 0.6);
+  b.cyl(0.07, 0.07, 1.8, m.darkwood, -2.0, 0, 0.6, 6);
+  if (t >= 2) b.flag(2.9, 2.0, 0.5, 1.8);
+};
+
+/** The ghost shown while placing a bridge (the real bridge is drawn by spans.ts): ten units of deck with posts, stretched to the real length. */
+/** The ghost of a road piece: a patch of beaten earth. */
+const roadPiece: Model = b => { b.box(2.2, 0.12, 2.2, M().mud, 0, 0.02, 0); };
+
+const bridgeGhost: Model = b => {
+  const m = M();
+  for (let s = -4.75; s <= 4.75; s += 0.5) b.box(0.46, 0.14, 2.4, m.wood, s, 0.55, 0);
+  for (const side of [-1, 1]) for (let s = -4.8; s <= 4.81; s += 2.4) b.box(0.2, 1.1, 0.2, m.darkwood, s, 0.5, side * 1.1);
+};
+
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,
@@ -919,6 +940,9 @@ export class VillageView {
   private items = new Map<number, Item>();
   get isBatched() { return this.batched; }
   constructor(private banner: number) {}
+  /** Change the colour of every banner and pennant: the buildings are rebuilt with it. */
+  setBanner(c: number) { if (c === this.banner) return; this.banner = c; for (const it of this.items.values()) this.dispose(it.group); this.items.clear(); this.touch(); }
+  get bannerColor() { return this.banner; }
 
   /** flat = World.buildings_flat() (stride 8). Returns discs [x, z, r] that should be cleared of trees. */
   sync(flat: Float32Array, radii: number[], health?: Float32Array, options?: ArrayLike<number>) {

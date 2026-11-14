@@ -60,14 +60,17 @@ pub const RIVER: u8 = 32;
 pub const RAISE: u8 = 33;
 pub const LOWER: u8 = 34;
 pub const PORT: u8 = 35;
+pub const TOLL: u8 = 36;
+pub const ROAD: u8 = 37;
+pub const BRIDGE: u8 = 38;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
-pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER => 0, _ => 3 } }
+pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD => 0, _ => 3 } }
 
 /// Pieces that reshape the ground instead of standing on it.
 pub fn is_edit(kind: u8) -> bool { matches!(kind, MOAT | RIVER | RAISE | LOWER) }
 
-pub static DEFS: [Def; 36] = [
+pub static DEFS: [Def; 39] = [
     Def { name: "House", cat: 0, r: 3.2, weight: 1, cost: &[(W, 12)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 5, max_slope: 0.35, pad: true, desc: "Homes for your villagers. Better tiers house more people." },
     Def { name: "Farm", cat: 1, r: 6.5, weight: 2, cost: &[(W, 25)], jobs: 2, inputs: &[], outputs: &[(GR, 10)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.22, pad: true, desc: "Grows grain to feed the village. Needs flat ground." },
     Def { name: "Wall", cat: 4, r: 2.4, weight: 1, cost: &[(ST, 5)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.4, pad: true, desc: "A wall segment. Rotate with R and chain them into a curtain wall." },
@@ -104,6 +107,9 @@ pub static DEFS: [Def; 36] = [
     Def { name: "Raise Ground", cat: 6, r: 1.9, weight: 1, cost: &[(W, 2)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Heaps earth into a mound or dike. Raise it in the water to make land." },
     Def { name: "Lower Ground", cat: 6, r: 1.9, weight: 1, cost: &[(W, 2)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Digs the ground away. Dig deep enough and it fills with water." },
     Def { name: "Port", cat: 5, r: 5.5, weight: 3, cost: &[(PL, 40), (ST, 20), (W, 30)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 3, req_arg: 0, housing: 0, max_slope: 0.5, pad: true, desc: "Merchant ships call here. Stock you have plenty of is sold for gold, and grain is bought when you run short. Must stand on the shore. Better tiers trade more." },
+    Def { name: "Toll Post", cat: 5, r: 3.0, weight: 2, cost: &[(W, 20), (PL, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.5, pad: true, desc: "A keeper and a barrier on the road: travellers pay a toll. The busier the roads round it, the more it earns. Place it beside a path." },
+    Def { name: "Road", cat: 6, r: 1.0, weight: 0, cost: &[(W, 1)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 1.2, pad: false, desc: "A dirt road piece. Draw a path of them and they link up like the roads that grow between buildings: they level the ground, people walk them and they are paved in time. A road also pushes your border outwards." },
+    Def { name: "Bridge", cat: 4, r: 2.0, weight: 2, cost: &[(PL, 10), (W, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Spans a moat, river or narrow water. Click near the water: it snaps to the banks, finds the shortest way over and puts supports in the middle where the span needs them. Costs more planks the longer it is. Starts as a wooden footbridge; upgrade it to timber, stone and a great stone bridge, which span wider." },
 ];
 
 /// Resources needed to upgrade to `new_tier` (1..=3).
@@ -124,16 +130,17 @@ pub fn options(kind: u8) -> &'static [Opt] {
     match kind {
         HOUSE => &[("Chimney", "A brick chimney with a curl of smoke.", 0), ("Flower boxes", "Shutters and window boxes full of flowers.", 0), ("Woodshed", "A lean-to for firewood against the wall.", 0), ("Dovecote", "A little tower for doves on the roof.", 1)],
         FARM => &[("Scarecrow", "Keeps the crows off the crop.", 0), ("Haystacks", "Golden stacks beside the field.", 0), ("Fenced yard", "A fence round the yard.", 0), ("Barn", "A small timber barn at the field's edge.", 1)],
-        WALL => &[("Stairs", "A stone stair up to the wall walk, so guards can climb on to the wall.", 1), ("Banners", "Pennants on the parapet.", 0), ("Hoarding", "A timber gallery projecting over the outer face.", 2), ("Braziers", "Iron fire baskets for the night watch.", 1)],
-        TOWER => &[("Banner", "A pennant on a pole.", 0), ("Hoarding", "A timber gallery round the top.", 1), ("Roof cap", "A conical roof.", 1), ("Beacon", "A signal fire basket.", 0)],
+        WALL => &[("Stairs", "A stone stair up to the wall walk, so guards can climb on to the wall.", 1), ("Banners", "Pennants on the parapet.", 0), ("Hoarding", "A timber gallery over the outer face. Pours boiling oil on anyone on a ladder against it.", 2), ("Braziers", "Iron fire baskets for the night watch.", 1)],
+        TOWER => &[("Banner", "A pennant on a pole.", 0), ("Hoarding", "A timber gallery round the top. Pours boiling oil on anyone climbing the wall below.", 1), ("Roof cap", "A conical roof.", 1), ("Beacon", "A signal fire basket.", 0)],
         GATE => &[("Banners", "Pennants either side of the gate.", 0), ("Braziers", "Fire baskets on the pillars.", 0), ("Spikes", "Iron spikes along the lintel.", 1), ("Guard hut", "A little lean-to for the gate guard.", 1)],
         DRAWBRIDGE => &[("Banners", "Pennants on the bridge posts.", 0), ("Lanterns", "Lanterns at both ends.", 0)],
         BARRACKS => &[("Banner pole", "A tall standard.", 0), ("Training dummies", "Straw dummies in the yard.", 0), ("Armoury rack", "Racks of spears and shields.", 1), ("Stable", "A lean-to stable.", 1)],
-        KEEP => &[("Banner", "The lord's standard.", 0), ("Hoarding", "Wooden galleries on the battlements.", 1), ("Corner turrets", "Round turrets at the corners.", 2), ("Beacon", "A signal fire.", 0)],
+        KEEP => &[("Banner", "The lord's standard.", 0), ("Hoarding", "Wooden galleries on the battlements. They pour boiling oil on ladders.", 1), ("Corner turrets", "Round turrets at the corners.", 2), ("Beacon", "A signal fire.", 0)],
         TOWN_HALL => &[("Banner", "The village standard.", 0), ("Bell turret", "A bell for alarms.", 1), ("Clock", "A clock face on the front.", 2), ("Garden court", "Hedges and flower beds.", 0)],
         CHAPEL => &[("Bell tower", "A small bell tower.", 0), ("Stained glass", "Coloured windows.", 1), ("Graveyard", "A walled burial ground.", 0), ("Lych gate", "A roofed gate at the churchyard.", 0)],
         WELL => &[("Roof", "A little roof over the well.", 0), ("Trough", "A stone trough beside it.", 0)],
-        MOAT | RIVER | RAISE | LOWER | FENCE => &[],
+        BRIDGE => &[("Lanterns", "Lanterns on the posts at both ends.", 0), ("Pennants", "Pennants on the end posts.", 0)],
+        MOAT | RIVER | RAISE | LOWER | FENCE | ROAD => &[],
         _ => &[("Banner", "A pennant on a pole.", 0), ("Lanterns", "Lanterns at the door.", 0), ("Awning", "A cloth awning.", 0), ("Stone footing", "A stone plinth.", 1)],
     }
 }

@@ -8,6 +8,9 @@ const SUBSTEP: f32 = 0.25;
 /// What stopped an attacker: a wall, fence or gate (index into the substep's list) or water.
 enum Block { Bar(usize), Wet }
 
+/// Damage a second to a soldier on a ladder under a hoarding that pours boiling oil.
+pub const OIL_DPS: f32 = 22.0;
+
 pub fn max_hp(kind: u8, tier: u8) -> f32 {
     let base = match kind { TOWN_HALL => 1400.0, WALL => 280.0, TOWER => 520.0, FENCE => 90.0, GATE => 300.0, DRAWBRIDGE => 220.0, MOAT | RIVER | RAISE | LOWER => 100000.0, _ => DEFS[kind as usize].weight as f32 * 90.0 + 130.0 };
     base * (1.0 + tier as f32 * 0.8)
@@ -102,10 +105,15 @@ impl World {
             }
         }
         let ladders = if atk[0] + atk[2] > 0 { ((atk[0] + atk[2]) / 4).max(1) } else { 0 };
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0 });
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; 5], fixed: vec![] });
+        let fixed = self.bridge_points();
+        if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);
         true
     }
+
+    /// Does this building have a hoarding (a timber gallery with murder holes) to pour boiling oil from? Stone walls (option 2), towers and keeps (option 1).
+    pub(crate) fn has_oil(w: &Building) -> bool { match w.kind { WALL => w.tier >= 2 && w.opts & 4 != 0, TOWER | KEEP => w.opts & 2 != 0, _ => false } }
 
     fn damage_unit(b: &mut Battle, j: usize, dmg: f32) {
         let armor = UNITS[b.units[j].kind as usize].armor;
@@ -233,18 +241,39 @@ impl World {
         let mut ignites: Vec<usize> = vec![];
         let mut dmg_b: Vec<(usize, f32)> = vec![];
         let mut shots: Vec<[f32; 7]> = vec![];
+        let hero_mult = self.hero_dmg();   // the lord leads the defenders: they hit harder, and do not break so soon
+        if b.rout.len() < n { b.rout.resize(n, 0.0); }
+        // how many are left on each side: soldiers who see their side break lose heart
+        let mut left = [0u32; 2]; for u in b.units.iter().filter(|u| u.alive) { left[u.side as usize] += 1; }
+        let ratio = [left[0] as f32 / b.start_side[0].max(1) as f32, left[1] as f32 / b.start_side[1].max(1) as f32];
         // walls, fences and gates stop attackers; moats and rivers too unless bridged
         let bars: Vec<(usize, f32, f32, f32, u8)> = self.buildings.iter().enumerate().filter(|(_, x)| x.hp > 0.0 && matches!(x.kind, WALL | FENCE | GATE)).map(|(k, x)| (k, x.x, x.y, if x.kind == FENCE { 1.9 } else { 2.6 }, x.kind)).collect();
-        let wet: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|x| matches!(x.kind, MOAT | RIVER)).map(|x| (x.x, x.y, if x.kind == MOAT { 2.7 * moat_scale(x) } else { 2.7 })).collect();
+        let wet: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|x| matches!(x.kind, MOAT | RIVER)).map(|x| (x.x, x.y, if x.kind == MOAT { MOAT_FLOOR * moat_scale(x) + 0.5 } else { RIVER_FLOOR + 0.5 })).collect();
         for si in 0..b.spots.len() { let busy = b.units.iter().any(|q| q.alive && q.climb > 0.0 && q.spot == si as i32); b.spots[si][3] = if busy { 1.0 } else { 0.0 }; }
         for i in 0..n {
             if !b.units[i].alive { continue; }
             let u = b.units[i].clone();
             let ud = &UNITS[u.kind as usize];
+            // morale: a unit running away does not fight; once clear of the field it is gone (alive, but out of the battle)
+            if b.rout[i] > 0.0 {
+                b.rout[i] -= dt;
+                let (mut best, mut bd) = (usize::MAX, f32::MAX);
+                for j in 0..n { if b.units[j].alive && b.units[j].side != u.side { let d = (b.units[j].x - u.x).powi(2) + (b.units[j].y - u.y).powi(2); if d < bd { bd = d; best = j; } } }
+                if best != usize::MAX { let d = bd.sqrt().max(0.1); b.units[i].x += (u.x - b.units[best].x) / d * ud.speed * 1.3 * dt; b.units[i].y += (u.y - b.units[best].y) / d * ud.speed * 1.3 * dt; b.units[i].face = (u.y - b.units[best].y).atan2(u.x - b.units[best].x); }
+                if b.rout[i] <= 0.0 { b.units[i].alive = false; b.fled[u.side as usize] += 1; if u.side == 1 && (u.kind as usize) < 5 { b.fled_kinds[u.kind as usize] += 1; } }
+                continue;
+            }
+            if u.kind != 4 && u.kind != 3 && !(u.held && u.pelev > 0.0) {
+                let hpf = u.hp / ud.hp;
+                let broken = if u.side == 1 { let limit = if b.tag == 0 { 0.6 } else { 0.45 }; (ratio[1] < limit && hpf < 0.5 && self.rf() < 0.03) || (ratio[1] < 0.3 && self.rf() < 0.02) } else { ratio[0] < if self.hero.is_some() { 0.15 } else { 0.3 } && hpf < 0.4 && self.rf() < 0.02 };
+                if broken { b.rout[i] = 7.0; continue; }
+            }
             b.units[i].cd = (u.cd - dt).max(0.0);
             b.units[i].anim = (b.units[i].anim - dt).max(0.0);
             if u.climb > 0.0 {   // up the ladder and over the wall
                 b.units[i].climb -= dt;
+                // boiling oil: a wall or tower with a hoarding pours it on whoever is on a ladder against it
+                if self.buildings.iter().any(|w| w.hp > 0.0 && Self::has_oil(w) && (w.x - u.x).powi(2) + (w.y - u.y).powi(2) < (DEFS[w.kind as usize].r + 3.2).powi(2)) { Self::damage_unit(&mut b, i, OIL_DPS * dt); if !b.units[i].alive { continue; } }
                 if b.units[i].climb <= 0.0 {
                     b.units[i].spot = -1;
                     let mut near: Option<(f32, f32, f32, f32)> = None;
@@ -293,7 +322,7 @@ impl World {
                         let mult = if b.units[i].charge { 1.7 } else { 1.0 };
                         b.units[i].charge = false;
                         let hit = ud.range < 5.0 || self.rf() < 0.72;
-                        if hit { Self::damage_unit(&mut b, best, ud.dmg * mult); }
+                        if hit { Self::damage_unit(&mut b, best, ud.dmg * mult * if u.side == 0 { hero_mult } else { 1.0 }); }
                         b.units[i].cd = ud.cd; b.units[i].anim = 0.35;
                         if ud.range > 5.0 { shots.push([0.0, u.x, u.y, tx, ty, 0.0, u.kind as f32]); }
                     }
@@ -310,7 +339,7 @@ impl World {
                 // attackers go for the nearest building
                 let mut tb = usize::MAX; let mut td = f32::MAX;
                 for (k, bd2) in self.buildings.iter().enumerate() {
-                    if bd2.hp <= 0.0 { continue; }
+                    if bd2.hp <= 0.0 || bd2.kind == ROAD { continue; }   // nobody storms a dirt road
                     let d = (bd2.x - u.x).powi(2) + (bd2.y - u.y).powi(2);
                     if d < td { td = d; tb = k; }
                 }
@@ -375,7 +404,7 @@ impl World {
         }
         for &(wx, wy, wr) in wet {
             let (dn, d0) = (((nx - wx).powi(2) + (ny - wy).powi(2)).sqrt(), ((ox - wx).powi(2) + (oy - wy).powi(2)).sqrt());
-            if dn < wr && dn < d0 && !b.bridges.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) { b.units[i].face = my.atan2(mx); return Some(Block::Wet); }
+            if dn < wr && dn < d0 && !b.bridges.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) && !b.fixed.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) { b.units[i].face = my.atan2(mx); return Some(Block::Wet); }
         }
         b.units[i].x = nx; b.units[i].y = ny; b.units[i].face = my.atan2(mx);
         None
@@ -434,6 +463,7 @@ impl World {
         self.population = self.population.saturating_sub(b.militia_dead);
         let mut surv = [0u32; 5];
         for u in b.units.iter().filter(|u| u.side == 1 && u.alive) { surv[u.kind as usize] += 1; }
+        for k in 0..5 { surv[k] += b.fled_kinds[k]; }   // the ones who ran off come home too
         // loot: raiders that pillaged take a share of the stores
         let mut loot = [0i32; N_RES];
         if !won && b.pillage > 0.0 {
@@ -443,8 +473,14 @@ impl World {
         self.report = vec![self.report_seq as i32, won as i32, b.tag, atk_alive as i32, b.def_dead as i32, b.bld_lost as i32];
         self.report.extend(surv.iter().map(|&x| x as i32));
         self.report.extend(loot.iter());
+        self.report.extend([b.fled[1] as i32, b.fled[0] as i32]);   // attackers and defenders who ran away
         let ev = if won { EV_REPELLED } else { EV_RAID };
         self.push_event(ev, loot[GD as usize], b.def_dead as i32);
+        // the lord learns from a defence, and may fall in a defeat
+        if let Some((name, xp)) = self.hero {
+            if won { let gain = 10 + b.atk_dead.min(40); let before = Self::hero_level(xp); let now = xp + gain; self.hero = Some((name, now)); if Self::hero_level(now) > before { self.push_event(EV_HERO, name as i32, Self::hero_level(now) as i32); } }
+            else if self.rf() < 0.3 { self.hero = None; self.push_event(EV_HERO, name as i32, -1); }
+        }
     }
 
     /// What it costs to build the building from scratch, or a stand-in for buildings that cannot be built (the hall).
@@ -465,8 +501,8 @@ impl World {
         v
     }
 
-    fn can_afford(&self, c: &[Amount]) -> bool { c.iter().all(|&(r, n)| self.stock[r as usize] >= n) }
-    fn pay(&mut self, c: &[Amount]) { for &(r, n) in c { self.stock[r as usize] -= n; } }
+    pub(crate) fn can_afford(&self, c: &[Amount]) -> bool { c.iter().all(|&(r, n)| self.stock[r as usize] >= n) }
+    pub(crate) fn pay(&mut self, c: &[Amount]) { for &(r, n) in c { self.stock[r as usize] -= n; } }
 
     /// Repair the whole building. 0 ok, -1 invalid, -6 cannot afford, -14 it is burning, -15 nothing to repair.
     pub(crate) fn do_repair(&mut self, idx: usize) -> i32 {

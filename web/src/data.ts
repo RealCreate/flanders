@@ -28,12 +28,15 @@ export const CATS = [
   { name: 'Industry', icon: '⚒️' }, { name: 'Defence', icon: '🛡️' }, { name: 'Civic', icon: '⛪' }, { name: 'Land', icon: '⛰️' },
 ];
 
-export const KIND_ICON = ['🏠', '🌾', '🧱', '🗼', '🪓', '🪚', '🪨', '🟤', '🏺', '⛏️', '💰', '♨️', '🔥', '⚒️', '🪙', '🏰', '🕳️', '⛪', '🏹', '⚔️', '🛠️', '🪵', '🚪', '🌉', '🌊', '📦', '🏯', '⚖️', '🏪', '☸️', '🥕', '🌳', '🏞️', '⛰️', '🕳️', '⚓'];
+export const KIND_ICON = ['🏠', '🌾', '🧱', '🗼', '🪓', '🪚', '🪨', '🟤', '🏺', '⛏️', '💰', '♨️', '🔥', '⚒️', '🪙', '🏰', '🕳️', '⛪', '🏹', '⚔️', '🛠️', '🪵', '🚪', '🌉', '🌊', '📦', '🏯', '⚖️', '🏪', '☸️', '🥕', '🌳', '🏞️', '⛰️', '🕳️', '⚓', '🚧', '🛤️', '🪵'];
 
 /** Kinds without a levelled pad under them (walls, fences, gates, drawbridges, moats). */
-export const NOPAD = new Set([2, 21, 22, 23, 24, 32, 33, 34]);
+export const NOPAD = new Set([2, 21, 22, 23, 24, 32, 33, 34, 37, 38]);
 /** Kinds the wall pen can draw in one stroke, and the distance between the pieces it lays. */
-export const PEN_SPACING: Record<number, number> = { 2: 6, 21: 4, 24: 4, 32: 4, 33: 4, 34: 4 };
+/** Banner colours a village can fly: style 0 is the default of the player's own village (blue) and of a neighbour's (red). */
+export const BANNER_STYLES = [0, 0x2f5fa8, 0xb03030, 0x2f8a4a, 0xc9a227, 0x7a3f9a, 0x1f1f1f];
+export const BANNER_NAMES = ['Default', 'Blue', 'Crimson', 'Green', 'Gold', 'Purple', 'Black'];
+export const PEN_SPACING: Record<number, number> = { 0: 7, 1: 14, 30: 7.2, 37: 4, 2: 6, 21: 4, 24: 4, 32: 4, 33: 4, 34: 4 };
 
 const GENERIC_TIERS = ['Rustic', 'Timber', 'Stone', 'Fortified'];
 export const TIER_NAMES: Record<number, string[]> = {
@@ -46,7 +49,7 @@ export const TIER_NAMES: Record<number, string[]> = {
   19: ['Drill Yard', 'Garrison', 'Barracks', 'Fortress'],
   20: ["Carpenter's Shed", "Builders' Yard", "Masons' Lodge", 'Guild Hall'],
   25: ['Storehouse', 'Warehouse', 'Stone Warehouse', 'Great Warehouse'], 26: ['Motte Tower', 'Stone Keep', 'Great Keep', 'Citadel'], 27: ['Moot Hall', 'Courthouse', 'Assize Hall', 'Royal Court'], 28: ['Market Stalls', 'Market Square', 'Market Hall', 'Grand Market'], 29: ['Mill Wheel', 'Watermill', 'Stone Mill', 'Great Mill'], 30: ['Kitchen Garden', 'Herb Garden', 'Walled Garden', 'Pleasure Garden'], 31: ['Green', 'Park', 'Gardens', 'Royal Park'], 32: ['River'], 33: ['Raised Ground'], 34: ['Lowered Ground'],
-  35: ['Landing Stage', 'Harbour', 'Port', 'Great Port'],
+  35: ['Landing Stage', 'Harbour', 'Port', 'Great Port'], 36: ['Toll Post', 'Toll House', 'Toll Gate', 'Customs House'], 37: ['Dirt Road'], 38: ['Footbridge', 'Timber Bridge', 'Stone Bridge', 'Great Bridge'],
   21: ['Spiked Logs'], 22: ['Wooden Gate', 'Timber Gate', 'Stone Gatehouse', 'Fortified Gatehouse'], 23: ['Drawbridge'], 24: ['Moat'],
 };
 export const tierName = (kind: number, tier: number) => (TIER_NAMES[kind] ?? GENERIC_TIERS)[tier];
@@ -56,7 +59,7 @@ export const STATUS = ['Working', 'Waiting for materials', 'Resource exhausted',
 export const PLACE_ERRORS: Record<number, string> = {
   [-1]: 'Unknown building', [-2]: 'Outside your village border — build more to grow it', [-3]: 'Something is in the way',
   [-4]: 'Too close to water', [-5]: 'Ground is too steep', [-6]: 'Not enough resources', [-7]: 'Needs a nearby ore or stone deposit',
-  [-8]: 'Needs a forest nearby', [-9]: 'Cannot build that',
+  [-8]: 'Needs a forest nearby', [-9]: 'Cannot build that', [-18]: 'No water to bridge here — click closer to a moat, river or lake', [-19]: 'Too wide for a footbridge: bridges of better tiers span more',
   [-16]: 'Needs water beside it: a river, lake or moat', [-17]: 'An ore or stone deposit is in the way', [-14]: 'It is burning — put the fire out first', [-102]: 'Not enough archers in the barracks', [-103]: 'The tower is full', [-104]: 'Not during a battle', [-15]: 'Nothing to repair',
   [-11]: 'Build a barracks first', [-12]: 'Your barracks is too basic for that unit — upgrade it', [-13]: 'Not enough villagers to recruit',
 };
@@ -67,6 +70,16 @@ export const DEPOSIT = [
   { name: 'Iron vein', icon: '🟠', color: '#b5482a' },
   { name: 'Gold vein', icon: '🟡', color: '#e6b800' },
 ];
+
+/** The decisions put to the player (see World.choose): a title, a line of story and the options. */
+export const CHOICES: { title: string; story: string; options: string[] }[] = [
+  { title: 'Plague in the village', story: 'The sick lie in every street. Your reeve asks what to do.', options: ['Quarantine the sick (they stop working for 5 days; fewer die)', 'Carry on as usual'] },
+  { title: 'A travelling preacher', story: 'A preacher with a worn cloak asks leave to speak in the square.', options: ['Welcome him (20 coins; spirits rise for 10 days)', 'Turn him away'] },
+  { title: 'A noble visits', story: 'A knight with a small train asks for hospitality.', options: ['Hold a feast (100 grain, 30 coins; he leaves 90 coins)', 'Decline politely'] },
+  { title: 'A hard winter', story: 'The first snow has fallen and the woodpiles are low.', options: ['Buy firewood (60 coins for 80 wood)', 'Share what there is (firewood lasts twice as long, people grumble)', 'Do nothing'] },
+];
+
+const HERO_NAME = (i: number) => ['Sir Aldric', 'Dame Isolde', 'Lord Godfrey', 'Lady Maud', 'Sir Baldwin', 'Dame Hawise', 'Lord Roland', 'Lady Eleanor', 'Sir Hugh', 'Dame Alys', 'Lord Edmund', 'Lady Cecily'][i % 12];
 
 export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; tone: 'good' | 'bad' | 'info' } => {
   switch (k) {
@@ -83,6 +96,11 @@ export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; ton
     case 11: return { text: 'Villagers put out the fire with water from the well.', tone: 'good' };
     case 13: return { text: 'The builders finished repairing a building.', tone: 'good' };
     case 14: return { text: 'The builders raised a ruined building again.', tone: 'good' };
+    case 16: return { text: 'A bitter winter without firewood: someone froze to death.', tone: 'bad' };
+    case 18: return { text: `${CHOICES[a]?.title ?? 'A decision'}: the village waits for your word.`, tone: 'info' };
+    case 19: return { text: `You decided: ${CHOICES[a]?.options[b] ?? ''}`, tone: 'info' };
+    case 21: return b === -1 ? { text: `${HERO_NAME(a)} has fallen. You may take another lord into your service.`, tone: 'bad' } : b > 0 ? { text: `${HERO_NAME(a)} has grown into a level ${b} commander.`, tone: 'good' } : { text: `${HERO_NAME(a)} takes command of your defence.`, tone: 'good' };
+    case 17: return { text: `Robbers waylaid a caravan: ${a} ${RES[b]?.name.toLowerCase() ?? 'goods'} lost.`, tone: 'bad' };
     case 15: return a >= 0 ? { text: `Merchants at your port bought ${RES[b]?.name.toLowerCase() ?? 'goods'} for ${a} gold.`, tone: 'good' } : { text: `Merchants sold you grain for ${-a} gold.`, tone: 'info' };
     case 10: return { text: `A new ${UNIT_NAMES[a] ?? 'soldier'} finished training.`, tone: 'good' };
     default: return { text: 'Something happened.', tone: 'info' };

@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import type { World } from './wasm/game_core.js';
 import type { Terrain } from './render/terrain';
 import { VillageView } from './render/buildings';
+import { BANNER_STYLES } from './data';
 import { Paths } from './render/paths';
 import { Walls } from './render/walls';
+import { Spans } from './render/spans';
 import { Props } from './render/props';
 import { FieldView, BridgesView } from './render/field';
 import { People } from './render/people';
@@ -25,7 +27,8 @@ export interface Shared {
 
 /** One village: its simulation plus everything that draws it. Used for your own village and for every rival replica. */
 export class Village {
-  view: VillageView; paths: Paths; walls: Walls; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; rivers: RiverFlow; boats: Boats;
+  private defaultBanner = 0;
+  view: VillageView; paths: Paths; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; rivers: RiverFlow; boats: Boats;
   clear: { x: number; z: number; r: number }[] = [];
   clearLines: { ax: number; az: number; bx: number; bz: number; r: number }[] = [];
   /** Circles soldiers must walk round. */
@@ -35,17 +38,17 @@ export class Village {
   fireData: Float32Array = new Float32Array(0);
 
   constructor(public world: World, public key: string, public name: string, public mine: boolean, private sh: Shared, color: number) {
-    this.view = new VillageView(color); this.paths = new Paths(sh.terrain); this.walls = new Walls(sh.terrain); this.props = new Props(sh.terrain);
+    this.defaultBanner = color; this.view = new VillageView(color); this.paths = new Paths(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
     this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
     this.army.friend = color; this.army.radii = sh.radii;
     this.army.plan = (ax, az, bx, bz) => { const p = this.world.plan_march(Uint32Array.from([1, 0, 0, 0, 0]), ax, az, bx, bz); return p[0] === 1 ? Array.from(p.slice(5)) : null; };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
-    sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.walls.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
+    sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
   }
 
   /** Which building (index) is under the pointer? Walls are separate meshes. */
-  pick(ray: THREE.Raycaster): number | null { return this.view.pick(ray) ?? this.walls.pick(ray); }
+  pick(ray: THREE.Raycaster): number | null { return this.view.pick(ray) ?? this.walls.pick(ray) ?? this.spans.pick(ray); }
 
   get ox() { return this.world.origin_x(); }
   get oz() { return this.world.origin_y(); }
@@ -54,7 +57,7 @@ export class Village {
   dispose() {
     this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.walls.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
     this.view.root.traverse(o => (o as THREE.Mesh).geometry?.dispose());
-    this.walls.dispose(); this.paths.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());
+    this.walls.dispose(); this.spans.dispose(); this.paths.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());
   }
 
   /** Swap in a fresh world (after moving to another site, or a rebuilt replica). */
@@ -62,12 +65,14 @@ export class Village {
 
   /** Rebuild everything that depends on the building list. */
   syncFull() {
+    { const st = this.world.style(); if (st === 0) this.view.setBanner(this.defaultBanner); else this.view.setBanner(BANNER_STYLES[st]); }
     const w = this.world, f = w.buildings_flat(), roads = w.roads_flat();
     this.clear = this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
     for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 24) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 6.4 * (1 + 0.13 * (f[i + 4] & 7)) }); else if (k === 32 || k === 33 || k === 34) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 5.6 }); }   // no trees on the banks of a moat or river or on earthworks
-    this.obstacles = []; for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 22 || k === 24 || k === 23 || k === 32 || k === 33 || k === 34) continue; this.obstacles.push({ x: f[i + 2], z: f[i + 3], r: k === 2 ? 3 : k === 21 ? 1.6 : this.sh.radii[k] + 0.3 }); }
+    this.obstacles = []; for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 22 || k === 24 || k === 23 || k === 32 || k === 33 || k === 34 || k === 37 || k === 38) continue; this.obstacles.push({ x: f[i + 2], z: f[i + 3], r: k === 2 ? 3 : k === 21 ? 1.6 : this.sh.radii[k] + 0.3 }); }
     this.paths.update(f, roads, this.sh.radii, w.birth_flat());
     this.walls.update(f, w.terrain_version(), w.options_flat());
+    this.spans.update(w.bridge_spans_flat());
     this.props.update(f, roads, this.sh.radii);
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
     this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
@@ -93,7 +98,7 @@ export class Village {
       const f = w.buildings_flat();
       this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
       this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
-      this.walls.update(f, w.terrain_version(), w.options_flat()); this.army.syncWalls(this.walls.walks);
+      this.walls.update(f, w.terrain_version(), w.options_flat()); this.spans.update(w.bridge_spans_flat()); this.army.syncWalls(this.walls.walks);
       this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     }
     this.fireData = w.fires_flat(); this.people.setFires(this.fireData); this.paths.setTick(Number(w.tick()));
