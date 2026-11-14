@@ -762,7 +762,7 @@ function applyFlag(f: Flag) {
   if (lv.world.set_style(n)) { commit({ op: 'style', kind: n }); lv.syncFull(); }
 }
 
-function afterLocalChange() { refreshTerrain(lv.world); lv.syncFull(); lv.afterTick(); if (forestDirtyFlag) rebuildForest(); updateSelection(); updateHud(); }
+function afterLocalChange() { refreshTerrain(lv.world); lv.syncFull(); deposits?.attach(lv.world.buildings_flat()); lv.afterTick(); if (forestDirtyFlag) rebuildForest(); updateSelection(); updateHud(); }
 
 /** How we stand with another village: feeling, marriage and treaties (1 trade pact, 2 peace, 4 alliance). */
 function relOf(key: string) {
@@ -815,7 +815,7 @@ function stepLocal() {
   if (t % 4 === 0) updateGoals();
   pollTrade(); checkArrivals(); updateDets(); if (selectedDet !== null) showRoute();
   room?.broadcastHash(t, w.state_hash().toString());
-  if (t % 3 === 0) deposits.sync(w.deposits_flat());
+  if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
   if (forestDirtyFlag) rebuildForest();
