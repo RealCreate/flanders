@@ -223,6 +223,7 @@ pub struct World {
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
+    ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
     net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network (derived; rebuilt when the village changes)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
@@ -295,7 +296,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), moat_water: vec![], bridges: vec![], map_ver: 0,
+            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), moat_water: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -1401,6 +1402,9 @@ impl World {
     pub fn net_flat(&self) -> Vec<f32> { self.net_flat_inner() }
     /// A route over the path network: [complete (1 or 0), x, y, x, y, ...], or empty when the network does not help (villagers walk it).
     pub fn net_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.net_route_inner(sx, sy, gx, gy) }
+
+    /// A walking route over the invisible lines (the grid of the world plus the village's paths), for villagers: [1, x, y, x, y, ...], or empty when there is no dry way.
+    pub fn walk_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.walk_route_inner(sx, sy, gx, gy) }
 
     /// Walkable routes between linked buildings: [child, parent, n, x0, y0, x1, y1, ...] repeated. Unlike `roads_flat` these include the crossings of drawbridges.
     pub fn road_paths_flat(&self) -> Vec<f32> {
@@ -3644,6 +3648,26 @@ mod pathnet_tests {
         let mut all = vec![(1.0f32, 22.0f32)]; all.extend(p.iter().map(|q| (q.x, q.y)));
         let xs: Vec<f32> = all.windows(2).filter(|q| (q[0].1 - 30.0) * (q[1].1 - 30.0) <= 0.0 && (q[0].1 - q[1].1).abs() > 1e-6).map(|q| q[0].0 + (q[1].0 - q[0].0) * (30.0 - q[0].1) / (q[1].1 - q[0].1)).collect();
         assert!(!xs.is_empty() && xs.iter().all(|x| x.abs() < 1.0), "through the middle of the gate: {xs:?}");
+    }
+
+    #[test]
+    fn villagers_and_soldiers_share_the_lines_and_nobody_wades() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let dry = w.walk_route(0.0, 8.0, 0.0, 36.0); assert!(dry.is_empty(), "no dry way across an unbroken moat: {dry:?}");
+        let br = w.place(DRAWBRIDGE, 0, 20, 0); assert!(br >= 0);
+        let r = w.walk_route(0.0, 8.0, 0.0, 36.0);
+        assert!(!r.is_empty() && r[0] == 1.0, "a dry way over the drawbridge");
+        let mut pts = vec![(0.0f32, 8.0f32)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1])));
+        for p in pts.windows(2) { for t in 0..=40 { let f = t as f32 / 40.0; let (x, y) = (p[0].0 + (p[1].0 - p[0].0) * f, p[0].1 + (p[1].1 - p[0].1) * f); assert!(w.height_at(x, y) > 0.1 || (x.abs() <= 2.0 && (y - 20.0).abs() <= 7.5), "waded at {x:.1},{y:.1}"); } }
+        // an army goes the same way, over the deck
+        let a = w.find_path(&[5, 0, 0, 0, 0], 0.0, 8.0, 0.0, 36.0).expect("a route");
+        assert!(a.iter().all(|q| q.mode == 0), "no ferry where there is a drawbridge");
+        // the roads are the cheap lines: two houses with a road between them are joined along it
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES];
+        for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 30, 4)] { w.place(k, x, y, 0); }
+        let p = w.find_path(&[5, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
+        assert!(p.len() >= 2 && p.last().map_or(false, |q| (q.x - 30.0).abs() < 3.0));
     }
 
     #[test]

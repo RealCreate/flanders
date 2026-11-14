@@ -66,7 +66,7 @@ export class People {
   /** For each building, the direction its paths leave in. */
   private doorAngle = new Map<number, number>();
   hidden = false;           // villagers shelter indoors during a battle
-  /** The path network of the village (see pathnet.rs): a route from one point to another as [complete, x, z, x, z, ...], or empty when it does not help. */
+  /** The invisible lines of the world (the grid plus the village paths, see march.rs): a dry route from one point to another as [1, x, z, x, z, ...], or empty when there is none. */
   router: ((sx: number, sz: number, gx: number, gz: number) => ArrayLike<number>) | null = null;
   private roadGrid = new Map<string, number[]>();
   /** Dirt roads as [ax, az, bx, bz, ...] segments (World.roads_flat() without the buildings): people walk them faster. */

@@ -52,7 +52,7 @@ export class Village {
     this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
     this.army.friend = color; this.army.radii = sh.radii;
-    this.people.router = (a, b, c, d) => this.world.net_route(a, b, c, d);
+    this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
     this.army.plan = (ax, az, bx, bz) => { const p = this.world.plan_march(Uint32Array.from([1, 0, 0, 0, 0]), ax, az, bx, bz); return p[0] === 1 ? Array.from(p.slice(5)) : null; };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
     sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
