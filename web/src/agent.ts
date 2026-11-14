@@ -182,7 +182,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
   // ---- the connection ----
   function connect() {
     if (stopped) return;
-    ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    ws = new WebSocket(`ws://localhost:${port}`);
     ws.onopen = () => { ws!.send(JSON.stringify({ hello: 'flanders-game', token })); };
     ws.onmessage = ev => {
       let m: { id?: number; tool?: string; args?: Record<string, unknown>; hello?: string };
