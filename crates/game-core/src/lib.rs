@@ -342,23 +342,7 @@ impl World {
         }
         for b in &self.buildings {
             let d = &DEFS[b.kind as usize];
-            if is_edit(b.kind) {   // (applied above, before roads and pads)
-                continue;
-                #[allow(unreachable_code)] if !moats { continue; }
-                let (dx, dy) = (x - b.x, y - b.y);
-                let (floor, bank) = if b.kind == MOAT { (MOAT_FLOOR * moat_scale(b), MOAT_BANK * moat_scale(b)) } else { (1.2, 5.0) };
-                if dx.abs() > bank || dy.abs() > bank { continue; }
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist >= bank { continue; }
-                let w = 1.0 - smoothstep(floor, bank, dist);
-                match b.kind {
-                    MOAT => { if h > MOAT_BED { h += (MOAT_BED - h) * w; } }
-                    RIVER => { if h > RIVER_BED { h += (RIVER_BED - h) * w; } }
-                    RAISE => h += 2.2 * w,
-                    _ => h -= 2.2 * w,
-                }
-                continue;
-            }
+            if is_edit(b.kind) { continue; }   // ditches and earthworks were applied above, before roads and pads
             if !d.pad { continue; }
             let r0 = pad_inner(d);
             let r1 = r0 + 3.5;
@@ -1606,12 +1590,8 @@ mod road_tests {
         let mut w = rich();
         ring(&mut w, 20.0, 44, MOAT);
         let outside = [(0, 36), (6, 38), (-8, 40), (12, 36), (-14, 36)].into_iter().map(|(x, y)| w.place(HOUSE, x, y, 0)).find(|&i| i >= 0).unwrap_or(-1);
-        let (ox, oy) = if outside >= 0 { (w.buildings[outside as usize].x, w.buildings[outside as usize].y) } else { (0.0, 36.0) };
-        let _ = (ox, oy);
         assert!(outside >= 0, "house outside the moat: {outside}");
-        let links = |w: &World| w.road_paths_flat().chunks(1).len();
         let has_link = |w: &World, child: u32| { let v = w.road_paths_flat(); let mut i = 0; let mut found = false; while i < v.len() { let n = v[i + 2] as usize; if v[i] as u32 == child { found = true; } i += 3 + 2 * n; } found };
-        let _ = links;
         assert!(!has_link(&w, outside as u32), "a house behind an unbroken moat gets no path at all");
         // no drawn segment may lie in water
         for s in w.roads_flat().chunks(6) { for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f); assert!(w.height_at(x, y) > 0.1, "path in water at {x},{y}"); } }
