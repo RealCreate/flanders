@@ -422,7 +422,7 @@ function marchOn(id: number, key: string, r: Rival): boolean {
 }
 
 function doAttack(key: string, u: number[]) {
-  const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
   if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
   const id = lv.world.det_form(Uint32Array.from(u));
   if (!id) { ui.toast('You do not have that many soldiers in the barracks. To send an army you already have in the field, select it on the map first.', 'bad'); return; }
@@ -433,7 +433,7 @@ function doAttack(key: string, u: number[]) {
 
 /** The armies you have selected march on the village. */
 function doAttackSelected(key: string) {
-  const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
   if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
   const ids = multiDets.length ? multiDets : selectedDet !== null ? [selectedDet] : [];
   if (!ids.length) { ui.toast('Select an army first.', 'info'); return; }
@@ -529,10 +529,23 @@ function checkArrivals() {
   for (let o = 0; o < f.length; o += 16) {
     if (f[o + 8] !== 5) continue;
     const id = f[o], key = attackTargets.get(id), r = key ? rivals.get(key) : null;
-    if (!key || !r || !r.online) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer there.', 'info'); continue; }
+    if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
     const u = detUnits(id)!, sent = lv.world.det_send(id);
-    if (sent.length) { attackTargets.delete(id); commit({ op: 'sendatk', idx: id, to: key, units: u }); ui.toast(`Your army attacks ${r.name}!`, 'good'); }
+    if (sent.length) {
+      attackTargets.delete(id); commit({ op: 'sendatk', idx: id, to: key, units: u });
+      if (r.online) ui.toast(`Your army attacks ${r.name}!`, 'good');
+      else attackAway(r, u);
+    }
   }
+}
+
+/** Villages whose owner has left but whose village stays in the world are fought over here, on our copy of it: the fight is against their towers, walls and soldiers as they stood
+ *  when they left. The battle runs a tick at a time (see `stepLocal`), and the report that ends it brings our survivors home with the loot, as with an online defender. */
+const awayFights = new Set<string>();
+function attackAway(r: Rival, u: number[]) {
+  const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
+  if (r.village.world.start_raid(angle, Uint32Array.from(u), myTag())) { awayFights.add(r.key); r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
+  else { lv.world.return_army(Uint32Array.from(u), new Int32Array(RES.length)); commit({ op: 'return', units: u, loot: new Array(RES.length).fill(0) }); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'bad'); updateHud(); }
 }
 
 /** A rival sent soldiers against us: start the fight in our own (authoritative) village. */
@@ -844,6 +857,14 @@ function battleBanner() {
   ui.battle(null);
 }
 
+function stepAwayFights() {
+  for (const key of [...awayFights]) {
+    const r = rivals.get(key); if (!r || r.online) { awayFights.delete(key); continue; }   // (an owner who comes back takes the village over again)
+    const w = r.village.world;
+    if (w.battle_active()) { w.step(); r.village.afterTick(); if (!w.battle_active()) { awayFights.delete(key); r.village.afterTick(); } } else { awayFights.delete(key); r.village.afterTick(); }
+  }
+}
+
 function stepLocal() {
   const w = lv.world;
   w.step();
@@ -853,7 +874,7 @@ function stepLocal() {
   for (let i = 0; i < ev.length; i += 4) { const e = EVENT_TEXT(ev[i], ev[i + 1], ev[i + 2]); ui.toast(e.text, e.tone); ui.log(e.text, e.tone, ev[i + 3]); if (e.tone === 'bad') sound.alert(); else if (e.tone === 'good') sound.coin(); }
   const t = Number(w.tick());
   if (t % 4 === 0) updateGoals();
-  pollTrade(); checkArrivals(); updateDets(); if (selectedDet !== null) showRoute();
+  pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
   room?.broadcastHash(t, w.state_hash().toString());
   if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
