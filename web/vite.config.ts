@@ -10,7 +10,7 @@ export default defineConfig({
     sourcemap: false,
     chunkSizeWarningLimit: 900,
     // three.js and the networking library change rarely: in their own files a visitor's browser keeps them cached across game updates
-    rollupOptions: { output: { manualChunks: { three: ['three'], p2p: ['trystero'] } } },
+    rollupOptions: { output: { manualChunks: (id: string) => (id.includes('/node_modules/three/') ? 'three' : /\/node_modules\/(trystero|@trystero-p2p)\//.test(id) ? 'p2p' : undefined) } },
   },
   base: './',   // relative links, so the build works from a sub-path such as https://user.github.io/flanders/
   preview: { host: '127.0.0.1', port: 4173, allowedHosts: ['.trycloudflare.com', ...extra] },
