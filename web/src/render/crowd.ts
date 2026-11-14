@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { tint } from './geomutil';
 
 /** One person (or soldier) to draw this frame. */
 export interface Draw {
@@ -14,11 +15,6 @@ export interface Draw {
 }
 
 const MAX = 800;
-const tint = (g: THREE.BufferGeometry, hex: number) => {
-  const geo = g.index ? g.toNonIndexed() : g, c = new THREE.Color(hex), n = geo.attributes.position.count, a = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3);
-  geo.setAttribute('color', new THREE.BufferAttribute(a, 3)); geo.deleteAttribute('uv'); return geo;
-};
 const T = (g: THREE.BufferGeometry, x: number, y: number, z: number) => g.translate(x, y, z);
 const merge = (parts: THREE.BufferGeometry[]) => mergeGeometries(parts.map(p => (p.attributes.normal ? p : (p.computeVertexNormals(), p))))!;
 const box = (w: number, h: number, d: number, hex: number, x = 0, y = 0, z = 0) => T(tint(new THREE.BoxGeometry(w, h, d), hex), x, y, z);

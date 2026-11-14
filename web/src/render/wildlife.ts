@@ -1,13 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { tint } from './geomutil';
 import type { Terrain } from './terrain';
 import type { Huntable, WildLike } from './people';
 
-const tint = (g: THREE.BufferGeometry, hex: number) => {
-  const geo = g.index ? g.toNonIndexed() : g, c = new THREE.Color(hex), n = geo.attributes.position.count, a = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3);
-  geo.setAttribute('color', new THREE.BufferAttribute(a, 3)); geo.deleteAttribute('uv'); return geo;
-};
 const bx = (w: number, h: number, d: number, hex: number, x: number, y: number, z: number, rx = 0) => { const g = new THREE.BoxGeometry(w, h, d); g.rotateX(rx); g.translate(x, y, z); return tint(g, hex); };
 const sp = (r: number, hex: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1) => { const g = new THREE.IcosahedronGeometry(r, 1); g.scale(sx, sy, sz); g.translate(x, y, z); return tint(g, hex); };
 const merge = (p: THREE.BufferGeometry[]) => { p.forEach(g => g.computeVertexNormals()); return mergeGeometries(p)!; };
