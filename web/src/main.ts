@@ -81,6 +81,7 @@ const ui: UI = new UI({
   minimapClick: (x, z) => rig?.focus(x, z),
   train: (k, n) => doTrain(k, n),
   attack: (key, u) => doAttack(key, u),
+  attackSelected: key => doAttackSelected(key),
   trade: (key, action, res, amount, escort) => doTrade(key, action, res, amount, escort),
   watch: key => startReplay(key),
   focusPeer: key => { const r = rivals.get(key); if (r) rig.focus(r.village.ox, r.village.oz, 80); },
@@ -410,18 +411,34 @@ function doTrain(kind: number, n: number) {
   commit({ op: 'train', kind, x: n }); sound.train(); ui.toast(`${n} × ${units[kind].name} queued at the barracks.`, 'good'); lv.afterTick(); updateHud();
 }
 
+/** Send a field army against a rival village: it halts just outside their border (on our side) and attacks once it gets there. */
+function marchOn(id: number, key: string, r: Rival): boolean {
+  const dx = lv.ox - r.village.ox, dz = lv.oz - r.village.oz, dl = Math.hypot(dx, dz) || 1, stand = r.village.radius + 12;
+  const tx = r.village.ox + dx / dl * stand, tz = r.village.oz + dz / dl * stand;
+  const res = lv.world.det_march(id, tx, tz, true, r.village.ox, r.village.oz);
+  if (res !== 0) { ui.toast(MARCH_ERRORS[res] ?? 'No route there.', 'bad'); return false; }
+  attackTargets.set(id, key); commit({ op: 'march', idx: id, x: tx, y: tz, to: key, ax: r.village.ox, ay: r.village.oz });
+  return true;
+}
+
 function doAttack(key: string, u: number[]) {
   const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
   if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
   const id = lv.world.det_form(Uint32Array.from(u));
-  if (!id) { ui.toast('You do not have that many soldiers.', 'bad'); return; }
+  if (!id) { ui.toast('You do not have that many soldiers in the barracks. To send an army you already have in the field, select it on the map first.', 'bad'); return; }
   commit({ op: 'form', units: u });
-  const dx = lv.ox - r.village.ox, dz = lv.oz - r.village.oz, dl = Math.hypot(dx, dz) || 1, stand = r.village.radius + 12;   // halt just outside their border, on our side
-  const tx = r.village.ox + dx / dl * stand, tz = r.village.oz + dz / dl * stand;
-  const res = lv.world.det_march(id, tx, tz, true, r.village.ox, r.village.oz);
-  if (res !== 0) { ui.toast(MARCH_ERRORS[res] ?? 'No route there.', 'bad'); return; }
-  attackTargets.set(id, key); commit({ op: 'march', idx: id, x: tx, y: tz, to: key, ax: r.village.ox, ay: r.village.oz });
+  if (!marchOn(id, key, r)) return;
   selectDet(id); ui.toast(`Your army sets out for ${r.name}. It attacks when it arrives.`, 'good'); updateHud();
+}
+
+/** The armies you have selected march on the village. */
+function doAttackSelected(key: string) {
+  const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
+  if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
+  const ids = multiDets.length ? multiDets : selectedDet !== null ? [selectedDet] : [];
+  if (!ids.length) { ui.toast('Select an army first.', 'info'); return; }
+  let sent = 0; for (const id of ids) if (detUnits(id) && marchOn(id, key, r)) sent++;
+  if (sent) { ui.toast(sent > 1 ? `${sent} armies set out for ${r.name}. They attack when they arrive.` : `Your army sets out for ${r.name}. It attacks when it arrives.`, 'good'); lv.afterTick(); showRoute(); updateDets(); updateHud(); }
 }
 
 // ---------- field armies: muster, select, order ----------
@@ -436,7 +453,7 @@ function doMuster(u: number[]) {
 let multiDets: number[] = [];   // every selected army; selectedDet is the first
 function selectDet(id: number | null) { selectDets(id === null ? [] : [id]); }
 function selectDets(ids: number[]) {
-  multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids);
+  multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids); ui.setSelectedArmies(ids.length);
   if (ids.length) { selectKind(null); selectBuilding(null); selectRuin(null); ui.setTab('army'); ui.hint(`${ids.length > 1 ? ids.length + ' armies' : 'Army ' + ids[0]} selected · right-click the ground to march · Shift+click adds or removes one · drag a box to select several · ${keyNames('haltArmy')} halt · ${keyNames('recallArmy')} send home · ${keyNames('cancel')} deselect`); }
   else if (selectedKind === null) ui.hint(null);
   showRoute(); updateDets();
