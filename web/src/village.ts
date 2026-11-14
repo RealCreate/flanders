@@ -48,7 +48,12 @@ export class Village {
   }
 
   /** Which building (index) is under the pointer? Walls are separate meshes. */
-  pick(ray: THREE.Raycaster): number | null { return this.view.pick(ray) ?? this.walls.pick(ray) ?? this.spans.pick(ray); }
+  pick(ray: THREE.Raycaster): number | null {
+    // the nearest thing under the pointer wins: a wall in front of a house is the wall (it used to pick whatever was behind it)
+    let best: { idx: number; d: number } | null = null;
+    for (const h of [this.view.pickHit(ray), this.walls.pickHit(ray), this.spans.pickHit(ray)]) if (h && (!best || h.d < best.d)) best = h;
+    return best ? best.idx : null;
+  }
 
   get ox() { return this.world.origin_x(); }
   get oz() { return this.world.origin_y(); }

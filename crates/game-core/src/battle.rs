@@ -32,6 +32,7 @@ impl World {
         (a.cos(), a.sin())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn defence_points(&self) -> u32 {
         self.buildings.iter().map(|b| match b.kind { TOWER => 2 + 2 * b.garrison as u32, KEEP => 8 + 2 * b.garrison as u32, WALL => 1, GATE => 2, MOAT => 1, RIVER => 1, _ => 0 }).sum::<u32>() + self.army.iter().take(5).sum::<u32>() * 3
     }
@@ -522,7 +523,7 @@ impl World {
         let Some(r) = self.ruins.get(ri).copied() else { return -1 };
         let (x, y, kind, tier, rot) = (r[0], r[1], r[3] as u8, r[4] as u8, r[5] as u8);
         let d = &DEFS[kind as usize];
-        for b in &self.buildings { let bd = &DEFS[b.kind as usize]; if (b.x - x).powi(2) + (b.y - y).powi(2) < (bd.r + d.r - 0.4).powi(2) { return -3; } }
+        for b in &self.buildings { if (b.x - x).powi(2) + (b.y - y).powi(2) < (crate::footprint(b.kind, b.tier) + d.r - 0.4).powi(2) { return -3; } }
         let cost = Self::rebuild_cost(kind, tier);
         if !self.can_afford(&cost) { return -6; }
         self.pay(&cost);

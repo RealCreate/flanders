@@ -41,6 +41,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   api.fill();
   for (let i = 0; i < 3; i++) { api.upgrade(hallIdx); api.fill(); }          // a grand castle hall widens the border for everything that follows
 
+  const up = (i: number, times: number) => { if (i < 0) return; for (let t = 0; t < times; t++) { if (!api.upgrade(i)) { api.fill(); if (!api.upgrade(i)) break; } } };   // (an upgrade fails when a neighbour is in the way)
   const reserved: [number, number, number][] = [];                           // x, y, radius: spots houses must keep clear of
   const wallPts: [number, number][] = [];                                   // every wall piece and gate standing so far
   /** Spots that keep a building clear of the walls: its own radius, the wall piece's, and 3 units of room between them. */
@@ -49,15 +50,16 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   reserved.push([0, 0, 6]);
 
   // 1. the inner ward: keep, church, court, barracks, well and a garden under the keep's walls
-  const keep = put(KEEP, 0, -13, 6.5, 0, 3);
-  const chapel = put(CHAPEL, -13, -2, 4, 0, 3);
-  put(COURTHOUSE, 13, -10, 4.5, 0, 3); put(BARRACKS, 12, 11, 5, 0, 3); put(WELL, -2, 10, 2, 0, 2); put(GARDEN, -12, 12, 3.4, 0, 3);
+  const keep = put(KEEP, 0, -21, 13, 0, 3);
+  const chapel = put(CHAPEL, -21, -2, 6, 0, 3);
+  up(keep, 3); up(chapel, 2);   // the keep and the church grow to their full size first, so everything else is placed round them
+  put(COURTHOUSE, 21, -12, 6, 0, 3); put(BARRACKS, 17, 15, 7, 0, 3); put(WELL, -3, 14, 2, 0, 2); put(GARDEN, -16, 17, 4, 0, 3);
 
   // 2. the mural towers of the inner and outer walls, standing a little inside the curtain
-  const R1 = 27, R2 = 49, R3 = 65;
+  const R1 = 39, R2 = 61, R3 = 76;   // a roomy inner ward and bailey: buildings grow as they are upgraded and need the space
   const innerTowers: number[] = [], outerTowers: number[] = [];
-  for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3, p = pt(R1 - 7.6, a); innerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
-  for (let k = 0; k < 8; k++) { const a = Math.PI / 8 + (k * Math.PI) / 4, p = pt(R2 - 7.6, a); outerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
+  for (let k = 0; k < 8; k++) { const a = Math.PI / 8 + (k * Math.PI) / 4, p = pt(R1 - 9.4, a); innerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
+  for (let k = 0; k < 12; k++) { const a = Math.PI / 12 + (k * Math.PI) / 6, p = pt(R2 - 9.4, a, 0.3); outerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
 
   // 3. the curtain walls, built before anything stands in the bailey so that no wall is ever blocked by a building (the buildings give way to the walls, not the other way round): inner (with its gatehouse to the east) and outer (gate to the south)
   api.fill();
@@ -66,7 +68,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
     let gate = -1;
     ring.forEach((p, k) => {
       if (k === 0) { placed.push([p.x, p.y]); return; }   // the gate goes in last, between its two walls (a gate only ever stands in a wall)
-      const i = api.place(WALL, p.x, p.y, 0, 4); if (i >= 0) { pieces.push(i); placed.push(api.at(i)); wallPts.push(api.at(i)); } else placed.push(null);
+      const i = api.place(WALL, p.x, p.y, 0, 4, (x, y) => Math.hypot(x - ring[0].x, y - ring[0].y) >= 5.6); if (i >= 0) { pieces.push(i); placed.push(api.at(i)); wallPts.push(api.at(i)); } else placed.push(null);   // (keeps the gate's spot free)
     });
     gate = api.place(GATE, ring[0].x, ring[0].y, 0, 0); if (gate >= 0) wallPts.push([ring[0].x, ring[0].y]);
     // close any gap: where neighbours stand too far apart, put a piece between them (or retry the missing spot wider)
@@ -95,8 +97,8 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
     const n = Math.floor((Math.PI * 2 * (ring ? R2 - 8.5 : R1 + 8.5)) / 7.6);
     for (let k = 0; k < n && houses.length < 38; k++) {
       const a = (k / n) * Math.PI * 2 + (ring ? 0.11 : 0), r = ring ? shape(R2, a, 0.3) - 8.5 : shape(R1, a, 0) + 8.5, p: [number, number] = [Math.round(Math.cos(a) * r), Math.round(Math.sin(a) * r)];
-      if (Math.abs(p[1]) < 5 && p[0] > 18) continue;                          // from the inner gate (east) ...
-      if (Math.abs(p[0]) < 5 && p[1] > 18) continue;                          // ... to the outer gate (south)
+      if (Math.abs(p[1]) < 5 && p[0] > 26) continue;                          // from the inner gate (east) ...
+      if (Math.abs(p[0]) < 5 && p[1] > 26) continue;                          // ... to the outer gate (south)
       if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 3.7)) continue;
       const i = api.place(HOUSE, p[0], p[1], 0, 2, clearOfWalls(3.2)); if (i >= 0) { houses.push(i); reserved.push([...api.at(i), 3.2]); }
     }
@@ -105,7 +107,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   // 4c. infill: more houses between the two rings, wherever the bailey still has room (the walls are already standing, so this can only fill space, never break a wall)
   for (let deg = 0; deg < 360 && houses.length < 30; deg += 7) for (const off of [-6, 0, 6]) {
     const p = bail(deg + (off ? 3 : 0), off);
-    if (Math.abs(p[1]) < 5 && p[0] > 18) continue; if (Math.abs(p[0]) < 5 && p[1] > 18) continue;
+    if (Math.abs(p[1]) < 5 && p[0] > 26) continue; if (Math.abs(p[0]) < 5 && p[1] > 26) continue;
     if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 3.7)) continue;
     const i = api.place(HOUSE, p[0], p[1], 0, 1, clearOfWalls(3.2)); if (i >= 0) { houses.push(i); reserved.push([...api.at(i), 3.2]); }
   }
@@ -115,7 +117,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   moatPts.forEach(p => {
     const dAng = Math.abs(((p.a - Math.PI / 2 + Math.PI * 3) % (Math.PI * 2)) - Math.PI);   // distance from the gate
     const width = dAng < 0.32 ? 1 : Math.max(0, Math.min(4, Math.round(2.2 + 1.8 * Math.sin(p.a * 2.3 + 1.0))));   // narrow at the drawbridge, varied elsewhere
-    const i = api.place(MOAT, p.x, p.y, width, 0); wet.push(i >= 0 ? api.at(i) : null);
+    const i = api.place(MOAT, p.x, p.y, width, 4); wet.push(i >= 0 ? api.at(i) : null);
   });
   for (let k = 0; k < wet.length; k++) {
     const a = wet[k], b = wet[(k + 1) % wet.length]; if (!a || !b) continue;
@@ -132,13 +134,10 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   }
 
   // 7. improvements: stone walls (the inner ring battlemented), stone towers, the keep, nicer houses
-  const up = (i: number, times: number) => { if (i < 0) return; for (let t = 0; t < times; t++) { if (!api.upgrade(i)) { api.fill(); if (!api.upgrade(i)) break; } } };
   innerWall.forEach(i => up(i, 3)); up(inner.gate, 3); api.fill();   // the gatehouses match the walls they stand in
   outerWall.forEach(i => up(i, 2)); up(outer.gate, 2); api.fill();
   for (const i of innerTowers) if (i >= 0) up(i, 3);
   for (const i of outerTowers) if (i >= 0) up(i, 2);
-  if (keep >= 0) up(keep, 3);
-  if (chapel >= 0) up(chapel, 2);
   houses.forEach((i, k) => { if (k % 2 === 0) up(i, 1); });
   api.fill();
 

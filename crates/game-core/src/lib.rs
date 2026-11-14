@@ -44,7 +44,7 @@ struct Building {
 }
 
 /// A moat piece's width: its rotation value (0..7) widens the ditch from 1x to 1.9x, so a moat can be thin in places and broad in others.
-pub fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 }
+pub(crate) fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 }
 
 /// Walls, fences, gates and moat pieces are not on the village path network.
 fn is_barrier(kind: u8) -> bool { matches!(kind, WALL | FENCE | GATE) || is_edit(kind) }
@@ -222,6 +222,17 @@ pub fn trees_in(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> { ter
 
 #[wasm_bindgen]
 pub fn village_sites(seed: u64) -> Vec<f32> { terrain::sites(seed).into_iter().flat_map(|(x, y)| [x, y]).collect() }
+
+#[wasm_bindgen]
+/// How much room a building takes at a tier: the grander buildings spread out as they are upgraded (a farm gains fields, a keep its courtyard), so an upgrade can need the
+/// neighbours to make way.
+pub fn footprint(kind: u8, tier: u8) -> f32 {
+    let Some(d) = DEFS.get(kind as usize) else { return 0.0 };
+    let grow = match kind { FARM => 0.25, TOWN_HALL => 0.1, KEEP => 0.1, BARRACKS | CHAPEL | COURTHOUSE | MARKET | STOREHOUSE | HOSPITAL | GRAVEYARD => 0.1, _ => 0.0 };
+    d.r * (1.0 + grow * tier as f32)
+}
+#[wasm_bindgen]
+pub fn footprint_of(kind: u8, tier: u8) -> f32 { footprint(kind, tier) }
 
 #[wasm_bindgen]
 pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
@@ -545,10 +556,10 @@ impl World {
         if !self.in_territory(x, y) { return -2; }
         if kind == GATE && !self.buildings.iter().any(|b| b.kind == WALL && (b.x - x).hypot(b.y - y) <= 9.0) { return -20; }   // a gate only ever stands in a wall
         for b in &self.buildings {
-            let bd = &DEFS[b.kind as usize];
+            let _bd = &DEFS[b.kind as usize];
             if (matches!(kind, DRAWBRIDGE | BRIDGE) && matches!(b.kind, MOAT | RIVER)) || (matches!(kind, MOAT | RIVER) && matches!(b.kind, DRAWBRIDGE | BRIDGE)) { continue; }   // a bridge spans the water   // a drawbridge spans the water
             if is_edit(kind) && is_edit(b.kind) && kind != b.kind { continue; }                                                               // raise, lower, dig: different edits can share a spot
-            if (b.x - x).powi(2) + (b.y - y).powi(2) < (bd.r + d.r - 0.4).powi(2) { return -3; }
+            if (b.x - x).powi(2) + (b.y - y).powi(2) < (footprint(b.kind, b.tier) + d.r - 0.4).powi(2) { return -3; }
         }
         let fr = d.r * 0.9;
         let pts = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
@@ -722,9 +733,23 @@ impl World {
     }
 
     /// 0 ok, -1 invalid, -6 cannot afford, -10 max tier
+    /// The buildings that stand in the way of this building growing to its next tier (only those that do not already overlap it now).
+    pub fn upgrade_blockers(&self, idx: u32) -> Vec<u32> {
+        let Some(b) = self.buildings.get(idx as usize) else { return vec![] };
+        if b.tier >= max_tier(b.kind) { return vec![]; }
+        let (old, new) = (footprint(b.kind, b.tier), footprint(b.kind, b.tier + 1));
+        if new <= old { return vec![]; }
+        self.buildings.iter().enumerate().filter(|(i, o)| {
+            if *i == idx as usize || matches!(o.kind, MOAT | RIVER | RAISE | LOWER | ROAD | DRAWBRIDGE | BRIDGE) { return false; }
+            let d2 = (o.x - b.x).powi(2) + (o.y - b.y).powi(2); let r = footprint(o.kind, o.tier);
+            d2 < (r + new - 0.4).powi(2) && d2 >= (r + old - 0.4).powi(2)
+        }).map(|(i, _)| i as u32).collect()
+    }
+
     pub fn upgrade(&mut self, idx: u32) -> i32 {
         let Some(b) = self.buildings.get(idx as usize) else { return -1 };
         if b.tier >= max_tier(b.kind) { return -10; }
+        if !self.upgrade_blockers(idx).is_empty() { return -3; }   // the bigger building would run into its neighbours: they must be demolished first
         let cost = upgrade_cost(DEFS[b.kind as usize].weight, b.tier + 1);
         if cost.iter().any(|&(r, n)| self.stock[r as usize] < n) { return -6; }
         for &(r, n) in &cost { self.stock[r as usize] -= n; }
@@ -775,6 +800,20 @@ impl World {
     pub(crate) fn hero_dmg(&self) -> f32 { self.hero.map_or(1.0, |(_, xp)| 1.0 + 0.06 * (Self::hero_level(xp) as f32 - 1.0) + 0.04) }
 
     /// Switch one optional design upgrade of a building on (or off again, without refund). 0 ok, -1 invalid, -6 cannot afford, -10 not available yet (needs a better tier).
+    /// Clear a deposit off the land (the villagers break the rock up and cart it away, or dig the clay out) so the ground can be built on. 0 done, -1 no such deposit,
+    /// -2 outside the border, -3 already cleared, -4 a mine or quarry is working it, -6 not enough wood and tools.
+    pub fn clear_deposit(&mut self, i: u32) -> i32 {
+        let Some(d) = self.deposits.get(i as usize).copied() else { return -1 };
+        if d.max == 0 { return -3; }
+        if !self.in_territory(d.x, d.y) { return -2; }
+        if self.buildings.iter().any(|b| b.aux == i as i32 && DEFS[b.kind as usize].req == 1) { return -4; }
+        if self.stock[W as usize] < 40 || self.stock[TL as usize] < 10 { return -6; }
+        self.stock[W as usize] -= 40; self.stock[TL as usize] -= 10;
+        let dep = &mut self.deposits[i as usize]; dep.rem = 0; dep.max = 0;
+        self.map_ver += 1; self.after_change();
+        0
+    }
+
     pub fn set_option(&mut self, idx: u32, bit: u8, on: bool) -> i32 {
         let Some(b) = self.buildings.get(idx as usize) else { return -1 };
         let opts = options(b.kind);
@@ -986,14 +1025,14 @@ impl World {
         let n = n.min(self.population); if n == 0 { return; }
         self.children = self.children.min(self.population); self.elders = self.elders.min(self.population - self.children);
         let adults = self.adults();
-        let (mut e, mut c, mut a) = (0u32, 0u32, 0u32);
-        match who {
-            1 => { e = n.min(self.elders); a = (n - e).min(adults); c = n - e - a; }
-            2 => { e = n.min(self.elders); c = (n - e).min(self.children); a = n - e - c; }
-            3 => { a = n.min(adults); c = (n - a).min(self.children); e = n - a - c; }
-            _ => { e = (n as u64 * self.elders as u64 / self.population as u64) as u32; c = (n as u64 * self.children as u64 / self.population as u64) as u32; a = n - e - c; }
-        }
-        self.elders -= e.min(self.elders); self.children -= c.min(self.children); let _ = a;
+        // how many of the dead are elders and children (the rest are adults)
+        let (e, c) = match who {
+            1 => { let e = n.min(self.elders); (e, n - e - (n - e).min(adults)) }
+            2 => { let e = n.min(self.elders); (e, (n - e).min(self.children)) }
+            3 => { let a = n.min(adults); let c = (n - a).min(self.children); (n - a - c, c) }
+            _ => ((n as u64 * self.elders as u64 / self.population as u64) as u32, (n as u64 * self.children as u64 / self.population as u64) as u32),
+        };
+        self.elders -= e.min(self.elders); self.children -= c.min(self.children);
         self.population -= n; self.died[cause] += n; self.unburied += n;
     }
     /// Newcomers arrive (grown men and women).
@@ -1522,7 +1561,7 @@ impl World {
             mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
             mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64);
         }
-        for d in &self.deposits { mix(d.rem as i64 as u64); }
+        for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); }
         for k in 0..5 { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); }
         for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
         for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); for k in 0..5 { mix(d.units[k] as u64); } }
@@ -2142,7 +2181,7 @@ mod tests {
         w.stock = [2000; N_RES];
         w.population = 400; // plenty of workers
         // find any legal spots near each required deposit for the chain
-        let mut place_near = |w: &mut World, kind: u8| -> bool {
+        let place_near = |w: &mut World, kind: u8| -> bool {
             for r in [10i32, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50] {
                 for a in 0..24 {
                     let t = a as f32 * 0.2618;
@@ -2564,7 +2603,7 @@ mod opening_tests {
     #[test]
     fn a_sensible_opening_grows_the_village() {
         let mut w = World::new(1337, 0, 0);
-        let mut put = |w: &mut World, kind: u8, spots: &[(i32, i32)]| spots.iter().any(|&(x, y)| w.place(kind, x, y, 0) >= 0);
+        let put = |w: &mut World, kind: u8, spots: &[(i32, i32)]| spots.iter().any(|&(x, y)| w.place(kind, x, y, 0) >= 0);
         assert!(put(&mut w, HOUSE, &[(12, 4), (14, 8), (-12, 6)]), "a first house");
         assert!(put(&mut w, FARM, &[(22, -8), (-24, -8), (20, 20), (-22, 20)]), "a farm");
         assert!(put(&mut w, FARM, &[(-24, -8), (22, -8), (-22, 20), (20, 20), (30, 6), (-32, 6)]), "a second farm");
@@ -2802,7 +2841,7 @@ mod road_piece_tests {
     fn roads_are_cheap_cannot_go_in_water_and_are_not_raid_targets() {
         let mut w = rich(); let wood = w.stocks()[W as usize]; w.place(ROAD, 14, 4, 0);
         assert_eq!(w.stocks()[W as usize], wood - 1, "one wood a piece");
-        let mut sea = rich(); let probe = (-600..600).step_by(40).flat_map(|x| (-600..600).step_by(40).map(move |y| (x, y))).find(|&(x, y)| sea.base(x as f32, y as f32) < 0.0);
+        let sea = rich(); let probe = (-600..600).step_by(40).flat_map(|x| (-600..600).step_by(40).map(move |y| (x, y))).find(|&(x, y)| sea.base(x as f32, y as f32) < 0.0);
         if let Some((x, y)) = probe { assert!(sea.can_place(ROAD, x, y) < 0, "no road in the sea"); }
         // raiders ignore dirt roads: with only road pieces besides the hall, they still go for the hall
         let mut w = rich(); for k in 0..5 { w.place(ROAD, 12 + k * 4, 0, 0); }
@@ -3045,3 +3084,40 @@ mod relation_tests {
     }
 }
 
+
+#[cfg(test)]
+mod deposit_tests {
+    use super::*;
+    #[test]
+    fn a_deposit_can_be_cleared_for_wood_and_tools_and_stops_blocking() {
+        let mut w = World::new(1337, 0, 0); w.stock = [5000; N_RES];
+        let (i, d) = w.deposits.iter().enumerate().find(|(_, d)| w.in_territory(d.x, d.y) && d.max > 0).map(|(i, d)| (i as u32, *d)).expect("a deposit inside the border");
+        let blocked = w.can_place(HOUSE, (d.x - w.ox as f32) as i32, (d.y - w.oy as f32) as i32);
+        assert_eq!(blocked, -17, "the rock is in the way");
+        let (wood, tools) = (w.stock[W as usize], w.stock[TL as usize]);
+        assert_eq!(w.clear_deposit(i), 0); assert_eq!(w.stock[W as usize], wood - 40); assert_eq!(w.stock[TL as usize], tools - 10);
+        assert_eq!(w.clear_deposit(i), -3, "only once");
+        assert_ne!(w.can_place(HOUSE, (d.x - w.ox as f32) as i32, (d.y - w.oy as f32) as i32), -17, "nothing is in the way any more");
+        assert_eq!(w.clear_deposit(99999), -1);
+        let mut poor = World::new(1337, 0, 0); poor.stock = [0; N_RES]; assert_eq!(poor.clear_deposit(i), -6);
+    }
+}
+
+#[cfg(test)]
+mod footprint_tests {
+    use super::*;
+    #[test]
+    fn a_building_grows_with_its_tier_and_needs_its_neighbours_to_make_way() {
+        assert!(footprint(FARM, 3) > footprint(FARM, 0) * 1.4); assert_eq!(footprint(WALL, 3), footprint(WALL, 0));
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        let farm = w.place(FARM, 30, 20, 0); assert!(farm >= 0);
+        let r0 = footprint(FARM, 0); let d = r0 + 3.2 - 0.4 + 0.3; let mut near = -1; let mut spot = (0, 0);
+        for k in 0..16 { let a = k as f32 * 0.39; let (px, py) = (30 + (a.cos() * d).round() as i32, 20 + (a.sin() * d).round() as i32); let c = w.place(HOUSE, px, py, 0); if c >= 0 { near = c; spot = (px, py); break; } }
+        assert!(near >= 0, "a house right beside the farm");
+        assert_eq!(w.upgrade_blockers(farm as u32), vec![near as u32], "the house is in the way of the farm's growth");
+        let tiers = w.buildings[farm as usize].tier; assert_eq!(w.upgrade(farm as u32), -3); assert_eq!(w.buildings[farm as usize].tier, tiers, "nothing changed and nothing was charged");
+        assert!(w.demolish(near as u32)); assert!(w.upgrade_blockers(farm as u32).is_empty()); assert_eq!(w.upgrade(farm as u32), 0);
+        // a new building must respect the grown farm
+        let dx = (spot.0 - 30) as f32; let dy = (spot.1 - 20) as f32; let dist = (dx * dx + dy * dy).sqrt(); assert!(dist < footprint(FARM, 1) + 3.2 - 0.4, "the grown farm now reaches where the house stood");
+    }
+}

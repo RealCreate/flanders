@@ -337,11 +337,13 @@ export class Walls {
   }
 
   /** Which wall piece (building index) did the ray hit? */
-  pick(ray: THREE.Raycaster): number | null {
+  pick(ray: THREE.Raycaster): number | null { return this.pickHit(ray)?.idx ?? null; }
+  /** The wall piece the ray hits first, with how far away it is (so it can be compared with other things under the pointer). */
+  pickHit(ray: THREE.Raycaster): { idx: number; d: number } | null {
     const hit = ray.intersectObjects(this.meshes, false)[0];
     if (!hit || hit.faceIndex == null) return null;
     const t = this.meshes.indexOf(hit.object as THREE.Mesh), f = hit.faceIndex;
-    for (const r of this.ranges[t]) if (f >= r.start && f < r.end) return r.idx;
+    for (const r of this.ranges[t]) if (f >= r.start && f < r.end) return { idx: r.idx, d: hit.distance };
     return null;
   }
 }

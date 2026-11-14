@@ -259,6 +259,13 @@ const farm: Model = b => {
     bl.position.set(-4.6, 4.2, 3.7); b.g.add(bl); b.spin.push(bl);
   }
   if (t === 3) b.flag(-1.2, 4.2, -2.6, 1.8);
+  // a bigger farm works more fields: a second beside the first, a third below it and a fourth in the corner (the farm's footprint grows to make room)
+  const crop = (c: number) => new THREE.MeshStandardMaterial({ color: c, roughness: 1 });
+  const extra: [number, number, number, number, number][] = [[5.0, 8.4, 7.9, 1.4, 0xc9a43b], [10.4, 4.6, 0, 8.0, 0x6f9a3a], [5.0, 4.6, 7.9, 8.0, 0x8a6a3a]];
+  for (let i = 0; i < Math.min(3, t); i++) {
+    const [w, d, x, z, c] = extra[i]; b.box(w, 0.1, d, crop(c), x, 0.02, z);
+    for (let k = 0; k < Math.floor(d / 1.2); k++) b.box(w - 0.4, 0.06, 0.18, crop(c === 0xc9a43b ? 0xe0bc4a : c === 0x6f9a3a ? 0x4f8a2f : 0x6b4a28), x, 0.1, z - d / 2 + 0.7 + k * 1.2);   // crop rows
+  }
 };
 
 const wall: Model = b => {
@@ -891,7 +898,7 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
         if (kind === 3) { const rr = [1.9, 2.3, 2.3, 2.7][b.t]; ring(rr, wt - 1.7, 1.1, m.wood, 20); ring(rr, wt - 0.6, 0.12, m.darkwood, 20); }
         else { const half = ([5.2, 7.2, 8.4, 9.4][b.t] + 0.8) / 2 + 0.3, len = half * 2 - 0.4; for (const [x, z, rot] of [[0, half, 0], [0, -half, 0], [half, 0, 1], [-half, 0, 1]] as const) { const p1 = b.box(len, 1.1, 0.35, m.wood, x, wt - 1.7, z), p2 = b.box(len, 0.12, 0.45, m.darkwood, x, wt - 0.6, z); if (rot) { p1.rotation.y = p2.rotation.y = Math.PI / 2; } } }
       }
-      if (kind === 3 && bit(2)) { b.cone(R + 0.5, R * 1.3 + 1.2, m.slate, cx, top, cz, 16); top += R * 1.3 + 1.2; }
+      if (kind === 3 && bit(2)) { b.cone(0.42, 2.6, m.slate, cx, top - 0.05, cz, 10); b.sphere(0.16, m.gold, cx, top + 2.6, cz); top += 2.7; }   // a spire on the roof
       if (kind === 26 && bit(2)) for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const tx = cx + sx * (hw - 0.2), tz = cz + sz * (hd - 0.2); b.cyl(1.0, 1.1, top + 0.8, m.stone, tx, 0, tz, 12); b.cone(1.3, 1.9, m.slate, tx, top + 0.8, tz, 12); }
       if (bit(0)) b.flag(cx, top, cz, 2.6);
       if (bit(3)) { b.cyl(0.35, 0.22, 0.4, m.iron, cx + (bit(0) ? 1.0 : 0), top, cz, 8); b.cone(0.28, 0.6, m.glow, cx + (bit(0) ? 1.0 : 0), top + 0.4, cz, 8); }
@@ -923,6 +930,21 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
       if (has(0)) for (const s of [-1, 1]) b.flag(cx + s * (hw - 0.4), 0, cz + hd + 0.5, 2.6);
       if (has(1)) for (const s of [-1, 1]) { b.cyl(0.05, 0.06, 1.5, m.darkwood, cx + s * (hw - 0.4), 0, cz - hd - 0.5, 6); b.box(0.24, 0.3, 0.24, m.glow, cx + s * (hw - 0.4), 1.45, cz - hd - 0.5); }
       break;
+    case 39: { // hospital: herb garden, quarantine ward, chapel ward, banner
+      if (has(0)) { const p = spot(4.2, 3.0, 1.0); if (p) { b.box(4.2, 0.45, 0.12, m.stone, p[0], 0, p[1] - 1.5); b.box(4.2, 0.45, 0.12, m.stone, p[0], 0, p[1] + 1.5); for (const x of [-2.1, 2.1]) b.box(0.12, 0.45, 3.1, m.stone, p[0] + x, 0, p[1]); const g2 = new THREE.MeshStandardMaterial({ color: 0x5a9a3a, roughness: 0.9 }); for (let i = 0; i < 3; i++) { b.box(1.0, 0.22, 2.4, m.earth, p[0] - 1.3 + i * 1.3, 0, p[1]); for (let k = 0; k < 4; k++) b.sphere(0.2, g2, p[0] - 1.3 + i * 1.3, 0.4, p[1] - 0.9 + k * 0.6); } } }
+      if (has(1)) { const p = spot(3.4, 2.6, 2.4); if (p) { b.box(3.2, 1.9, 2.4, m.plaster, p[0], 0, p[1]); b.gable(3.4, 2.6, 1.1, m.tile, p[0], 1.9, p[1], 0.3); b.box(0.9, 1.4, 0.1, m.door, p[0], 0, p[1] + 1.22); for (let i = -1; i <= 1; i += 2) b.box(0.08, 1.0, 0.08, m.darkwood, p[0] + i * 1.9, 0, p[1] + 1.7); b.flag(p[0] - 1.5, 1.9, p[1] - 1.0, 1.4); } }
+      if (has(2)) { const p = spot(2.4, 2.4, 3.0); if (p) { b.box(2.2, 2.0, 2.2, m.stone, p[0], 0, p[1]); b.pyramid(2.6, 2.6, 1.3, m.slate, p[0], 2.0, p[1]); b.box(0.12, 1.0, 0.12, m.gold, p[0], 3.3, p[1]); b.box(0.6, 0.12, 0.12, m.gold, p[0], 3.9, p[1]); } }
+      if (has(3)) { const p = spot(0.5, 0.5, 3.4); if (p) b.flag(p[0], 0, p[1], 3.4); }
+      break;
+    }
+    case 40: { // graveyard: chapel of rest, memorial cross, yews, charnel house
+      if (has(0)) { const p = spot(3.0, 2.4, 2.8); if (p) { b.box(2.8, 1.8, 2.2, m.stone, p[0], 0, p[1]); b.gable(2.8, 2.2, 1.0, m.slate, p[0], 1.8, p[1], 0.25); b.box(0.8, 1.3, 0.1, m.door, p[0], 0, p[1] + 1.12); b.box(0.1, 0.9, 0.1, m.gold, p[0], 2.6, p[1]); b.box(0.5, 0.1, 0.1, m.gold, p[0], 3.05, p[1]); } }
+      if (has(1)) { const p = spot(1.2, 1.2, 4.2); if (p) { b.box(1.2, 0.5, 1.2, m.stone, p[0], 0, p[1]); b.box(0.7, 0.5, 0.7, m.stone, p[0], 0.5, p[1]); b.box(0.28, 3.0, 0.28, m.stone, p[0], 1.0, p[1]); b.box(1.3, 0.28, 0.28, m.stone, p[0], 2.3, p[1]); } }
+      if (has(2)) { const leaf = new THREE.MeshStandardMaterial({ color: 0x23472a, roughness: 0.95 }); for (let i = 0; i < 2; i++) { const p = spot(2.0, 2.0, 3.4); if (p) { b.cyl(0.2, 0.3, 1.6, m.log, p[0], 0, p[1], 7); b.cone(1.0, 3.0, leaf, p[0], 0.9, p[1], 9); } } }
+      if (has(3)) { const p = spot(2.4, 1.8, 1.8); if (p) { b.box(2.2, 1.2, 1.6, m.darkstone, p[0], 0, p[1]); b.gable(2.4, 1.8, 0.7, m.slate, p[0], 1.2, p[1], 0.2); b.box(0.7, 0.9, 0.1, m.door, p[0], 0, p[1] + 0.84); }
+      }
+      break;
+    }
     default: for (let bit = 0; bit < 4; bit++) if (has(bit)) generic(bit);
   }
 }
@@ -1065,12 +1087,14 @@ export class VillageView {
   }
   private dispose(g: THREE.Group) { this.root.remove(g); g.traverse(o => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); }); }
   groupOf(i: number) { return this.items.get(i)?.group; }
-  pick(ray: THREE.Raycaster): number | null {
-    const hit = ray.intersectObjects(this.root.children, true)[0];
-    if (!hit) return null;
-    let o: THREE.Object3D | null = hit.object;
-    while (o && o.userData.idx === undefined) o = o.parent;
-    return o ? o.userData.idx : null;
+  pick(ray: THREE.Raycaster): number | null { return this.pickHit(ray)?.idx ?? null; }
+  pickHit(ray: THREE.Raycaster): { idx: number; d: number } | null {
+    for (const hit of ray.intersectObjects(this.root.children, true)) {
+      let o: THREE.Object3D | null = hit.object;
+      while (o && o.userData.idx === undefined) o = o.parent;
+      if (o) return { idx: o.userData.idx, d: hit.distance };
+    }
+    return null;
   }
 }
 

@@ -1,7 +1,7 @@
 import { HALF } from '../render/terrain';
 import { CATS, KIND_ICON, RES, UNIT_ICON, defs, units, fmtCost, type BuildingDef } from '../data';
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
-import { mountFlagDesigner } from './flagdesigner';
+import { mountFlagDesigner, paintFlag } from './flagdesigner';
 import { loadFlag, saveFlag } from '../flag';
 
 /** The keys bound to an action, as they are now (after any rebinding), e.g. "W / Z / ↑". */
@@ -24,6 +24,7 @@ export interface Handlers {
   start(world: string, name: string): void;
   select(kind: number | null): void;
   act(name: string): void;
+  upgradeHover(on: boolean): void;
   speed(n: number): void;
   toggleResources(): void;
   minimapClick(x: number, z: number): void;
@@ -93,7 +94,7 @@ export class UI {
     <span class="pill" id="v-joy" title="Happiness: gardens, parks, chapels, markets and courts lift it; hunger, plague and overcrowding lower it. Happy villages grow faster and pay more tax."><span class="ic">😊</span><b>50</b></span>
     <span class="pill" id="v-work" title="Workforce efficiency: jobs vs. available workers"><span class="ic">⚒️</span><b>100%</b></span>
   </div>
-  <div class="spacer"></div>
+  <div class="tools">
   <div class="speed" id="speed">
     <button class="btn" data-s="0" title="Pause"><svg viewBox="0 0 16 16"><rect x="3" y="2" width="3.6" height="12" rx=".6"/><rect x="9.4" y="2" width="3.6" height="12" rx=".6"/></svg></button>
     <button class="btn on" data-s="1" title="Normal speed (calm)"><svg viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg></button>
@@ -106,6 +107,7 @@ export class UI {
   <button class="btn" id="btn-map" title="Full-screen map (M)">🗺 Map</button>
   <button class="btn" id="btn-full" title="Full-screen mode (F11)">⛶</button>
   <button class="btn" id="btn-help">?</button>
+  </div>
 </header>
 <div id="battle" hidden></div>
 <aside id="ledger" hidden>
@@ -175,11 +177,15 @@ export class UI {
     <hr>
     <div class="userfield"><div><label for="username">Your name</label><input id="username" value="${esc(name)}" maxlength="20" spellcheck="false" autocomplete="off"></div><div><label for="world">World</label><select id="world">${worldOptions(world)}</select><input id="world-custom" placeholder="Name your world" maxlength="30" spellcheck="false" autocomplete="off" hidden></div></div>
     <p class="muted">Everyone who enters the same world shares the same lands. Other players see your name over your town hall.</p>
-    <h3 style="margin:8px 0 2px">Your flag</h3><div id="intro-flag"></div>
+    <div class="flagrow"><button type="button" class="flagmini" id="flag-mini" title="Design your flag"><canvas width="60" height="40"></canvas></button><div><b>Your flag</b><div class="muted">Click it to design your own.</div></div></div>
     <div class="btnrow"><button class="pbtn primary" id="found">Enter the world</button></div>
     <p class="muted">There is no game server: every player runs a copy of the game and your browsers connect to each other. Your village is saved in this browser and keeps growing while you are away.</p>
     <p class="muted" id="home-keys"></p>
   </div>
+</div>
+<div class="overlay" id="flag-page" hidden style="z-index:21">
+  <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. You can change it later from the Village tab.</p><div id="intro-flag"></div>
+    <div class="btnrow"><button class="pbtn primary" id="flag-done">Done</button></div></div>
 </div>
 <div class="overlay clear" id="help" hidden>
   <div class="sheet">
@@ -200,7 +206,7 @@ export class UI {
       <button class="pbtn" data-ch="3,0,0">Fill every store</button><button class="pbtn" data-ch="1,10,0">+10 villagers</button><button class="pbtn" data-ch="6,0,0">Cure plague</button>
     </div>
     <h3>Soldiers</h3><div class="btnrow" style="flex-wrap:wrap" id="cheat-army"></div>
-    <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">🏘 Build a model village</button></div>
+    <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">🏘 Build a model village</button><button class="pbtn" data-ch="101,0,0" title="Every building at every tier, plus the design options">🏛 Test hall: all buildings</button></div>
     <h3>Ground</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="102,30,0">▭ Level 30</button><button class="pbtn" data-ch="102,50,0">▭ Level 50</button><button class="pbtn" data-ch="102,72,0">▭ Level 72</button></div>
     <h3>Repair</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="7,0,0">🧯 Extinguish all fires</button><button class="pbtn" data-ch="8,0,0">⛰ Reset terrain</button><button class="pbtn danger" data-ch="101,0,0">♻ Full reset (all villages)</button></div>
     <h3>Trouble</h3>
@@ -223,7 +229,10 @@ export class UI {
   private bind() {
     const wsel = $('world') as HTMLSelectElement, wcus = $('world-custom') as HTMLInputElement;
     wsel.onchange = () => { wcus.hidden = wsel.value !== '__custom'; if (!wcus.hidden) wcus.focus(); };
-    mountFlagDesigner($('intro-flag'), loadFlag(), saveFlag);   // the flag is chosen here, before the village exists, and flown as soon as it does
+    // the flag is chosen before the village exists and flown as soon as it does; the start screen only shows a small flag, and a click opens the designer page
+    const mini = $('flag-mini').querySelector('canvas') as HTMLCanvasElement; paintFlag(mini, loadFlag());
+    mountFlagDesigner($('intro-flag'), loadFlag(), f => { saveFlag(f); paintFlag(mini, f); });
+    $('flag-mini').onclick = () => { $('flag-page').hidden = false; }; $('flag-done').onclick = () => { $('flag-page').hidden = true; };
     const keyText = () => { $('home-keys').innerHTML = controlsHtml(); }; keyText(); keys.onChange(keyText);
     { const h = () => { $('help-mouse').innerHTML = controlsHtml() + ' Number keys <b>1-9</b> pick a building on any keyboard layout.'; }; h(); keys.onChange(h); }
     $('found').onclick = () => { const s = (wsel.value === '__custom' ? wcus.value.trim() : wsel.value) || 'flanders', n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n); };
@@ -243,6 +252,8 @@ export class UI {
     $('btn-mp').onclick = () => this.modal('mp', true);
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => this.modal(b.dataset.close!, false));
     $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').textContent = '✓ Copied'; setTimeout(() => ($('mp-copy').textContent = '📋 Copy invite link'), 1800); };
+    { const up = (e: Event) => this.h.upgradeHover(!!(e.target as HTMLElement).closest('[data-act="upgrade"]'));   // hovering Upgrade outlines the bigger building
+      $('pane-sel').onmouseover = up; $('pane-sel').onmouseleave = () => this.h.upgradeHover(false); }
     $('pane-sel').onclick = e => { const a = (e.target as HTMLElement).closest<HTMLElement>('[data-act]'); if (a && !(a as HTMLButtonElement).disabled) this.h.act(a.dataset.act!); };
     $('btn-map').onclick = () => this.toggleMap(); $('btn-full').onclick = () => toggleFullscreen(); $('mm-full').onclick = e => { e.stopPropagation(); this.toggleMap(); };
     $('bigmap').onclick = e => { const r = $('bigmap').getBoundingClientRect(); this.h.minimapClick(((e.clientX - r.left) / r.width - 0.5) * HALF * 2, ((e.clientY - r.top) / r.height - 0.5) * HALF * 2); this.toggleMap(false); };
@@ -263,6 +274,8 @@ export class UI {
       if ((e.target as HTMLElement)?.matches?.('input,textarea')) return;
       if (e.key === 'Escape') { document.querySelectorAll('.overlay.clear').forEach(o => ((o as HTMLElement).hidden = true)); }
     });
+    // a click on the dimmed backdrop (outside the sheet) closes any pop-up
+    document.querySelectorAll<HTMLElement>('.overlay.clear').forEach(o => o.addEventListener('pointerdown', e => { if (e.target === o) o.hidden = true; }));
   }
 
   // ---- loading screen ----
@@ -281,11 +294,14 @@ export class UI {
   }
   private savePrefs() { try { localStorage.setItem('flanders:ui', JSON.stringify(this.pref)); } catch { /* ignore */ } this.applyPanels(); }
   private applyPanels() {
-    $('ledger').classList.toggle('min', !!this.pref.ledger); $('ledger-open').hidden = !this.pref.ledger || $('ledger').hidden;
+    const shut = !!this.pref.ledger && !this.tempOpen;
+    $('ledger').classList.toggle('min', shut); $('ledger-open').hidden = !shut || $('ledger').hidden;
     $('minimap-card').classList.toggle('min', !!this.pref.map); $('mm-chev').textContent = this.pref.map ? '▸' : '▾';
     $('goals').classList.toggle('min', !!this.pref.goals); $('goals-chev').textContent = this.pref.goals ? '▸' : '▾';
   }
-  toggleLedger() { this.pref.ledger = !this.pref.ledger; this.savePrefs(); }
+  /** Set while the panel is folded away but opened for a selected building; it folds away again when the selection ends. */
+  private tempOpen = false;
+  toggleLedger() { if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); return; } this.pref.ledger = !this.pref.ledger; this.savePrefs(); }
   toggleMinimap() { this.pref.map = !this.pref.map; this.savePrefs(); }
   get bigmap() { return $('bigmap') as HTMLCanvasElement; }
   mapOpen() { return !$('worldmap').hidden; }
@@ -535,10 +551,10 @@ export class UI {
 
   setSelectedPane(html: string | null) {
     const tab = $('tab-sel');
-    if (html === null) { tab.hidden = true; if (this.tab === 'sel') this.setTab('build'); return; }
+    if (html === null) { tab.hidden = true; if (this.tab === 'sel') this.setTab('build'); if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); } return; }
     $('pane-sel').innerHTML = html; tab.hidden = false;
   }
-  showSelectedTab() { this.setTab('sel'); }
+  showSelectedTab() { if (this.pref.ledger && !this.tempOpen) { this.tempOpen = true; this.applyPanels(); } this.setTab('sel'); }
   get currentTab() { return this.tab; }
 
   log(text: string, tone: string, tick: number) {

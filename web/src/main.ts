@@ -6,9 +6,11 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites, tunnels_flat } from './wasm/game_core.js';
+import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of } from './wasm/game_core.js';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
 import { PenPreview } from './render/pen';
+import { SelectionMark } from './render/selection';
+import { buildShowroom } from './render/showroom';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
 import { buildModelVillage, type ModelApi } from './modelvillage';
@@ -42,6 +44,8 @@ import { PathLine, STATE_TEXT } from './render/field';
 await init();
 
 const radii = defs.map(d => d.r);
+/** How much room a building takes at a tier (the core's rule: grander buildings spread out as they are upgraded). */
+const footprint = (kind: number, tier: number) => footprint_of(kind, tier);
 const sound = new Sound();
 const nextFrame = () => new Promise<void>(r => setTimeout(r, 20));
 /** Game ticks per real second at 1x. Half a tick per second keeps the pace of the village calm and readable. */
@@ -53,6 +57,7 @@ const ui: UI = new UI({
   start: (w, n) => startGame(w, n),
   select: k => selectKind(k === selectedKind ? null : k),
   act: a => onAct(a),
+  upgradeHover: on => showUpgradeOutline(on),
   speed: n => setSpeed(n),
   toggleResources: () => toggleResources(),
   muster: u => doMuster(u),
@@ -94,7 +99,7 @@ const cleanName = (n: unknown) => String(n ?? '').replace(/[<>&"']/g, '').trim()
 let perf!: Perf;
 let selectedKind: number | null = null, rot = 0, ghost: THREE.Group | null = null, ghostCode = 99;
 let selectedIdx: number | null = null;
-const selRing = new THREE.Mesh(new THREE.RingGeometry(1, 1.12, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffd34d, transparent: true, opacity: 0.9, depthTest: false }));
+let selRing!: SelectionMark, growRing!: SelectionMark; const blockRings: SelectionMark[] = [];
 /** The border of the land you hold: the outline of the union of a patch round every building (not a circle). */
 const borderRing = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd34d, transparent: true, opacity: 0.6 }));
 borderRing.frustumCulled = false; let borderKey = '';
@@ -153,6 +158,7 @@ function applyCmd(w: World, c: Cmd) {
     case 'envoy': w.envoy(c.idx!); break;
     case 'marriage': w.marriage(c.idx!); break;
     case 'war': w.declare_war(c.idx!); break;
+    case 'clear': w.clear_deposit(c.idx!); break;
     case 'caravan': w.caravan_send(c.kind ?? 0, c.x ?? 0, c.idx ?? 0, c.y ?? 0, c.ax ?? 0); break;
     case 'rebuild': w.rebuild(c.idx!); break;
     case 'form': w.det_form(Uint32Array.from(c.units ?? [])); break;
@@ -307,8 +313,18 @@ function fullReset() {
   location.reload();
 }
 
+/** Test hall (off the map's east coast): every building at every tier in rows, and the top tier with all its design options. Press again to go home. */
+let showroom: THREE.Group | null = null;
+function toggleShowroom() {
+  const hide = (on: boolean) => { terrain.mesh.visible = on; forest.group.visible = on; wildlife.group.visible = on; deposits.group.visible = on; };   // the hall stands on its own platform: the land and its trees would clip through it
+  if (showroom) { scene.remove(showroom); showroom = null; hide(true); rig.focus(lv.ox, lv.oz, 75); ui.toast('Back at your village.', 'info'); return; }
+  const x0 = 960, z0 = -560, sr = buildShowroom(defs.map(d => ({ id: d.id, name: d.name, maxTier: d.maxTier })), tierName, x0, z0);
+  showroom = sr.group; showroom.position.y = Math.max(1, terrain.heightAt(sr.spawn.x, sr.spawn.z)); scene.add(showroom); hide(false); rig.focus(sr.spawn.x, sr.spawn.z, 70);
+  ui.toast('Test hall: one row per building, tiers left to right, then tier 2 and the top tier with every design option. Pan along the rows; press the button again to leave.', 'info');
+}
+
 /** Clear every building except the town hall and build the planned model village (see modelvillage.ts). Everything goes through signed commands. */
-const MODEL_FLAT_RADIUS = 80;
+const MODEL_FLAT_RADIUS = 90;
 function runModelVillage(ask: boolean) {
   if (ask && !confirm('This clears every building except the town hall and builds a model village in its place. Continue?')) return;
   const w = lv.world;
@@ -346,6 +362,7 @@ function runModelVillage(ask: boolean) {
 
 function doCheat(action: number, a: number, b: number) {
   if (action === 100) { runModelVillage(true); return; }
+  if (action === 101) { toggleShowroom(); return; }
   if (action === 101) { fullReset(); return; }
   if (action === 102) { if (lv.world.flatten(a) === 0) { commit({ op: 'flatten', x: a }); afterLocalChange(); refreshTerrain(lv.world); ui.toast('The ground is levelled.', 'good'); } return; }
   if (action === 5) a = selectedIdx ?? -1;           // "burn selected building"
@@ -597,7 +614,8 @@ async function startGame(name: string, username: string) {
   crowd = new Crowd(); scene.add(crowd.group);
   fx = new Effects2(terrain); scene.add(fx.group);
   effects = new Effects(); scene.add(effects.smoke.points);
-  scene.add(selRing, borderRing); selRing.visible = false; selRing.renderOrder = 10;
+  selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
+  for (let i = 0; i < 8; i++) { const r = new SelectionMark(terrain, 0xff6a5a); blockRings.push(r); scene.add(r); }
   pathLine = new PathLine(terrain); scene.add(pathLine.mesh);
   penPreview = new PenPreview(terrain); scene.add(...penPreview.objects);
   worldShips = new WorldShips(terrain); scene.add(worldShips.group);
@@ -682,7 +700,8 @@ async function warmUp() {
 let forestDirtyFlag = false;
 function rebuildForest() {
   const all = [lv, ...[...rivals.values()].map(r => r.village)];
-  forest.rebuild(all.flatMap(v => v.clear), all.flatMap(v => v.clearLines)); forestDirtyFlag = false;
+  const rocks: { x: number; z: number; r: number }[] = []; { const d = lv.world.deposits_flat(); for (let i = 0; i + 4 < d.length; i += 5) if (d[i + 4] > 0) rocks.push({ x: d[i + 1], z: d[i + 2], r: 5 }); }   // trees do not grow through ore and rock
+  forest.rebuild([...all.flatMap(v => v.clear), ...rocks], all.flatMap(v => v.clearLines)); forestDirtyFlag = false;
   obstCache = all.flatMap(v => v.obstacles);
 }
 
@@ -886,7 +905,21 @@ function drawPenBar() {
   bar.innerHTML = SHAPES.map(sh => `<button data-shape="${sh.id}" title="${sh.label}: ${sh.hint}" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${sh.id === penShape ? '#ffe08a' : '#6d5a38'};background:${sh.id === penShape ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;font-size:20px;line-height:1">${sh.icon}</span><span style="font-size:10px">${sh.label}</span></button>`).join('');
 }
 
-function selectBuilding(i: number | null) { selectedIdx = i; if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
+/** While the pointer is on the Upgrade button: an outline of the bigger building (green when there is room, red with the neighbours in the way marked red too). */
+function showUpgradeOutline(on: boolean) {
+  if (growRing.visible) ui.hint(null);
+  growRing.visible = false; blockRings.forEach(r => (r.visible = false));
+  if (!on || selectedIdx === null) return;
+  const w = lv.world, f = w.buildings_flat(), o = selectedIdx * 10; if (o >= f.length) return;
+  const kind = f[o], tier = f[o + 1]; if (tier >= defs[kind].maxTier) return;
+  const fa = footprint(kind, tier), fb = footprint(kind, tier + 1); if (fb <= fa + 0.01) return;
+  const blockers = Array.from(w.upgrade_blockers(selectedIdx));
+  growRing.set(f[o + 2], f[o + 3], fb + 1.1); growRing.visible = true;
+  (growRing.material as THREE.MeshBasicMaterial).color.setHex(blockers.length ? 0xff8a5a : 0x9dffb0);
+  blockers.slice(0, blockRings.length).forEach((b, i) => { const q = b * 10; blockRings[i].set(f[q + 2], f[q + 3], footprint(f[q], f[q + 1]) + 1.1); blockRings[i].visible = true; });
+  if (blockers.length) ui.hint(`Not enough room: ${blockers.length} building${blockers.length > 1 ? 's' : ''} in the way (marked red). Demolish ${blockers.length > 1 ? 'them' : 'it'} to upgrade.`, true);
+}
+function selectBuilding(i: number | null) { showUpgradeOutline(false); selectedIdx = i; if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
 function selectRuin(i: number | null) { selectedRuin = i; if (i !== null) { selectedIdx = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
@@ -898,7 +931,7 @@ function updateSelection() {
     const o = selectedRuin * 6, x = ru[o], z = ru[o + 1], kind = ru[o + 3], tier = ru[o + 4], cc = w.rebuild_cost_of(selectedRuin), cost: [number, number][] = [], stocks = Array.from(w.stocks());
     for (let i = 0; i < cc.length; i += 2) cost.push([cc[i], cc[i + 1]]);
     const ok = cost.every(([r, n]) => stocks[r] >= n);
-    selRing.visible = true; selRing.position.set(x, terrain.heightAt(x, z) + 0.25, z); selRing.scale.setScalar(ru[o + 2] + 1.1);
+    selRing.visible = true; selRing.set(x, z, ru[o + 2] + 1.1);
     ui.setSelectedPane(`<div><div class="eyebrow">Ruins</div><h2>${tierName(kind, tier)}</h2><p class="muted">${defs[kind].name} — burnt or smashed down</p></div><p>Rebuild it as it was, for less than a new one.</p>
       <div><h3>Rebuild cost</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div>
       <button class="pbtn primary" data-act="rebuild" ${ok ? '' : 'disabled'}>${ok ? 'Rebuild' : 'Not enough resources'}</button>
@@ -910,7 +943,7 @@ function updateSelection() {
   const f = w.buildings_flat(), o = selectedIdx * 10, hp = w.building_health();
   const kind = f[o], tier = f[o + 1], x = f[o + 2], z = f[o + 3], status = f[o + 6], pct = f[o + 7];
   const d = defs[kind];
-  selRing.visible = true; selRing.position.set(x, terrain.heightAt(x, z) + 0.25, z); selRing.scale.setScalar(d.r + 1.1);
+  selRing.visible = true; selRing.set(x, z, footprint(kind, tier) + 1.1);
   const stocks = Array.from(w.stocks());
   const io = (a: [number, number][]) => a.map(([r, n]) => `${RES[r].icon} ${n} ${RES[r].name}`).join(', ');
   const health = hp[selectedIdx * 3] / hp[selectedIdx * 3 + 1], burning = hp[selectedIdx * 3 + 2] > 0;
@@ -1004,7 +1037,9 @@ function onAct(a: string) {
   if (a === 'deselect') { selectBuilding(null); return; }
   const w = lv.world;
   if (a === 'upgrade') {
-    if (w.upgrade(selectedIdx) === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit({ op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
+    const code = w.upgrade(selectedIdx);
+    if (code === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit({ op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
+    else if (code === -3) { ui.toast('Not enough room to grow: demolish the buildings in the way (hover Upgrade to see them).', 'bad'); sound.error(); }
     afterLocalChange();
   } else if (a === 'demolish') {
     if (w.demolish(selectedIdx)) { const f = w.buildings_flat(); void f; commit({ op: 'demolish', idx: selectedIdx }); sound.demolish(); selectedIdx = null; afterLocalChange(); rig.shake(0.25); }
@@ -1016,7 +1051,7 @@ const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
 /** The in-game right-click menu: what it offers depends on what is under the pointer. */
 function openContext(e: PointerEvent) {
   const r = pointerRay(e), hit = terrain.pick(r.ray), items: Parameters<UI['ctxMenu']>[3] = [];
-  const det = lv.field.pick(r), idx = det === null ? lv.pick(r) : null, ruin = det === null && idx === null ? lv.ruins.pick(r) : null;
+  const det = lv.field.pick(r), idx = det === null ? pickBuilding(r) : null, ruin = det === null && idx === null ? lv.ruins.pick(r) : null;
   let title = 'The land';
   if (det !== null) {
     selectDet(det); title = `Army ${det}`;
@@ -1050,6 +1085,14 @@ function openContext(e: PointerEvent) {
   ui.ctxMenu(e.clientX, e.clientY, title, items);
 }
 
+/** The building under the pointer. A hand-drawn road piece has no model to hit, so it is found by the ground under the pointer: that way it can be selected and taken away again. */
+function pickBuilding(r: THREE.Raycaster): number | null {
+  const i = lv.pick(r); if (i !== null) return i;
+  const hit = terrain.pick(r.ray); if (!hit) return null;
+  const f = lv.world.buildings_flat(); let best = -1, bd = 3.2;
+  for (let k = 0; k < f.length; k += 10) if (f[k] === 37) { const d = Math.hypot(f[k + 2] - hit.x, f[k + 3] - hit.z); if (d < bd) { bd = d; best = k / 10; } }
+  return best >= 0 ? best : null;
+}
 function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, rig.cam); return ray; }
 
 function updateGhost(e: { clientX: number; clientY: number }) {
@@ -1124,7 +1167,7 @@ function bindInput() {
     }
     if (selectedKind === null && performance.now() - hoverT > 90 && !e.buttons) {
       hoverT = performance.now();
-      const idx = lv.pick(pointerRay(e));
+      const idx = pickBuilding(pointerRay(e));
       let hit: { r: Rival; i: number } | null = null;
       if (idx === null) for (const r of rivals.values()) { const i = r.village.pick(ray); if (i !== null) { hit = { r, i }; break; } }
       const armyId = idx === null ? pickArmy(e) : null;
@@ -1177,7 +1220,7 @@ function bindInput() {
         if (e.shiftKey || e.ctrlKey) selectDets(multiDets.includes(det) ? multiDets.filter(i => i !== det) : [...multiDets, det]); else selectDet(det);   // Shift or Ctrl: add to the selection, or take out
         return;
       }
-      const idx = lv.pick(pointerRay(e));
+      const idx = pickBuilding(pointerRay(e));
       if (idx === null) { const ri = lv.ruins.pick(pointerRay(e)); if (ri !== null) { selectRuin(ri); return; } }
       if (idx !== null) selectBuilding(idx);
       else for (const r of rivals.values()) if (r.village.pick(ray) !== null) { ui.setTab('army'); ui.toast(`${r.name}'s village — choose an army in the Army tab to march on it.`, 'info'); return; }
@@ -1229,6 +1272,15 @@ function buildDepositLabels() {
   for (let i = 0; i < raw.length; i += 5) {
     const el = document.createElement('div'); el.className = 'lbl'; el.hidden = true;
     el.innerHTML = `${DEPOSIT[raw[i]].icon}<span>${DEPOSIT[raw[i]].name}</span>`; ui.labels.appendChild(el); depLabels.push(el);
+    el.style.pointerEvents = 'auto'; el.style.cursor = 'pointer'; el.title = 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
+    const idx = i / 5; let armed = 0;
+    el.onclick = e => {   // the first click asks, the second (within 4 seconds) clears it
+      e.stopPropagation();
+      if (performance.now() - armed > 4000) { armed = performance.now(); ui.toast('Click the label again to clear this deposit (40 wood, 10 tools).', 'info'); return; }
+      armed = 0; const code = lv.world.clear_deposit(idx);
+      if (code === 0) { commit({ op: 'clear', idx }); sound.click(); ui.toast('The deposit is cleared away.', 'good'); forestDirtyFlag = true; afterLocalChange(); updateHud(); }
+      else ui.toast(code === -6 ? 'Clearing takes 40 wood and 10 tools.' : code === -4 ? 'A mine or quarry is working it.' : code === -2 ? 'It lies outside your border.' : 'Nothing to clear.', 'bad');
+    };
   }
 }
 function toggleResources() { showDeposits = !showDeposits; ui.setResourcesToggle(showDeposits); if (!showDeposits) depLabels.forEach(l => (l.hidden = true)); }
@@ -1240,7 +1292,7 @@ function updateLabels() {
     const x = flat[i * 5 + 1], z = flat[i * 5 + 2], rem = flat[i * 5 + 3];
     vtmp.set(x, terrain.heightAt(x, z) + 3.2, z).project(rig.cam);
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.05 && Math.abs(vtmp.y) < 1.05 && Math.hypot(x - rig.target.x, z - rig.target.z) < 210;
-    const el = depLabels[i]; el.hidden = !on; if (!on) continue;
+    const el = depLabels[i]; el.hidden = !on || flat[i * 5 + 4] <= 0; if (el.hidden) continue;
     el.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; el.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
     (el.firstElementChild as HTMLElement).textContent = `${DEPOSIT[flat[i * 5]].name} · ${Math.round(rem)}`;
   }

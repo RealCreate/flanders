@@ -70,3 +70,7 @@ Still not done:
 ## Diplomacy, care and death (done)
 Relations (−100..100) with every other village, envoys, marriage, alliances, declared war; chapels with weekly services and tithes; infirmary/hospital (beds, herb garden, quarantine ward); graveyards, burial plots and unburied dead (miasma); a population ledger (`population = 10 + arrived + born − enlisted − left − Σdied`) proven by a per-tick test.
 Not done: gifts as a caravan flag, refusing caravans from hostile villages, MCP/agent tools for diplomacy.
+
+## Footprints, deposits, test hall (done)
+Buildings take more room as they are upgraded (`footprint(kind, tier)`: farms, keep, hall, chapel, barracks, court, market, store, hospital, graveyard); an upgrade is refused when neighbours are in the way, and hovering Upgrade outlines the bigger building and marks the blockers. Deposits can be cleared (40 wood, 10 tools); hand-drawn road pieces can be selected and demolished. The Test panel has a "Test hall" showing every building at every tier plus all design options.
+Not done: the footprint is a circle (fields and courtyards are drawn inside it approximately); the demo village is only roomier, not redesigned.

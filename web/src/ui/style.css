@@ -27,7 +27,9 @@ body { background: #1a140e; color: var(--paper); font-family: var(--f-ui); font-
 .pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px 2px 5px; border-radius: 2px; font-variant-numeric: tabular-nums; position: relative; cursor: default; }
 .pill:hover { background: #ffffff12; }
 .pill .ic { font-size: 14px; filter: drop-shadow(0 1px 0 #0008); }
-.pill b { font-weight: 400; min-width: 2ch; text-align: right; }
+.pill b { font-weight: 400; min-width: 4.4ch; text-align: right; }   /* wide enough for 5 digits, so the bar does not reflow as stocks change */
+.vitals .pill b { min-width: 3.2ch; }
+#v-pop b { min-width: 6ch; }
 .pill.low b { color: #ff9a8a; }
 .pill.full b { color: #ffe28a; }
 .pill .d { display: none; font-family: var(--f-ui); font-size: 11px; color: #9fcf8a; min-width: 3.4ch; }
@@ -35,7 +37,7 @@ body { background: #1a140e; color: var(--paper); font-family: var(--f-ui); font-
 .pill .d.neg { color: #e58a7a; }
 .vitals { display: flex; gap: 4px; font-family: var(--f-old); }
 .vitals .pill { border: 1px solid #4d3d29; background: #2a2017e6; }
-.spacer { flex: 1; }
+.tools { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }   /* one group pinned to the right, so the controls never hop sides when the numbers change width */
 .speed { display: flex; gap: 0; border: 1px solid #6b5536; border-radius: 3px; overflow: hidden; }
 .btn { font-family: var(--f-ui); font-size: 14px; font-weight: 500; border: 1px solid #6b5536; background: #2f251bdd; color: var(--paper); padding: 6px 11px; border-radius: 3px; cursor: pointer; }
 .btn:hover { border-color: var(--gold-soft); }
@@ -258,3 +260,9 @@ table.res td.r { text-align: right; }
 .flagdice { align-self: flex-start; padding: 4px 10px; font-size: 14px; }
 #intro .sheet { max-height: 94vh; overflow-y: auto; }
 kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5a; border-bottom-width: 2px; border-radius: 3px; background: #f3e8cc; color: #2a1d10; white-space: nowrap; }
+
+/* start screen: the flag is only a small symbol; its designer opens as its own page */
+.flagrow { display: flex; align-items: center; gap: 12px; margin: 8px 0 2px; }
+.flagmini { padding: 3px; border: 2px solid var(--gold-soft, #d9b96a); border-radius: 4px; background: #2a2017; cursor: pointer; line-height: 0; transition: transform .12s; }
+.flagmini:hover { transform: scale(1.06); }
+.flagmini canvas { width: 60px; height: 40px; display: block; }

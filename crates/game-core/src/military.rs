@@ -63,7 +63,7 @@ pub struct Battle {
     pub t: f32,
     pub pillage: f32,
     pub tag: i32, // 0 = bandits, otherwise id of the attacking player
-    pub atk_start: [u32; 5],
+    #[allow(dead_code)] pub atk_start: [u32; 5],
     pub atk_dead: u32,
     pub def_dead: u32,
     pub militia_dead: u32,
