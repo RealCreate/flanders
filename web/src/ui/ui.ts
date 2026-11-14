@@ -1,3 +1,4 @@
+import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
 import { CATS, KIND_ICON, RES, UNIT_ICON, defs, units, fmtCost, type BuildingDef } from '../data';
@@ -248,7 +249,10 @@ export class UI {
 
   private bind() {
     const wsel = $('world') as HTMLSelectElement, wcus = $('world-custom') as HTMLInputElement;
-    wsel.onchange = () => { wcus.hidden = wsel.value !== '__custom'; if (!wcus.hidden) wcus.focus(); };
+    // the chosen map is kept in the address bar, so copying the address (or the invite button) always gives friends the same map
+    const showWorld = () => { const w = wsel.value === '__custom' ? wcus.value.trim() : wsel.value; if (w) history.replaceState(null, '', withWorld(location.href, w)); };
+    wsel.onchange = () => { wcus.hidden = wsel.value !== '__custom'; if (!wcus.hidden) wcus.focus(); showWorld(); };
+    wcus.addEventListener('input', showWorld); showWorld();
     // the flag is chosen before the village exists and flown as soon as it does; the start screen only shows a small flag, and a click opens the designer page
     const mini = $('flag-mini').querySelector('canvas') as HTMLCanvasElement; paintFlag(mini, loadFlag());
     mountFlagDesigner($('intro-flag'), loadFlag(), f => { saveFlag(f); paintFlag(mini, f); });
@@ -257,7 +261,7 @@ export class UI {
     // rebinding a key must work on the start page too, before the game's own key handler exists
     document.addEventListener('keydown', e => { this.captureKey(e); }, true);
     { const h = () => { $('help-mouse').innerHTML = controlsHtml() + ' Number keys <b>1-9</b> pick a building on any keyboard layout.'; }; h(); keys.onChange(h); }
-    $('found').onclick = () => { const s = (wsel.value === '__custom' ? wcus.value.trim() : wsel.value) || 'flanders', n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n); };
+    $('found').onclick = () => { const s = cleanWorld(wsel.value === '__custom' ? wcus.value : wsel.value), n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n); };
     ($('username') as HTMLInputElement).onkeydown = wcus.onkeydown = e => { if (e.key === 'Enter') $('found').click(); };
     $('tabs').onclick = e => { const t = (e.target as HTMLElement).dataset.t; if (t) this.setTab(t); };
     $('cats').innerHTML = `<button class="chip on" data-c="-1">All</button>` + CATS.map((c, i) => `<button class="chip" data-c="${i}">${c.icon} ${c.name}</button>`).join('');

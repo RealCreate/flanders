@@ -189,5 +189,7 @@ export class Room {
   broadcastCmd(s: Signed) { if (this.peers.size) this.sendCmd(s).catch(() => { /* peers left */ }); }
   broadcastHash(tick: number, hash: string) { if (this.peers.size) this.sendHash({ tick, hash }).catch(() => { /* peers left */ }); }
   pubOf(peerId: string) { return this.pubs.get(peerId); }
+  /** Our own id in this room (empty until the room has told us). */
+  get self() { return this.selfId; }
   leave() { this.stopLonely(); this.room.leave(); }
 }

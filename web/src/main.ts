@@ -44,6 +44,7 @@ import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
 import { dayPhase } from './daycycle';
+import { cleanWorld, inviteLink, withWorld } from './worldname';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
 import { showReplayBar, type ReplayBar } from './replayui';
@@ -84,8 +85,8 @@ const ui: UI = new UI({
   watch: key => startReplay(key),
   focusPeer: key => { const r = rivals.get(key); if (r) rig.focus(r.village.ox, r.village.oz, 80); },
   cheat: (a, x, y) => doCheat(a, x, y),
-  copyLink: () => navigator.clipboard?.writeText(`${location.origin}${location.pathname}?world=${encodeURIComponent(worldName)}`),
-}, params.get('world') ?? 'flanders', localStorage.getItem('flanders:name') ?? NAMES[Math.floor(Math.random() * NAMES.length)]);
+  copyLink: () => navigator.clipboard?.writeText(inviteLink(location.href, worldName)),
+}, cleanWorld(params.get('world')), localStorage.getItem('flanders:name') ?? NAMES[Math.floor(Math.random() * NAMES.length)]);
 
 // interface sounds
 document.addEventListener('click', e => { if ((e.target as HTMLElement)?.closest?.('button,.card,.chip,.tab')) sound.click(); });
@@ -197,11 +198,24 @@ function quarantine(r: Rival, e: unknown) {
   updatePeers();
 }
 
+let yielding = false;
+/** Two tabs of one browser share a key and a saved village, so the game saw "Matilda 2" as the same player and put them on the same spot. One of the two tabs (the one with the larger
+ *  connection id; both can tell) starts again with its own key and village (`?player=`) and joins by itself under the same name. */
+function giveWayToOtherTab(otherPeer: string) {
+  if (yielding || !room || !room.self || room.self < otherPeer) return;   // the other tab is the one that moves
+  yielding = true;
+  try { sessionStorage.setItem('flanders:autostart', JSON.stringify({ world: worldName, name: myName })); } catch { /* storage blocked: the player will press Enter again */ }
+  ui.toast('Another tab in this browser is already playing as you. This tab starts its own village…', 'info');
+  const u = new URL(location.href); u.searchParams.set('player', 'tab' + Math.random().toString(36).slice(2, 8));
+  setTimeout(() => location.replace(u.toString()), 1800);
+}
+
 function connect() {
   room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName }), () => myLog, {
     onStatus: s => ui.netStatus(s),
     onHello: (peerId, h) => {
       if (h.world !== worldName || h.site >= sites.length) return;
+      if (h.pub === identity.pub) { giveWayToOtherTab(peerId); return; }   // another tab of this same browser: same key, same village, not a neighbour
       byPeer.set(peerId, h.pub);
       if (h.site === mySite && h.pub !== identity.pub) {
         // two villages on one spot: the player with the larger key moves out
@@ -599,7 +613,7 @@ function tickReplay(dt: number) {
 // ---------- start ----------
 async function startGame(name: string, username: string) {
   if (started) return; started = true;
-  worldName = name; seedBig = hashSeed(name); myName = cleanName(username);
+  worldName = cleanWorld(name); seedBig = hashSeed(worldName); history.replaceState(null, '', withWorld(location.href, worldName)); myName = cleanName(username);
   try { localStorage.setItem('flanders:name', myName); } catch { /* ignore */ }
   ui.setOwner(myName);
   sound.start(); ui.setMuteIcon(sound.muted);
@@ -1510,3 +1524,9 @@ if (DEBUG_HOOKS) (window as any).__game = {
   get perf() { return perf; }, get world() { return lv.world; }, get lv() { return lv; }, get rivals() { return rivals; }, get wildlife() { return wildlife; }, get fx() { return fx; }, get crowd() { return crowd; }, ui, afterLocalChange, refreshTerrain,
   raid(angle = 0.6, u = [8, 4, 2, 0, 0]) { const ok = lv.world.start_raid(angle, Uint32Array.from(u), 0); lv.afterTick(); return ok; },
 };
+
+// a tab that gave way to another tab of this browser (see giveWayToOtherTab) joins again by itself, under the same name
+try {
+  const resume = sessionStorage.getItem('flanders:autostart');
+  if (resume) { sessionStorage.removeItem('flanders:autostart'); const r = JSON.parse(resume) as { world?: string; name?: string }; void startGame(cleanWorld(r.world), cleanName(r.name)); }
+} catch { /* nothing to resume */ }
