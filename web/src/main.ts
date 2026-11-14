@@ -578,7 +578,13 @@ function onLocalReport(rep: number[]) {
 }
 
 function updatePeers() {
-  ui.setPeers([...rivals.values()].map(r => ({ key: r.key, name: r.name + (r.online ? '' : ' (away)'), pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), ...relOf(r.key) })), worldName);
+  const compass = (dx: number, dz: number) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'][((Math.round(Math.atan2(dz, dx) / (Math.PI / 4)) % 8) + 8) % 8];
+  const rows = [...rivals.values()].map(r => {
+    const dx = r.village.ox - lv.ox, dz = r.village.oz - lv.oz, dist = Math.hypot(dx, dz);
+    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
+  });
+  rows.sort((a, b) => Number(b.row.online) - Number(a.row.online) || a.dist - b.dist);   // villages with somebody at home first, then by distance
+  ui.setPeers(rows.map(x => x.row), worldName);
 }
 
 // ---------- replay and spectating ----------

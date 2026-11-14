@@ -53,7 +53,7 @@ export interface Hud {
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
 }
 
-export interface PeerRow { key: string; name: string; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
+export interface PeerRow { key: string; name: string; where?: string; online?: boolean; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
 
 const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
@@ -601,11 +601,11 @@ export class UI {
     const list = rows.length ? rows.map(r => `<li><b>${esc(r.name)}</b> — ${r.pop} villagers, ${r.buildings} buildings · ${r.sync} <button class="chip" data-peer="${esc(r.key)}">Visit</button> <button class="chip" data-watch="${esc(r.key)}" title="Replay this player's history">Watch history</button></li>`).join('') : '<li class="muted">Nobody else is here yet.</li>';
     $('peer-list').innerHTML = list; $('mp-peers').innerHTML = list;
     const form = $('attack-form');
-    const sig = rows.map(r => r.key + r.busy).join(',');
+    const sig = rows.map(r => r.key + r.busy + r.name + r.where).join(',');
     if (sig !== this.armyShown) {
       this.armyShown = sig;
       form.innerHTML = rows.length
-        ? `<select id="atk-target">${rows.map(r => `<option value="${esc(r.key)}">${esc(r.name)}</option>`).join('')}</select>
+        ? `<select id="atk-target">${rows.map(r => `<option value="${esc(r.key)}">${esc(r.name)}${r.where ? ' · ' + esc(r.where) : ''} · ${r.buildings} buildings</option>`).join('')}</select>
            <button class="pbtn danger" id="atk-sel" hidden></button>
            <p class="muted" id="atk-hint"></p>
            <h4>Trade</h4>
