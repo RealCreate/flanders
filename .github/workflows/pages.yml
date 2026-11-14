@@ -30,7 +30,7 @@ jobs:
           npm ci
           npm run wasm:release   # optimised (wasm-opt): about 15% smaller than the --no-opt development build
           npx vite build
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with: { path: web/dist }
 
   deploy:
