@@ -736,7 +736,7 @@ async function startGame(name: string, username: string) {
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
   if (DEBUG_HOOKS) (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
-  last = performance.now(); requestAnimationFrame(frame);
+  last = performance.now(); startBackgroundClock(); requestAnimationFrame(frame);
 }
 
 /** Compile every shader and draw a few real frames (shadow map, textures, trees) behind the loading screen,
@@ -1526,7 +1526,24 @@ function lightLamps(all: Village[], now: number) {
   for (const l of lampLights) l.intensity = l.userData.on ? k * 26 : 0;
 }
 
+/** A page that is not on screen gets no animation frames, and a village that stopped ticking when its tab went to the background stalled everything that depended on it (a fight in it, the
+ *  other players' copies of it). So the clock also runs from a worker's timer, which the browser does not slow down, and it steps the village only while no frames are coming (the page is hidden). */
+let bgLast = 0, frameAt = 0;
+function startBackgroundClock() {
+  try {
+    const src = 'setInterval(() => postMessage(0), 200);';
+    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    w.onmessage = () => {
+      const now = performance.now();
+      if (now - frameAt < 400 || !lv) { bgLast = now; return; }   // frames are coming (the page is on screen): they run the clock
+      const dt = Math.max(0, Math.min(0.5, (now - (bgLast || now)) / 1000)); bgLast = now;
+      if (replay?.target !== lv && speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
+    };
+  } catch { /* no workers (a locked-down browser): the village simply waits while its tab is hidden, as before */ }
+}
+
 function frame(now: number) {
+  frameAt = performance.now();
   { const cap = settings().fpsCap; if (cap && now - last < 1000 / cap - 2) { requestAnimationFrame(frame); return; } }   // frame rate limit
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last); last = now;   // never negative, never a big jump
   perf.start('simulation');
