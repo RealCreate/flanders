@@ -3745,6 +3745,24 @@ mod pathnet_tests {
     }
 
     #[test]
+    fn every_building_is_chained_to_the_castle_through_the_network() {
+        let comps = |w: &World| -> (usize, usize) {   // (nodes outside the hall's network, nodes)
+            let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize);
+            let mut c: Vec<usize> = (0..n).collect();
+            fn f(c: &mut Vec<usize>, x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } r }
+            for k in 0..e { let o = 2 + 2 * n + 3 * k; let (a, b) = (f(&mut c, v[o] as usize), f(&mut c, v[o + 1] as usize)); if a != b { c[a] = b; } }
+            let hall = f(&mut c, (0..n).min_by(|&a, &b| (v[2 + 2 * a].hypot(v[3 + 2 * a])).partial_cmp(&(v[2 + 2 * b].hypot(v[3 + 2 * b]))).unwrap()).unwrap());
+            ((0..n).filter(|&i| f(&mut c, i) != hall).count(), n)
+        };
+        // houses spread wide apart (further than the links reach) with a tower and a wall piece between
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 34, 4), (HOUSE, 56, 10), (TOWER, 0, 20), (HOUSE, -22, 6), (HOUSE, -44, -6), (WALL, 24, 20), (WALL, 30, 20), (HOUSE, 30, 36)] { w.place(k, x, y, 0); }
+        let (apart, total) = comps(&w);
+        assert!(total > 40, "{total} nodes");
+        assert_eq!(apart, 0, "every building's lines join the castle's: {apart} of {total} nodes are cut off");
+    }
+
+    #[test]
     fn soldiers_walk_faster_on_a_road() {
         let w = village();
         let v = w.roads_flat(); assert!(!v.is_empty());

@@ -269,6 +269,32 @@ impl World {
                 if net.clear(net.nodes[a], net.nodes[b as usize], 0.0) { net.link(a as u32, b, is_road.contains(&(a as u32)) && is_road.contains(&b) && l <= 6.0); added += 1; }
             }
         }
+        // every building is chained to the castle: whatever part of the network is not yet joined to the hall's is joined to it by the shortest walkable link, from node to node, so the
+        // chain runs from building to building (through the rings of the ones between) all the way back to the hall. Only what is cut off by water or walls stays apart.
+        let mut comp: Vec<usize> = (0..net.nodes.len()).collect();
+        fn find(c: &mut Vec<usize>, x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } let mut y = x; while c[y] != r { let nx = c[y]; c[y] = r; y = nx; } r }
+        for a in 0..net.nodes.len() { for e in net.adj[a].clone() { let (ra, rb) = (find(&mut comp, a), find(&mut comp, e.0 as usize)); if ra != rb { comp[ra] = rb; } } }
+        let hall: Option<usize> = ring.first().and_then(|r| r.iter().copied().find(|&id| id != u32::MAX)).map(|id| id as usize);
+        if let Some(h) = hall {
+            for _round in 0..64 {
+                let main = find(&mut comp, h);
+                // the nearest walkable link between any node outside the hall's network and any node inside it
+                let mut best: Option<(f32, usize, usize)> = None;
+                let nn = net.nodes.len();
+                for a in 0..nn {
+                    if find(&mut comp, a) == main { continue; }
+                    let (ax, ay) = net.nodes[a]; let (bi, bj) = ((ax / 8.0).floor() as i32, (ay / 8.0).floor() as i32);
+                    for di in -6..=6 { for dj in -6..=6 { if let Some(v) = bins.get(&(bi + di, bj + dj)) { for &b in v {
+                        let b = b as usize; if find(&mut comp, b) != main { continue; }
+                        let l = (net.nodes[b].0 - ax).hypot(net.nodes[b].1 - ay);
+                        if l < 48.0 && best.map_or(true, |o| l < o.0) && net.clear(net.nodes[a], net.nodes[b], 0.0) { best = Some((l, a, b)); }
+                    } } } }
+                }
+                let Some((_, a, b)) = best else { break };
+                net.link(a as u32, b as u32, false);
+                let (ra, rb) = (find(&mut comp, a), find(&mut comp, b)); if ra != rb { comp[ra] = rb; }
+            }
+        }
         net
     }
 
