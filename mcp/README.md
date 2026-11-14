@@ -1,31 +1,51 @@
-# Flanders MCP server
+# Flanders MCP server (headless)
 
-Lets an AI agent play Flanders through a normal browser tab, under the same rules as a human player.
+An AI agent plays Flanders through MCP with **no browser and no UI at all**. The game's Rust core, the same one the web game runs, is loaded into this Node process, so every action is decided by the game's own rules (cost, terrain, border, workforce, ...). There are no cheat tools.
 
 ```
-agent ──MCP (stdio)──▶ server.mjs ──WebSocket (127.0.0.1)──▶ game tab (web/src/agent.ts) ──▶ the same World calls and signed commands as a click
+agent ──MCP (stdio)──▶ server.mjs ──▶ engine.mjs ──▶ the game core (WebAssembly, in-process)
 ```
 
 ## Run it
+Needs Node 22, plus Rust and `wasm-pack` once, to build the core for Node:
+```
+cd mcp
+npm ci
+npm run wasm          # builds the game core into mcp/wasm (not committed)
+```
+Add it to your MCP client:
+```json
+{ "mcpServers": { "flanders": { "command": "node", "args": ["/path/to/flanders/mcp/server.mjs", "--world", "flanders", "--save", "/path/to/game.json"] } } }
+```
+- `--world NAME` picks the map: the same names as the game's links, so `flanders` is the same land as `?world=flanders` in the browser.
+- `--save FILE` keeps the game. The world is deterministic, so a save is only the list of actions with the tick of each; the next run replays it and arrives at exactly the same village. Without `--save` the game ends with the session.
 
-1. Start the game (`cd web && npm run dev`, or serve `web/dist`).
-2. Add the server to your MCP client, for example:
-   ```json
-   { "mcpServers": { "flanders": { "command": "node", "args": ["/path/to/flanders/mcp/server.mjs", "--game", "http://localhost:5173"] } } }
-   ```
-3. The server prints a link on stderr (`...?agent=8765&token=...&player=agent`). Open it in a browser tab. The agent plays as its own player (`player=agent` keeps its village and keys apart from yours), and a badge at the bottom left shows what it is doing, with **Pause** and **Disconnect**.
+## Tools (five, on purpose)
+| tool | what it does |
+|---|---|
+| `status` | one small object: time, people, stores and their rates, army, danger, a waiting decision, and the next goals |
+| `info` | the building table (id, name, radius, cost), or `info {kind}` for one; `units: true` lists soldiers |
+| `look` | `buildings` (counts by kind plus a page), `land` (a small height map and deposits), `deposits`, `armies` (and neutral places), `prices` |
+| `act` | a **batch** of actions, each a short array, done in order (see below) |
+| `advance` | run 1-1200 ticks; pauses early at raids, fires, famine, plague or a decision |
 
-## Tools
+Actions (`act`): `["place",kind,dx,dy,rot?,search?]`, `["up",idx]`, `["opt",idx,bit,on?]`, `["demo",idx,true]`, `["fix",idx]`, `["gar",idx,archers]`, `["draw",idx,up]`, `["gate",idx,closed]`, `["field",idx,mode]`, `["train",kind,n]`, `["hero"]`, `["form",s,a,w,k,c]`, `["march",id,dx,dy]`, `["recall",id]`, `["visit",id]`, `["decide",n]`. Coordinates are relative to the town hall (x east, y south). Mines, quarries and clay pits **snap** to the nearest matching deposit, and `search` tries nearby spots, so a placement is usually one action, not a probe-and-retry loop.
 
-`observe`, `catalog`, `buildings`, `probe`, `can_place`, `place`, `upgrade`, `option`, `demolish`, `repair`, `train`, `garrison`, `drawbridge`, `form_army`, `march_army`, `recall_army`, `rivals`, `wait`, `game_rules`
-(and `attack`, only when attacking is switched on).
+## Why it is cheap
+- Replies are one line of JSON with arrays and numbers, no prose: a `status` is 300-500 characters, an `act` reply a few dozen, an `advance` 50-150.
+- Actions are batched (up to 40 per call), so a turn is one call.
+- Static data is fetched on demand: the building table is about 1 000 characters instead of the 24 000 of full descriptions; details of one kind are a separate call.
+- `look buildings` is paged and summarised, never the whole village.
+- A repeating event (a starving village raises "famine" every tick) pauses `advance` at most once every 120 ticks and is reported as `famine x9`, so a call never ends after one tick.
+- The five tools and the rules cost about 3 700 characters (roughly 1 000 tokens) of context, once per session.
+- Measured: 20 game days of a scripted player took 222 calls and about 30 000 characters of traffic in total (a real agent needs far fewer calls). `npm test` enforces size limits on every reply.
 
-## Guardrails
+## Limits (be honest)
+- **Single player.** The headless game is your own village on the map nearest the centre. It does not connect to other players (that is peer-to-peer WebRTC in the browser), so no trade, treaties, envoys or attacks on other villages. Raids by bandits, plague, fire, famine, harvests and decisions all happen.
+- **Time only moves when the agent says so.** `advance` is the clock, so there is no real-time pressure and no pace limit; the cap is 1200 ticks a call. (A game day is 240 ticks.)
+- Saves made here are not browser saves and cannot be opened in the game.
 
-- **Same rules as a person.** Every action is applied by the game itself (build radius, cost, terrain, workforce, ...) and sent to the other players as a signed command. There are no testing tools: no cheats, no free resources, no levelling the ground, no model village, no resets, no game speed.
-- **Speed handicap.** At most one action every 2.5 s and 15 actions a minute (`--gap-ms`, `--per-minute`; `&pace=slow` in the link halves that again), reads are limited too, and a session has a budget of 3000 actions. The agent cannot change the game speed, so it plays in real time. The game tab enforces the same limits on its own, so a client that skips this server still cannot go faster.
-- **Fenced off.** Demolishing needs `confirm: true` and is limited to 4 a minute. Attacking another player is **off** unless you start the server with `--allow-attack` *and* open the game with `allow_attack=1`, and then every attack still needs `confirm_attack: true`.
-- **Local only.** The socket listens on 127.0.0.1, accepts only localhost origins and needs the random token from the link.
-- **You stay in charge.** Pause/Resume and Disconnect on the badge; while paused every call is refused.
+## The old browser bridge
+`browser-bridge.mjs` is the previous server: it drives a game in a browser tab over a local WebSocket, with human-pace limits (see `guardrails.mjs` and `web/src/agent.ts`). It is kept for playing alongside people in a shared world; it needs the game open in a tab.
 
-Tests: `npm test` (guardrails).
+Tests: `npm test` (the bridge guardrails, the headless engine: rules, no cheats, save and load, size limits, and the server end to end over the MCP protocol).

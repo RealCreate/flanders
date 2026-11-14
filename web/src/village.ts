@@ -1,3 +1,6 @@
+import { deck, type Deck } from './render/terrain';
+import { MoatWater } from './render/moatwater';
+import { WIDTH, deckHeight } from './render/spanplan';
 import * as THREE from 'three';
 import { solid_radius_of, type World } from './wasm/game_core.js';
 import type { Terrain } from './render/terrain';
@@ -28,6 +31,7 @@ export interface Shared {
 /** One village: its simulation plus everything that draws it. Used for your own village and for every rival replica. */
 export class Village {
   private defaultBanner = 0;
+  moats: MoatWater;
   view: VillageView; paths: Paths; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; rivers: RiverFlow; boats: Boats;
   clear: { x: number; z: number; r: number }[] = [];
   /** Groves kept standing inside a big cleared area. */
@@ -41,6 +45,7 @@ export class Village {
 
   constructor(public world: World, public key: string, public name: string, public mine: boolean, private sh: Shared, color: number) {
     this.defaultBanner = color; this.view = new VillageView(color); this.paths = new Paths(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
+    this.moats = new MoatWater(sh.terrain); sh.scene.add(this.moats.group);
     this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
     this.army.friend = color; this.army.radii = sh.radii;
@@ -64,11 +69,32 @@ export class Village {
   dispose() {
     this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.walls.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
     this.view.root.traverse(o => (o as THREE.Mesh).geometry?.dispose());
+    this.sh.scene.remove(this.moats.group); this.moats.dispose(); this.sh.terrain.setDecks(this, []);
     this.walls.dispose(); this.spans.dispose(); this.paths.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());
   }
 
   /** Swap in a fresh world (after moving to another site, or a rebuilt replica). */
   setWorld(w: World) { this.world = w; this.count = -1; this.version = -1; this.reportSeq = 0; }
+
+  /** Register what can be walked on above the ground: lowered drawbridges and the footbridges, at the height of their decks, so walkers cross them instead of sinking into the water under. */
+  private updateDecks(w: World, f: Float32Array) {
+    const list: Deck[] = [];
+    for (let i = 0; i + 9 < f.length; i += 10) {
+      if (f[i] !== 23 || f[i + 6] === 5) continue;   // a drawbridge that is drawn up has no deck to cross
+      const a = (f[i + 4] & 7) * Math.PI / 4, sx = Math.sin(a), sz = Math.cos(a), x = f[i + 2], z = f[i + 3], y = f[i + 5] + 0.66;   // (the deck planks lie 0.66 above the pad: see the model)
+      list.push(deck(x - sx * 6.4, z - sz * 6.4, x + sx * 6.4, z + sz * 6.4, 1.5, y, y));
+    }
+    const sp = w.bridge_spans_flat();
+    for (let o = 0; o + 9 < sp.length; o += 10) {
+      const cx = sp[o + 1], cz = sp[o + 2], ang = sp[o + 3], L = sp[o + 4], tier = sp[o + 5], ux = Math.cos(ang), uz = Math.sin(ang), n = 6;
+      const input = { length: L, tier, hA: sp[o + 7], hB: sp[o + 8], bed: () => 0, options: 0 };
+      for (let k = 0; k < n; k++) {   // the deck rises and falls along the span (stone ones hump), so it is walked as a few short strips
+        const s0 = -L / 2 + (L * k) / n, s1 = -L / 2 + (L * (k + 1)) / n;
+        list.push(deck(cx + ux * s0, cz + uz * s0, cx + ux * s1, cz + uz * s1, WIDTH[Math.min(3, Math.max(0, tier))] / 2, deckHeight(input, s0), deckHeight(input, s1)));
+      }
+    }
+    this.sh.terrain.setDecks(this, list);
+  }
 
   /** Rebuild everything that depends on the building list. */
   syncFull() {
@@ -79,7 +105,7 @@ export class Village {
     this.obstacles = []; for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 22 || k === 24 || k === 23 || k === 32 || k === 33 || k === 34 || k === 37 || k === 38) continue; this.obstacles.push({ x: f[i + 2], z: f[i + 3], r: k === 2 ? 3 : k === 21 ? 1.6 : solid_radius_of(k, f[i + 1]) + 0.3 }); }   // only the solid part of a building is an obstacle
     this.paths.update(f, roads, this.sh.radii, w.birth_flat());
     this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat());
-    this.spans.update(w.bridge_spans_flat());
+    this.spans.update(w.bridge_spans_flat()); this.updateDecks(w, f); this.moats.update(w.moat_water_flat());
     this.props.update(f, roads, this.sh.radii);
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
     this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
@@ -106,7 +132,7 @@ export class Village {
       const f = w.buildings_flat();
       this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
       this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
-      this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat()); this.spans.update(w.bridge_spans_flat()); this.army.syncWalls(this.walls.walks);
+      this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat()); this.spans.update(w.bridge_spans_flat()); this.updateDecks(w, f); this.army.syncWalls(this.walls.walks);
       this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     }
     this.fireData = w.fires_flat(); this.people.setFires(this.fireData); this.paths.setTick(Number(w.tick()));

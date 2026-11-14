@@ -29,6 +29,10 @@ const C = (hex: number) => new THREE.Color(hex);
 const char = C(0x15110e), ash = C(0x3a3430), sand = C(0xd9c58c), wet = C(0x8f8363), grassA = C(0x5f8a3a), grassB = C(0x7a9a45), grassDry = C(0x9a9a52), forest = C(0x3f6a33), dirt = C(0x8a6b45),
   rock = C(0x7d7872), rockDark = C(0x5d5a56), snow = C(0xf2f5f8), hillGrass = C(0x6f8446);
 
+/** A walkable surface above the ground: a straight strip from (ax, az) to (bx, bz), `half` wide on each side, at height ya at the start and yb at the end. */
+export interface Deck { ax: number; az: number; bx: number; bz: number; half: number; ya: number; yb: number; minx: number; maxx: number; minz: number; maxz: number }
+export const deck = (ax: number, az: number, bx: number, bz: number, half: number, ya: number, yb: number): Deck => ({ ax, az, bx, bz, half, ya, yb, minx: Math.min(ax, bx) - half, maxx: Math.max(ax, bx) + half, minz: Math.min(az, bz) - half, maxz: Math.max(az, bz) + half });
+
 export class Terrain {
   scorch: Float32Array = new Float32Array(0); // burnt ground discs [x, z, r, ...] from every village
   heights: Float32Array;       // current (with pads, with coast drop)
@@ -80,13 +84,35 @@ export class Terrain {
     this.heightTex = new THREE.DataTexture(this.heightData, NV, NV, THREE.RedFormat, THREE.HalfFloatType);
     this.heightTex.minFilter = this.heightTex.magFilter = THREE.LinearFilter; this.heightTex.wrapS = this.heightTex.wrapT = THREE.ClampToEdgeWrapping; this.heightTex.generateMipmaps = false;
     this.uploadHeights();
+    this.water = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000).rotateX(-Math.PI / 2), this.makeWaterMaterial());
+    this.water.position.y = 0;
+  }
+
+  /** A water surface material: shaded by how deep the water is over the ground (see water.ts). The sea and the water of the moats share it. Reflections are kept gentle: a
+   *  full mirror coat turned every bridge and wall into a bright glare on the water. */
+  makeWaterMaterial() {
     const wm = new THREE.MeshPhysicalMaterial({
-      color: 0x2c6f86, roughness: 0.05, metalness: 0, transparent: true, opacity: 1, depthWrite: false,
-      normalMap: this.waterTex, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 1.8,
+      color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: true, opacity: 1, depthWrite: false,
+      normalMap: this.waterTex, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.35, clearcoatRoughness: 0.22, envMapIntensity: 0.8,
     });
     patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, this.waterTime, false);
-    this.water = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000).rotateX(-Math.PI / 2), wm);
-    this.water.position.y = 0;
+    return wm;
+  }
+
+  /** Surfaces people and soldiers can stand on above the ground: the decks of bridges and lowered drawbridges. `owner` is whoever registers them (a village). */
+  private decks = new Map<unknown, Deck[]>();
+  setDecks(owner: unknown, list: Deck[]) { this.decks.set(owner, list); }
+  /** The height somebody standing at this spot stands at: the ground, or a deck if one is under their feet (a deck over water is far above the bed of the ditch under it). */
+  walkAt(x: number, z: number): number {
+    let y = this.heightAt(x, z);
+    for (const list of this.decks.values()) for (const d of list) {
+      if (x < d.minx || x > d.maxx || z < d.minz || z > d.maxz) continue;
+      const dx = d.bx - d.ax, dz = d.bz - d.az, l2 = dx * dx + dz * dz || 1, t = ((x - d.ax) * dx + (z - d.az) * dz) / l2;
+      if (t < 0 || t > 1) continue;
+      if (Math.hypot(x - (d.ax + dx * t), z - (d.az + dz * t)) > d.half) continue;
+      const dy = d.ya + (d.yb - d.ya) * t; if (dy > y) y = dy;
+    }
+    return y;
   }
 
   animate(t: number) {
