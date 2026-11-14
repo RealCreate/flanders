@@ -6,7 +6,7 @@ const { World, catalog } = require('./.wasm/game_core.js');
 const defs = JSON.parse(catalog());
 export function buildDemo(seed = 1337n) {
   const w = new World(seed, 0, 0);
-  w.cheat(8, 0, 0); w.flatten(Number(process.env.FLAT ?? 90));
+  w.cheat(8, 0, 0); w.flatten(Number(process.env.FLAT ?? 108));
   const fill = () => w.cheat(3, 0, 0);
   const api = {
     place(kind, x, y, rot = 0, search = 8, ok = () => true) {
@@ -24,6 +24,10 @@ export function buildDemo(seed = 1337n) {
     wet(x, y) { return w.height_at(w.origin_x() + x, w.origin_y() + y) < 0; },
     at(i) { const f = w.buildings_flat(); return [f[i * 10 + 2] - w.origin_x(), f[i * 10 + 3] - w.origin_y()]; },
     fill, soldiers(kind, n) { w.cheat(2, kind, n); },
+    clearLand(r) { w.demo(0, r, 0, 0); },
+    deposit(kind, x, y) { return w.demo(1, kind, x, y); },
+    grove(x, y, r) { w.demo(2, x, y, r); },
+    forestSpot(minR, maxR, from, to) { const v = w.forest_spot(minR, maxR, from, to); return v.length ? [v[0], v[1], v[2]] : null; },
   };
   buildModelVillage(api);
   return w;

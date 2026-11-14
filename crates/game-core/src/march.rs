@@ -150,6 +150,7 @@ impl World {
         ov
     }
 
+    // Trees slow soldiers only a little (densest forest: 1.5x slower, was 3.7x), and the margin round a building (gardens, yards) is barely avoided, so soldiers cut through town.
     fn classify(&self, ns: &NavStatic, ov: &Ov, i: usize, siege: bool) -> Cl {
         let (x, y) = cell_xy(i);
         if x.abs() > 1192.0 || y.abs() > 1192.0 || ov.blocked[i] { return Cl::Block; }
@@ -158,7 +159,7 @@ impl World {
         if ns.slope[i] > if siege { 0.85 } else { 1.6 } { return Cl::Block; }
         let d = if ov.cleared[i] { 0.0 } else { ns.dens[i] as f32 };
         if siege && d >= 2.0 { return Cl::Free(8.0 + d); }               // dense forest: needs felling
-        Cl::Free(1.0 + 0.3 * d + ns.slope[i] * 1.2 + if ov.soft[i] { 1.6 } else { 0.0 })
+        Cl::Free(1.0 + 0.2 * d + ns.slope[i] * 1.2 + if ov.soft[i] { 0.3 } else { 0.0 })
     }
 
     fn near_free(&self, ns: &NavStatic, ov: &Ov, x: f32, y: f32, siege: bool) -> Option<usize> {
@@ -301,7 +302,7 @@ impl World {
                 let workers = (d.units[0] + d.units[2]) as f32;
                 let dens = ns.dens_at(d.x, d.y) as f32;
                 match wp.mode {
-                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.3 * dens); Self::advance(&mut d, wp); }
+                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.06 * dens); Self::advance(&mut d, wp); }
                     1 => {
                         d.state = S_FELL; d.speed = (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base);
                         let (ox, oy) = (d.x, d.y);

@@ -3,3 +3,4 @@ node_modules/
 web/src/wasm/
 web/tests/.wasm/
 target/
+web/dist/

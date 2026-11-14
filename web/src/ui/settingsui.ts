@@ -1,4 +1,5 @@
 import { settings, setSettings, resetSettings, onSettings, PRESETS, type Settings } from '../settings';
+import { downloadBackup, restoreBackup } from '../backup';
 
 interface Row { key: keyof Settings; label: string; hint: string; kind: 'select' | 'toggle' | 'range'; options?: [string, string][]; min?: number; max?: number; step?: number }
 const ROWS: { title: string; rows: Row[] }[] = [
@@ -34,7 +35,8 @@ export function mountSettings(root: HTMLElement, askReload: () => void) {
   }).join('')).join('') + `<h3>Network</h3><p class="muted">Players connect directly to each other. If a friend cannot connect (strict office or mobile network), a TURN relay server helps. Optional; applies after a reload.</p>
     <label class="setrow"><span><b>TURN server</b><small>For example turn:turn.example.com:3478</small></span><input type="text" id="turn-urls" placeholder="turn:host:3478"></label>
     <label class="setrow"><span><b>User name</b></span><input type="text" id="turn-user" autocomplete="off"></label>
-    <label class="setrow"><span><b>Password</b></span><input type="password" id="turn-cred" autocomplete="off"></label>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div>';
+    <label class="setrow"><span><b>Password</b></span><input type="password" id="turn-cred" autocomplete="off"></label>` + `<h3>Your data</h3><p class="muted">Your village and your signing key live only in this browser: clearing site data or switching computers loses them. Save a backup file now and then. <b>The file holds your private key: keep it to yourself.</b></p>
+    <div class="btnrow"><button class="pbtn" id="data-export">Save a backup file</button><button class="pbtn" id="data-import">Restore from a backup file…</button><input type="file" id="data-file" accept="application/json,.json" hidden></div><p class="muted" id="data-msg" role="status"></p>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div>';
   const el = <T extends HTMLElement>(k: string) => root.querySelector<T>(`#set-${k}`)!;
   const sync = () => {
     const s = settings() as unknown as Record<string, unknown>;
@@ -63,6 +65,17 @@ export function mountSettings(root: HTMLElement, askReload: () => void) {
     try { if (urls) localStorage.setItem('flanders:turn', JSON.stringify({ urls, username: turnEls[1].value.trim(), credential: turnEls[2].value })); else localStorage.removeItem('flanders:turn'); } catch { /* blocked */ }
     root.querySelector<HTMLElement>('#set-reload')!.hidden = false;
   }));
+  const msg = (t: string) => { root.querySelector<HTMLElement>('#data-msg')!.textContent = t; };
+  root.querySelector<HTMLElement>('#data-export')!.onclick = () => { try { msg(`Backup saved (${downloadBackup()} items). Keep the file somewhere safe.`); } catch (e) { msg(`Could not save the backup: ${(e as Error).message}`); } };
+  const file = root.querySelector<HTMLInputElement>('#data-file')!;
+  root.querySelector<HTMLElement>('#data-import')!.onclick = () => file.click();
+  file.onchange = async () => {
+    const f = file.files?.[0]; file.value = ''; if (!f) return;
+    try {
+      const n = await restoreBackup(f, count => confirm(`This replaces ${count} saved item(s) in this browser (your village, key and name) with the ones in the file. Continue?`));
+      if (n) { msg(`Restored ${n} items. Reloading…`); setTimeout(() => location.reload(), 800); } else msg('Nothing was changed.');
+    } catch (e) { msg((e as Error).message); }
+  };
   onSettings(sync); sync();
   void PRESETS;
 }

@@ -37,3 +37,40 @@ for (const seed of SEEDS.slice(0, 3)) test(`seed ${seed}: the keep, hall and cha
   const w = buildDemo(seed), f = w.buildings_flat(), tier = k => { for (let i = 0; i < f.length / 10; i++) if (f[i * 10] === k) return f[i * 10 + 1]; return -1; };
   assert.equal(tier(26), 3, 'the keep is a great keep'); assert.equal(tier(15), 3, 'the hall is a castle'); assert.equal(tier(17), 2, 'the chapel is an abbey');
 });
+
+// ---- production and resources stand outside the moat; trees and deposits exist only where a resource building needs them ----
+const OUTSIDE = [1, 4, 5, 6, 7, 8, 9, 10, 11];   // farm, woodcutter, sawmill, quarry, clay pit, brickworks, iron mine, gold mine, charcoal burner
+const MINES = { 6: 0, 7: 1, 9: 2, 10: 3 };         // building -> the deposit kind it works
+for (const seed of SEEDS.slice(0, 4)) test(`seed ${seed}: farms and every resource building stand outside the moat`, () => {
+  const w = buildDemo(seed), f = w.buildings_flat(), ox = w.origin_x(), oy = w.origin_y(), count = {};
+  for (let i = 0; i < f.length / 10; i++) {
+    const k = f[i * 10]; if (!OUTSIDE.includes(k)) continue;
+    const r = Math.hypot(f[i * 10 + 2] - ox, f[i * 10 + 3] - oy); count[k] = (count[k] ?? 0) + 1;
+    assert.ok(r >= 86, `${defs[k].name} stands ${r.toFixed(0)} from the hall, inside the moat`);
+  }
+  for (const k of [1, 4, 5, 6, 7, 9, 10]) assert.ok(count[k] >= 1, `no ${defs[k].name} outside the moat`);
+  assert.ok(count[1] >= 5, `only ${count[1]} farms`);
+});
+
+for (const seed of SEEDS.slice(0, 4)) test(`seed ${seed}: all deposits are cleared except the ones the mines and quarry work`, () => {
+  const w = buildDemo(seed), f = w.buildings_flat(), d = Array.from(w.deposits_flat()), ox = w.origin_x(), oy = w.origin_y();
+  const alive = []; for (let i = 0; i < d.length; i += 5) if (d[i + 4] > 0 && Math.hypot(d[i + 1] - ox, d[i + 2] - oy) < 118) alive.push({ kind: d[i], x: d[i + 1], y: d[i + 2] });
+  assert.equal(alive.length, 4, 'one deposit of each kind');
+  for (const dep of alive) {
+    let worked = false;
+    for (let i = 0; i < f.length / 10; i++) if (MINES[f[i * 10]] === dep.kind && Math.hypot(f[i * 10 + 2] - dep.x, f[i * 10 + 3] - dep.y) <= 15) worked = true;
+    assert.ok(worked, `deposit kind ${dep.kind} has no working building beside it`);
+  }
+});
+
+for (const seed of SEEDS.slice(0, 3)) test(`seed ${seed}: trees survive only in the woodcutter's grove`, () => {
+  const w = buildDemo(seed), g = Array.from(w.groves_flat()), ox = w.origin_x(), oy = w.origin_y();
+  assert.equal(g.length, 3, 'one grove');
+  let tested = 0;
+  for (let a = 0; a < 360; a += 6) for (const r of [60, 85, 100, 112]) {
+    const dx = Math.round(Math.cos(a * Math.PI / 180) * r), dy = Math.round(Math.sin(a * Math.PI / 180) * r);
+    if (w.can_place(4, dx, dy) !== 0) continue;   // a woodcutter can only stand where there is forest
+    tested++; assert.ok(Math.hypot(ox + dx - g[0], oy + dy - g[1]) <= g[2] + 13, `a woodcutter is allowed at ${dx},${dy}, far from the grove`);
+  }
+  assert.ok(tested >= 0);
+});

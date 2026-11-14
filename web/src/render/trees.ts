@@ -205,7 +205,7 @@ export class Forest {
   get all() { return this.trees; }
 
   /** Rebuild instances; trees inside any `clear` disc (x, z, radius) are removed. */
-  rebuild(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[] = []) {
+  rebuild(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[] = [], keep: { x: number; z: number; r: number }[] = []) {
     const L = lines.map(l => ({ ...l, minx: Math.min(l.ax, l.bx) - l.r, maxx: Math.max(l.ax, l.bx) + l.r, minz: Math.min(l.az, l.bz) - l.r, maxz: Math.max(l.az, l.bz) + l.r, dx: l.bx - l.ax, dz: l.bz - l.az }));
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
     const col = new THREE.Color(), used = new Array<number>(this.meshes.length).fill(0);   // felled and drowned trees are left out, not drawn as zero-size instances
@@ -213,6 +213,8 @@ export class Forest {
       const t = this.trees[ti];
       let hidden = false;
       for (const c of clear) { const dx = t.x - c.x, dz = t.z - c.z; if (dx * dx + dz * dz < c.r * c.r) { hidden = true; break; } }
+      // a kept grove stands even inside a big cleared area (the model village's woodcutter grove); small clearings (moats, scorch, felled spots) still win
+      if (hidden && keep.length && clear.every(c => c.r >= 30 || (t.x - c.x) ** 2 + (t.z - c.z) ** 2 >= c.r * c.r) && keep.some(k => (t.x - k.x) ** 2 + (t.z - k.z) ** 2 < k.r * k.r)) hidden = false;
       if (!hidden) for (const l of L) {            // trees never grow on a path
         if (t.x < l.minx || t.x > l.maxx || t.z < l.minz || t.z > l.maxz) continue;
         const len2 = l.dx * l.dx + l.dz * l.dz || 1, k = clamp(((t.x - l.ax) * l.dx + (t.z - l.az) * l.dz) / len2, 0, 1), px = l.ax + l.dx * k, pz = l.az + l.dz * k;

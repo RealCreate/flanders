@@ -74,3 +74,15 @@ Not done: gifts as a caravan flag, refusing caravans from hostile villages, MCP/
 ## Footprints, deposits, test hall (done)
 Buildings take more room as they are upgraded (`footprint(kind, tier)`: farms, keep, hall, chapel, barracks, court, market, store, hospital, graveyard); an upgrade is refused when neighbours are in the way, and hovering Upgrade outlines the bigger building and marks the blockers. Deposits can be cleared (40 wood, 10 tools); hand-drawn road pieces can be selected and demolished. The Test panel has a "Test hall" showing every building at every tier plus all design options.
 Not done: the footprint is a circle (fields and courtyards are drawn inside it approximately); the demo village is only roomier, not redesigned.
+
+## Production review and market research (2026-11)
+**Research caveat:** a web search for what players want from comparable games returned mostly reviews and forum posts and no retention data, so these are hypotheses, not findings. Sources: [Farthest Frontier review](https://entertainium.co/2025/10/22/farthest-frontier-review/), [Manor Lords forum thread](https://www.rpgcodex.net/forums/threads/manor-lords-medieval-city-building-with-large-scale-battles.133844/page-12), [Manor Lords summary](https://vaporlens.app/app/1363080/manor_lords), [Farthest Frontier summary](https://vaporlens.app/app/1044720/farthest_frontier).
+
+What the comparison suggests:
+- **Production and farming depth** is what Farthest Frontier and Foundation are praised for (crop rotation, many resources); Manor Lords is criticised for thin production cycles and static animals. Flanders already has a long ore-to-coin chain; soil fertility and crop rotation are the cheapest depth to add.
+- **Combat feel** is Manor Lords' strength and Farthest Frontier's weak spot (clumsy melee). Siege towers, rams and sapping (open above) matter more than more unit types.
+- **No tutorial and late-game performance** recur as genre complaints. Flanders has gentle goals but no guided first ten minutes; a tutorial and a population soft-cap warning are worth doing.
+- **Narrative** is missed in Manor Lords; events with choices and diplomacy put Flanders ahead. Naming and persisting notable villagers and lords builds on that.
+
+Done in this review: save backup/restore, error and unsupported-browser screens, hardened multiplayer ([SECURITY.md](SECURITY.md)), a fuzz test of every network command, the first army no longer freezes the game (the navigation grid is built behind the loading screen), 14% smaller wasm, split bundle, CSP, CI audits and Dependabot.
+Not done, in suggested order: a guided tutorial; spectator/replay mode (signed histories already make it possible); soil fertility and crop rotation; cross-checked battle loot (closes the last economic trust gap); photo mode; a default TURN relay for strict networks; splitting `main.ts` (1 400 lines) into modules.

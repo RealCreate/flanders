@@ -4,6 +4,9 @@ on:
     branches: [master, main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -18,6 +21,9 @@ jobs:
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release -p game-core
+      - name: Hostile-input fuzz test again with integer overflow checks on (release builds wrap silently; this finds the wraps)
+        run: cargo test --release -p game-core --test hostile_input
+        env: { CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: 'true', CARGO_PROFILE_RELEASE_LTO: 'false' }
       - run: cargo build --release -p game-core --target wasm32-unknown-unknown
 
   web:
@@ -37,6 +43,8 @@ jobs:
       - name: Build wasm (the TypeScript types come from it)
         run: wasm-pack build ../crates/game-core --target web --release --no-opt --out-dir ../../web/src/wasm
       - run: npx tsc --noEmit
+      - name: Known vulnerabilities in what ships to players
+        run: npm audit --omit=dev --audit-level=high
       - run: npm test
       - name: Demo village test (deterministic core under node)
         run: |
@@ -44,3 +52,23 @@ jobs:
           node -e "require('fs').writeFileSync('tests/.wasm/package.json','{\"type\":\"commonjs\"}')"
           node --experimental-strip-types --test tests/demo.test.mjs
       - run: npx vite build
+
+  mcp:
+    name: MCP server (tests, audit)
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: mcp } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: mcp/package-lock.json }
+      - run: npm ci
+      - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
+
+  rust-audit:
+    name: Rust dependencies (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit

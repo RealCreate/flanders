@@ -1,3 +1,4 @@
+import './boot';
 import '@fontsource/im-fell-english-sc';
 import '@fontsource/im-fell-english';
 import '@fontsource/im-fell-english/400-italic.css';
@@ -6,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of } from './wasm/game_core.js';
+import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation } from './wasm/game_core.js';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
@@ -40,6 +41,7 @@ import { territoryOutline } from './render/border';
 import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
+import { cleanName, parseCmd } from './net/validate';
 import { Village, type Shared } from './village';
 import { PathLine, STATE_TEXT } from './render/field';
 
@@ -53,6 +55,8 @@ const nextFrame = () => new Promise<void>(r => setTimeout(r, 20));
 /** Game ticks per real second at 1x. Half a tick per second keeps the pace of the village calm and readable. */
 const TICK_RATE = 0.5;
 const params = new URLSearchParams(location.search);
+/** Handles for tests and the browser console (window.__game): only on this computer or with ?debug=1, never in a shared build by default. */
+const DEBUG_HOOKS = import.meta.env.DEV || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || params.has('debug');
 const NAMES = ['Aldric', 'Beatrix', 'Cedric', 'Dunstan', 'Eleanor', 'Fulk', 'Godric', 'Hawise', 'Isolde', 'Jocelin', 'Leofric', 'Matilda', 'Osric', 'Rowena', 'Wulfric'];
 
 const ui: UI = new UI({
@@ -92,12 +96,11 @@ let penLastClick = 0;                                    // when the last corner
 let tunnels!: Tunnels;
 let deposits!: Deposits, minimap!: Minimap, effects!: Effects, crowd!: Crowd, fx!: Effects2, wildlife!: Wildlife, shared!: Shared;
 let lv!: Village;                           // your village
-interface Rival { key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number }
+interface Rival { key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number; broken?: boolean }
 const rivals = new Map<string, Rival>();    // by public key
 const byPeer = new Map<string, string>();   // peerId -> pub
 let sites: { x: number; z: number }[] = [];
 let mySite = 0, myName = 'Traveller';
-const cleanName = (n: unknown) => String(n ?? '').replace(/[<>&"']/g, '').trim().slice(0, 20) || 'Traveller';
 let perf!: Perf;
 let selectedKind: number | null = null, rot = 0, ghost: THREE.Group | null = null, ghostCode = 99;
 let selectedIdx: number | null = null;
@@ -161,6 +164,7 @@ function applyCmd(w: World, c: Cmd) {
     case 'marriage': w.marriage(c.idx!); break;
     case 'war': w.declare_war(c.idx!); break;
     case 'clear': w.clear_deposit(c.idx!); break;
+    case 'demo': w.demo(c.kind ?? 0, c.x ?? 0, c.y ?? 0, c.idx ?? 0); break;   // model-village testing tool
     case 'gate': w.gate_set(c.idx!, (c.kind ?? 0) === 1); break;
     case 'caravan': w.caravan_send(c.kind ?? 0, c.x ?? 0, c.idx ?? 0, c.y ?? 0, c.ax ?? 0); break;
     case 'rebuild': w.rebuild(c.idx!); break;
@@ -183,6 +187,19 @@ async function commit(cmd: Omit<Cmd, 'tick' | 'n'>) {
   const signing = identity.sign(full);
   sendChain = sendChain.then(async () => { const s = await signing; myLog.push(s); room?.broadcastCmd(s); save(); });
   await sendChain;
+}
+
+/** The saved history of your own village, read back carefully: a damaged or edited save must not crash the game. Testing-tool commands are your own and stay. */
+function validSavedLog(log: unknown): { signed: Signed; cmd: Cmd }[] {
+  if (!Array.isArray(log)) return [];
+  const out: { signed: Signed; cmd: Cmd }[] = []; let n = -1, t = 0;
+  for (const s of log.slice(0, 60000)) {
+    if (!s || typeof s.cmd !== 'string' || typeof s.sig !== 'string') break;
+    const cmd = parseCmd(s.cmd, true) as Cmd | null;
+    if (!cmd || cmd.n <= n || cmd.tick < t) break;
+    n = cmd.n; t = cmd.tick; out.push({ signed: { cmd: s.cmd, sig: s.sig }, cmd });
+  }
+  return out;
 }
 
 function save() {
@@ -213,12 +230,20 @@ function moveToSite(i: number) {
   refreshTerrain(w); lv.syncFull(); rig.focus(o.x, o.z); save(); room?.announce();
 }
 
+/** A replica of another player's village threw while applying their commands. A trap inside the wasm core leaves that copy unusable, so stop listening to it
+ *  (it is rebuilt from their next history) instead of letting a bad message break the whole game. */
+function quarantine(r: Rival, e: unknown) {
+  console.warn('A rival village could not be replayed; ignoring it until it sends a fresh history.', e);
+  r.broken = true; r.sync = 'broken ⚠';
+  try { r.village.setWorld(new World(seedBig, siteOrigin(r.site).x, siteOrigin(r.site).z)); r.village.syncFull(); } catch { /* keep the old copy */ }
+  updatePeers();
+}
+
 function connect() {
-  room = new Room(worldName, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName }), () => myLog, {
+  room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName }), () => myLog, {
     onStatus: s => ui.netStatus(s),
     onHello: (peerId, h) => {
-      if (h.world !== worldName) return;
-      h.name = cleanName(h.name);
+      if (h.world !== worldName || h.site >= sites.length) return;
       byPeer.set(peerId, h.pub);
       if (h.site === mySite && h.pub !== identity.pub) {
         // two villages on one spot: the player with the larger key moves out
@@ -241,17 +266,21 @@ function connect() {
     },
     onLog: (peerId, cmds) => {
       const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r) return;
-      const o = siteOrigin(r.site), w = new World(seedBig, o.x, o.z);
-      for (const c of cmds) { stepTo(w, c.tick); applyCmd(w, c); }
-      r.village.setWorld(w); r.tick = Number(w.tick());
-      refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
+      try {
+        const o = siteOrigin(r.site), w = new World(seedBig, o.x, o.z);
+        for (const c of cmds) { stepTo(w, c.tick); applyCmd(w, c); }
+        r.village.setWorld(w); r.tick = Number(w.tick()); r.broken = false;
+        refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
+      } catch (e) { quarantine(r, e); }
     },
     onCmd: (peerId, c) => {
-      const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r) return;
-      r.village.advanceTo(c.tick); applyCmd(r.village.world, c);
-      if (c.op === 'style') r.village.syncFull();
-      if (c.op === 'place' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'cheat' || c.op === 'upgrade' || c.op === 'flatten') refreshTerrain(r.village.world);
-      r.village.syncFull(); r.village.afterTick(); r.tick = c.tick;
+      const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || r.broken) return;
+      try {
+        r.village.advanceTo(c.tick); applyCmd(r.village.world, c);
+        if (c.op === 'style') r.village.syncFull();
+        if (c.op === 'place' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') refreshTerrain(r.village.world);
+        r.village.syncFull(); r.village.afterTick(); r.tick = c.tick;
+      } catch (e) { quarantine(r, e); return; }
       if ((c.op === 'attack' || c.op === 'sendatk') && c.to === identity.pub) defendAgainst(r, c);
       else if (c.op === 'refuse' && c.to === identity.pub) {
         lv.world.return_army(Uint32Array.from(c.units ?? []), new Int32Array(RES.length));
@@ -328,7 +357,7 @@ function toggleShowroom() {
 }
 
 /** Clear every building except the town hall and build the planned model village (see modelvillage.ts). Everything goes through signed commands. */
-const MODEL_FLAT_RADIUS = 90;
+const MODEL_FLAT_RADIUS = 108;   // the city, its moat and the farmland and workshops outside it
 async function runModelVillage(ask: boolean) {
   if (ask && !(await ui.confirm('This clears every building except the town hall and builds a model village in its place.', 'Build it', 'Build the model village?'))) return;
   const w = lv.world;
@@ -356,9 +385,14 @@ async function runModelVillage(ask: boolean) {
     wet(x, y) { return w.height_at(w.origin_x() + x, w.origin_y() + y) < 0; },
     at(i) { const f = w.buildings_flat(); return [f[i * 10 + 2] - w.origin_x(), f[i * 10 + 3] - w.origin_y()]; },
     fill,
+    clearLand(r) { w.demo(0, r, 0, 0); commit({ op: 'demo', kind: 0, x: r, y: 0, idx: 0 }); },
+    deposit(kind, x, y) { const i = w.demo(1, kind, x, y); if (i >= 0) commit({ op: 'demo', kind: 1, x: kind, y: x, idx: y }); return i; },
+    grove(x, y, r) { if (w.demo(2, x, y, r) === 0) commit({ op: 'demo', kind: 2, x, y, idx: r }); },
+    forestSpot(minR, maxR, from, to) { const v = w.forest_spot(minR, maxR, from, to); return v.length ? [v[0], v[1], v[2]] : null; },
     soldiers(kind, n) { if (w.cheat(2, kind, n)) commit({ op: 'cheat', kind: 2, x: kind, y: n }); },
   };
   buildModelVillage(api);
+  deposits.sync(w.deposits_flat()); deposits.refit(); forestDirtyFlag = true;   // the trees and deposits were cleared and put back where the workshops need them
   afterLocalChange(); lv.afterTick(); updateHud(); updateSelection();
   const f = w.buildings_flat(); rig.focus(f[2], f[3], 90);
   ui.toast(`Your model village is ready: ${w.building_count()} buildings.`, 'good');
@@ -642,7 +676,7 @@ async function startGame(name: string, username: string) {
   const o = siteOrigin(mySite), w = new World(seedBig, o.x, o.z);
   let away = 0;
   if (saved) {
-    for (const s of saved.log) { myLog.push(s); const c = JSON.parse(s.cmd) as Cmd; stepTo(w, c.tick); applyCmd(w, c); cmdN = Math.max(cmdN, c.n + 1); }
+    for (const s of validSavedLog(saved.log)) { myLog.push(s.signed); stepTo(w, s.cmd.tick); applyCmd(w, s.cmd); cmdN = Math.max(cmdN, s.cmd.n + 1); }
     stepTo(w, saved.tick);
     away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
     for (let i = 0; i < away; i++) w.step();   // the world kept turning while you were away
@@ -666,7 +700,7 @@ async function startGame(name: string, username: string) {
   connect();
   setupPerf(); applySettings(settings()); onSettings(applySettings);
   const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
-  if (agentPort > 0 && agentToken) startAgentBridge({
+  if (Number.isInteger(agentPort) && agentPort >= 1024 && agentPort <= 65535 && /^[A-Za-z0-9_-]{8,128}$/.test(agentToken)) startAgentBridge({
     world: () => lv.world, commit: c => commit(c as Omit<Cmd, 'tick' | 'n'>), afterChange: () => { afterLocalChange(); },
     toast: (m, k) => ui.toast(m, k ?? 'info'),
     rivals: () => [...rivals.entries()].map(([key, r]) => ({ key, name: r.name, x: r.village.ox, z: r.village.oz, online: r.online })),
@@ -676,13 +710,15 @@ async function startGame(name: string, username: string) {
   updateGoals();
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
-  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
+  if (DEBUG_HOOKS) (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
   last = performance.now(); requestAnimationFrame(frame);
 }
 
 /** Compile every shader and draw a few real frames (shadow map, textures, trees) behind the loading screen,
  *  so nothing pops in or stalls once the player sees the world. */
 async function warmUp() {
+  ui.progress(70, 'Mapping the roads…'); await nextFrame();
+  warm_navigation(seedBig);   // otherwise the first field army you form freezes the game for a second or two
   ui.progress(74, 'Compiling shaders…'); await nextFrame();
   fx.warm(true); effects.smoke.points.visible = true;
   try { await renderer.compileAsync(scene, rig.cam); } catch { /* older drivers: the warm-up frames below compile instead */ }
@@ -704,7 +740,7 @@ let forestDirtyFlag = false;
 function rebuildForest() {
   const all = [lv, ...[...rivals.values()].map(r => r.village)];
   const rocks: { x: number; z: number; r: number }[] = []; { const d = lv.world.deposits_flat(); for (let i = 0; i + 4 < d.length; i += 5) if (d[i + 4] > 0) rocks.push({ x: d[i + 1], z: d[i + 2], r: 5 }); }   // trees do not grow through ore and rock
-  forest.rebuild([...all.flatMap(v => v.clear), ...rocks], all.flatMap(v => v.clearLines)); forestDirtyFlag = false;
+  forest.rebuild([...all.flatMap(v => v.clear), ...rocks], all.flatMap(v => v.clearLines), all.flatMap(v => v.keep)); forestDirtyFlag = false;
   obstCache = all.flatMap(v => v.obstacles);
 }
 
@@ -1435,7 +1471,7 @@ function debugPlace(kind: number, dx: number, dy: number, r = 0) {
   if (res >= 0) { commit({ op: 'place', kind, x: dx, y: dy, rot: r }); afterLocalChange(); }
   return res;
 }
-(window as any).__game = {
+if (DEBUG_HOOKS) (window as any).__game = {
   get worldShips() { return worldShips; }, debugPlace, runModelVillage, selectBuilding, selectRuin, KIND_ICON, setSpeed, selectKind, frame, updateGhost,
   get renderer() { return renderer; }, get forest() { return forest; }, get atmo() { return atmo; }, get scene() { return scene; }, get terrain() { return terrain; }, get rig() { return rig; },
   get perf() { return perf; }, get world() { return lv.world; }, get lv() { return lv; }, get rivals() { return rivals; }, get wildlife() { return wildlife; }, get fx() { return fx; }, get crowd() { return crowd; }, ui, afterLocalChange, refreshTerrain,

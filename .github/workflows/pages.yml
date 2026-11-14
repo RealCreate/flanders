@@ -28,7 +28,7 @@ jobs:
         working-directory: web
         run: |
           npm ci
-          wasm-pack build ../crates/game-core --target web --release --no-opt --out-dir ../../web/src/wasm
+          npm run wasm:release   # optimised (wasm-opt): about 15% smaller than the --no-opt development build
           npx vite build
       - uses: actions/upload-pages-artifact@v3
         with: { path: web/dist }

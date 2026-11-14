@@ -6,11 +6,14 @@
     "wasm": "wasm-pack build ../crates/game-core --target web --release --no-opt --out-dir ../../web/src/wasm",
     "predev": "npm run wasm",
     "dev": "vite",
-    "prebuild": "npm run wasm",
+    "prebuild": "npm run wasm:release",
     "build": "vite build",
     "share": "npm run build && vite preview",
-    "test": "node --experimental-strip-types --test tests/penshapes.test.mjs",
-    "test:demo": "wasm-pack build ../crates/game-core --target nodejs --release --no-opt --out-dir ../../web/tests/.wasm; node -e \"require('fs').writeFileSync('tests/.wasm/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node --experimental-strip-types --test tests/demo.test.mjs"
+    "test": "node --experimental-strip-types --test tests/penshapes.test.mjs tests/border.test.mjs tests/camerafx.test.mjs tests/flag.test.mjs tests/spanplan.test.mjs tests/validate.test.mjs tests/backup.test.mjs",
+    "test:demo": "wasm-pack build ../crates/game-core --target nodejs --release --no-opt --out-dir ../../web/tests/.wasm && node -e \"require('fs').writeFileSync('tests/.wasm/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node --experimental-strip-types --test tests/demo.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "audit": "npm audit --omit=dev --audit-level=high",
+    "wasm:release": "wasm-pack build ../crates/game-core --target web --release --out-dir ../../web/src/wasm"
   },
   "dependencies": {
     "@fontsource/alegreya-sans": "^5.3.0",
@@ -23,5 +26,8 @@
     "@types/three": "^0.180.0",
     "typescript": "^5.6.0",
     "vite": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

@@ -70,12 +70,17 @@ export class Deposits {
 
   /** Shrink deposits as they are mined out. */
   sync(flat: Float32Array) {
+    let moved = false;
     for (let i = 0; i < this.groups.length; i++) {
+      if (flat[i * 5 + 1] !== this.flat[i * 5 + 1] || flat[i * 5 + 2] !== this.flat[i * 5 + 2]) {   // the model village moves deposits to where its mines need them
+        this.flat[i * 5 + 1] = flat[i * 5 + 1]; this.flat[i * 5 + 2] = flat[i * 5 + 2]; this.groups[i].position.x = flat[i * 5 + 1]; this.groups[i].position.z = flat[i * 5 + 2]; moved = true;
+      }
       const rem = flat[i * 5 + 3], max = flat[i * 5 + 4], f = max > 0 ? rem / max : 0, g = this.groups[i];
       g.scale.setScalar(rem <= 0 ? 0.2 : 0.55 + 0.45 * f);
       const gone = max <= 0;   // cleared by the villagers
       if (!!g.userData.gone !== gone) { g.userData.gone = gone; g.visible = !gone && !g.userData.sub; }
     }
+    if (moved) this.refit();
   }
 
   get count() { return this.groups.length; }

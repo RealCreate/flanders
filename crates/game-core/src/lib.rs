@@ -48,6 +48,10 @@ pub(crate) fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 
 
 /// Walls, fences, gates and moat pieces are not on the village path network.
 fn is_barrier(kind: u8) -> bool { matches!(kind, WALL | FENCE | GATE) || is_edit(kind) }
+/// No order may point further than this from the map's centre (the map is about 2400 units across).
+const MAP_LIMIT: f32 = 1500.0;
+/// No standing army can hold more soldiers of one kind than this (the testing tool stops at the same number).
+const ARMY_MAX: u32 = 100_000;
 const LEVEL_BLEND: f32 = 9.0;  // how far a levelled patch of ground blends back into the land
 pub(crate) const MOAT_FLOOR: f32 = 3.0;  // flat bottom radius of a moat piece
 pub(crate) const RIVER_FLOOR: f32 = 2.0; // and of a river piece
@@ -200,6 +204,7 @@ pub struct World {
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
+    groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
     map_ver: u32,                // changes when trees are felled or bridges built
 }
@@ -219,6 +224,10 @@ pub fn tunnels_flat(seed: u64) -> Vec<f32> { terrain::tunnels(seed).into_iter().
 
 #[wasm_bindgen]
 pub fn trees_in(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> { terrain::trees(seed, x0, y0, x1, y1) }
+
+/// Build the army navigation grid now (about a second of work) instead of in the middle of play, when the first field army is formed. Call it behind the loading screen.
+#[wasm_bindgen]
+pub fn warm_navigation(seed: u64) { let _ = march::nav_static(seed); }
 
 #[wasm_bindgen]
 pub fn village_sites(seed: u64) -> Vec<f32> { terrain::sites(seed).into_iter().flat_map(|(x, y)| [x, y]).collect() }
@@ -264,7 +273,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], bridges: vec![], map_ver: 0,
+            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -436,7 +445,7 @@ impl World {
     /// Level the ground round the village (radius `r`) to an even height, so a whole castle can be raised on flat land. 0 ok, -1 battle going on.
     pub fn flatten(&mut self, r: u32) -> i32 {
         if self.battle.is_some() { return -1; }
-        let (cx, cy) = (self.buildings[0].x, self.buildings[0].y); let rr = (r as f32).clamp(10.0, 90.0);
+        let (cx, cy) = (self.buildings[0].x, self.buildings[0].y); let rr = (r as f32).clamp(10.0, 110.0);
         let mut sum = 0.0; let mut n = 0.0;
         for k in 0..25 { let (i, j) = ((k % 5) as f32 - 2.0, (k / 5) as f32 - 2.0); sum += self.base(cx + i * rr * 0.25, cy + j * rr * 0.25); n += 1.0; }
         let h = (sum / n).clamp(3.0, 9.0);
@@ -590,7 +599,7 @@ impl World {
             if self.deposits.iter().any(|dep| dep.rem > 0 && (dep.x - x).powi(2) + (dep.y - y).powi(2) < clear * clear) { return -17; }
         }
         if d.req == 1 && self.nearest_deposit(x, y, d.req_arg).is_none() { return -7; }
-        if d.req == 2 && terrain::forest_near(self.seed, x, y, 12.0) < 0.12 { return -8; }
+        if d.req == 2 && self.forest_here(x, y, 12.0) < 0.12 { return -8; }
         if d.req == 3 && !self.water_near(x, y, d.r + 5.0) { return -16; }
         for &(res, n) in d.cost { if self.stock[res as usize] < n { return -6; } }
         0
@@ -602,12 +611,19 @@ impl World {
         false
     }
 
+    /// Forest density near a point, as the village sees it: the land's own forest, except inside a big cleared area (see `demo`) where only the kept groves still have trees.
+    fn forest_here(&self, x: f32, y: f32, r: f32) -> f32 {
+        let inside = |c: &[f32; 3]| (c[0] - x).hypot(c[1] - y) < c[2];
+        if self.felled.iter().any(|c| c[2] >= 30.0 && inside(c)) && !self.groves.iter().any(inside) { return 0.0; }
+        terrain::forest_near(self.seed, x, y, r)
+    }
+
     /// Woodcutters slowly clear the forest round them, so the clearing (and the village) grows.
     fn clear_trees(&mut self, bx: f32, by: f32) {
         if self.rng.range(4) != 0 || self.felled.len() >= 500 { return; }
         let a = self.rng.range(628) as f32 * 0.01; let dist = 5.0 + self.rng.range(120) as f32 * 0.1;
         let (x, y) = (bx + a.cos() * dist, by + a.sin() * dist);
-        if terrain::forest_near(self.seed, x, y, 2.5) < 0.12 || self.height_at(x, y) < 0.6 { return; }
+        if self.forest_here(x, y, 2.5) < 0.12 || self.height_at(x, y) < 0.6 { return; }
         if self.felled.iter().any(|f| (f[0] - x).powi(2) + (f[1] - y).powi(2) < 2.2 * 2.2) { return; }
         self.felled.push([x, y, 2.4]); self.map_ver += 1;
     }
@@ -1366,15 +1382,18 @@ impl World {
         for k in 0..5 { self.army[k] -= counts[k]; self.away[k] += counts[k]; }
         true
     }
-    /// Survivors come home with loot.
+    /// Survivors come home with loot. Only soldiers that were really sent away can come back, and loot cannot exceed a raider's share of a full store,
+    /// so a forged "return" command cannot print soldiers or goods out of nothing (it can still claim loot a battle did not give: only the battle's other side could check that).
     pub fn return_army(&mut self, survivors: &[u32], loot: &[i32]) {
-        for k in 0..5.min(survivors.len()) { self.army[k] += survivors[k]; }
+        let sent = self.away;
+        for k in 0..5.min(survivors.len()) { self.army[k] = self.army[k].saturating_add(survivors[k].min(sent[k])).min(ARMY_MAX); }
         self.away = [0; 5];
-        let cap = self.storage_cap();
-        for r in 0..N_RES.min(loot.len()) { self.stock[r] = Self::add_capped(self.stock[r], loot[r], cap); }
+        let cap = self.storage_cap(); let most = cap / 100 * 35;
+        for r in 0..N_RES.min(loot.len()) { self.stock[r] = Self::add_capped(self.stock[r], loot[r].clamp(0, most), cap); }
     }
     /// Another village (tag = its id) attacks this one from `angle`.
     pub fn start_raid(&mut self, angle: f32, atk: &[u32], tag: i32) -> bool {
+        if !angle.is_finite() || angle.abs() > 7.0 { return false; }   // an angle comes from atan2 (-pi..pi); anything else is a forged command
         if atk.len() < 5 || self.has_treaty(tag, TREATY_PEACE) || self.has_treaty(tag, TREATY_ALLIANCE) { return false; }
         if tag != 0 { self.rel_add(tag, -40); }   // whoever marches on us is not our friend
         let c = |n: u32| n.min(300);
@@ -1422,7 +1441,7 @@ impl World {
     }
     /// Goods arrive from another village's caravan: they go into the stores (up to what fits), and the sender is owed their worth, which we pay in coin at our own price when we can. Returns the coins paid.
     pub fn receive_goods(&mut self, res: u8, amount: i32) -> i32 {
-        if res as usize >= N_RES || amount <= 0 { return 0; }
+        if res as usize >= N_RES || amount <= 0 || amount > 500 { return 0; }   // (a caravan carries at most 500)
         let cap = self.storage_cap(); let room = (cap - self.stock[res as usize]).max(0); let take = amount.min(room);
         let pact = self.treaties.iter().any(|t| t.kind == TREATY_TRADE && t.until > self.tick);   // (the sender's own village pays by `settle`)
         let worth = take * self.price_x100(res as usize) / 100 * if pact { 110 } else { 100 } / 100;
@@ -1499,7 +1518,10 @@ impl World {
     pub fn det_form(&mut self, units: &[u32]) -> u32 { if units.len() < 5 { return 0; } self.det_form_arr([units[0], units[1], units[2], units[3], units[4]]) }
     fn det_form_arr(&mut self, u: [u32; 5]) -> u32 { self.det_form_inner(u) }
     /// March to (tx, ty). 0 ok, -1 no such army, -2 unreachable, -3 siege engines need soldiers to cut the forest, -5 water too wide.
-    pub fn det_march(&mut self, id: u32, tx: f32, ty: f32, attack: bool, ax: f32, ay: f32) -> i32 { self.det_march_inner(id, tx, ty, if attack { Some((ax, ay)) } else { None }, false) }
+    pub fn det_march(&mut self, id: u32, tx: f32, ty: f32, attack: bool, ax: f32, ay: f32) -> i32 {
+        // a peer chooses these numbers: NaN, infinity or a point far off the map would make the router search forever
+        if ![tx, ty, ax, ay].iter().all(|v| v.is_finite() && v.abs() <= MAP_LIMIT) { return -1; }
+        self.det_march_inner(id, tx, ty, if attack { Some((ax, ay)) } else { None }, false) }
     /// Send the army back to the town hall, where it rejoins the barracks.
     pub fn det_recall(&mut self, id: u32) -> i32 { let (hx, hy) = (self.buildings[0].x, self.buildings[0].y + 9.0); self.det_march_inner(id, hx, hy, None, true) }
     pub fn det_split(&mut self, id: u32, take: &[u32]) -> u32 { if take.len() < 5 { return 0; } self.det_split_inner(id, [take[0], take[1], take[2], take[3], take[4]]) }
@@ -1522,6 +1544,53 @@ impl World {
         let mut v = vec![d.x, d.y, 0.0]; for w in d.path.iter().skip(d.wi) { v.extend_from_slice(&[w.x, w.y, w.mode as f32]); } v
     }
     pub fn map_version(&self) -> u32 { self.map_ver }
+    /// Kept groves [x, y, radius] each: forest that stands inside a cleared area.
+    pub fn groves_flat(&self) -> Vec<f32> { self.groves.iter().flatten().copied().collect() }
+    /// Testing tool for the model village. Positions are relative to the town hall.
+    /// 0: clear every tree and every ore/stone/clay deposit within radius `a` (and forget the groves). 1: put a deposit of kind `a` (0 stone, 1 clay, 2 iron ore, 3 gold ore) at (`b`, `c`),
+    /// reusing a cleared one (or, failing that, moving the nearest other one of that kind). 2: keep the natural forest standing in a grove at (`a`, `b`) of radius `c`. Returns the deposit index for 1, else 0 (-1 on bad arguments).
+    pub fn demo(&mut self, action: u8, a: i32, b: i32, c: i32) -> i32 {
+        let (hx, hy) = (self.ox as f32, self.oy as f32);
+        match action {
+            0 => {
+                let r = (a as f32).clamp(10.0, 200.0);
+                self.felled.push([hx, hy, r]); self.groves.clear();
+                for d in self.deposits.iter_mut() { if (d.x - hx).hypot(d.y - hy) < r { d.rem = 0; d.max = 0; } }
+                self.map_ver += 1; self.terrain_ver += 1; 0
+            }
+            1 => {
+                if !(0..4).contains(&a) || b.abs() > 400 || c.abs() > 400 { return -1; }
+                let kind = a as u8; let (x, y) = (hx + b as f32, hy + c as f32);
+                let slot = self.deposits.iter().position(|d| d.kind == kind && d.max == 0)
+                    .or_else(|| self.deposits.iter().enumerate().filter(|(_, d)| d.kind == kind).min_by(|(_, p), (_, q)| (p.x - hx).hypot(p.y - hy).total_cmp(&(q.x - hx).hypot(q.y - hy))).map(|(i, _)| i));
+                let Some(i) = slot else { return -1 };
+                let amount = match kind { 0 => 1500, 1 => 1200, 2 => 900, _ => 320 };
+                self.deposits[i] = Deposit { kind, x, y, rem: amount, max: amount };
+                self.map_ver += 1; self.terrain_ver += 1; i as i32
+            }
+            2 => { if b.abs() > 400 || a.abs() > 400 || self.groves.len() >= 16 { return -1; } self.groves.push([hx + a as f32, hy + b as f32, (c as f32).clamp(5.0, 60.0)]); self.map_ver += 1; 0 }
+            _ => -1,
+        }
+    }
+    /// The best patch of natural forest in a ring round the hall (radii `min_r`..`max_r`, directions `from_deg`..`to_deg`, 0 = east, 90 = south): [dx, dy, density] relative to the hall, or nothing.
+    pub fn forest_spot(&self, min_r: f32, max_r: f32, from_deg: f32, to_deg: f32) -> Vec<f32> {
+        if ![min_r, max_r, from_deg, to_deg].iter().all(|v| v.is_finite()) { return vec![]; }
+        let (min_r, max_r) = (min_r.clamp(0.0, 400.0), max_r.clamp(0.0, 400.0));
+        let (from_deg, to_deg) = (from_deg.clamp(-720.0, 720.0), to_deg.clamp(-720.0, 720.0));
+        let (hx, hy) = (self.ox as f32, self.oy as f32);
+        let mut best: Option<(f32, f32, f32)> = None;
+        let mut deg = from_deg;
+        while deg <= to_deg {
+            let a = deg.to_radians(); let mut r = min_r;
+            while r <= max_r {
+                let (x, y) = (hx + a.cos() * r, hy + a.sin() * r);
+                if self.height_at(x, y) > 1.0 { let d = terrain::forest_near(self.seed, x, y, 12.0); if best.map_or(true, |b| d > b.2) { best = Some((a.cos() * r, a.sin() * r, d)); } }
+                r += 5.0;
+            }
+            deg += 6.0;
+        }
+        best.map_or(vec![], |(x, y, d)| vec![x, y, d])
+    }
     pub fn felled_flat(&self) -> Vec<f32> { self.felled.iter().flatten().copied().collect() }
     pub fn bridges_flat(&self) -> Vec<f32> { self.bridges.iter().flatten().copied().collect() }
     /// Plan a route without ordering it: [ok(1) | error code, seconds, planks, wood, count, x, y, mode, ...].
@@ -1593,7 +1662,7 @@ impl World {
         for k in 0..5 { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); }
         for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
         for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); for k in 0..5 { mix(d.units[k] as u64); } }
-        mix(self.felled.len() as u64); mix(self.bridges.len() as u64);
+        mix(self.felled.len() as u64); mix(self.groves.len() as u64); mix(self.bridges.len() as u64);
         mix(self.levels.len() as u64); mix(self.craters.len() as u64); mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
         if let Some(bt) = &self.battle { for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); } }
         h

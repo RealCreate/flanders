@@ -16,9 +16,17 @@ export interface ModelApi {
   /** Is there water at this spot (relative to the hall)? */
   wet(x: number, y: number): boolean;
   soldiers(kind: number, n: number): void;
+  /** Remove every tree and every ore, stone and clay deposit within `radius` of the hall (they are put back only where a resource building needs them). */
+  clearLand(radius: number): void;
+  /** Put a deposit (0 stone, 1 clay, 2 iron ore, 3 gold ore) at this spot; returns its index or -1. */
+  deposit(kind: number, x: number, y: number): number;
+  /** Keep the natural forest standing in a patch of this radius inside the cleared land. */
+  grove(x: number, y: number, r: number): void;
+  /** The thickest natural forest in a ring round the hall (radii, and directions in degrees: 0 east, 90 south): [x, y, density] or null. */
+  forestSpot(minR: number, maxR: number, fromDeg: number, toDeg: number): [number, number, number] | null;
 }
 
-const HOUSE = 0, FARM = 1, WALL = 2, TOWER = 3, WOODCUTTER = 4, SAWMILL = 5, BLACKSMITH = 13, WELL = 16, CHAPEL = 17, BARRACKS = 19, BUILDERS = 20, GATE = 22, DRAWBRIDGE = 23, MOAT = 24,
+const HOUSE = 0, FARM = 1, WALL = 2, TOWER = 3, WOODCUTTER = 4, SAWMILL = 5, QUARRY = 6, CLAY_PIT = 7, BRICKWORKS = 8, IRON_MINE = 9, GOLD_MINE = 10, CHARCOAL = 11, BLACKSMITH = 13, WELL = 16, CHAPEL = 17, BARRACKS = 19, BUILDERS = 20, GATE = 22, DRAWBRIDGE = 23, MOAT = 24,
   STOREHOUSE = 25, KEEP = 26, COURTHOUSE = 27, MARKET = 28, GARDEN = 30, PARK = 31;
 
 /** An irregular outline: radius R swelling and narrowing with the angle. */
@@ -37,11 +45,16 @@ function outline(R: number, step: number, from: number, phase = 0): { x: number;
   return out;
 }
 
+/** Everything within this radius of the hall is cleared of trees and deposits: the city, its moat and the farmland and workshops round it. */
+export const CLEAR_RADIUS = 118;
+
 export function buildModelVillage(api: ModelApi, hallIdx = 0) {
+  api.clearLand(CLEAR_RADIUS);   // a bare, level site: trees and deposits come back only where a resource building needs them (step 6b)
   api.fill();
   for (let i = 0; i < 3; i++) { api.upgrade(hallIdx); api.fill(); }          // a grand castle hall widens the border for everything that follows
 
   const up = (i: number, times: number) => { if (i < 0) return; for (let t = 0; t < times; t++) { if (!api.upgrade(i)) { api.fill(); if (!api.upgrade(i)) break; } } };   // (an upgrade fails when a neighbour is in the way)
+  let hasMarket = false;
   const reserved: [number, number, number][] = [];                           // x, y, radius: spots houses must keep clear of
   const wallPts: [number, number][] = [];                                   // every wall piece and gate standing so far
   /** Spots that keep a building clear of the walls: its own radius, the wall piece's, and 3 units of room between them. */
@@ -84,34 +97,35 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
 
   // a spot in the bailey: halfway between the inner and outer curtain wall in this direction (the walls swell and narrow, so the bailey does too)
   const bail = (deg: number, off = 0): [number, number] => { const a = (deg * Math.PI) / 180, r = (shape(R1, a, 0) + shape(R2, a, 0.3)) / 2 + off; return [Math.round(Math.cos(a) * r), Math.round(Math.sin(a) * r)]; };
-  // 4. the bailey: workshops, market, park and farms on the ring between the walls
-  { const [x, y] = bail(-33); put(STOREHOUSE, x, y, 4.2, 0, 4); } { const [x, y] = bail(200); put(SAWMILL, x, y, 4.5, 0, 4); } { const [x, y] = bail(222); put(WOODCUTTER, x, y, 3.2, 0, 6); }
-  { const [x, y] = bail(172); put(BLACKSMITH, x, y, 4, 0, 4); } { const [x, y] = bail(-62); put(BUILDERS, x, y, 4.5, 0, 4); }
-  { const [x, y] = bail(122); put(MARKET, x, y, 5.5, 0, 4); } { const [x, y] = bail(58); put(PARK, x, y, 4, 0, 4); } { const [x, y] = bail(20); put(GARDEN, x, y, 3.4, 0, 4); }
-  for (const deg of [215, 160, 285, 335, 100]) { const [x, y] = bail(deg + 8); put(FARM, x, y, 6.5, 0, 9); }
+  // 4. the bailey: the craftsmen, market and park on the ring between the walls
+  { const [x, y] = bail(-33); put(STOREHOUSE, x, y, 4.2, 0, 4); }   { const [x, y] = bail(172); put(BLACKSMITH, x, y, 4, 0, 4); } { const [x, y] = bail(-62); put(BUILDERS, x, y, 4.5, 0, 4); }
+  { const [x, y] = bail(122); hasMarket = put(MARKET, x, y, 5.5, 0, 4) >= 0; } { const [x, y] = bail(58); put(PARK, x, y, 4, 0, 4); } { const [x, y] = bail(20); put(GARDEN, x, y, 3.4, 0, 4); }
+  // (farms, the woodcutter, the sawmill and the mines are outside the moat: see 6b)
 
   // 4b. houses fill the bailey, leaving the roads between the two gates free
   const houses: number[] = [];
   for (const ring of [0, 1]) {
     // ring 0 hugs the inside of the inner wall, ring 1 the inside of the outer wall; both keep 8.5 units off the wall pieces
     const n = Math.floor((Math.PI * 2 * (ring ? R2 - 8.5 : R1 + 8.5)) / 7.6);
-    for (let k = 0; k < n && houses.length < 38; k++) {
+    for (let k = 0; k < n && houses.length < 44; k++) {
       const a = (k / n) * Math.PI * 2 + (ring ? 0.11 : 0), r = ring ? shape(R2, a, 0.3) - 8.5 : shape(R1, a, 0) + 8.5, p: [number, number] = [Math.round(Math.cos(a) * r), Math.round(Math.sin(a) * r)];
       if (Math.abs(p[1]) < 5 && p[0] > 26) continue;                          // from the inner gate (east) ...
       if (Math.abs(p[0]) < 5 && p[1] > 26) continue;                          // ... to the outer gate (south)
-      if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 3.7)) continue;
+      if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 4.4)) continue;
       const i = api.place(HOUSE, p[0], p[1], 0, 2, clearOfWalls(3.2)); if (i >= 0) { houses.push(i); reserved.push([...api.at(i), 3.2]); }
     }
   }
 
   // 4c. infill: more houses between the two rings, wherever the bailey still has room (the walls are already standing, so this can only fill space, never break a wall)
-  for (let deg = 0; deg < 360 && houses.length < 30; deg += 7) for (const off of [-6, 0, 6]) {
+  for (let deg = 0; deg < 360 && houses.length < 40; deg += 7) for (const off of [-6, 0, 6]) {
+    if (houses.length >= 40) break;
     const p = bail(deg + (off ? 3 : 0), off);
     if (Math.abs(p[1]) < 5 && p[0] > 26) continue; if (Math.abs(p[0]) < 5 && p[1] > 26) continue;
-    if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 3.7)) continue;
+    if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 4.4)) continue;
     const i = api.place(HOUSE, p[0], p[1], 0, 1, clearOfWalls(3.2)); if (i >= 0) { houses.push(i); reserved.push([...api.at(i), 3.2]); }
   }
 
+  const suburb: number[] = [];
   // 6. the moat, outside the outer wall: pieces every ~4 units, broad in some places and thin in others, then any gap filled
   const moatPts = outline(R3, 3.9, Math.PI / 2, 0.3), wet: ([number, number] | null)[] = [];
   moatPts.forEach(p => {
@@ -131,6 +145,44 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
     api.place(DRAWBRIDGE, bx, Math.round(by + mid), 0, 0);
     // a little settlement on the far bank, so a road runs out from the gate and across the drawbridge
     const oy = by + (lo <= hi ? hi : 4) + 7; api.place(HOUSE, bx, oy, 0, 2); api.place(WELL, bx + 7, oy + 3, 0, 2); api.place(HOUSE, bx - 7, oy + 3, 0, 2);
+    // ... which grows into a little suburb along the road: houses on both sides of it
+    for (const [dx, dy] of [[-9, 11], [9, 12], [-17, 5], [17, 6], [-16, 17], [16, 19]]) suburb.push(api.place(HOUSE, bx + dx, oy + dy, 0, 2));
+    if (!hasMarket) api.place(MARKET, bx, oy + 28, 0, 7);   // the market stands outside the gate, on the road, as in a real town (the bailey is too narrow for it)
+  }
+
+
+  // 6b. outside the moat, as in a real medieval town: the farms and everything that digs, fells or smelts. Trees and deposits were all cleared at the start;
+  //     each resource building gets back exactly the one deposit (or the grove) it needs, set down beside it.
+  {
+    const ring = 98;   // the moat's outer bank is about 82 from the hall: farms and works stand a little beyond it, inside the land the hall holds
+    const polar = (deg: number, r: number): [number, number] => { const a = (deg * Math.PI) / 180; return [Math.round(Math.cos(a) * r), Math.round(Math.sin(a) * r)]; };
+    const dry = (x: number, y: number) => ![[0, 0], [7, 0], [-7, 0], [0, 7], [0, -7]].some(([dx, dy]) => api.wet(x + dx, y + dy));
+    /** A dry spot near this direction and distance (trying neighbouring directions and distances when the first is water). */
+    const spot = (deg: number, r = ring): [number, number] | null => { for (const dd of [0, 8, -8, 16, -16]) for (const dr of [0, -5, 5, -9, 5]) { const [x, y] = polar(deg + dd, r + dr); if (dry(x, y)) return [x, y]; } return null; };
+    /** Set a deposit down in this direction and put the working building beside it, on the city's side. Returns the building's index. */
+    const works = (kind: number, building: number, deg: number, r: number, search = 7) => {
+      const s = spot(deg, ring + 3); if (!s) return -1;
+      if (api.deposit(kind, s[0], s[1]) < 0) return -1;
+      const [bx, by] = [s[0] * (1 - 7 / Math.hypot(s[0], s[1])), s[1] * (1 - 7 / Math.hypot(s[0], s[1]))];
+      return api.place(building, Math.round(bx), Math.round(by), 0, search, beyondMoat);
+    };
+    const beyondMoat = (x: number, y: number) => Math.hypot(x, y) >= 90;   // never back inside the moat's outer bank
+    const mines: number[] = [];
+    mines.push(works(0, QUARRY, 0, 4.5));
+    const clay = works(1, CLAY_PIT, 58, 4);
+    if (clay >= 0) { const [cx, cy] = api.at(clay), a = Math.atan2(cy, cx); api.place(BRICKWORKS, Math.round(cx - Math.sin(a) * 12), Math.round(cy + Math.cos(a) * 12), 0, 6, beyondMoat); api.place(CHARCOAL, Math.round(cx + Math.sin(a) * 12), Math.round(cy - Math.cos(a) * 12), 0, 6, beyondMoat); }
+    mines.push(clay, works(2, IRON_MINE, 150, 4.2), works(3, GOLD_MINE, 270, 4.2));
+    // the forest: the thickest natural woodland within reach, kept standing as a grove with the woodcutter and the sawmill beside it
+    const wood = api.forestSpot(ring - 4, ring + 6, 125, 245) ?? api.forestSpot(ring - 4, ring + 6, 245, 485) ?? api.forestSpot(ring - 4, ring + 6, 0, 360);
+    if (wood) {
+      api.grove(wood[0], wood[1], 24);
+      const a = Math.atan2(wood[1], wood[0]);
+      api.place(WOODCUTTER, wood[0], wood[1], 0, 6, beyondMoat);
+      if (api.place(SAWMILL, Math.round(wood[0] - Math.cos(a) * 12), Math.round(wood[1] - Math.sin(a) * 12), 0, 8, beyondMoat) < 0) api.place(SAWMILL, Math.round(wood[0] + Math.sin(a) * 14), Math.round(wood[1] - Math.cos(a) * 14), 0, 10, beyondMoat);
+    }
+    // the farms fill the gaps round the ring, leaving the road to the gate (south) clear
+    for (const deg of [30, 125, 180, 240, 300, 335]) { const s = spot(deg); if (s) api.place(FARM, s[0], s[1], 0, 8, beyondMoat); }
+    void mines;
   }
 
   // 7. improvements: stone walls (the inner ring battlemented), stone towers, the keep, nicer houses
@@ -139,6 +191,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   for (const i of innerTowers) if (i >= 0) up(i, 3);
   for (const i of outerTowers) if (i >= 0) up(i, 2);
   houses.forEach((i, k) => { if (k % 2 === 0) up(i, 1); });
+  suburb.forEach(i => { if (i >= 0) up(i, 1); });
   api.fill();
 
   // 7b. optional designs: stairs up to the wall walks (every few pieces, so the guards can climb), banners, braziers, hoardings, chimneys
@@ -156,4 +209,4 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   for (const t of [...innerTowers, ...outerTowers]) if (t >= 0) api.garrison(t, 3);
 }
 
-void FARM; void BUILDERS; void WALL; void TOWER; void HOUSE;
+void BUILDERS; void WALL; void TOWER; void HOUSE;

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // MCP server for Flanders. An AI agent plays through a normal browser tab: this server talks to the agent over MCP (stdio) and to the game page over a local WebSocket.
 // The page applies every action with the same rules as a human click, and both sides enforce the guardrails (see guardrails.mjs and web/src/agent.ts).
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { WebSocketServer } from 'ws';
@@ -10,20 +10,29 @@ import { Guard } from './guardrails.mjs';
 
 const args = process.argv.slice(2), flag = n => args.includes(`--${n}`), opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
 const PORT = Number(opt('port', process.env.FLANDERS_AGENT_PORT ?? '8765')), GAME = opt('game', process.env.FLANDERS_URL ?? 'http://localhost:5173');
-const TOKEN = process.env.FLANDERS_AGENT_TOKEN || randomBytes(12).toString('hex');
+const TOKEN = process.env.FLANDERS_AGENT_TOKEN || randomBytes(24).toString('hex');
+if (!/^[A-Za-z0-9_-]{8,128}$/.test(TOKEN)) { process.stderr.write('FLANDERS_AGENT_TOKEN must be 8-128 letters, digits, - or _.\n'); process.exit(1); }
 const guard = new Guard({ allowAttack: flag('allow-attack'), gapMs: Number(opt('gap-ms', '2500')), perMinute: Number(opt('per-minute', '15')) });
 
 // ---- the game page ----
 let page = null, nextId = 1; const pending = new Map();
-const wss = new WebSocketServer({ host: '127.0.0.1', port: PORT, verifyClient: ({ origin }) => !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || (process.env.FLANDERS_ORIGINS ?? '').split(',').includes(origin) });
+// Only the local game page may talk to this server: it listens on the loopback address only, wants an Origin that is this machine (or one you list in FLANDERS_ORIGINS),
+// a secret token in the first message, and refuses big messages and many connections.
+const ORIGIN_OK = o => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(o) || (process.env.FLANDERS_ORIGINS ?? '').split(',').map(x => x.trim()).filter(Boolean).includes(o);
+const sameToken = t => typeof t === 'string' && t.length === TOKEN.length && timingSafeEqual(Buffer.from(t), Buffer.from(TOKEN));
+const wss = new WebSocketServer({ host: '127.0.0.1', port: PORT, maxPayload: 256 * 1024, verifyClient: ({ origin }) => !origin || ORIGIN_OK(origin) });
 wss.on('connection', ws => {
+  if (wss.clients.size > 4) { ws.close(1013); return; }
   let authed = false;
+  const deadline = setTimeout(() => { if (!authed) ws.close(1008); }, 5000);   // whoever connects must prove they know the token within five seconds
   ws.on('message', raw => {
     let m; try { m = JSON.parse(String(raw)); } catch { return; }
-    if (!authed) { if (m.hello === 'flanders-game' && m.token === TOKEN) { authed = true; page?.close(); page = ws; ws.send(JSON.stringify({ hello: 'ok' })); } else ws.close(); return; }
+    if (!m || typeof m !== 'object') return;
+    if (!authed) { if (m.hello === 'flanders-game' && sameToken(m.token)) { authed = true; clearTimeout(deadline); page?.close(); page = ws; ws.send(JSON.stringify({ hello: 'ok' })); } else ws.close(1008); return; }
     const p = pending.get(m.id); if (p) { pending.delete(m.id); clearTimeout(p.timer); p.resolve(m); }
   });
-  ws.on('close', () => { if (page === ws) page = null; });
+  ws.on('close', () => { clearTimeout(deadline); if (page === ws) page = null; });
+  ws.on('error', () => { /* a broken socket is just closed */ });
 });
 const link = `${GAME}/?agent=${PORT}&token=${TOKEN}&player=agent${flag('allow-attack') ? '&allow_attack=1' : ''}`;
 process.stderr.write(`Flanders MCP server. Open this link in a browser tab so the agent can play:\n  ${link}\n`);

@@ -29,7 +29,7 @@ Install `cloudflared` from [Cloudflare's downloads](https://developers.cloudflar
 - Do not tunnel anything else: no `--url` pointing at the MCP server (`mcp/`), a database, or a folder. Run the tunnel as a normal user, not as administrator.
 - A quick tunnel URL is public to anyone who has it. Cloudflare's own docs say quick tunnels are for testing, have no uptime guarantee and a request rate limit ([quick tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)). A recent `cloudflared` can restrict a quick tunnel to listed emails ([changelog](https://developers.cloudflare.com/changelog/post/2026-10-02-protected-quick-tunnels/)); for a private session use that, or a named tunnel with Cloudflare Access.
 - Stop the tunnel (Ctrl+C) when you are done.
-- The Test panel (cheats) only appears on `localhost` or with `?cheats=1` in the address. Cheat commands are signed and sent to other players, so do not hand out a link containing `?cheats=1`.
+- The Test panel (cheats) only appears on `localhost` or with `?cheats=1` in the address. Cheat commands are never accepted from the network (other players ignore them), so cheating only changes your own copy, which then drifts out of step with what others see. Debug handles for tests (`window.__game`) are only available on localhost or with `?debug=1`.
 
 ### What other players can learn about you
 WebRTC connects browsers directly, so **each player can see the others' IP addresses** (that is how it works). Only play with people you are happy to share that with. Your village and signing key live in your browser's local storage; clearing site data deletes them.
@@ -39,3 +39,6 @@ A tunnel only delivers the page; the game connection itself is WebRTC. Most home
 
 ## Not checked from here
 The sandbox this was written in cannot reach the Nostr relays, so peer discovery and a real two-computer game through a tunnel were not tested. The preview server's host check was tested with `curl`. If peers never see each other, check the browser console for relay errors and try both players on the same World name with a TURN server set.
+
+## Security headers
+GitHub Pages cannot send custom headers, so the page carries a Content-Security-Policy in a `<meta>` tag. On Cloudflare Pages or Netlify, `web/public/_headers` is published with the build and adds what a meta tag cannot (framing protection, nosniff, long caching for hashed assets). See [SECURITY.md](SECURITY.md).

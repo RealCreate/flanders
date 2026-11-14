@@ -30,6 +30,8 @@ export class Village {
   private defaultBanner = 0;
   view: VillageView; paths: Paths; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; rivers: RiverFlow; boats: Boats;
   clear: { x: number; z: number; r: number }[] = [];
+  /** Groves kept standing inside a big cleared area. */
+  keep: { x: number; z: number; r: number }[] = [];
   clearLines: { ax: number; az: number; bx: number; bz: number; r: number }[] = [];
   /** Circles soldiers must walk round. */
   obstacles: { x: number; z: number; r: number }[] = [];
@@ -87,6 +89,7 @@ export class Village {
     this.ruins.sync(w.ruins_flat(), w.terrain_version());
     this.sh.wildlife.syncDomestic(this.key, f);
     const fl = w.felled_flat(); for (let i = 0; i < fl.length; i += 3) this.clear.push({ x: fl[i], z: fl[i + 1], r: fl[i + 2] });
+    this.keep = []; const gv = w.groves_flat(); for (let i = 0; i < gv.length; i += 3) this.keep.push({ x: gv[i], z: gv[i + 1], r: gv[i + 2] });
     this.mapVersion = w.map_version();
     const sc = w.scorch_flat(); for (let i = 0; i < sc.length; i += 3) this.clear.push({ x: sc[i], z: sc[i + 1], r: sc[i + 2] * 0.95 });
     this.count = w.building_count(); this.version = w.terrain_version();
