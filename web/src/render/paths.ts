@@ -76,7 +76,7 @@ export class Paths {
     // aprons under buildings (and the plaza under the hall)
     for (let i = 0; i < buildings.length; i += S) {
       const kind = buildings[i], x = buildings[i + 2], z = buildings[i + 3];
-      if (kind === 2 || kind === 21 || kind === 22 || kind === 24 || kind === 32 || kind === 33 || kind === 34) continue; // walls, fences, gates and moats have no apron
+      if (kind === 2 || kind === 21 || kind === 22 || kind === 24 || kind === 32 || kind === 33 || kind === 34 || kind === 37) continue; // walls, fences, gates and moats have no apron
       const isHall = kind === 15, R = isHall ? radii[kind] + 3.8 + hallTier * 0.8 : radii[kind] * 1.05 + 1.0, rings = 5, seg = 28;
       const base = pos.length / 3;
       vert(x, z, 0.95, 0.5, 0.5);
