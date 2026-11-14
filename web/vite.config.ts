@@ -5,5 +5,6 @@ import { defineConfig } from 'vite';
 const extra = (process.env.ALLOWED_HOSTS ?? '').split(',').map(h => h.trim()).filter(Boolean);
 
 export default defineConfig({
+  base: './',   // relative links, so the build works from a sub-path such as https://user.github.io/flanders/
   preview: { host: '127.0.0.1', port: 4173, allowedHosts: ['.trycloudflare.com', ...extra] },
 });

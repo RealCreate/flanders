@@ -9,6 +9,9 @@ That gives three options, safest first:
 2. **A Cloudflare quick tunnel from your computer** (below): fastest for tonight, the URL changes every time, and it only works while your computer and the tunnel are running.
 3. **A named Cloudflare tunnel on your own domain**, optionally behind Cloudflare Access (only listed emails get in). Same as 2 but with a stable name and a login.
 
+## GitHub Pages (set up in `.github/workflows/pages.yml`)
+Once, in the repository: **Settings → Pages → Build and deployment → Source: GitHub Actions**. After that every push to `master`/`main` (or a manual run from the Actions tab) builds the game and publishes it at `https://<your-user>.github.io/<repo>/`. The site is public even if you keep it unlisted (and Pages on a private repository needs a paid plan). The build uses relative links (`base: './'`), so it works from that sub-path; I checked a build served from `/flanders/` loads and starts with no failed requests.
+
 ## Quick tunnel, step by step
 ```
 cd web
