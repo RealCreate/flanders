@@ -44,7 +44,7 @@ export class Paths {
   }
 
   /** Rebuild from the world: buildings_flat (stride 10), roads_flat (stride 6), building radii, hall tier. */
-  update(buildings: Float32Array, roads: Float32Array, radii: number[], born: ArrayLike<number> = []) {
+  update(buildings: Float32Array, roads: Float32Array, radii: number[], born: ArrayLike<number> = [], ring?: (kind: number, tier: number) => number) {
     const pos: number[] = [], col: number[] = [], uv: number[] = [], idx: number[] = [], rd: number[] = [];
     let rb = -1e6, rs = 0, rp = 0;   // the road the next vertices belong to: birth tick, distance from the village end (0..1), paveable
     const hallTier = buildings[1] ?? 0, tone = TIER_COLOR[Math.min(3, hallTier)];
@@ -65,7 +65,7 @@ export class Paths {
     // a road stops where it meets the building: at its door for a house, but for a building with fields or beds round it (a farm, a garden, a market) at the ring of path that runs round all of
     // that, never in among the crops
     const FIELDS: Record<number, number> = { 1: 0.25, 28: 0.1, 30: 0, 31: 0 };
-    const stepBack = (kind: number, tier: number) => (kind in FIELDS ? radii[kind] * (1 + FIELDS[kind] * tier) + 1.6 : radii[kind] * 0.6);
+    const stepBack = (kind: number, tier: number) => (kind in FIELDS ? (ring ? ring(kind, tier) : radii[kind] * (1 + FIELDS[kind] * tier) + 1.6) : radii[kind] * 0.6);
     const half = hallTier >= 2 ? 1.45 : 1.15, discs = new Map<string, [number, number]>();
     lines.forEach((ln, li) => {
       const kc = buildings[ln.child * S], kp = buildings[ln.parent * S];

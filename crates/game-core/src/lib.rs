@@ -280,6 +280,9 @@ pub fn solid_radius(kind: u8, tier: u8) -> f32 {
 }
 #[wasm_bindgen]
 pub fn solid_radius_of(kind: u8, tier: u8) -> f32 { solid_radius(kind, tier) }
+/// How far from a building's middle the ring of path round it runs (round a farm: out past all of its fields).
+#[wasm_bindgen]
+pub fn ring_radius_of(kind: u8, tier: u8) -> f32 { pathnet::ring_radius(kind, tier) }
 
 #[wasm_bindgen]
 pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
@@ -3795,6 +3798,22 @@ mod pathnet_tests {
         let far = (0..n).filter(|&i| net[2 + 2 * i] > 120.0).count(); assert!(far > 3, "network nodes out along the path: {far}");
         let p = w.find_path(&[10, 0, 0, 0, 0], 8.0, 8.0, 280.0, 36.0).expect("a march to the other city");
         assert!(p.last().map_or(false, |q| (q.x - 280.0).abs() < 6.0));
+    }
+
+    #[test]
+    fn the_paths_never_cross_a_farms_fields() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        let mut farms = vec![];
+        for (x, y, rot) in [(16, 6, 0u8), (-18, 8, 3), (4, -22, 5)] { let i = w.place(FARM, x, y, rot); if i >= 0 { farms.push(i as usize); } }
+        assert!(farms.len() >= 2, "farms placed: {}", farms.len());
+        for &f in farms.iter().take(2) { let _ = w.upgrade(f as u32); }
+        let net = w.net_flat(); let (n, e) = (net[0] as usize, net[1] as usize);
+        let bad = |x: f32, y: f32| farms.iter().any(|&f| pathnet::in_fields(&w.buildings[f], x, y, 0.0));
+        for i in 0..n { assert!(!bad(net[2 + 2 * i], net[3 + 2 * i]), "a node in a field at {:.1},{:.1}", net[2 + 2 * i], net[3 + 2 * i]); }
+        for k in 0..e { let o = 2 + 2 * n + 3 * k; let (a, b) = (net[o] as usize, net[o + 1] as usize); for t in 1..8 { let f = t as f32 / 8.0; let (x, y) = (net[2 + 2 * a] + (net[2 + 2 * b] - net[2 + 2 * a]) * f, net[3 + 2 * a] + (net[3 + 2 * b] - net[3 + 2 * a]) * f); assert!(!bad(x, y), "an edge across a field at {x:.1},{y:.1}"); } }
+        // and a walker going past does not cross them either
+        let r = w.walk_route(30.0, 6.0, 2.0, 6.0);
+        if !r.is_empty() { let mut pts = vec![(30.0f32, 6.0f32)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1]))); for q in pts.windows(2) { for t in 0..=30 { let f = t as f32 / 30.0; let (x, y) = (q[0].0 + (q[1].0 - q[0].0) * f, q[0].1 + (q[1].1 - q[0].1) * f); assert!(!bad(x, y), "walked across a field at {x:.1},{y:.1}"); } } }
     }
 
     #[test]
