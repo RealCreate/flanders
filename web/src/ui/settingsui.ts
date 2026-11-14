@@ -1,0 +1,68 @@
+import { settings, setSettings, resetSettings, onSettings, PRESETS, type Settings } from '../settings';
+
+interface Row { key: keyof Settings; label: string; hint: string; kind: 'select' | 'toggle' | 'range'; options?: [string, string][]; min?: number; max?: number; step?: number }
+const ROWS: { title: string; rows: Row[] }[] = [
+  { title: 'Overall', rows: [
+    { key: 'quality', label: 'Quality preset', hint: 'Sets most of the options below at once. Change any of them and it becomes Custom.', kind: 'select', options: [['low', 'Low: smooth on weak computers'], ['medium', 'Medium'], ['high', 'High (default)'], ['ultra', 'Ultra: for strong graphics cards'], ['custom', 'Custom']] },
+    { key: 'fpsCap', label: 'Frame rate limit', hint: 'Lower limits save battery and keep a laptop cool.', kind: 'select', options: [['0', 'Unlimited (screen speed)'], ['60', '60 per second'], ['30', '30 per second']] },
+    { key: 'showFps', label: 'Show frame rate', hint: 'The small counter in the corner (also F3 for details).', kind: 'toggle' },
+  ] },
+  { title: 'Image', rows: [
+    { key: 'resolution', label: 'Resolution', hint: 'How many pixels are drawn. Lower is much faster; above 100% is sharper but slow.', kind: 'range', min: 0.5, max: 1.5, step: 0.05 },
+    { key: 'adaptive', label: 'Adjust resolution automatically', hint: 'Drops the resolution a little when the game runs slowly and brings it back when there is room.', kind: 'toggle' },
+    { key: 'antialias', label: 'Smooth edges (anti-aliasing)', hint: 'Removes jagged edges. Changing it needs a reload of the page.', kind: 'toggle' },
+    { key: 'shadows', label: 'Shadows', hint: 'Shadow quality. Off is the biggest single speed-up.', kind: 'select', options: [['0', 'Off'], ['1024', 'Low'], ['2048', 'Medium'], ['4096', 'High']] },
+    { key: 'waterFx', label: 'Glossy water', hint: 'Reflective water surface.', kind: 'toggle' },
+  ] },
+  { title: 'World', rows: [
+    { key: 'trees', label: 'Trees', hint: 'Forests. Without them the land is bare but much faster.', kind: 'toggle' },
+    { key: 'treeDetail', label: 'Detailed trees nearby', hint: 'Rich trees close to the camera, simple ones further away.', kind: 'toggle' },
+    { key: 'drawDistance', label: 'Draw distance', hint: 'How far away forests are drawn.', kind: 'select', options: [['450', 'Short'], ['750', 'Medium'], ['1300', 'Long'], ['2600', 'Very long']] },
+    { key: 'particles', label: 'Fire, smoke and dust', hint: 'Particle effects.', kind: 'toggle' },
+    { key: 'crowds', label: 'People, soldiers and animals', hint: 'The moving figures. Turning them off does not change the game, only what you see.', kind: 'toggle' },
+  ] },
+];
+
+/** Build the display settings panel into `root`. It stays in step with the settings (a preset changes several controls at once). */
+export function mountSettings(root: HTMLElement, askReload: () => void) {
+  root.innerHTML = ROWS.map(g => `<h3>${g.title}</h3>` + g.rows.map(r => {
+    const id = `set-${r.key}`;
+    const ctl = r.kind === 'select' ? `<select id="${id}">${r.options!.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`
+      : r.kind === 'toggle' ? `<input type="checkbox" id="${id}">`
+      : `<input type="range" id="${id}" min="${r.min}" max="${r.max}" step="${r.step}"><output id="${id}-v"></output>`;
+    return `<label class="setrow" for="${id}"><span><b>${r.label}</b><small>${r.hint}</small></span>${ctl}</label>`;
+  }).join('')).join('') + `<h3>Network</h3><p class="muted">Players connect directly to each other. If a friend cannot connect (strict office or mobile network), a TURN relay server helps. Optional; applies after a reload.</p>
+    <label class="setrow"><span><b>TURN server</b><small>For example turn:turn.example.com:3478</small></span><input type="text" id="turn-urls" placeholder="turn:host:3478"></label>
+    <label class="setrow"><span><b>User name</b></span><input type="text" id="turn-user" autocomplete="off"></label>
+    <label class="setrow"><span><b>Password</b></span><input type="password" id="turn-cred" autocomplete="off"></label>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div>';
+  const el = <T extends HTMLElement>(k: string) => root.querySelector<T>(`#set-${k}`)!;
+  const sync = () => {
+    const s = settings() as unknown as Record<string, unknown>;
+    for (const g of ROWS) for (const r of g.rows) {
+      const c = el<HTMLInputElement | HTMLSelectElement>(r.key as string);
+      if (r.kind === 'toggle') (c as HTMLInputElement).checked = !!s[r.key]; else c.value = String(s[r.key]);
+      if (r.kind === 'range') root.querySelector<HTMLElement>(`#set-${r.key}-v`)!.textContent = `${Math.round(Number(s[r.key]) * 100)}%`;
+    }
+  };
+  root.addEventListener('change', e => {
+    if (!(e.target as HTMLElement).id.startsWith('set-')) return;
+    const t = e.target as HTMLInputElement | HTMLSelectElement, key = t.id.replace(/^set-/, '') as keyof Settings, row = ROWS.flatMap(g => g.rows).find(r => r.key === key);
+    if (!row) return;
+    const v = row.kind === 'toggle' ? (t as HTMLInputElement).checked : row.kind === 'select' && key !== 'quality' ? Number(t.value) : row.kind === 'range' ? Number(t.value) : t.value;
+    setSettings({ [key]: v } as Partial<Settings>);
+    if (key === 'antialias') { root.querySelector<HTMLElement>('#set-reload')!.hidden = false; askReload(); }
+  });
+  root.addEventListener('input', e => { const t = e.target as HTMLInputElement; if (t.id === 'set-resolution') root.querySelector<HTMLElement>('#set-resolution-v')!.textContent = `${Math.round(Number(t.value) * 100)}%`; });
+  root.querySelector<HTMLElement>('#set-reset')!.onclick = () => resetSettings();
+  root.querySelector<HTMLElement>('#set-reload')!.onclick = () => location.reload();
+  // the TURN relay lives apart from the other settings: it is a secret of this browser
+  const turnEls = ['turn-urls', 'turn-user', 'turn-cred'].map(id => root.querySelector<HTMLInputElement>(`#${id}`)!);
+  try { const t = JSON.parse(localStorage.getItem('flanders:turn') ?? 'null'); if (t) { turnEls[0].value = t.urls ?? ''; turnEls[1].value = t.username ?? ''; turnEls[2].value = t.credential ?? ''; } } catch { /* none */ }
+  turnEls.forEach(e => e.addEventListener('change', () => {
+    const urls = turnEls[0].value.trim();
+    try { if (urls) localStorage.setItem('flanders:turn', JSON.stringify({ urls, username: turnEls[1].value.trim(), credential: turnEls[2].value })); else localStorage.removeItem('flanders:turn'); } catch { /* blocked */ }
+    root.querySelector<HTMLElement>('#set-reload')!.hidden = false;
+  }));
+  onSettings(sync); sync();
+  void PRESETS;
+}

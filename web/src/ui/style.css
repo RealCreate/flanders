@@ -266,3 +266,16 @@ kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5
 .flagmini { padding: 3px; border: 2px solid var(--gold-soft, #d9b96a); border-radius: 4px; background: #2a2017; cursor: pointer; line-height: 0; transition: transform .12s; }
 .flagmini:hover { transform: scale(1.06); }
 .flagmini canvas { width: 60px; height: 40px; display: block; }
+
+/* display settings */
+.sheet.wide { width: min(640px, 94vw); max-height: 90vh; overflow: auto; }
+.setrow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 7px 0; border-bottom: 1px solid #0002; cursor: pointer; }
+.setrow span { display: flex; flex-direction: column; min-width: 0; }
+.setrow small { color: var(--ink-soft); font-size: 12.5px; line-height: 1.3; }
+.setrow select { max-width: 230px; font-size: 14px; padding: 3px 4px; }
+.setrow input[type=checkbox] { width: 20px; height: 20px; flex: none; }
+.setrow input[type=range] { width: 150px; }
+.setrow output { min-width: 3.4ch; text-align: right; font-variant-numeric: tabular-nums; }
+#display-body h3 { margin: 14px 0 2px; }
+.setrow small { text-transform: none; letter-spacing: 0; }
+.setrow input[type=text], .setrow input[type=password] { width: 230px; font-size: 14px; padding: 3px 5px; }

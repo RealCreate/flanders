@@ -178,12 +178,16 @@ export class Forest {
     this.rebuild([]);
   }
 
+  /** Display settings: how far forests are drawn, and whether trees near the camera get their rich shape. */
+  drawDistance = 1300; detail = true;
+
   /** Per frame: wind, and swap each tile between its rich and cheap geometry by distance to the camera. */
   tick(t: number, cam?: THREE.Vector3) {
     this.uTime.value = t;
     if (!cam) return;
     this.tileCentre.forEach((c, i) => {
-      const d = Math.hypot(c.x - cam.x, c.z - cam.z), want = c.hi ? d < 95 : d < 75;   // hysteresis: no flicker at the boundary
+      const d = Math.hypot(c.x - cam.x, c.z - cam.z), want = this.detail && (c.hi ? d < 95 : d < 75);
+      this.meshes[i].visible = d < this.drawDistance;   // forests further away than the draw distance are skipped   // hysteresis: no flicker at the boundary
       this.meshes[i].castShadow = d < 150;   // forest beyond the shadow map casts none
       if (want !== c.hi) { c.hi = want; this.meshes[i].geometry = want ? this.geos[c.type].hi : this.geos[c.type].lo; }
     });

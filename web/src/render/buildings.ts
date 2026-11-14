@@ -409,7 +409,6 @@ const well: Model = b => {
   const t = b.t, m = M();
   b.cyl(1.0, 1.1, 0.9, t >= 2 ? m.stone : m.stone, 0, 0, 0, 14); b.cyl(0.8, 0.8, 0.05, m.glass, 0, 0.8, 0, 14);
   b.box(0.18, 2.4, 0.18, m.darkwood, -1, 0, 0); b.box(0.18, 2.4, 0.18, m.darkwood, 1, 0, 0);
-  b.gable(2.6, 2.4, 0.9, t >= 1 ? m.tile : m.thatch, 0, 2.4, 0, 0.25);
   b.logH(2.2, 0.09, m.log, 0, 2.05, 0, 'x'); b.box(0.35, 0.3, 0.35, m.wood, 0.4, 0.7, 0);
   if (t >= 2) { b.cyl(1.5, 1.6, 0.35, m.darkstone, 0, -0.05, 0, 18); }
 };
@@ -834,14 +833,14 @@ function bake(g: THREE.Group, animated: Set<THREE.Object3D>) {
   }
 }
 
-export function buildModel(kind: number, tier: number, banner = 0x2f5fa8, seed = 0, opts = 0, flag?: Flag) {
+export function buildModel(kind: number, tier: number, banner = 0x2f5fa8, seed = 0, opts = 0, flag?: Flag, baked = true) {
   const b = new B(tier, banner, flag);
   MODELS[kind](b);
   addOptions(b, kind, opts, seed);
   if (seed >= 0) applyVariant(b.g, ((seed % 4) + 4) % 4);
   b.g.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh && m.geometry.attributes.position && !m.geometry.attributes.color) { const n = m.geometry.attributes.position.count; m.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3)); } });
   const animated = new Set<THREE.Object3D>(); b.spin.forEach(o => o.traverse(c => animated.add(c))); b.deck.forEach(o => o.traverse(c => animated.add(c)));
-  bake(b.g, animated);
+  if (baked) bake(b.g, animated);
   b.g.userData.smoke = b.smoke; b.g.userData.spin = b.spin.concat(b.deck);
   return b.g;
 }
@@ -870,6 +869,8 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
     }
     return null;
   };
+  /** The height of the highest broad part of the building at (x, z): where something can really stand (not on a flagpole or a chimney). */
+  const surf = (x: number, z: number) => { let y = 0; for (const s of solid) if (s.max.x - s.min.x > 0.8 && s.max.z - s.min.z > 0.8 && x >= s.min.x && x <= s.max.x && z >= s.min.z && z <= s.max.z) y = Math.max(y, s.max.y); return y; };
   const pole = (h: number) => { const p = spot(0.5, 0.5, h); if (p) b.flag(p[0], 0, p[1], h); };
   const lantern = () => { const p = spot(0.4, 0.4, 1.7); if (p) { b.cyl(0.05, 0.06, 1.5, m.darkwood, p[0], 0, p[1], 6); b.box(0.24, 0.3, 0.24, m.glow, p[0], 1.45, p[1]); b.pyramid(0.34, 0.34, 0.2, m.iron, p[0], 1.75, p[1]); } };
   const awning = () => { const p = spot(2.2, 1.5, 2.2); if (p) { b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] - 1.0, 0, p[1] - 0.6, 6); b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] + 1.0, 0, p[1] - 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] - 1.0, 0, p[1] + 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] + 1.0, 0, p[1] + 0.6, 6); const c = b.box(2.3, 0.07, 1.5, m.shutterRed, p[0], 1.95, p[1]); c.rotation.x = 0.12; } };
@@ -882,7 +883,7 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
       if (has(0)) b.chimney(cx - hw * 0.45, Math.max(1.2, top - 1.1), cz, 1.7, m.stone);
       if (has(1)) { const p = spot(1.6, 0.4, 0.8); if (p) { b.box(1.6, 0.34, 0.4, m.darkwood, p[0], 0, p[1]); for (let i = 0; i < 6; i++) b.sphere(0.12, new THREE.MeshStandardMaterial({ color: [0xe04a5a, 0xf2c14e, 0xf0f0f0, 0xd070d0][i % 4] }), p[0] - 0.65 + i * 0.26, 0.5, p[1]); } }
       if (has(2)) { const p = spot(1.8, 1.2, 1.3); if (p) { for (let r = 0; r < 3; r++) for (let c = 0; c < 4 - r; c++) b.logH(1.5, 0.15, m.log, p[0], 0.18 + r * 0.3, p[1] - 0.4 + c * 0.3 + r * 0.15, 'x'); b.box(1.9, 0.07, 1.3, m.darkwood, p[0], 1.2, p[1]); } }
-      if (has(3)) { b.box(0.7, 0.7, 0.7, m.plaster, cx + hw * 0.45, top - 0.35, cz); b.pyramid(0.95, 0.95, 0.5, m.tile, cx + hw * 0.45, top + 0.35, cz); b.box(0.12, 0.12, 0.05, m.door, cx + hw * 0.45, top - 0.1, cz + 0.36); }
+      if (has(3)) { const x = cx + hw * 0.45, y = surf(x, cz) - 0.1; b.box(0.7, 0.7, 0.7, m.plaster, x, y, cz); b.pyramid(0.95, 0.95, 0.5, m.tile, x, y + 0.7, cz); b.box(0.12, 0.12, 0.05, m.door, x, y + 0.3, cz + 0.36); }
       break;
     case 1: // farm
       if (has(0)) { const p = spot(1.2, 1.2, 2.1, 0); if (p) { b.cyl(0.05, 0.05, 1.9, m.darkwood, p[0], 0, p[1], 6); const arm = b.box(1.2, 0.07, 0.07, m.darkwood, p[0], 1.45, p[1]); arm.rotation.y = 0.4; b.sphere(0.2, m.hay, p[0], 1.95, p[1]); b.pyramid(0.6, 0.6, 0.3, m.darkwood, p[0], 2.1, p[1]); } }
@@ -896,10 +897,13 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
       if (bit(1)) {   // wooden hoardings hang from the parapet, never above the roofs
         const wt = (kind === 26 ? [6.4, 8.9, 11.5, 14.1] : [5.2, 4.6, 7.3, 9.1])[b.t];
         if (kind === 3) { const rr = [1.9, 2.3, 2.3, 2.7][b.t]; ring(rr, wt - 1.7, 1.1, m.wood, 20); ring(rr, wt - 0.6, 0.12, m.darkwood, 20); }
-        else { const half = ([5.2, 7.2, 8.4, 9.4][b.t] + 0.8) / 2 + 0.3, len = half * 2 - 0.4; for (const [x, z, rot] of [[0, half, 0], [0, -half, 0], [half, 0, 1], [-half, 0, 1]] as const) { const p1 = b.box(len, 1.1, 0.35, m.wood, x, wt - 1.7, z), p2 = b.box(len, 0.12, 0.45, m.darkwood, x, wt - 0.6, z); if (rot) { p1.rotation.y = p2.rotation.y = Math.PI / 2; } } }
+        else { const half = b.t === 0 ? 2.5 : ([5.2, 7.2, 8.4, 9.4][b.t] + 0.8) / 2 + 0.3, len = half * 2 - 0.4; for (const [x, z, rot] of [[0, half, 0], [0, -half, 0], [half, 0, 1], [-half, 0, 1]] as const) { const p1 = b.box(len, 1.1, 0.35, m.wood, x, wt - 1.7, z), p2 = b.box(len, 0.12, 0.45, m.darkwood, x, wt - 0.6, z); if (rot) { p1.rotation.y = p2.rotation.y = Math.PI / 2; } } }
       }
       if (kind === 3 && bit(2)) { b.cone(0.42, 2.6, m.slate, cx, top - 0.05, cz, 10); b.sphere(0.16, m.gold, cx, top + 2.6, cz); top += 2.7; }   // a spire on the roof
-      if (kind === 26 && bit(2)) for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const tx = cx + sx * (hw - 0.2), tz = cz + sz * (hd - 0.2); b.cyl(1.0, 1.1, top + 0.8, m.stone, tx, 0, tz, 12); b.cone(1.3, 1.9, m.slate, tx, top + 0.8, tz, 12); }
+      if (kind === 26 && bit(2)) {
+        if (b.t < 2) for (const sx of [-1, 1]) for (const sz of [-1, 1]) { const tx = cx + sx * (hw - 0.2), tz = cz + sz * (hd - 0.2); b.cyl(1.0, 1.1, top + 0.8, m.stone, tx, 0, tz, 12); b.cone(1.3, 1.9, m.slate, tx, top + 0.8, tz, 12); }
+        else { const w = [5.2, 7.2, 8.4, 9.4][b.t], wt = [6.4, 8.9, 11.5, 14.1][b.t]; for (const [tx, tz] of [[w / 2 + 0.45, 0], [-w / 2 - 0.45, 0], [0, w / 2 + 0.45], [0, -w / 2 - 0.45]] as const) { b.cyl(0.75, 0.85, wt - 0.6, m.stone, tx, -0.3, tz, 10); b.cone(1.0, 1.5, m.slate, tx, wt - 0.9, tz, 10); } }   // the corners already have towers: these stand halfway along each wall
+      }
       if (bit(0)) b.flag(cx, top, cz, 2.6);
       if (bit(3)) { b.cyl(0.35, 0.22, 0.4, m.iron, cx + (bit(0) ? 1.0 : 0), top, cz, 8); b.cone(0.28, 0.6, m.glow, cx + (bit(0) ? 1.0 : 0), top + 0.4, cz, 8); }
       break;
@@ -912,7 +916,7 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
       break;
     case 15: // town hall
       if (has(0)) b.flag(cx, top, cz, 3.2);
-      if (has(1)) { const x = cx + hw * 0.5; b.box(1.0, 1.0, 1.0, m.stone, x, top, cz); b.pyramid(1.3, 1.3, 1.0, m.slate, x, top + 1.0, cz); b.cyl(0.18, 0.2, 0.4, m.gold, x, top + 0.3, cz, 8); }
+      if (has(1)) { const x = cx + hw * 0.5, y = surf(x, cz) - 0.1; b.box(1.0, 1.0, 1.0, m.stone, x, y, cz); b.pyramid(1.3, 1.3, 1.0, m.slate, x, y + 1.0, cz); b.cyl(0.18, 0.2, 0.4, m.gold, x, y + 0.3, cz, 8); }
       if (has(2)) { const d = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.1, 20), m.gold); d.rotation.x = Math.PI / 2; (b as unknown as { g: THREE.Group }).g.add(d); d.position.set(cx, Math.min(top - 0.8, 5.5), all.max.z + 0.04); d.castShadow = true; }
       if (has(3)) for (let i = 0; i < 4; i++) { const p = spot(2.6, 0.7, 0.7); if (p) { b.box(2.6, 0.7, 0.7, new THREE.MeshStandardMaterial({ color: 0x3f7a35, roughness: 1 }), p[0], 0, p[1]); b.sphere(0.12, new THREE.MeshStandardMaterial({ color: 0xe04a5a }), p[0], 0.8, p[1]); } }
       break;
@@ -923,7 +927,7 @@ function addOptions(b: B, kind: number, opts: number, seed: number) {
       if (has(3)) { const p = spot(2.2, 1.2, 2.3); if (p) { b.box(0.22, 2.0, 0.22, m.darkwood, p[0] - 1, 0, p[1]); b.box(0.22, 2.0, 0.22, m.darkwood, p[0] + 1, 0, p[1]); b.gable(2.4, 1.4, 0.8, m.tile, p[0], 2.0, p[1], 0.2); } }
       break;
     case 16: // well
-      if (has(0)) { b.cyl(0.07, 0.07, 1.9, m.darkwood, cx - 0.7, 0, cz, 6); b.cyl(0.07, 0.07, 1.9, m.darkwood, cx + 0.7, 0, cz, 6); b.gable(1.8, 1.8, 0.7, m.thatch, cx, 1.9, cz, 0.2); }
+      if (has(0)) b.gable(2.6, 2.4, 0.9, b.t >= 1 ? m.tile : m.thatch, cx, 2.4, cz, 0.25);   // the roof over the well (the posts are already there)
       if (has(1)) { const p = spot(1.4, 0.6, 0.5); if (p) b.box(1.4, 0.45, 0.6, m.stone, p[0], 0, p[1]); }
       break;
     case 23: // drawbridge
@@ -1120,4 +1124,28 @@ export class Effects {
     }
     this.smoke.update(dt);
   }
+}
+
+/** Look for parts that do not belong: a part hanging in the air (nothing under it) or one buried inside another of the same material (a roof drawn twice). Used by the test hall. */
+export function auditModel(kind: number, tier: number, opts: number) {
+  const g = buildModel(kind, tier, 0x2f5fa8, 1, opts, undefined, false); g.updateMatrixWorld(true);
+  const parts: { box: THREE.Box3; mat: THREE.Material; type: string }[] = [];
+  g.traverse(o => { const m = o as THREE.Mesh; if (!m.isMesh || Array.isArray(m.material)) return; const box = new THREE.Box3().setFromObject(m); if (!box.isEmpty()) parts.push({ box, mat: m.material, type: m.geometry.type.replace('Geometry', '') }); });
+  const vol = (b: THREE.Box3) => Math.max(0, b.max.x - b.min.x) * Math.max(0, b.max.y - b.min.y) * Math.max(0, b.max.z - b.min.z);
+  const out: string[] = [], f = (b: THREE.Box3) => `[${b.min.x.toFixed(1)},${b.min.y.toFixed(1)},${b.min.z.toFixed(1)}..${b.max.x.toFixed(1)},${b.max.y.toFixed(1)},${b.max.z.toFixed(1)}]`;
+  parts.forEach((p, i) => {
+    const sz = p.box.getSize(new THREE.Vector3()); if (p.type === 'Plane' || sz.x * sz.y * sz.z < 0.9) return;   // flags, bars, shutters and the like hang from things on purpose
+    if (p.box.min.y > 0.5) {   // is anything touching its underside?
+      const under = parts.some((q, j) => j !== i && q.box.max.y >= p.box.min.y - 0.3 && q.box.min.y < p.box.min.y + 0.1 && q.box.max.x > p.box.min.x + 0.05 && q.box.min.x < p.box.max.x - 0.05 && q.box.max.z > p.box.min.z + 0.05 && q.box.min.z < p.box.max.z - 0.05);
+      const leaning = parts.some((q, j) => j !== i && q.box.clone().expandByScalar(0.06).intersectsBox(p.box) && Math.min(q.box.max.y, p.box.max.y) - Math.max(q.box.min.y, p.box.min.y) > 0.4);   // hung on a wall
+      if (!under && !leaning) out.push(`floats: ${p.type} ${f(p.box)}`);
+    }
+    if (p.type === 'Cone' || p.type === 'Extrude') parts.forEach((q, j) => {   // two roofs stacked on one spot
+      if (j <= i || (q.type !== 'Cone' && q.type !== 'Extrude')) return;
+      const pc = p.box.getCenter(new THREE.Vector3()), qc = q.box.getCenter(new THREE.Vector3()), oy = Math.min(p.box.max.y, q.box.max.y) - Math.max(p.box.min.y, q.box.min.y), hp = p.box.max.y - p.box.min.y, hq = q.box.max.y - q.box.min.y;
+      if (Math.hypot(pc.x - qc.x, pc.z - qc.z) < 0.7 && oy > 0.35 * Math.min(hp, hq)) out.push(`stacked roofs: ${p.type} ${f(p.box)} and ${q.type} ${f(q.box)}`);
+    });
+    parts.forEach((q, j) => { if (j <= i || q.mat !== p.mat || vol(p.box) < 0.5 || vol(q.box) < 0.5) return; const x = p.box.clone().intersect(q.box); if (!x.isEmpty() && vol(x) > 0.7 * Math.min(vol(p.box), vol(q.box)) && p.type === q.type && p.type !== 'Box') out.push(`doubled: ${p.type} ${f(p.box)} with ${f(q.box)}`); });
+  });
+  return out;
 }

@@ -38,6 +38,13 @@ export class Atmosphere {
     (this.scene.fog as THREE.FogExp2).color.copy(this.fogCol);
   }
 
+  /** Shadow quality from the display settings: a map size, or 0 for no shadows at all. */
+  setShadows(size: number) {
+    this.sun.castShadow = size > 0;
+    if (size > 0 && this.sun.shadow.mapSize.x !== size) { this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; this.sun.shadow.mapSize.set(size, size); }
+    if (size === 0) { this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; }
+  }
+
   /** Move the shadow frustum so it follows the camera focus. */
   follow(target: THREE.Vector3) {
     this.sun.target.position.copy(target);

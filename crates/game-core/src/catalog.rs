@@ -141,7 +141,7 @@ pub fn options(kind: u8) -> &'static [Opt] {
         GATE => &[("Banners", "Pennants either side of the gate.", 0), ("Braziers", "Fire baskets on the pillars.", 0), ("Spikes", "Iron spikes along the lintel.", 1), ("Guard hut", "A little lean-to for the gate guard.", 1)],
         DRAWBRIDGE => &[("Banners", "Pennants on the bridge posts.", 0), ("Lanterns", "Lanterns at both ends.", 0)],
         BARRACKS => &[("Banner pole", "A tall standard.", 0), ("Training dummies", "Straw dummies in the yard.", 0), ("Armoury rack", "Racks of spears and shields.", 1), ("Stable", "A lean-to stable.", 1)],
-        KEEP => &[("Banner", "The lord's standard.", 0), ("Hoarding", "Wooden galleries on the battlements. They pour boiling oil on ladders.", 1), ("Corner turrets", "Round turrets at the corners.", 2), ("Beacon", "A signal fire.", 0)],
+        KEEP => &[("Banner", "The lord's standard.", 0), ("Hoarding", "Wooden galleries on the battlements. They pour boiling oil on ladders.", 1), ("Turrets", "Round turrets: at the corners of a small keep, halfway along the walls of a great one.", 2), ("Beacon", "A signal fire.", 0)],
         TOWN_HALL => &[("Banner", "The village standard.", 0), ("Bell turret", "A bell for alarms.", 1), ("Clock", "A clock face on the front.", 2), ("Garden court", "Hedges and flower beds.", 0)],
         CHAPEL => &[("Bell tower", "A small bell tower.", 0), ("Stained glass", "Coloured windows.", 1), ("Graveyard", "A walled burial ground.", 0), ("Lych gate", "A roofed gate at the churchyard.", 0)],
         WELL => &[("Roof", "A little roof over the well.", 0), ("Trough", "A stone trough beside it.", 0)],

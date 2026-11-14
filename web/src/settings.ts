@@ -1,0 +1,58 @@
+/** Display settings: what the player can switch on and off to trade looks for speed. Saved in this browser. */
+export type Quality = 'low' | 'medium' | 'high' | 'ultra' | 'custom';
+export interface Settings {
+  quality: Quality;
+  shadows: 0 | 1024 | 2048 | 4096;   // shadow map size, 0 = off
+  antialias: boolean;                // needs a reload: it is chosen when the canvas is created
+  resolution: number;                // render scale, 0.5 .. 1.5 of the screen's native resolution
+  adaptive: boolean;                 // lower the resolution by itself when frames run long
+  pixelCap: number;                  // highest pixel ratio on high-density screens
+  drawDistance: number;              // forests further away than this are not drawn
+  treeDetail: boolean;               // rich trees near the camera
+  trees: boolean;
+  waterFx: boolean;                  // glossy water with reflections
+  particles: boolean;                // fire, smoke, dust, arrows
+  crowds: boolean;                   // villagers, soldiers, animals
+  fpsCap: 0 | 30 | 60;
+  showFps: boolean;
+}
+
+type Preset = Omit<Settings, 'quality' | 'antialias' | 'fpsCap' | 'showFps' | 'adaptive' | 'resolution'>;
+export const PRESETS: Record<Exclude<Quality, 'custom'>, Preset> = {
+  low:    { shadows: 0,    pixelCap: 1,    drawDistance: 450,  treeDetail: false, trees: true, waterFx: false, particles: true, crowds: true },
+  medium: { shadows: 1024, pixelCap: 1.25, drawDistance: 750,  treeDetail: false, trees: true, waterFx: true,  particles: true, crowds: true },
+  high:   { shadows: 2048, pixelCap: 2,    drawDistance: 1300, treeDetail: true,  trees: true, waterFx: true,  particles: true, crowds: true },
+  ultra:  { shadows: 4096, pixelCap: 2,    drawDistance: 2600, treeDetail: true,  trees: true, waterFx: true,  particles: true, crowds: true },
+};
+export const DEFAULTS: Settings = { quality: 'high', antialias: true, resolution: 1, adaptive: true, fpsCap: 0, showFps: false, ...PRESETS.high };
+
+const KEY = 'flanders:display';
+let current: Settings = load();
+const listeners: ((s: Settings, changed: (keyof Settings)[]) => void)[] = [];
+
+function load(): Settings {
+  try { const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings>; return { ...DEFAULTS, ...raw }; } catch { return { ...DEFAULTS }; }
+}
+export const settings = () => current;
+export function onSettings(fn: (s: Settings, changed: (keyof Settings)[]) => void) { listeners.push(fn); }
+
+/** Change one or more settings (a preset fills in the others). */
+export function setSettings(patch: Partial<Settings>) {
+  const next: Settings = { ...current, ...patch };
+  if (patch.quality && patch.quality !== 'custom') Object.assign(next, PRESETS[patch.quality]);
+  else if (!patch.quality && Object.keys(PRESETS.high).some(k => k in patch)) next.quality = matchPreset(next);
+  const changed = (Object.keys(next) as (keyof Settings)[]).filter(k => next[k] !== current[k]);
+  current = next;
+  try { localStorage.setItem(KEY, JSON.stringify(current)); } catch { /* storage blocked */ }
+  if (changed.length) listeners.forEach(f => f(current, changed));
+}
+export const resetSettings = () => setSettings({ ...DEFAULTS });
+
+/** The preset these settings equal, or 'custom'. */
+function matchPreset(s: Settings): Quality {
+  for (const [name, p] of Object.entries(PRESETS)) if ((Object.keys(p) as (keyof Preset)[]).every(k => s[k] === p[k])) return name as Quality;
+  return 'custom';
+}
+
+/** The pixel ratio to render at, given the screen's own and what the adaptive scaler has taken off. */
+export const pixelRatio = (dpr: number, adapt: number) => Math.max(0.4, Math.min(dpr, current.pixelCap) * current.resolution * (current.adaptive ? adapt : 1));

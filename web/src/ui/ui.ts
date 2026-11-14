@@ -2,6 +2,7 @@ import { HALF } from '../render/terrain';
 import { CATS, KIND_ICON, RES, UNIT_ICON, defs, units, fmtCost, type BuildingDef } from '../data';
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
 import { mountFlagDesigner, paintFlag } from './flagdesigner';
+import { mountSettings } from './settingsui';
 import { loadFlag, saveFlag } from '../flag';
 
 /** The keys bound to an action, as they are now (after any rebinding), e.g. "W / Z / ↑". */
@@ -100,6 +101,7 @@ export class UI {
     <button class="btn on" data-s="1" title="Normal speed (calm)"><svg viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg></button>
     <button class="btn" data-s="2" title="Fast x2"><svg viewBox="0 0 16 16"><path d="M1 2l7 6-7 6zM8 2l7 6-7 6z"/></svg></button>
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
+  <button class="btn" id="btn-display" title="Display settings: quality, shadows, anti-aliasing…">⚙ Display</button>
   <button class="btn" id="btn-sound" title="Sound on / off"><svg viewBox="0 0 16 16" id="snd-on"><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 5.2a4 4 0 0 1 0 5.6M12.8 3.6a6.3 6.3 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><svg viewBox="0 0 16 16" id="snd-off" hidden><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
   <button class="btn" id="btn-res" aria-pressed="false" title="Show ore and stone deposits (V)">⛏ Deposits</button>
   <button class="btn" id="btn-mp" title="Players in this world">🌍 <span id="mp-count">Online</span></button>
@@ -187,6 +189,11 @@ export class UI {
   <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. You can change it later from the Village tab.</p><div id="intro-flag"></div>
     <div class="btnrow"><button class="pbtn primary" id="flag-done">Done</button></div></div>
 </div>
+<div class="overlay clear" id="display" hidden>
+  <div class="sheet wide"><h2>Display settings</h2><p class="muted">Saved in this browser. These only change how the game looks on your screen, never the game itself.</p>
+    <div id="display-body"></div>
+    <div class="btnrow"><button class="pbtn primary" data-close="display">Done</button></div></div>
+</div>
 <div class="overlay clear" id="help" hidden>
   <div class="sheet">
     <h2>How to rule</h2>
@@ -249,6 +256,8 @@ export class UI {
     $('btn-res').onclick = () => this.h.toggleResources();
     $('btn-sound').onclick = () => this.h.toggleMute();
     $('btn-help').onclick = () => this.modal('help', true);
+    $('btn-display').onclick = () => this.modal('display', true);
+    mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'));
     $('btn-mp').onclick = () => this.modal('mp', true);
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => this.modal(b.dataset.close!, false));
     $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').textContent = '✓ Copied'; setTimeout(() => ($('mp-copy').textContent = '📋 Copy invite link'), 1800); };

@@ -13,6 +13,9 @@ cd web && npm ci && npm run dev
 
 `npm run dev` and `npm run build` rebuild the wasm first (it lives in `web/src/wasm/`, which is not committed), so a pull that changes `crates/` is picked up on the next start. If you run `vite` directly, run `npm run wasm` yourself first, or you get errors like "does not provide an export named …".
 
+## Playing with friends
+See [docs/HOSTING.md](docs/HOSTING.md): how to share a build safely (static hosting or a Cloudflare tunnel) and what to know about it. Display settings (quality, shadows, anti-aliasing, frame rate limit, …) are under the ⚙ Display button.
+
 ## Tests
 ```
 cargo test --release -p game-core     # the game rules

@@ -11,6 +11,8 @@ import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, K
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
 import { buildShowroom } from './render/showroom';
+import { settings, onSettings, pixelRatio, type Settings } from './settings';
+import { auditModel } from './render/buildings';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
 import { buildModelVillage, type ModelApi } from './modelvillage';
@@ -316,7 +318,7 @@ function fullReset() {
 /** Test hall (off the map's east coast): every building at every tier in rows, and the top tier with all its design options. Press again to go home. */
 let showroom: THREE.Group | null = null;
 function toggleShowroom() {
-  const hide = (on: boolean) => { terrain.mesh.visible = on; forest.group.visible = on; wildlife.group.visible = on; deposits.group.visible = on; };   // the hall stands on its own platform: the land and its trees would clip through it
+  const hide = (on: boolean) => { terrain.mesh.visible = on; deposits.group.visible = on; forest.group.visible = on && settings().trees; wildlife.group.visible = on && settings().crowds; };   // the hall stands on its own platform: the land and its trees would clip through it
   if (showroom) { scene.remove(showroom); showroom = null; hide(true); rig.focus(lv.ox, lv.oz, 75); ui.toast('Back at your village.', 'info'); return; }
   const x0 = 960, z0 = -560, sr = buildShowroom(defs.map(d => ({ id: d.id, name: d.name, maxTier: d.maxTier })), tierName, x0, z0);
   showroom = sr.group; showroom.position.y = Math.max(1, terrain.heightAt(sr.spawn.x, sr.spawn.z)); scene.add(showroom); hide(false); rig.focus(sr.spawn.x, sr.spawn.z, 70);
@@ -595,8 +597,8 @@ async function startGame(name: string, username: string) {
   for (let i = 0; i < flat.length; i += 2) sites.push({ x: flat[i], z: flat[i + 1] });
   sites.sort((a, b) => Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z));
 
-  renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+  renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: settings().antialias, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(pixelRatio(devicePixelRatio, 1)); renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // the shadow map is redrawn every other frame (see frame())
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.78;
   scene = new THREE.Scene();
@@ -657,10 +659,9 @@ async function startGame(name: string, username: string) {
   ui.hint('Choose a building on the right, then click the ground. Start with houses and a farm.');
   setTimeout(() => ui.hint(null), 7000);
   addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); });
-  basePixelRatio = Math.min(devicePixelRatio, 2);
   bindInput();
   connect();
-  setupPerf();
+  setupPerf(); applySettings(settings()); onSettings(applySettings);
   const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
   if (agentPort > 0 && agentToken) startAgentBridge({
     world: () => lv.world, commit: c => commit(c as Omit<Cmd, 'tick' | 'n'>), afterChange: () => { afterLocalChange(); },
@@ -672,8 +673,7 @@ async function startGame(name: string, username: string) {
   updateGoals();
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
-  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; } };
-  basePixelRatio = Math.min(devicePixelRatio, 2);
+  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
   last = performance.now(); requestAnimationFrame(frame);
 }
 
@@ -1338,23 +1338,37 @@ let worldShips: WorldShips | null = null;
 let tideLevel = 0;   // the water rises and falls a little, slowly
 let sCount = 0, sT = 0, fireBuf = new Float32Array(256);
 let last = 0, miniT = 0, scareT = 0, scares: { x: number; z: number }[] = [];
+/** Put the display settings into effect (at start, and whenever one changes). */
+function applySettings(s: Settings) {
+  renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
+  atmo.setShadows(s.shadows);
+  forest.drawDistance = s.drawDistance; forest.detail = s.treeDetail; forest.group.visible = s.trees && !showroom;
+  const wm = terrain.water.material as THREE.MeshPhysicalMaterial; const gloss = s.waterFx ? 1 : 0; if (wm.clearcoat !== gloss) { wm.clearcoat = gloss; wm.envMapIntensity = s.waterFx ? 1.8 : 0.6; wm.needsUpdate = true; }
+  fx.group.visible = effects.smoke.points.visible = s.particles;
+  wildlife.group.visible = crowd.group.visible = s.crowds && !showroom;
+  perf.setBadge(s.showFps || perf.open);
+}
+
 // ---------- adaptive resolution: when frames run long, draw fewer pixels; when there is room again, win them back ----------
-let basePixelRatio = 1, resScale = 1, slowMs = 0, resFrames = 0, shadowFrame = 0;
+let resScale = 1, slowMs = 0, resFrames = 0, shadowFrame = 0;
 function adaptResolution(frameMs: number) {
+  if (!settings().adaptive) return;
   slowMs = slowMs * 0.94 + frameMs * 0.06;
   if (++resFrames < 90 || resFrames % 45 !== 0) return;   // let things settle after loading, then adjust a little at a time
   const was = resScale;
   if (slowMs > 24 && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.15);
   else if (slowMs < 13 && resScale < 1) resScale = Math.min(1, resScale + 0.1);
-  if (resScale !== was) renderer.setPixelRatio(basePixelRatio * resScale);
+  if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
 }
 
 function frame(now: number) {
+  { const cap = settings().fpsCap; if (cap && now - last < 1000 / cap - 2) { requestAnimationFrame(frame); return; } }   // frame rate limit
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last); last = now;   // never negative, never a big jump
   perf.start('simulation');
   if (speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
   perf.stop('simulation');
   const all = allVillages();
+  { const on = settings().crowds; for (const v of all) v.people.group.visible = v.army.group.visible = on; }
   perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) { v.boats.level = tideLevel; v.rivers.setTide(tideLevel); }   // open water ebbs and flows; sealed moats stay full
   forest.tick(now / 1000, rig.cam.position); perf.stop('camera + world');
   perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1)); perf.stop('villages (people, army)');
