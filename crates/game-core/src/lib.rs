@@ -731,6 +731,26 @@ impl World {
         out
     }
 
+    /// Where a drawbridge clicked at (dx, dy) goes: snapped onto the nearest piece of moat or river (its middle line) and turned square across it, so the deck spans the water from bank to bank.
+    /// [x, y, turn] relative to the origin (the turn is in 45-degree steps, as `place` takes it), or nothing when no moat is within reach.
+    pub fn drawbridge_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (px, py) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        let pieces: Vec<(f32, f32)> = self.buildings.iter().filter(|b| matches!(b.kind, MOAT | RIVER)).map(|b| (b.x, b.y)).collect();
+        let Some(&(mx, my)) = pieces.iter().filter(|p| (p.0 - px).hypot(p.1 - py) <= 16.0).min_by(|a, b| (a.0 - px).hypot(a.1 - py).partial_cmp(&(b.0 - px).hypot(b.1 - py)).unwrap_or(std::cmp::Ordering::Equal)) else { return vec![] };
+        // the way the ditch runs here: between the nearest neighbours on either side of the piece (or towards the one it has)
+        let mut near: Vec<(f32, f32)> = pieces.iter().copied().filter(|p| { let d = (p.0 - mx).hypot(p.1 - my); d > 0.3 && d <= 8.0 }).collect();
+        near.sort_by(|a, b| (a.0 - mx).hypot(a.1 - my).partial_cmp(&(b.0 - mx).hypot(b.1 - my)).unwrap_or(std::cmp::Ordering::Equal));
+        let (mut tx, mut ty) = (1.0f32, 0.0f32);
+        if let Some(&n1) = near.first() {
+            let (v1x, v1y) = (n1.0 - mx, n1.1 - my);
+            if let Some(&n2) = near.iter().find(|p| (p.0 - mx) * v1x + (p.1 - my) * v1y < 0.0) { tx = n2.0 - n1.0; ty = n2.1 - n1.1; } else { tx = v1x; ty = v1y; }
+        }
+        let tl = tx.hypot(ty).max(1e-6); let (nx, ny) = (-ty / tl, tx / tl);   // square across the ditch
+        let a = nx.atan2(ny);   // the deck runs along (sin a, cos a)
+        let rot = ((a / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8);
+        vec![mx - self.ox as f32, my - self.oy as f32, rot as f32]
+    }
+
     // ---------- bridges ----------
     /// Where a bridge clicked at (dx, dy) would go: it finds the nearest water, picks the way across with the shortest span, and returns [centre x, centre y, angle in radians, total length, span of water],
     /// or nothing when there is no water within reach or it is too wide to bridge at all (60 units).
@@ -3668,6 +3688,19 @@ mod pathnet_tests {
         for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 30, 4)] { w.place(k, x, y, 0); }
         let p = w.find_path(&[5, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
         assert!(p.len() >= 2 && p.last().map_or(false, |q| (q.x - 30.0).abs() < 3.0));
+    }
+
+    #[test]
+    fn a_drawbridge_snaps_onto_the_moat_and_lies_square_across_it() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        // near the south of the ring the ditch runs east-west, so the deck runs north-south (turn 0 or 4); near the east it runs the other way (turn 2 or 6)
+        let s = w.drawbridge_snap(3, 17); assert_eq!(s.len(), 3, "a moat is near");
+        assert!((s[0].hypot(s[1]) - 20.0).abs() < 1.5, "snapped onto the ring: {s:?}");
+        assert!(s[2] == 0.0 || s[2] == 4.0, "square across a ditch that runs east-west: {s:?}");
+        let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
+        assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
+        let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
     }
 
     #[test]

@@ -1154,6 +1154,7 @@ function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.client
 /** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
  *  facing your hall, turned so its door faces the village. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
 function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
+  if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
   const d = defs[kind]; if (d.req !== 1) return null;
   const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
   let best = -1, bd = 18 * 18;
