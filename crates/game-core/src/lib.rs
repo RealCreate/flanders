@@ -223,6 +223,7 @@ pub struct World {
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
+    links: Vec<Vec<(f32, f32)>>,   // invisible paths chained from this city out to other villages' cities (set by `link_village`; part of the state)
     ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
     net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network (derived; rebuilt when the village changes)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
@@ -296,7 +297,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), moat_water: vec![], bridges: vec![], map_ver: 0,
+            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -1432,6 +1433,22 @@ impl World {
     /// A route over the path network: [complete (1 or 0), x, y, x, y, ...], or empty when the network does not help (villagers walk it).
     pub fn net_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.net_route_inner(sx, sy, gx, gy) }
 
+    /// Chain an invisible path from this city to another village's city (its hall at world position (tx, ty)): the cheapest dry way over the invisible lines, from our hall out through our own
+    /// paths and across the land to theirs. Armies march along it like along a road. 0 ok, -1 nonsense, -2 no dry way, -3 too many, -4 that is this village.
+    pub fn link_village(&mut self, tx: f32, ty: f32) -> i32 {
+        if !tx.is_finite() || !ty.is_finite() || tx.abs() > 3000.0 || ty.abs() > 3000.0 { return -1; }
+        let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
+        if (tx - hx).hypot(ty - hy) < 40.0 { return -4; }
+        let same = |pl: &Vec<(f32, f32)>| pl.last().map_or(false, |e| (e.0 - tx).hypot(e.1 - ty) < 12.0);
+        if self.links.len() >= 24 && !self.links.iter().any(same) { return -3; }
+        let route = match self.route_on_graph(&[1, 0, 0, 0, 0], hx, hy, tx, ty, true) { Ok(r) => r, Err(_) => return -2 };
+        let pl: Vec<(f32, f32)> = route.iter().map(|w| (w.x, w.y)).collect();
+        if let Some(k) = self.links.iter().position(same) { self.links[k] = pl; } else { self.links.push(pl); }
+        0
+    }
+    /// Is there already an invisible path to the village whose hall is at (tx, ty)?
+    pub fn link_exists(&self, tx: f32, ty: f32) -> bool { self.links.iter().any(|pl| pl.last().map_or(false, |e| (e.0 - tx).hypot(e.1 - ty) < 12.0)) }
+
     /// A walking route over the invisible lines (the grid of the world plus the village's paths), for villagers: [1, x, y, x, y, ...], or empty when there is no dry way.
     pub fn walk_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.walk_route_inner(sx, sy, gx, gy) }
 
@@ -1798,6 +1815,7 @@ impl World {
             mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
         }
         for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); }
+        for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } }
         for k in 0..5 { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); }
         for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
         for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); for k in 0..5 { mix(d.units[k] as u64); } }
@@ -3760,6 +3778,23 @@ mod pathnet_tests {
         let (apart, total) = comps(&w);
         assert!(total > 40, "{total} nodes");
         assert_eq!(apart, 0, "every building's lines join the castle's: {apart} of {total} nodes are cut off");
+    }
+
+    #[test]
+    fn a_path_is_chained_out_to_another_city_and_armies_use_it() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES];
+        for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, -12, 6), (TOWER, 0, 16)] { w.place(k, x, y, 0); }
+        assert!(!w.link_exists(300.0, 40.0));
+        let r = w.link_village(300.0, 40.0); assert_eq!(r, 0, "a dry way to the other city");
+        assert!(w.link_exists(300.0, 40.0));
+        assert_eq!(w.link_village(300.0, 40.0), 0, "linking again replaces, it does not add");
+        assert_eq!(w.links.len(), 1);
+        assert_eq!(w.link_village(5.0, 5.0), -4, "not to ourselves");
+        // the path is part of the network: it reaches out of the city towards the other one, and marching takes it
+        let net = w.net_flat(); let n = net[0] as usize;
+        let far = (0..n).filter(|&i| net[2 + 2 * i] > 120.0).count(); assert!(far > 3, "network nodes out along the path: {far}");
+        let p = w.find_path(&[10, 0, 0, 0, 0], 8.0, 8.0, 280.0, 36.0).expect("a march to the other city");
+        assert!(p.last().map_or(false, |q| (q.x - 280.0).abs() < 6.0));
     }
 
     #[test]

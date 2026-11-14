@@ -118,6 +118,7 @@ impl World {
         for l in &self.levels { for v in l { mix(v.to_bits() as u64); } }
         for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
         mix(self.battle.is_some() as u64); mix(self.terrain_ver as u64); mix(self.road_paths.len() as u64);
+        for pl in &self.links { mix(pl.len() as u64); for q in pl { mix(q.0.to_bits() as u64); mix(q.1.to_bits() as u64); } }
         h
     }
 
@@ -246,6 +247,16 @@ impl World {
             for w in chain.windows(2) {
                 if w[0] == u32::MAX || w[1] == u32::MAX { continue; }
                 if net.clear(net.nodes[w[0] as usize], net.nodes[w[1] as usize], 0.0) { net.link(w[0], w[1], true); }
+            }
+        }
+        // the paths chained out to other villages: their points are nodes too (they were found over open ground, so they need no check against the village's own grid)
+        for pl in &self.links {
+            let mut prev = u32::MAX;
+            for q in pl {
+                let key = ((q.0 / 1.2).round() as i32, (q.1 / 1.2).round() as i32);
+                let id = *shared.entry(key).or_insert_with(|| { let id = net.add(q.0, q.1); road_node.push(id); id });
+                if prev != u32::MAX && prev != id { net.link(prev, id, true); }
+                prev = id;
             }
         }
         road_node.extend(road_pre);

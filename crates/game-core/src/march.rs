@@ -220,7 +220,7 @@ impl World {
         }
     }
 
-    fn route_on_graph(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
+    pub(crate) fn route_on_graph(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
         let margins: [f32; 3] = if no_water { [30.0, 90.0, 500.0] } else { [45.0, 180.0, 2500.0] };
         let mut last = Err(-2);
         for m in margins {
