@@ -333,3 +333,12 @@ kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5
 .stats.five .stat { padding-left: 2px; padding-right: 2px; text-align: center; }
 #unit-cards .card.unit { grid-template-columns: 34px minmax(0, 1fr); padding: 7px 9px; }
 #unit-cards .card .io, #unit-cards .card .ds { overflow-wrap: anywhere; }
+
+/* the trade row: the goods, the amount and the escort are one row of controls of the same height */
+.trade-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); gap: 6px; align-items: stretch; margin-bottom: 8px; }
+.trade-row select, .trade-row input { height: 36px; box-sizing: border-box; margin: 0; width: 100%; font-family: var(--f-old); font-size: 16px; padding: 0 8px; border: 1px solid var(--paper-edge); background: #f8f0d8; color: var(--ink); border-radius: 3px; }
+.trade-row .tfield { display: flex; align-items: center; gap: 4px; border: 1px solid var(--paper-edge); background: #f8f0d8; border-radius: 3px; padding-left: 8px; height: 36px; box-sizing: border-box; font-size: 16px; }
+.trade-row .tfield span { opacity: .75; }
+.trade-row .tfield input { border: 0; background: transparent; padding: 0 4px; text-align: center; min-width: 0; height: 34px; -moz-appearance: textfield; }
+.trade-row .tfield input::-webkit-outer-spin-button, .trade-row .tfield input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+#attack-form select { height: 36px; box-sizing: border-box; }

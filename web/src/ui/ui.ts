@@ -609,7 +609,7 @@ export class UI {
            <button class="pbtn danger" id="atk-sel" hidden></button>
            <p class="muted" id="atk-hint"></p>
            <h4>Trade</h4>
-           <div class="atk-row"><select id="trd-res">${RES.map((r, i) => `<option value="${i}">${r.icon} ${r.name}</option>`).join('')}</select><label title="Amount">#<input type="number" min="1" max="500" value="50" id="trd-amt"></label><label title="Spearmen as escort">🛡<input type="number" min="0" value="0" id="trd-esc"></label></div>
+           <div class="trade-row"><select id="trd-res" aria-label="Goods">${RES.map((r, i) => `<option value="${i}">${r.icon} ${r.name}</option>`).join('')}</select><label class="tfield" title="Amount"><span>#</span><input type="number" min="1" max="500" value="50" id="trd-amt"></label><label class="tfield" title="Spearmen as escort"><span>🛡</span><input type="number" min="0" value="0" id="trd-esc"></label></div>
            <div class="btnrow"><button class="pbtn" id="trd-send">🐴 Send caravan</button><button class="pbtn" id="trd-pact">🤝 Trade pact</button><button class="pbtn" id="trd-peace">🕊 Peace</button></div>
            <h4>Diplomacy</h4><p class="muted" id="dip-rel"></p>
            <div class="btnrow"><button class="pbtn" id="dip-envoy" title="Send an envoy with gifts (20 gold, once every 3 days)">📜 Envoy</button><button class="pbtn" id="dip-ally" title="An alliance needs a trade pact and warm relations">🛡 Alliance</button><button class="pbtn" id="dip-marry" title="Marry into their house: 150 gold, needs good relations">💍 Marriage</button><button class="pbtn danger" id="dip-war" title="Declare war: treaties end and relations collapse">🔥 Declare war</button></div>`
