@@ -260,7 +260,7 @@ impl World {
                 for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                     let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { continue; }
                     let k = (b * NC + a) as usize; let Some(kl) = local(k) else { continue };
-                    let step = match self.classify(&ns, &ov, k, siege) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 40.0 } };
+                    let step = match self.classify(&ns, &ov, k, siege) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 16.0 } };
                     if di != 0 && dj != 0 {   // no cutting corners through blocked cells
                         if self.classify(&ns, &ov, (cj * NC + a) as usize, siege) == Cl::Block || self.classify(&ns, &ov, (b * NC + ci) as usize, siege) == Cl::Block { continue; }
                     }
@@ -416,7 +416,17 @@ impl World {
                 let workers = (d.units[0] + d.units[2]) as f32;
                 let dens = ns.dens_at(d.x, d.y) as f32;
                 match wp.mode {
-                    0 => { d.state = if d.home { S_HOME } else { S_MARCH }; d.speed = base / (1.0 + 0.06 * dens) * if self.on_road(d.x, d.y) { crate::pathnet::ROAD_SPEED } else { 1.0 }; let _ = wp; Self::advance_path(&mut d); }
+                    0 => {
+                        d.state = if d.home { S_HOME } else { S_MARCH };
+                        // soldiers push through woods by cutting the trees that stand in their way (a little slower while they do, and the cleared strip stays open for the next army)
+                        let in_wood = dens >= 2.0 && !self.on_road(d.x, d.y) && !self.felled.iter().any(|f| (f[0] - d.x).hypot(f[1] - d.y) < f[2] - 0.8);
+                        d.speed = base / (1.0 + 0.06 * dens) * if self.on_road(d.x, d.y) { crate::pathnet::ROAD_SPEED } else { 1.0 } * if in_wood { 0.8 } else { 1.0 };
+                        let _ = wp; let (ox, oy) = (d.x, d.y); Self::advance_path(&mut d);
+                        if in_wood {
+                            d.since_fell += ((d.x - ox).powi(2) + (d.y - oy).powi(2)).sqrt();
+                            if d.since_fell >= 2.5 { d.since_fell = 0.0; if self.felled.len() < 1500 { self.felled.push([d.x, d.y, 3.4]); self.map_ver += 1; } }
+                        }
+                    }
                     1 => {
                         d.state = S_FELL; d.speed = (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base);
                         let (ox, oy) = (d.x, d.y);

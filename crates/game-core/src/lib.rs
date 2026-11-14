@@ -3729,6 +3729,22 @@ mod pathnet_tests {
     }
 
     #[test]
+    fn marching_soldiers_cut_the_trees_in_their_way() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES];
+        let ns = march::nav_static(1337);
+        // a stretch of wood within reach of the village: look for a spot with thick trees, and march across it
+        let mut spot = None;
+        'find: for r in (60..260).step_by(10) { for k in 0..48 { let a = k as f32 / 48.0 * std::f32::consts::TAU; let (x, y) = (a.cos() * r as f32, a.sin() * r as f32); let (ux, uy) = (a.cos(), a.sin()); if (0..=6).all(|q| ns.dens_at(x + ux * q as f32 * 4.0, y + uy * q as f32 * 4.0) >= 3 && w.height_at(x + ux * q as f32 * 4.0, y + uy * q as f32 * 4.0) > 1.0) { spot = Some((x + ux * 24.0, y + uy * 24.0)); break 'find; } } }
+        let (fx, fy) = spot.expect("there is thick wood near the village");
+        w.army = [8, 0, 0, 0, 0]; let id = w.det_form(&[8, 0, 0, 0, 0]); assert!(id > 0);
+        let r = w.det_march(id, fx, fy, false, 0.0, 0.0); assert_eq!(r, 0, "a way to the wood");
+        let before = w.felled.len();
+        for _ in 0..1200 { w.step(); w.stock[GR as usize] = 3000; if w.det_flat().len() >= 9 && w.det_flat()[8] as u8 != march::S_MARCH { break; } }
+        assert!(w.felled.len() > before, "the soldiers felled trees on their way ({} -> {})", before, w.felled.len());
+        assert!(w.felled.iter().any(|f| (f[0] - fx).hypot(f[1] - fy) < 40.0), "and the cleared strip reaches the wood they walked into");
+    }
+
+    #[test]
     fn soldiers_walk_faster_on_a_road() {
         let w = village();
         let v = w.roads_flat(); assert!(!v.is_empty());
