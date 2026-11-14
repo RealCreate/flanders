@@ -4,7 +4,7 @@
 import { joinRoom } from 'trystero';
 
 export interface Cmd {
-  op: 'place' | 'upgrade' | 'demolish' | 'train' | 'attack' | 'raid' | 'refuse' | 'return' | 'cheat' | 'form' | 'march' | 'recall' | 'split' | 'merge' | 'halt' | 'sendatk' | 'repair' | 'rebuild' | 'garrison' | 'bridge' | 'option' | 'flatten' | 'treaty' | 'caravan' | 'choose' | 'visit' | 'batch' | 'goods' | 'accept' | 'settle' | 'hero' | 'style' | 'envoy' | 'marriage' | 'war';
+  op: 'place' | 'upgrade' | 'demolish' | 'train' | 'attack' | 'raid' | 'refuse' | 'return' | 'cheat' | 'form' | 'march' | 'recall' | 'split' | 'merge' | 'halt' | 'sendatk' | 'repair' | 'rebuild' | 'garrison' | 'bridge' | 'option' | 'flatten' | 'treaty' | 'caravan' | 'choose' | 'visit' | 'batch' | 'goods' | 'accept' | 'settle' | 'hero' | 'style' | 'envoy' | 'marriage' | 'war' | 'clear';
   tick: number; n: number;
   kind?: number; x?: number; y?: number; rot?: number; idx?: number;
   to?: string;            // attack/refuse: pub key of the village concerned
@@ -73,7 +73,10 @@ export class Room {
   peers = new Set<string>();
 
   constructor(world: string, private hello: () => Hello, private log: () => Signed[], private h: RoomHandlers) {
-    this.room = joinRoom({ appId: 'flanders-medieval-p2p-v6' }, world);
+    // players behind strict networks (some phones, offices) can only connect through a TURN relay; one can be set in Display settings -> Network and is kept in this browser
+    let turn: { urls: string; username?: string; credential?: string }[] | undefined;
+    try { const t = JSON.parse(localStorage.getItem('flanders:turn') ?? 'null'); if (t && typeof t.urls === 'string' && /^turns?:/.test(t.urls)) turn = [{ urls: t.urls, username: t.username, credential: t.credential }]; } catch { /* none */ }
+    this.room = joinRoom({ appId: 'flanders-medieval-p2p-v6', ...(turn ? { turnConfig: turn as never } : {}) }, world);
     const hello_ = this.room.makeAction('hello'), cmd_ = this.room.makeAction('cmd'), log_ = this.room.makeAction('log'), hash_ = this.room.makeAction('hash');
     this.sendHello = (d, o) => hello_.send(d as never, o); this.sendCmd = (d, o) => cmd_.send(d as never, o);
     this.sendLog = (d, o) => log_.send(d as never, o); this.sendHash = (d, o) => hash_.send(d as never, o);

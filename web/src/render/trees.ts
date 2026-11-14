@@ -178,12 +178,17 @@ export class Forest {
     this.rebuild([]);
   }
 
+  /** Display settings: how far forests are drawn, and whether trees near the camera get their rich shape. */
+  drawDistance = 1300; detail = true;
+
   /** Per frame: wind, and swap each tile between its rich and cheap geometry by distance to the camera. */
   tick(t: number, cam?: THREE.Vector3) {
     this.uTime.value = t;
     if (!cam) return;
     this.tileCentre.forEach((c, i) => {
-      const d = Math.hypot(c.x - cam.x, c.z - cam.z), want = c.hi ? d < 150 : d < 115;   // hysteresis: no flicker at the boundary
+      const d = Math.hypot(c.x - cam.x, c.z - cam.z), want = this.detail && (c.hi ? d < 95 : d < 75);
+      this.meshes[i].visible = d < this.drawDistance;   // forests further away than the draw distance are skipped   // hysteresis: no flicker at the boundary
+      this.meshes[i].castShadow = d < 150;   // forest beyond the shadow map casts none
       if (want !== c.hi) { c.hi = want; this.meshes[i].geometry = want ? this.geos[c.type].hi : this.geos[c.type].lo; }
     });
   }
@@ -203,7 +208,7 @@ export class Forest {
   rebuild(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[] = []) {
     const L = lines.map(l => ({ ...l, minx: Math.min(l.ax, l.bx) - l.r, maxx: Math.max(l.ax, l.bx) + l.r, minz: Math.min(l.az, l.bz) - l.r, maxz: Math.max(l.az, l.bz) + l.r, dx: l.bx - l.ax, dz: l.bz - l.az }));
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
-    const col = new THREE.Color();
+    const col = new THREE.Color(), used = new Array<number>(this.meshes.length).fill(0);   // felled and drowned trees are left out, not drawn as zero-size instances
     for (let ti = 0; ti < this.trees.length; ti++) {
       const t = this.trees[ti];
       let hidden = false;
@@ -222,13 +227,13 @@ export class Forest {
       }
       this.hidden[ti] = hidden ? 1 : 0;
       const mesh = this.meshes[t.mesh];
-      if (hidden) { m.makeScale(0, 0, 0); mesh.setMatrixAt(t.slot, m); continue; }
-      t.y = h0;
+      if (hidden) continue;
+      t.slot = used[t.mesh]++; t.y = h0;
       q.setFromAxisAngle(up, t.rot); p.set(t.x, t.y - 0.1, t.z); s.set(t.s * (t.type === 0 ? 1.1 : 1), t.s * (1 + ((t.rot * 3.7) % 1) * 0.25), t.s * (t.type === 0 ? 1.1 : 1));
       m.compose(p, q, s); mesh.setMatrixAt(t.slot, m);
       const v = 0.88 + ((t.rot * 7.3) % 1) * 0.26, hue = (t.x * 0.13) % 0.12;
       col.setRGB(v * (1 + hue * 0.6), v * (1 + hue * 0.2), v * (0.9 + hue)); mesh.setColorAt(t.slot, col);
     }
-    this.meshes.forEach(mm => { mm.instanceMatrix.needsUpdate = true; if (mm.instanceColor) mm.instanceColor.needsUpdate = true; mm.computeBoundingSphere(); mm.computeBoundingBox(); });
+    this.meshes.forEach((mm, i) => { mm.count = used[i]; mm.instanceMatrix.needsUpdate = true; if (mm.instanceColor) mm.instanceColor.needsUpdate = true; mm.computeBoundingSphere(); mm.computeBoundingBox(); });
   }
 }
