@@ -6,7 +6,12 @@ use crate::military::*;
 const SUBSTEP: f32 = 0.25;
 
 /// What stopped an attacker: a wall, fence or gate (index into the substep's list) or water.
-enum Block { Bar(usize), Wet }
+enum Block { Bar(usize) }
+
+/// Raiders in the water of a moat or river make slow headway (heavy knights even slower), cannot fight while they struggle across, and are hit twice as hard.
+const WADE_SPEED: f32 = 0.3;
+const WADE_KNIGHT: f32 = 0.18;
+const WADE_DAMAGE: f32 = 2.0;
 
 /// Damage a second to a soldier on a ladder under a hoarding that pours boiling oil.
 pub const OIL_DPS: f32 = 22.0;
@@ -57,7 +62,7 @@ impl World {
             for _ in 0..n {
                 let row = (k / 12) as f32; let col = (k % 12) as f32 - 5.5;
                 let (px, py) = (cx + dx * (dist + row * 2.2) - dy * col * 2.0, cy + dy * (dist + row * 2.2) + dx * col * 2.0);
-                units.push(Unit { side: 1, kind: kind as u8, x: px, y: py, hx: px, hy: py, hp: UNITS[kind].hp, cd: if kind == 4 { 6.0 } else { 0.5 }, alive: true, from_army: false, charge: kind == 3, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: angle + std::f32::consts::PI });
+                units.push(Unit { side: 1, kind: kind as u8, x: px, y: py, hx: px, hy: py, hp: UNITS[kind].hp, cd: if kind == 4 { 6.0 } else { 0.5 }, alive: true, wading: false, from_army: false, charge: kind == 3, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: angle + std::f32::consts::PI });
                 k += 1;
             }
         }
@@ -68,7 +73,7 @@ impl World {
         for kind in 0..5usize {
             for _ in 0..self.army[kind] {
                 let a = j as f32 * 0.7; let r = 4.0 + (j / 9) as f32 * 1.5;
-                units.push(Unit { side: 0, kind: kind as u8, x: hall.0 + a.cos() * r, y: hall.1 + a.sin() * r, hx: hall.0 + a.cos() * (r + 3.0), hy: hall.1 + a.sin() * (r + 3.0), hp: UNITS[kind].hp, cd: if kind == 4 { 6.0 } else { 0.5 }, alive: true, from_army: true, charge: kind == 3, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: 0.0 });
+                units.push(Unit { side: 0, kind: kind as u8, x: hall.0 + a.cos() * r, y: hall.1 + a.sin() * r, hx: hall.0 + a.cos() * (r + 3.0), hy: hall.1 + a.sin() * (r + 3.0), hp: UNITS[kind].hp, cd: if kind == 4 { 6.0 } else { 0.5 }, alive: true, wading: false, from_army: true, charge: kind == 3, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: 0.0 });
                 j += 1;
             }
         }
@@ -78,10 +83,10 @@ impl World {
             if b.kind == TOWN_HALL { guards.push((b.x + 3.0, b.y + 3.0, 0, 2 * (b.tier as u32 + 1))); }
         }
         for (gx, gy, kind, n) in guards {
-            for i in 0..n { let a = i as f32 * 1.4; units.push(Unit { side: 0, kind, x: gx + a.cos(), y: gy + a.sin(), hx: gx, hy: gy, hp: UNITS[kind as usize].hp, cd: 0.5, alive: true, from_army: false, charge: false, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: 0.0 }); }
+            for i in 0..n { let a = i as f32 * 1.4; units.push(Unit { side: 0, kind, x: gx + a.cos(), y: gy + a.sin(), hx: gx, hy: gy, hp: UNITS[kind as usize].hp, cd: 0.5, alive: true, wading: false, from_army: false, charge: false, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: 0.0 }); }
         }
-        let militia = (self.population / 5).min(14);
-        for i in 0..militia { let a = i as f32 * 0.9; units.push(Unit { side: 0, kind: MILITIA, x: hall.0 + a.cos() * 8.0, y: hall.1 + a.sin() * 8.0, hx: hall.0 + a.cos() * 9.0, hy: hall.1 + a.sin() * 9.0, hp: UNITS[5].hp, cd: 1.0, alive: true, from_army: false, charge: false, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: 0.0 }); }
+        let militia = (self.population / 5).min(14) + self.perks().militia;   // beacons, turrets and guard huts call more villagers to arms
+        for i in 0..militia { let a = i as f32 * 0.9; units.push(Unit { side: 0, kind: MILITIA, x: hall.0 + a.cos() * 8.0, y: hall.1 + a.sin() * 8.0, hx: hall.0 + a.cos() * 9.0, hy: hall.1 + a.sin() * 9.0, hp: UNITS[5].hp, cd: 1.0, alive: true, wading: false, from_army: false, charge: false, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face: 0.0 }); }
         // defenders run to the walls and defences on the side the attackers come from, and stand on top of them where there is a walkway
         {
             let (ax, ay) = (cx + dx * dist, cy + dy * dist);
@@ -116,9 +121,9 @@ impl World {
     /// Does this building have a hoarding (a timber gallery with murder holes) to pour boiling oil from? Stone walls (option 2), towers and keeps (option 1).
     pub(crate) fn has_oil(w: &Building) -> bool { match w.kind { WALL => w.tier >= 2 && w.opts & 4 != 0, TOWER | KEEP => w.opts & 2 != 0, _ => false } }
 
-    fn damage_unit(b: &mut Battle, j: usize, dmg: f32) {
+    pub(crate) fn damage_unit(b: &mut Battle, j: usize, dmg: f32) {
         let armor = UNITS[b.units[j].kind as usize].armor;
-        let d = (dmg * (1.0 - armor * 0.1)).max(1.0) * if b.units[j].elev > 0.0 { 0.8 } else { 1.0 };
+        let d = (dmg * (1.0 - armor * 0.1)).max(1.0) * if b.units[j].elev > 0.0 { 0.8 } else { 1.0 } * if b.units[j].wading { WADE_DAMAGE } else { 1.0 };
         b.units[j].hp -= d;
         if b.units[j].hp <= 0.0 && b.units[j].alive {
             b.units[j].alive = false;
@@ -242,7 +247,7 @@ impl World {
         let mut ignites: Vec<usize> = vec![];
         let mut dmg_b: Vec<(usize, f32)> = vec![];
         let mut shots: Vec<[f32; 7]> = vec![];
-        let hero_mult = self.hero_dmg();   // the lord leads the defenders: they hit harder, and do not break so soon
+        let hero_mult = self.hero_dmg() * (1.0 + self.perks().banner_pct as f32 / 100.0);   // standards and armoury racks steady the defenders' hand   // the lord leads the defenders: they hit harder, and do not break so soon
         if b.rout.len() < n { b.rout.resize(n, 0.0); }
         // how many are left on each side: soldiers who see their side break lose heart
         let mut left = [0u32; 2]; for u in b.units.iter().filter(|u| u.alive) { left[u.side as usize] += 1; }
@@ -317,7 +322,7 @@ impl World {
             let mut acted = false;
             if best != usize::MAX && !siege && d_enemy <= aggro && !pinned {
                 let (tx, ty) = (b.units[best].x, b.units[best].y);
-                if d_enemy <= rng {
+                if d_enemy <= rng && !(u.side == 1 && b.units[i].wading) {
                     b.units[i].face = (ty - u.y).atan2(tx - u.x);
                     if b.units[i].cd <= 0.0 {
                         let mult = if b.units[i].charge { 1.7 } else { 1.0 };
@@ -328,7 +333,7 @@ impl World {
                         if ud.range > 5.0 { shots.push([0.0, u.x, u.y, tx, ty, 0.0, u.kind as f32]); }
                     }
                 } else {
-                    let (mx, my) = ((tx - u.x) / d_enemy, (ty - u.y) / d_enemy);
+                    let (mx, my) = ((tx - u.x) / d_enemy.max(0.1), (ty - u.y) / d_enemy.max(0.1));
                     if u.side == 1 {
                         if let Some(blk) = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet) { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
                     } else { b.units[i].x += mx * ud.speed * dt; b.units[i].y += my * ud.speed * dt; b.units[i].face = my.atan2(mx); }
@@ -349,7 +354,7 @@ impl World {
                 let br = DEFS[self.buildings[tb].kind as usize].r;
                 let d = td.sqrt();
                 let reach = if siege { ud.range * 0.9 } else { ud.range.max(1.0) + br * 0.8 };   // catapults fire from a distance
-                if d <= reach {
+                if d <= reach && !b.units[i].wading {
                     b.units[i].face = (by - u.y).atan2(bx - u.x);
                     if b.units[i].cd <= 0.0 {
                         let (mult, fire) = if siege { (3.2, 0.3) } else if ud.range > 5.0 { (0.25, 0.08) } else { (0.7, 0.05) };
@@ -361,7 +366,7 @@ impl World {
                         if siege { impacts.push((bx + (self.rf() - 0.5) * 3.0, by + (self.rf() - 0.5) * 3.0)); }
                     }
                 } else {
-                    let (mx, my) = ((bx - u.x) / d, (by - u.y) / d);
+                    let (mx, my) = ((bx - u.x) / d.max(0.1), (by - u.y) / d.max(0.1));
                     if siege { b.units[i].x += mx * ud.speed * dt; b.units[i].y += my * ud.speed * dt; b.units[i].face = my.atan2(mx); }
                     else if let Some(blk) = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet) { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
                 }
@@ -395,24 +400,30 @@ impl World {
         self.check_battle_end();
     }
 
-    /// Move an attacker one step. Walls, fences and gates stop it (it may only move away from them); a moat or river stops it
-    /// unless the attackers have bridged that spot. Returns what stopped it.
+    /// Is this spot in the water of a moat or river, with no bridge or drawbridge over it?
+    fn in_water(b: &Battle, wet: &[(f32, f32, f32)], x: f32, y: f32, grow: f32) -> bool {
+        wet.iter().any(|&(wx, wy, wr)| (x - wx).powi(2) + (y - wy).powi(2) < (wr + grow) * (wr + grow))
+            && !b.bridges.iter().any(|g| (g[0] - x).powi(2) + (g[1] - y).powi(2) < 3.4 * 3.4)
+            && !b.fixed.iter().any(|g| (g[0] - x).powi(2) + (g[1] - y).powi(2) < 3.4 * 3.4)
+    }
+
+    /// Move an attacker one step. Walls, fences and gates stop it (it may only move away from them). A moat or river does not: raiders wade or float across on rafts and ladders laid
+    /// over the water, but only at a crawl (see WADE_SPEED), unable to fight, and hit twice as hard. A bridge or lowered drawbridge is a dry way over. Returns what stopped it.
     fn attacker_step(b: &mut Battle, i: usize, mx: f32, my: f32, step: f32, bars: &[(usize, f32, f32, f32, u8)], wet: &[(f32, f32, f32)]) -> Option<Block> {
-        let (ox, oy) = (b.units[i].x, b.units[i].y); let (nx, ny) = (ox + mx * step, oy + my * step);
+        let (ox, oy) = (b.units[i].x, b.units[i].y);
+        let slow = if b.units[i].wading { if b.units[i].kind == 3 { WADE_KNIGHT } else { WADE_SPEED } } else { 1.0 };
+        let (nx, ny) = (ox + mx * step * slow, oy + my * step * slow);
         for (bi, &(_, bx, by, r, _)) in bars.iter().enumerate() {
             let (dn, d0) = (((nx - bx).powi(2) + (ny - by).powi(2)).sqrt(), ((ox - bx).powi(2) + (oy - by).powi(2)).sqrt());
             if dn < r + 0.6 && dn < d0 { b.units[i].face = (by - oy).atan2(bx - ox); return Some(Block::Bar(bi)); }
         }
-        for &(wx, wy, wr) in wet {
-            let (dn, d0) = (((nx - wx).powi(2) + (ny - wy).powi(2)).sqrt(), ((ox - wx).powi(2) + (oy - wy).powi(2)).sqrt());
-            if dn < wr && dn < d0 && !b.bridges.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) && !b.fixed.iter().any(|g| (g[0] - nx).powi(2) + (g[1] - ny).powi(2) < 3.4 * 3.4) { b.units[i].face = my.atan2(mx); return Some(Block::Wet); }
-        }
         b.units[i].x = nx; b.units[i].y = ny; b.units[i].face = my.atan2(mx);
+        b.units[i].wading = Self::in_water(b, wet, nx, ny, if slow < 1.0 { 0.8 } else { 0.0 });   // (once in, a raider stays "in the water" a little past the rim, so it does not flicker in and out)
         None
     }
 
-    /// What an attacker does when something stops it: climb with a ladder, hack at the wall, or work on a bridge over the water.
-    fn on_block(&self, b: &mut Battle, i: usize, blk: Block, bars: &[(usize, f32, f32, f32, u8)], dmg_b: &mut Vec<(usize, f32)>, dt: f32) {
+    /// What an attacker does when something stops it: climb with a ladder or hack at the wall.
+    fn on_block(&self, b: &mut Battle, i: usize, blk: Block, bars: &[(usize, f32, f32, f32, u8)], dmg_b: &mut Vec<(usize, f32)>, _dt: f32) {
         let kind = b.units[i].kind; let ud = &UNITS[kind as usize];
         match blk {
             Block::Bar(bi) => {
@@ -428,13 +439,6 @@ impl World {
                     let mult = if ud.range > 5.0 { 0.25 } else { 0.7 };
                     dmg_b.push((k, ud.dmg * mult)); b.units[i].cd = ud.cd; b.units[i].anim = 0.4;
                 }
-            }
-            Block::Wet => {
-                if !matches!(kind, 0 | 1 | 2 | 3) { return; }   // the men with spades and planks; archers help at half speed
-                let (x, y, face) = (b.units[i].x, b.units[i].y, b.units[i].face);
-                let si = match b.sites.iter().position(|s| (s[0] - x).powi(2) + (s[1] - y).powi(2) < 4.5 * 4.5) { Some(si) => si, None => { b.sites.push([x, y, face, 0.0]); b.sites.len() - 1 } };
-                b.sites[si][3] += if kind == 1 { dt * 0.5 } else { dt }; b.units[i].anim = 0.3;
-                if b.sites[si][3] >= 8.0 { let s = b.sites.remove(si); b.bridges.push([s[0] + face.cos() * 1.5, s[1] + face.sin() * 1.5, s[2]]); }
             }
         }
     }
@@ -601,6 +605,7 @@ impl World {
     pub(crate) fn training_step(&mut self) {
         let effort: u32 = self.buildings.iter().filter(|b| b.kind == BARRACKS && b.staff > 0).map(|b| b.tier as u32 + 1).sum();
         if effort == 0 { return; }
+        let effort = effort + effort * self.perks().train_pct / 100 + if self.tick % 4 < (effort * self.perks().train_pct % 100 / 25) as u64 { 1 } else { 0 };   // training dummies: faster drill (the remainder is spread over the ticks)
         let Some(k) = (0..5).find(|&k| self.queue[k] > 0) else { self.train_prog = 0; return };
         self.train_prog += effort;
         if self.train_prog >= UNITS[k].time {

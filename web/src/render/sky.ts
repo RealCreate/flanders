@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
+import { dayPhase, sunElevation, nightFactor } from '../daycycle';
 
 /** Physically based sky, sun light with shadows, image-based lighting and fog. */
 export class Atmosphere {
   sky = new Sky();
-  sun = new THREE.DirectionalLight(0xfff0d8, 3.4);
-  hemi = new THREE.HemisphereLight(0xbcd6ff, 0x55633a, 0.55);
+  sun = new THREE.DirectionalLight(0xffe8c8, 2.4);
+  hemi = new THREE.HemisphereLight(0xa9c4ee, 0x4a5530, 0.42);
+  /** Direction of the light that lights the world: the sun by day, a pale moon at night (never from below the horizon). */
   private sunDir = new THREE.Vector3();
+  private skyDir = new THREE.Vector3();
+  /** 0 in full day .. 1 at night: what lanterns and windows follow. */
+  night = 0;
   private fogCol = new THREE.Color(0xb9cde0);
 
   constructor(private scene: THREE.Scene, private renderer: THREE.WebGLRenderer) {
@@ -20,8 +25,8 @@ export class Atmosphere {
     const c = this.sun.shadow.camera; c.left = -80; c.right = 80; c.top = 80; c.bottom = -80; c.near = 10; c.far = 500;
     this.sun.shadow.bias = -0.0005; this.sun.shadow.normalBias = 0.4;
 
-    scene.fog = new THREE.FogExp2(this.fogCol, 0.0023);
-    this.setTime(0.3);
+    scene.fog = new THREE.FogExp2(this.fogCol, 0.0016);
+    this.setClock(dayPhase(0));
     this.bakeEnvironment();
   }
 
@@ -33,9 +38,28 @@ export class Atmosphere {
     this.sky.material.uniforms.sunPosition.value.copy(this.sunDir);
     const warm = 1 - Math.min(1, elev / 40);
     this.sun.color.setRGB(1, 0.93 - warm * 0.22, 0.82 - warm * 0.4);
-    this.sun.intensity = 2.6 + (1 - warm) * 1.2;
-    this.fogCol.setRGB(0.72 + warm * 0.18, 0.80 + warm * 0.02 - warm * 0.1, 0.88 - warm * 0.18);
+    this.sun.intensity = 1.9 + (1 - warm) * 0.8;   // (was 2.6-3.8: with ACES tone mapping the lit grass and stone clipped towards white)
+    this.fogCol.setRGB(0.58 + warm * 0.2, 0.67 + warm * 0.0 - warm * 0.1, 0.78 - warm * 0.2);
     (this.scene.fog as THREE.FogExp2).color.copy(this.fogCol);
+  }
+
+  /** The light for a time of day (see daycycle.ts): the sun crosses the sky, sets, and a dim blue moonlight takes over; the sky, fog, ambient light and exposure follow. */
+  setClock(phase: number) {
+    const elev = sunElevation(phase), n = nightFactor(phase), az = 90 + (phase - 0.25) * 360;
+    this.night = n;
+    this.skyDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - elev), THREE.MathUtils.degToRad(az));
+    this.sky.material.uniforms.sunPosition.value.copy(this.skyDir);
+    const lightElev = elev > 3 ? elev : 3 + (3 - elev) * 0.5;   // below the horizon the moon stands in, rising as the sun sinks
+    this.sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - Math.min(lightElev, 70)), THREE.MathUtils.degToRad(az));
+    const warm = 1 - Math.min(1, Math.max(0, elev) / 40);
+    const day = new THREE.Color(1, 0.93 - warm * 0.22, 0.82 - warm * 0.4), moon = new THREE.Color(0.5, 0.6, 1.0);
+    this.sun.color.copy(day).lerp(moon, n);
+    this.sun.intensity = (1.9 + (1 - warm) * 0.8) * (1 - n) + 0.55 * n;
+    this.hemi.intensity = 0.42 * (1 - n) + 0.24 * n; this.hemi.color.setRGB(0.66, 0.77, 0.93).lerp(new THREE.Color(0.35, 0.44, 0.72), n);
+    const f = this.fogCol.setRGB(0.58 + warm * 0.2, 0.67 - warm * 0.1, 0.78 - warm * 0.2).lerp(new THREE.Color(0.04, 0.06, 0.13), n);
+    (this.scene.fog as THREE.FogExp2).color.copy(f);
+    this.scene.environmentIntensity = 0.4 * (1 - n) + 0.12 * n;
+    this.renderer.toneMappingExposure = 0.72 + 0.3 * n;   // a little brighter at night, so a dark scene stays readable
   }
 
   /** Shadow quality from the display settings: a map size, or 0 for no shadows at all. */
@@ -58,7 +82,7 @@ export class Atmosphere {
     Object.entries(this.sky.material.uniforms).forEach(([k, v]) => { (s.material.uniforms as any)[k].value = (v as any).value; });
     env.add(s);
     this.scene.environment = pm.fromScene(env, 0.02).texture;
-    this.scene.environmentIntensity = 0.55;
+    this.scene.environmentIntensity = 0.4;
     pm.dispose();
   }
 }

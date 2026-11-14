@@ -60,6 +60,8 @@ export class People {
   private bld: { kind: number; x: number; z: number }[] = [];
   private radii: number[] = [];
   private t = 0;
+  /** Workers per workplace, from the village state. */
+  private staffAt = new Map<number, number>();
   hidden = false;           // villagers shelter indoors during a battle
   /** Hand carts that carry goods from workplaces to the storehouse (or the hall). */
   group = new THREE.Group();
@@ -98,6 +100,9 @@ export class People {
       for (let k = 0; k < res; k++) homes.push(i);
       if (this.bld[i].kind !== 15 && this.bld[i].kind !== 19) for (let k = 0; k < staff; k++) works.push(i);
     }
+    // every workplace with workers: the number of them, so each can be shown at its building (see `draw`)
+    this.staffAt.clear();
+    for (const b of works) this.staffAt.set(b, (this.staffAt.get(b) ?? 0) + 1);
     const total = Math.min(MAX, population, Math.max(homes.length, 0));
     const roster: { home: number; work: number }[] = [];
     for (let i = 0; i < total; i++) roster.push({ home: homes[(i * 7) % Math.max(1, homes.length)] ?? 0, work: i < works.length ? works[i] : 0 });
@@ -309,7 +314,7 @@ export class People {
   /** Queue everyone near the view for drawing (people far outside the screen are skipped). */
   draw(crowd: Crowd, cx = 0, cz = 0, radius = 1e9) {
     if (this.hidden) { this.cartBody.count = this.cartLoad.count = this.cartShaft.count = this.cartWheel.count = 0; return; }
-    const r2 = radius * radius; this.drawCarts(cx, cz, r2);
+    const r2 = radius * radius; this.drawCarts(cx, cz, r2); this.drawStations(crowd, cx, cz, r2);
     for (const a of this.agents) {
       if ((a.x - cx) ** 2 + (a.z - cz) ** 2 > r2) continue;
       const walking = a.route.length > 0 && a.at < a.route.length;
@@ -319,6 +324,30 @@ export class People {
         body: a.body, skin: a.skin, hat: a.hat, tool: a.fight ? TOOL.BUCKET : a.tool || undefined, dress: a.dress, scale: a.scale, swing: a.aim ? 0 : a.fight && a.fs === 4 ? Math.max(0.05, a.fsT / 0.7) : undefined,
         legs: a.dress ? a.body : 0x4a3a2a,
       });
+    }
+  }
+
+  /** Workers stand at their workplace for only part of the day (the rest they walk or are at home), and there are fewer walking villagers than workers, so a busy building could look
+   *  empty. Every workplace with workers always shows at least one (up to two) of them at work beside it, in addition to any who are really there. */
+  drawStations(crowd: Crowd, cx: number, cz: number, r2: number) {
+    const present = new Map<number, number>();
+    for (const a of this.agents) {
+      if (a.route.length && a.at < a.route.length) continue;
+      const B = this.bld[a.work]; if (!B || Math.hypot(a.x - B.x, a.z - B.z) > this.radii[B.kind] + 4.5) continue;
+      present.set(a.work, (present.get(a.work) ?? 0) + 1);
+    }
+    for (const [b, staff] of this.staffAt) {
+      const B = this.bld[b]; if (!B || (B.x - cx) ** 2 + (B.z - cz) ** 2 > r2) continue;
+      const need = Math.min(2, staff) - (present.get(b) ?? 0);
+      for (let k = 0; k < need; k++) {
+        const p = this.spot(b, 7 + k * 5), look = LOOKS[B.kind], seed = b * 13 + k * 7, r = (j: number) => { const x = Math.sin(seed * 12.9898 + j * 78.233) * 43758.5453; return x - Math.floor(x); };
+        const woman = !look && r(1) < 0.5;
+        crowd.add({
+          x: p.x, y: this.terrain.heightAt(p.x, p.y), z: p.y, yaw: Math.atan2(B.x - p.x, B.z - p.y) + Math.sin(this.t * 0.7 + seed) * 0.25, pose: 2, phase: this.t * 1.1 + seed, speed: 0,
+          body: look ? look[2][Math.floor(r(2) * look[2].length)] : woman ? DRESS[Math.floor(r(2) * DRESS.length)] : PLAIN[Math.floor(r(2) * PLAIN.length)], skin: SKIN[Math.floor(r(3) * SKIN.length)],
+          hat: look?.[0], tool: look ? look[1] || undefined : undefined, dress: woman, scale: 1 + (r(4) - 0.5) * 0.1, legs: woman ? DRESS[0] : 0x4a3a2a,
+        });
+      }
     }
   }
 

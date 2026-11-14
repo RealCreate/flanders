@@ -220,10 +220,18 @@ class B {
 // ---------- per-building variation and fire damage ----------
 const variantCache = new Map<string, THREE.Material>();
 const glows = (m: THREE.Mesh) => ((m.material as THREE.MeshStandardMaterial).emissiveIntensity ?? 0) >= 1.5;
+const glassVariants: THREE.MeshStandardMaterial[] = [];
+let nightLevel = 0;
+/** At night the windows glow a warm yellow: the glass material and its per-building colour variants. `n` is 0 by day, 1 at night. */
+export function setNightLight(n: number) {
+  nightLevel = n;
+  for (const g of [M().glass as THREE.MeshStandardMaterial, ...glassVariants]) { g.emissive.setRGB(1, 0.72, 0.35); g.emissiveIntensity = n * 1.7; }
+}
 function variantOf(mat: THREE.Material, v: number): THREE.Material {
   const key = mat.uuid + ':' + v; let c = variantCache.get(key);
   if (!c) {
     c = mat.clone(); const sm = c as THREE.MeshStandardMaterial;
+    if (mat === M().glass && v !== -1) { glassVariants.push(sm); sm.emissive.setRGB(1, 0.72, 0.35); sm.emissiveIntensity = nightLevel * 1.7; }
     if (v === -1) { sm.color.multiplyScalar(0.22); sm.roughness = 1; if (sm.emissive) sm.emissive.setHex(0x1a0600); }
     else { const shade = 0.88 + v * 0.07; sm.color.multiplyScalar(shade); sm.color.offsetHSL((v - 1.5) * 0.012, 0, 0); }
     variantCache.set(key, c);
@@ -355,16 +363,17 @@ const brickworks: Model = b => {
 
 const mine = (gold: boolean): Model => b => {
   const t = b.t, m = M();
-  b.dome(4, m.rock, 0, -0.6, -1.2, 0.55);
+  // The mine is the entrance only: it is placed against the deposit (see depositSnap in main.ts), whose rocks stand just behind the door.
   const post = t >= 2 ? m.stone : m.darkwood;
-  b.box(0.45, 2.4, 0.45, post, -1.1, 0, 1.0); b.box(0.45, 2.4, 0.45, post, 1.1, 0, 1.0); b.box(3, 0.5, 0.6, post, 0, 2.2, 1.0);
-  b.box(1.8, 1.9, 0.2, new THREE.MeshBasicMaterial({ color: 0x050505 }), 0, 0, 0.85);
+  b.box(3.6, 0.5, 2.6, m.rock, 0, -0.2, -1.2);   // a shelf of spoil in front of the face, so the door is not left floating on a slope
+  b.box(0.45, 2.4, 0.45, post, -1.1, 0, -1.9); b.box(0.45, 2.4, 0.45, post, 1.1, 0, -1.9); b.box(3, 0.5, 0.6, post, 0, 2.2, -1.9);
+  b.box(1.8, 1.9, 0.2, new THREE.MeshBasicMaterial({ color: 0x050505 }), 0, 0, -2.0);
   for (let i = 0; i < 3; i++) b.box(0.18, 0.18, 1.2, m.iron, -0.3 + i * 0.3, 0.02, 2.5 + i * 0.5).visible = false;
   b.box(1.3, 0.7, 0.9, m.wood, 2, 0.25, 2.4, 0.4); for (const dx of [-0.4, 0.4]) b.cyl(0.25, 0.25, 0.1, m.iron, 2 + dx, 0.15, 2.9, 10).rotation.x = Math.PI / 2;
   const pile = gold ? m.goldPile : m.ironPile;
   for (const [x, z, r] of [[-2.6, 2.4, 0.9], [-1.6, 3, 0.6], [3.2, 0.6, 0.7]] as const) b.cone(r, r * 1.1, pile, x, 0, z, 7);
   if (gold) { b.box(0.9, 0.6, 0.6, m.darkwood, 3.1, 0, 3); b.box(0.92, 0.1, 0.62, m.gold, 3.1, 0.6, 3); }
-  if (t >= 1) b.gable(3.4, 2.2, 1.0, t >= 2 ? m.slate : m.tile, 0, 2.6, 1.0, 0.3);
+  if (t >= 1) b.gable(3.4, 2.2, 1.0, t >= 2 ? m.slate : m.tile, 0, 2.6, -1.9, 0.3);
 };
 
 const charcoal: Model = b => {
@@ -505,18 +514,46 @@ const townhall: Model = b => {
     b.cyl(0.65, 0.65, 0.12, m.gold, 0, 8.6, 1.33, 16).rotation.x = Math.PI / 2;   // clock face
     b.flag(-5.2, 5.6, 1.0, 2.4); b.flag(5.2, 5.6, 1.0, 2.4);
   } else {
-    const cs = 5.6, ch = 5.2;
-    b.box(cs * 2 + 2, 3, cs * 2 + 2, m.darkstone, 0, -3, 0).scale.set(1, 1, 1);
-    for (const s of [[0, cs, 11.6, 1.6], [0, -cs, 11.6, 1.6], [cs, 0, 1.6, 11.6], [-cs, 0, 1.6, 11.6]] as const) b.box(s[2], ch, s[3], m.stone, s[0], 0, s[1]);
-    for (const x of [-4.4, 0, 4.4]) { b.box(1.2, 0.5, 1.8, m.darkstone, x, ch, cs); b.box(1.2, 0.5, 1.8, m.darkstone, x, ch, -cs); }
-    for (const [x, z] of [[-cs, -cs], [cs, -cs], [cs, cs], [-cs, cs]]) { b.cyl(1.9, 2.1, ch + 3.8, m.stone, x, -0.2, z, 16); b.cyl(2.15, 2.15, 0.5, m.darkstone, x, ch + 3.4, z, 16); b.cone(2.25, 3, m.slate, x, ch + 3.9, z, 16); b.flag(x, ch + 6.5, z, 2); }
-    b.box(5.4, 11, 5.4, m.stone, 0, 0, -0.4); b.box(6, 0.5, 6, m.darkstone, 0, 10.6, -0.4); b.battlements(6, 6, 11.1, m.stone, 0.8, 5);
-    for (const [x, z] of [[-2.6, -3], [2.6, -3], [2.6, 2.2], [-2.6, 2.2]]) { b.cyl(0.9, 1, 3.2, m.stone, x, 11, z, 10); b.cone(1.15, 2.2, m.slate, x, 14.2, z, 10); }
-    b.box(3.2, 4, 1.8, m.darkstone, 0, 0, cs + 0.6); b.box(1.9, 2.8, 0.25, new THREE.MeshBasicMaterial({ color: 0x0a0806 }), 0, 0, cs + 1.55);
-    b.box(0.2, 3, 0.2, m.iron, -0.7, 0, cs + 1.6);
-    for (const y of [3.5, 6.5, 9]) { b.window(-1.2, y, 2.32, 0, 0.5, 1.1); b.window(1.2, y, 2.32, 0, 0.5, 1.1); }
-    // the keep's roof: a round slate spire on a drum, topped with a gilded ball
-    b.cyl(2.6, 2.7, 1.2, m.darkstone, 0, 11.1, -0.4, 16); b.cone(2.7, 4.6, m.slate, 0, 12.3, -0.4, 16); b.sphere(0.4, m.gold, 0, 17.1, -0.4); b.flag(0, 17.4, -0.4, 3.0);
+    // The Castle: a rectangular walled castle in the manner of Caerphilly or Harlech, not a square of four towers. A curtain wall 18 x 12 with round corner and side towers and a
+    // twin-towered gatehouse at the front (+z); inside, a T-shaped palace (the great hall along the back wall, a wing running out towards the gate), a donjon rising behind it,
+    // and the small buildings of a courtyard: chapel, stable, smithy, well. It fills the largest footprint of any building (see `footprint` in the core).
+    const W = 9, D = 6, wh = 5.0, black = new THREE.MeshBasicMaterial({ color: 0x0a0806 });
+    const merlons = (x0: number, z0: number, x1: number, z1: number, y: number, n: number) => { for (let i = 0; i < n; i++) { const f = (i + 0.5) / n; b.box(0.55, 0.7, 0.55, m.stone, x0 + (x1 - x0) * f, y, z0 + (z1 - z0) * f); } };
+    b.box(W * 2 + 2.4, 3, D * 2 + 2.4, m.darkstone, 0, -3, 0);   // the foundation, deep enough to stand square on a slope
+    // the curtain wall
+    b.box(W * 2 + 1.4, wh, 1.4, m.stone, 0, 0, -D); merlons(-W, -D, W, -D, wh, 18);
+    for (const sx of [-1, 1]) {
+      b.box(1.4, wh, D * 2, m.stone, sx * W, 0, 0); merlons(sx * W, -D, sx * W, D, wh, 11);
+      const w = W - 2.6 + 0.7; b.box(w, wh, 1.4, m.stone, sx * (2.6 + (W - 2.6) / 2 + 0.35), 0, D); merlons(sx * 2.6, D, sx * W, D, wh, 6);
+    }
+    // corner towers, side towers
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const x = sx * W, z = sz * D;
+      b.cyl(1.9, 2.1, wh + 4, m.stone, x, -0.2, z, 16); b.cyl(2.15, 2.15, 0.5, m.darkstone, x, wh + 3.6, z, 16); b.cone(2.25, 3, m.slate, x, wh + 4.1, z, 16); b.flag(x, wh + 6.9, z, 2.4);
+    }
+    for (const sx of [-1, 1]) { b.cyl(1.4, 1.55, wh + 2.6, m.stone, sx * W, -0.2, 0, 14); b.cone(1.7, 2.4, m.slate, sx * W, wh + 2.4, 0, 14); }
+    // the gatehouse: two round towers, a dark passage, a heavy lintel
+    for (const sx of [-1, 1]) { b.cyl(1.3, 1.45, wh + 2.2, m.stone, sx * 2.4, -0.2, D + 0.3, 14); b.cone(1.6, 2.2, m.slate, sx * 2.4, wh + 2.0, D + 0.3, 14); b.flag(sx * 2.4, wh + 4.0, D + 0.3, 2.0); }
+    b.box(3.6, 2.4, 1.8, m.darkstone, 0, wh - 1.4, D + 0.1); b.box(2.4, 3.4, 0.25, black, 0, 0, D + 1.0); b.box(0.2, 3.4, 0.28, m.iron, -0.6, 0, D + 1.05); b.box(0.2, 3.4, 0.28, m.iron, 0.6, 0, D + 1.05);
+    // the T-shaped palace: the great hall along the back, a wing running forward from its middle
+    b.box(14, 5.8, 4.4, m.stone, 0, 0, -3.3); b.gable(14, 4.4, 2.4, m.slate, 0, 5.8, -3.3, 0.5);
+    b.box(4.4, 5.2, 4.6, m.stone, 0, 0, 1.2); b.gableZ(4.6, 4.4, 2.2, m.slate, 0, 5.2, 1.2, 0.5);
+    b.box(1.4, 2.4, 0.2, m.door, 0, 0, 3.55); b.box(2.0, 0.3, 0.45, m.darkstone, 0, 2.5, 3.55);
+    for (const x of [-5.6, -3.6, 3.6, 5.6]) b.window(x, 2.6, -1.08, 0, 0.5, 1.2);
+    for (const sx of [-1, 1]) { b.window(sx * 2.22, 2.6, 1.2, sx * Math.PI / 2, 0.5, 1.1); b.window(sx * 2.22, 3.8, 2.4, sx * Math.PI / 2, 0.45, 0.8); }
+    // the donjon: a square tower rising behind the palace, with corner turrets and a spire
+    const dz = -4.2;
+    b.box(4.8, 11.5, 4.8, m.stone, 0, 0, dz); b.box(5.4, 0.5, 5.4, m.darkstone, 0, 11.1, dz);
+    merlons(-2.6, dz - 2.6, 2.6, dz - 2.6, 11.6, 6); merlons(-2.6, dz + 2.6, 2.6, dz + 2.6, 11.6, 6); merlons(-2.6, dz - 2.6, -2.6, dz + 2.6, 11.6, 6); merlons(2.6, dz - 2.6, 2.6, dz + 2.6, 11.6, 6);
+    for (const [x, z] of [[-2.4, dz - 2.4], [2.4, dz - 2.4], [2.4, dz + 2.4], [-2.4, dz + 2.4]]) { b.cyl(0.8, 0.9, 3.0, m.stone, x, 11.2, z, 10); b.cone(1.05, 2.0, m.slate, x, 14.2, z, 10); }
+    for (const y of [7.0, 9.4]) { b.window(-0.9, y, dz + 2.42, 0, 0.45, 1.0); b.window(0.9, y, dz + 2.42, 0, 0.45, 1.0); }
+    b.cyl(1.7, 1.8, 1.0, m.darkstone, 0, 11.4, dz, 14); b.cone(1.8, 4.2, m.slate, 0, 12.4, dz, 14); b.sphere(0.35, m.gold, 0, 16.7, dz); b.flag(0, 17.0, dz, 3.0);
+    // the courtyard: a chapel with a small spire (west), a stable (east), a smithy by the gate, a well, hay
+    b.box(2.4, 3.4, 3.6, m.stone, -6.6, 0, 2.4); b.gableZ(3.6, 2.4, 1.6, m.slate, -6.6, 3.4, 2.4, 0.3); b.cyl(0.5, 0.6, 2.2, m.stone, -6.6, 3.4, 3.7, 10); b.cone(0.75, 2.0, m.slate, -6.6, 5.6, 3.7, 10);
+    b.box(2.2, 2.3, 4.4, m.wood, 7.0, 0, 2.2); b.gableZ(4.4, 2.2, 1.0, m.thatch, 7.0, 2.3, 2.2, 0.3);
+    b.box(2.4, 2.2, 2.0, m.timber, -4.6, 0, 4.4); b.gable(2.4, 2.0, 1.1, m.tile, -4.6, 2.2, 4.4, 0.3); b.chimney(-3.9, 2.0, 4.1, 1.4);
+    b.cyl(0.7, 0.8, 0.9, m.stone, 4.2, 0, 4.0, 12); b.box(0.12, 1.5, 0.12, m.darkwood, 3.7, 0.9, 4.0); b.box(0.12, 1.5, 0.12, m.darkwood, 4.7, 0.9, 4.0); b.box(1.5, 0.12, 0.9, m.darkwood, 4.2, 2.35, 4.0);
+    b.cone(0.8, 1.1, m.hay, 5.4, 0, 5.0, 8); b.cone(0.65, 0.9, m.hay, 6.2, 0, 4.6, 8);
   }
 };
 

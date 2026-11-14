@@ -6,6 +6,8 @@ import { linkWalls, GATE_HALF } from './wallgraph';
 const S = 10;
 const TILE = 2;
 const HEIGHT = [2.4, 3.0, 3.8, 4.4];     // wall height by tier
+/** Height of a gate's pillars by tier. The opening under the lintel is about 1.1 less: at least 3.7, so a mounted knight with a plume or a spearman with his spear up passes without his head going through the beam. */
+const gateTopOf = (t: number) => Math.max(HEIGHT[t] + 1.5 + t * 0.25, 4.8);
 const THICK = [0.8, 1.1, 1.5, 1.7];
 const DEPTH = 2.4;                        // foundation below ground, hides slopes
 const GATE_TRIM = GATE_HALF + 0.7;        // wall runs stop at the outer face of a pillar
@@ -114,7 +116,7 @@ export class Walls {
     const out: WallWalk[] = [], seen = new Set<number>();
     const stoneOf = (n: Node) => (n.kind === GATE || n.kind === WALL) && n.tier >= 1;
     const floor = (n: Node): [number, number, number] => {
-      if (n.kind === GATE) { const t = Math.min(3, n.tier), top = HEIGHT[t] + 1.5 + t * 0.25; return [n.x, n.z, this.gy(n.x, n.z) + top + (t >= 1 ? 0.3 : 0)]; }
+      if (n.kind === GATE) { const t = Math.min(3, n.tier), top = gateTopOf(t); return [n.x, n.z, this.gy(n.x, n.z) + top + (t >= 1 ? 0.3 : 0)]; }
       return [n.x, n.z, this.gy(n.x, n.z) + HEIGHT[Math.min(3, n.tier)]];
     };
     nodes.forEach((n, i) => {
@@ -244,7 +246,7 @@ export class Walls {
 
   /** A gateway: two pillars and a lintel across the opening, in the line of the wall (axis u). */
   private gate(b: Builder, x: number, z: number, ux: number, uz: number, tier: number, idx: number, opts = 0, shut = false) {
-    const start = b.pos.length / 9, H = HEIGHT[tier], pw = 0.72 + tier * 0.06, top = H + 1.5 + tier * 0.25, nx = -uz, nz = ux;
+    const start = b.pos.length / 9, H = HEIGHT[tier], pw = 0.72 + tier * 0.06, top = gateTopOf(tier), nx = -uz, nz = ux;
     const gTop = Math.max(this.gy(x, z), this.gy(x + ux * GATE_HALF, z + uz * GATE_HALF), this.gy(x - ux * GATE_HALF, z - uz * GATE_HALF)) + top;   // one height for both pillars and the lintel, even on a slope
     for (const s of [-1, 1]) this.pillar(b, x + ux * GATE_HALF * s, z + uz * GATE_HALF * s, pw, top, tier, true, gTop, [ux, uz]);
     // lintel: a beam between the pillars, clear of the ground by about 2.9

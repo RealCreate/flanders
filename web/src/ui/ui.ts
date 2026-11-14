@@ -1,3 +1,4 @@
+import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
 import { CATS, KIND_ICON, RES, UNIT_ICON, defs, units, fmtCost, type BuildingDef } from '../data';
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
@@ -190,7 +191,7 @@ export class UI {
     <div class="flagrow"><button type="button" class="flagmini" id="flag-mini" title="Design your flag"><canvas width="60" height="40"></canvas></button><div><b>Your flag</b><div class="muted">Click it to design your own.</div></div></div>
     <div class="btnrow"><button class="pbtn primary" id="found">Enter the world</button></div>
     <p class="muted">There is no game server: every player runs a copy of the game and your browsers connect to each other. Your village is saved in this browser and keeps growing while you are away.</p>
-    <p class="muted" id="home-keys"></p>
+    <div class="btnrow"><button class="pbtn" id="home-keys-btn">⌨ Controls and keybindings</button><button class="pbtn" id="home-display-btn">⚙ Display settings</button></div>
   </div>
 </div>
 <div class="overlay" id="flag-page" hidden style="z-index:21">
@@ -213,7 +214,7 @@ export class UI {
     <p class="muted" id="help-mouse"></p>
     <div class="btnrow"><button class="pbtn" id="keys-reset">Reset keys to default</button></div>
     <p class="muted">Feed your people, then dig for stone, clay, iron and gold. Hunters keep the larder full. Build a barracks, train soldiers and man your towers: bandits will come, and fire spreads fast through thatch. Siege engines scar the land with craters; stone and wells keep fires small.</p>
-    <div class="btnrow"><button class="pbtn primary" data-close="help">Back to the realm</button></div>
+    <div class="btnrow"><button class="pbtn primary" data-close="help">Done</button></div>
   </div>
 </div>
 <div class="overlay clear" id="cheats" hidden>
@@ -252,7 +253,9 @@ export class UI {
     const mini = $('flag-mini').querySelector('canvas') as HTMLCanvasElement; paintFlag(mini, loadFlag());
     mountFlagDesigner($('intro-flag'), loadFlag(), f => { saveFlag(f); paintFlag(mini, f); });
     $('flag-mini').onclick = () => { $('flag-page').hidden = false; }; $('flag-done').onclick = () => { $('flag-page').hidden = true; };
-    const keyText = () => { $('home-keys').innerHTML = controlsHtml(); }; keyText(); keys.onChange(keyText);
+    $('home-keys-btn').onclick = () => this.modal('help', true); $('home-display-btn').onclick = () => this.modal('display', true);   // separate pages, also before the game starts
+    // rebinding a key must work on the start page too, before the game's own key handler exists
+    document.addEventListener('keydown', e => { this.captureKey(e); }, true);
     { const h = () => { $('help-mouse').innerHTML = controlsHtml() + ' Number keys <b>1-9</b> pick a building on any keyboard layout.'; }; h(); keys.onChange(h); }
     $('found').onclick = () => { const s = (wsel.value === '__custom' ? wcus.value.trim() : wsel.value) || 'flanders', n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n); };
     ($('username') as HTMLInputElement).onkeydown = wcus.onkeydown = e => { if (e.key === 'Enter') $('found').click(); };
@@ -526,7 +529,8 @@ export class UI {
 
   update(h: Hud) {
     const day = Math.floor(h.tick / 240) + 1, season = SEASONS[Math.floor((day - 1) / 10) % 4];
-    $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season}`;
+    const ph = dayPhase(h.tick);
+    $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season} · ${clockText(ph)} ${nightFactor(ph) > 0.5 ? '☾' : '☀'}`;
     h.stocks.forEach((v, i) => {
       const p = this.pills[i], rate = h.rates[i];
       p.querySelector('b')!.textContent = String(v);

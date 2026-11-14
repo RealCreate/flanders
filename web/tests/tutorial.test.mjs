@@ -32,3 +32,11 @@ test('saved progress is read back safely', () => {
   for (const bad of ['-1', '99', 'abc', '2.5', '']) assert.equal(loadProgress(st(bad)), null, bad);
   assert.equal(loadProgress({ getItem: () => { throw new Error('blocked'); } }), null);
 });
+
+import { fillKeys } from '../src/tutorial.ts';
+test('key names in the guide come from the player\'s own bindings', () => {
+  assert.equal(fillKeys('Press {deposits} then {photo}'), 'Press V then F9');
+  assert.equal(fillKeys('Press {deposits}', a => (a === 'deposits' ? 'K' : '?')), 'Press K');
+  for (const s of STEPS) assert.ok(!/\{\w+\}/.test(fillKeys(s.text)), 'unfilled placeholder in: ' + s.title);
+  assert.ok(STEPS.some(s => s.text.includes('{panUp}')), 'the camera step names the movement keys');
+});

@@ -63,6 +63,11 @@ export class Props {
   group = new THREE.Group();
   private mesh: THREE.Mesh; private glow: THREE.Mesh;
   private sig = '';
+  /** Where the lanterns stand (x, z), for the night lights that follow the camera. */
+  lamps: [number, number][] = [];
+
+  /** Lanterns burn brighter as it gets dark (0 by day .. 1 at night). */
+  setNight(n: number) { const m = this.glow.material as THREE.MeshStandardMaterial; m.emissiveIntensity = 0.5 + 2.9 * n; }
 
   constructor(private terrain: Terrain) {
     this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
@@ -74,22 +79,39 @@ export class Props {
   update(buildings: Float32Array, roads: Float32Array, radii: number[]) {
     const n = buildings.length / S, sig = Array.from({ length: n }, (_, i) => `${buildings[i * S]}:${buildings[i * S + 1]}:${buildings[i * S + 2]}:${buildings[i * S + 3]}`).join('|');
     if (sig === this.sig) return; this.sig = sig;
-    const kits: Kit[] = [];
-    const free = (x: number, z: number, margin = 1.2) => { if (this.terrain.heightAt(x, z) < 0.5) return false; for (let i = 0; i < n; i++) { const dx = x - buildings[i * S + 2], dz = z - buildings[i * S + 3]; if (Math.hypot(dx, dz) < radii[buildings[i * S]] + margin) return false; } return true; };
+    const kits: Kit[] = []; this.lamps = [];
+    const lamp = (x: number, z: number, yaw: number) => { kits.push(lantern(at(x, z, yaw))); this.lamps.push([x, z]); };
+    /** How close (to its middle line) something may stand to a path: villagers walk the paths, so scenery must not sit on or against them. */
+    const nearRoad = (x: number, z: number, margin: number) => {
+      for (let s = 0; s < roads.length; s += 6) {
+        const ax = roads[s], az = roads[s + 1], dx = roads[s + 2] - ax, dz = roads[s + 3] - az, l2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)); if (Math.hypot(x - (ax + dx * t), z - (az + dz * t)) < margin) return true;
+      }
+      return false;
+    };
+    const free = (x: number, z: number, margin = 1.2, road = 3.0) => { if (this.terrain.heightAt(x, z) < 0.5 || (road > 0 && nearRoad(x, z, road))) return false; for (let i = 0; i < n; i++) { const dx = x - buildings[i * S + 2], dz = z - buildings[i * S + 3]; if (Math.hypot(dx, dz) < radii[buildings[i * S]] + margin) return false; } return true; };
     const at = (x: number, z: number, yaw: number) => new Kit(x, this.terrain.heightAt(x, z), z, yaw);
     const hx = buildings[2], hz = buildings[3], hallTier = buildings[1];
 
-    // path furniture: a bench or lantern at intervals, alternating sides
+    // path furniture: a bench or lantern at intervals, alternating sides. Paths made of many short overlapping pieces (a hand-drawn road) would otherwise get a bench from
+    // every piece, so furniture keeps a minimum distance from all other furniture, whichever segment it belongs to.
+    const FURNITURE_GAP = 15, placed = new Map<string, [number, number][]>();
+    const roomFor = (x: number, z: number) => {
+      const cx = Math.floor(x / FURNITURE_GAP), cz = Math.floor(z / FURNITURE_GAP);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (const [qx, qz] of placed.get(`${cx + i}:${cz + j}`) ?? []) if (Math.hypot(qx - x, qz - z) < FURNITURE_GAP) return false;
+      const key = `${cx}:${cz}`; (placed.get(key) ?? placed.set(key, []).get(key)!).push([x, z]); return true;
+    };
     for (let s = 0; s < roads.length; s += 6) {
       const ax = roads[s], az = roads[s + 1], bx = roads[s + 2], bz = roads[s + 3], L = Math.hypot(bx - ax, bz - az);
       if (L < 9) continue;
       const ux = (bx - ax) / L, uz = (bz - az) / L, nx = -uz, nz = ux, yaw = Math.atan2(nx, nz);
       for (let d = 6.5, k = 0; d < L - 5; d += 9, k++) {
         const side = (Math.floor(rnd(s, k) * 2) ? 1 : -1), px = ax + ux * d + nx * 2.3 * side, pz = az + uz * d + nz * 2.3 * side;
-        if (!free(px, pz)) continue;
+        if (!free(px, pz, 1.2, 1.6) || !roomFor(px, pz)) continue;
         const near = Math.hypot(px - hx, pz - hz) < 24;
-        if (k % 2 === 0 || !near) kits.push(bench(at(px, pz, yaw * 1 + (side > 0 ? Math.PI : 0) + Math.PI)));
-        else kits.push(lantern(at(px, pz, yaw)));
+        // a bench's seat faces its local +z, which must point at the road: back along -side * normal, i.e. the normal's yaw (turned half a circle on the +normal side)
+        if (k % 2 === 0 || !near) kits.push(bench(at(px, pz, yaw + (side > 0 ? Math.PI : 0))));
+        else lamp(px, pz, yaw);
       }
     }
     // around buildings
@@ -105,8 +127,12 @@ export class Props {
     }
     // the market square in front of a grown town hall, with lamp posts at the corners
     if (hallTier >= 1) {
-      for (const [dx, dz, c] of [[-9.5, -5.5, 0xb8403a], [9.5, -5.5, 0x3a6ab8]] as const) if (free(hx + dx, hz + dz, 1.2)) kits.push(stall(at(hx + dx, hz + dz, Math.PI), c));
-      for (const [dx, dz] of [[-8, 8], [8, 8], [-8, -8], [8, -8]]) kits.push(lantern(at(hx + dx, hz + dz, Math.atan2(dx, dz))));
+      for (const [dx, dz, c] of [[-9.5, -5.5, 0xb8403a], [9.5, -5.5, 0x3a6ab8]] as const) {
+        // a stall is wide: keep it a good 4 units clear of every path, trying other spots round the square if the first is on one
+        const spot = [[dx, dz], [dx * 1.25, dz - 1.5], [dx * 0.8, dz - 3.5], [dx * 1.3, dz + 2], [dx, dz - 6], [dx * 1.5, dz - 4]].find(([ox, oz]) => free(hx + ox, hz + oz, 1.2, 4.2));
+        if (spot) kits.push(stall(at(hx + spot[0], hz + spot[1], Math.PI), c));
+      }
+      for (const [dx, dz] of [[-8, 8], [8, 8], [-8, -8], [8, -8]]) lamp(hx + dx, hz + dz, Math.atan2(dx, dz));
       kits.push(signpost(at(hx + 7.5, hz + 8.8, 0.6)));
     }
 

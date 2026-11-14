@@ -48,6 +48,7 @@ pub struct Unit {
     pub alive: bool,
     pub from_army: bool, // counted against the village army when it dies
     pub charge: bool,
+    pub wading: bool, // an attacker in the water of a moat or river: slow, unable to fight, easy to hit
     pub anim: f32, // 0 idle/walk, >0 swinging (render hint)
     pub climb: f32, // seconds left climbing a wall or fence
     pub spot: i32,  // the ladder it is climbing, if any

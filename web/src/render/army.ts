@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Terrain } from './terrain';
 import { buildCatapult, HAT, TOOL, type Crowd, type Draw } from './crowd';
 import { smoothPath } from './field';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 const S = 10;
 // where the archers stand on each tower tier: walkway height above the ground and radius of the ring they stand on (see the tower model)
@@ -17,7 +18,9 @@ interface Field {
   sx: number; sz: number; segT: number; segD: number; lastSync: number;   // glide from where it was drawn to where the core put it, over the time one tick takes
   gait: number; spd: number;   // gait angle (advances with distance walked) and smoothed ground speed
 }
-interface Post { kind: number; x: number; z: number; y: number; yaw: number; row: number; mode: 'drill' | 'tower' | 'patrol'; ring?: number; idx?: number; n?: number; R?: number }
+interface Post { kind: number; x: number; z: number; y: number; yaw: number; row: number; mode: 'drill' | 'tower' | 'patrol'; ring?: number; idx?: number; n?: number; R?: number;
+  /** An archer on a tower walkway paces back and forth along an arc of the ring: centre, radius, middle angle, how far it strays, how fast, and when in the cycle it starts. */
+  tw?: { cx: number; cz: number; R: number; a0: number; amp: number; w: number; ph: number; dist?: number; last?: number } }
 
 interface Guard { idx: number; wps: { x: number; z: number }[]; wi: number; route: number[]; ri: number; x: number; z: number; yaw: number; wait: number; gait: number; spd: number }
 
@@ -31,6 +34,21 @@ export class ArmyView {
   private corpses: { f: Field; t: number }[] = [];
   private siege: THREE.Group[] = [];
   group = new THREE.Group();
+  /** Rafts for raiders crossing a moat or river (the core marks them as wading: slow, helpless, easy to hit): a few logs lashed together, one per soldier, drawn at the water's edge. */
+  private rafts: THREE.Mesh[] = [];
+  private raftGeo: THREE.BufferGeometry | null = null;
+  private raftMat = new THREE.MeshStandardMaterial({ color: 0x8a6a46, roughness: 0.95 });
+  private raftAt(i: number) {
+    if (!this.raftGeo) {
+      const parts: THREE.BufferGeometry[] = [];
+      for (let k = -2; k <= 2; k++) { const g = new THREE.CylinderGeometry(0.17, 0.17, 1.7, 7); g.rotateX(Math.PI / 2); g.translate(k * 0.3, 0, 0); parts.push(g); }   // logs along z
+      for (const z of [-0.55, 0.55]) { const g = new THREE.BoxGeometry(1.5, 0.1, 0.16); g.translate(0, 0.17, z); parts.push(g); }                                      // lashed cross-pieces
+      this.raftGeo = mergeGeometries(parts)!;
+    }
+    let r = this.rafts[i];
+    if (!r) { r = new THREE.Mesh(this.raftGeo, this.raftMat); r.castShadow = r.receiveShadow = true; this.rafts.push(r); this.group.add(r); }
+    return r;
+  }
   private t = 0;
   battle = false;
   friend = 0x2f5fa8;       // colour of this village's soldiers
@@ -73,7 +91,7 @@ export class ArmyView {
     for (const i of towers) {
       const tier = buildings[i + 1], n = garrison[i / S] ?? 0, tx = buildings[i + 2], tz = buildings[i + 3], keep = buildings[i] === 26, ring = keep ? KEEP_RING : TOWER_RING, top = keep ? KEEP_TOP : TOWER_TOP;
       this.towers.push({ x: tx, z: tz, tier, keep });
-      for (let j = 0; j < n; j++) { const a = (j / n) * Math.PI * 2 + 0.4; posts.push({ kind: 1, x: tx + Math.cos(a) * ring[tier], z: tz + Math.sin(a) * ring[tier], y: top[tier], yaw: Math.PI / 2 - a, row: 0, mode: 'tower' }); }
+      for (let j = 0; j < n; j++) { const a = (j / n) * Math.PI * 2 + 0.4; posts.push({ kind: 1, x: tx + Math.cos(a) * ring[tier], z: tz + Math.sin(a) * ring[tier], y: top[tier], yaw: Math.PI / 2 - a, row: 0, mode: 'tower', tw: { cx: tx, cz: tz, R: ring[tier], a0: a, amp: n > 1 ? Math.min(0.9, (Math.PI / n) * 0.7) : 1.4, w: 0.22 + 0.05 * ((j * 7) % 3), ph: j * 2.3 + tx * 0.1 } }); }
     }
     this.posts = posts;
     // the guard patrols a loop through the village: the outermost building in each direction, found with the village's pathfinding
@@ -231,17 +249,18 @@ export class ArmyView {
       // fire = seconds of the throwing motion left (1 -> 0): a quick swing forward, then the arm is winched back
       const p = 1 - fire; (g.userData.arm as THREE.Object3D).rotation.x = fire <= 0 ? -0.9 : p < 0.25 ? -0.9 + (p / 0.25) * 2.1 : 1.2 - ((p - 0.25) / 0.75) * 2.1;
     };
-    let si = 0;
+    let si = 0, nr = 0; for (const r of this.rafts) r.visible = false;
     if (this.battle) {
       for (const f of this.field) {
         if (!f.alive || !near(f.x, f.z)) continue;
+        if (f.side === 1 && f.elev > 1.0 && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, f.elev + this.terrain.heightAt(f.x, f.z) - 0.1, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.05; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.04; }
         if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
         if (f.side === 0 && f.kind === 1) {   // archers stationed in a tower shoot from its walkway
           const tw = this.towers.find(q => (q.x - f.x) ** 2 + (q.z - f.z) ** 2 < 2.6 * 2.6);
           if (tw) { const a = Math.atan2(f.z - tw.z, f.x - tw.x), R = (tw.keep ? KEEP_RING : TOWER_RING)[tw.tier], x = tw.x + Math.cos(a) * R, z = tw.z + Math.sin(a) * R; crowd.add({ x, y: this.terrain.heightAt(tw.x, tw.z) + (tw.keep ? KEEP_TOP : TOWER_TOP)[tw.tier], z, yaw: f.anim > 0 ? f.yaw : Math.PI / 2 - a, pose: 3, phase: t + f.seed, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, ...l } as Draw); continue; }
         }
-        crowd.add({ x: f.x, y: this.terrain.heightAt(f.x, f.z) + f.elev, z: f.z, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, scale: 1, ...l } as Draw);
+        crowd.add({ x: f.x, y: this.terrain.heightAt(f.x, f.z) + f.elev, z: f.z, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, scale: 0.92, ...l } as Draw);
       }
       for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.heightAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
     } else {
@@ -254,7 +273,17 @@ export class ArmyView {
           const drilling = Math.sin(t * 0.35 + p.row * 0.9) > 0.88;
           crowd.add({ x: p.x, y: this.terrain.heightAt(p.x, p.z), z: p.z, yaw: p.yaw, pose: drilling ? 3 : 0, phase: t + p.x, swing: drilling ? (Math.sin(t * 5 + p.x) > 0 ? 0.6 : 0) : 0, skin: 0xd9a877, ...l } as Draw);
         } else if (p.mode === 'tower') {
-          crowd.add({ x: p.x, y: this.terrain.heightAt(p.x, p.z) + p.y, z: p.z, yaw: p.yaw, pose: 0, phase: t + p.x, skin: 0xd9a877, ...l } as Draw);
+          const w = p.tw;
+          if (!w) { crowd.add({ x: p.x, y: this.terrain.heightAt(p.x, p.z) + p.y, z: p.z, yaw: p.yaw, pose: 0, phase: t + p.x, skin: 0xd9a877, ...l } as Draw); continue; }
+          // pace an arc of the walkway: walk while the swing is fast, stop and look out over the wall near the ends of it. A walkway too cramped for a real stroll (a small tower,
+          // or many archers sharing it) does not pace at all: its archers turn slowly on the spot, because a walking animation on a body that hardly moves looks like shaking.
+          const ph = t * w.w + w.ph, roomy = w.amp * w.R >= 0.7;
+          const a = roomy ? w.a0 + Math.sin(ph) * w.amp : w.a0, v = Math.cos(ph), walking = roomy && Math.abs(v) > 0.3, sg = v >= 0 ? 1 : -1;
+          const x = w.cx + Math.cos(a) * w.R, z = w.cz + Math.sin(a) * w.R;
+          const out = Math.PI / 2 - a, yaw = walking ? Math.atan2(-sg * Math.sin(a), sg * Math.cos(a)) : out + (roomy ? 0 : Math.sin(ph * 0.6) * 0.8);
+          // the gait follows the distance actually walked (so the feet never move faster than the body)
+          if (walking) { w.dist = (w.dist ?? 0) + Math.abs(a - (w.last ?? a)) * w.R; } w.last = a;
+          crowd.add({ x, y: this.terrain.heightAt(x, z) + p.y, z, yaw, pose: walking ? 1 : 0, phase: walking ? (w.dist ?? 0) * 4.5 : t + p.x, speed: walking ? Math.min(1.1, w.amp * w.w * Math.abs(v) * w.R) : 0, skin: 0xd9a877, ...l } as Draw);
         }
       }
       for (const g of this.wallGuards) {

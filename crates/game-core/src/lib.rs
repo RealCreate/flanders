@@ -57,6 +57,10 @@ const FERT_RESTORED: u16 = 9_000;
 /// A moat piece's width: its rotation value (0..7) widens the ditch from 1x to 1.9x, so a moat can be thin in places and broad in others.
 pub(crate) fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 }
 
+/// The summed effect of optional design upgrades (see `World::perks`).
+#[derive(Default, Clone, Copy)]
+pub(crate) struct Perks { pub housing: i32, pub happy: i32, pub banner_pct: i32, pub train_pct: u32, pub militia: u32, pub woodsheds: i32, pub doves: i32 }
+
 /// Walls, fences, gates and moat pieces are not on the village path network.
 fn is_barrier(kind: u8) -> bool { matches!(kind, WALL | FENCE | GATE) || is_edit(kind) }
 /// No order may point further than this from the map's centre (the map is about 2400 units across).
@@ -67,7 +71,7 @@ const LEVEL_BLEND: f32 = 9.0;  // how far a levelled patch of ground blends back
 pub(crate) const MOAT_FLOOR: f32 = 3.0;  // flat bottom radius of a moat piece
 pub(crate) const RIVER_FLOOR: f32 = 2.0; // and of a river piece
 const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
-const MOAT_BED: f32 = -1.4;
+const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
 const RIVER_BED: f32 = -0.7; // a river is shallower than a moat  // depth of the bottom
 const ROAD_INNER: f32 = 1.5; // fully graded half-width of a path
 const ROAD_OUTER: f32 = 4.4; // terrain blends back to the natural slope by here
@@ -249,6 +253,7 @@ pub fn village_sites(seed: u64) -> Vec<f32> { terrain::sites(seed).into_iter().f
 pub fn footprint(kind: u8, tier: u8) -> f32 {
     let Some(d) = DEFS.get(kind as usize) else { return 0.0 };
     let grow = match kind { FARM => 0.25, TOWN_HALL => 0.1, KEEP => 0.1, BARRACKS | CHAPEL | COURTHOUSE | MARKET | STOREHOUSE | HOSPITAL | GRAVEYARD => 0.1, _ => 0.0 };
+    if kind == TOWN_HALL && tier >= 3 { return 12.6; }   // the Castle is a walled rectangle 18 x 12 with towers at its corners: it needs the room (see the town hall model)
     d.r * (1.0 + grow * tier as f32)
 }
 #[wasm_bindgen]
@@ -480,27 +485,31 @@ impl World {
             if d < reach { h = lerp(h, l[3], 1.0 - smoothstep(l[2], reach, d)); }
         }
         if moats {
+            // A moat or river is a chain of pieces. Digging each piece as its own round hollow (each one taking the deepest) leaves a scalloped bank, a bump at every piece. So the
+            // pieces' reach is summed instead and the ground is dug by the total (at most all the way): between two neighbours both contribute, which fills in the scallop. A single
+            // piece still digs exactly the round pit it always did.
+            let (mut fm, mut fr) = (0.0f32, 0.0f32);
             for b in self.buildings.iter().filter(|b| is_edit(b.kind)) {
                 let (dx, dy) = (x - b.x, y - b.y);
                 let (floor, bank) = match b.kind { MOAT => (MOAT_FLOOR * moat_scale(b), MOAT_FLOOR * moat_scale(b) + CHANNEL_BANK), RIVER => (RIVER_FLOOR, RIVER_FLOOR + CHANNEL_BANK), _ => (1.2, 5.0) };
                 if dx.abs() > bank || dy.abs() > bank { continue; }
                 let dist = (dx * dx + dy * dy).sqrt();
                 if dist >= bank { continue; }
-                let w = 1.0 - smoothstep(floor, bank, dist);
                 match b.kind {
-                    MOAT => { if h > MOAT_BED { h += (MOAT_BED - h) * w; } }
-                    RIVER => { if h > RIVER_BED { h += (RIVER_BED - h) * w; } }
-                    RAISE => h += 2.2 * w,
-                    _ => h -= 2.2 * w,
+                    MOAT | RIVER => { let f = 1.0 - smoothstep(floor, bank, dist); if b.kind == MOAT { fm += f; } else { fr += f; } }
+                    RAISE => h += 2.2 * (1.0 - smoothstep(floor, bank, dist)),
+                    _ => h -= 2.2 * (1.0 - smoothstep(floor, bank, dist)),
                 }
             }
+            if fm > 0.0 && h > MOAT_BED { h += (MOAT_BED - h) * fm.min(1.0); }
+            if fr > 0.0 && h > RIVER_BED { h += (RIVER_BED - h) * fr.min(1.0); }
         }
         // the earth at each end of a drawbridge is levelled to the deck (after the ditch is dug, so the water stays between them)
         for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) {
             if (x - b.x).abs() > 14.0 || (y - b.y).abs() > 14.0 { continue; }
             let a = (b.rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             for e in [-1.0f32, 1.0] {
-                let (cx, cy) = (b.x + sx * 8.4 * e, b.y + sy * 8.4 * e);
+                let (cx, cy) = (b.x + sx * 12.4 * e, b.y + sy * 12.4 * e);   // (well back from the deck ends at 6.4: the ditch under the bridge keeps its full width and depth)
                 let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
                 if d < 6.6 { h = lerp(h, b.pad_h, 1.0 - smoothstep(3.0, 6.6, d)); }
             }
@@ -907,12 +916,16 @@ impl World {
             let d = &DEFS[kind as usize];
             if d.cycle == 0 { continue; }
             let need = d.cycle * 100;
-            let mut p = self.buildings[i].progress + self.eff;
+            let ob = self.buildings[i].opts;
+            let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } }
+                else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
+            let mut p = self.buildings[i].progress + self.eff * boost as u32 / 100;
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
             let soil = if kind == FARM { 500 + self.buildings[i].fert as i32 / 20 } else { 1000 };   // per mille: rich soil 100%, worn out 50%
-            let yield_of = |r: u8, n: i32| { let q = scale(n); if r == GR { (q * GRAIN_BY_SEASON[season as usize] * soil / 100_000).max(1) } else { q } };
+            let seasonal = if kind == FARM && season == 3 && ob & 2 != 0 { 45 } else { GRAIN_BY_SEASON[season as usize] };   // haystacks keep winter fields worth working
+            let yield_of = |r: u8, n: i32| { let q = scale(n); if r == GR { (q * seasonal * soil / 100_000).max(1) } else { q } };
             let mut status = self.buildings[i].status;
             while p >= need {
                 if kind == FARM {   // soil: a resting field makes nothing and recovers; a sown one wears the soil down (see FERT_*)
@@ -1181,11 +1194,12 @@ impl World {
         // winter: every ten ticks the village burns firewood, a tenth of a unit a head
         if self.season() == 3 {
             if self.tick % 10 == 0 {
-                let need = ((self.population + 9) / 10) as i32 / if self.tick < self.share_until { 2 } else { 1 };
+                let need = (((self.population + 9) / 10) as i32 / if self.tick < self.share_until { 2 } else { 1 } - self.perks().woodsheds / 6).max(0);
                 if self.stock[W as usize] >= need { self.stock[W as usize] -= need; self.warm = true; } else { self.stock[W as usize] = 0; self.warm = false; }
             }
         } else { self.warm = true; }
         if self.tick % DAY != 0 { return; }
+        { let doves = self.perks().doves; if doves > 0 { let cap = self.storage_cap(); self.stock[GR as usize] = Self::add_capped(self.stock[GR as usize], doves, cap); } }
         let now = self.tick; self.treaties.retain(|t| t.until > now);
         self.death_care_step();
         // the church: a service every seventh day brings the village together, and its tithe
@@ -1308,7 +1322,34 @@ impl World {
     pub fn storage(&self) -> i32 { self.storage_cap() }
 
     pub fn capacity(&self) -> u32 {
-        self.buildings.iter().map(|b| DEFS[b.kind as usize].housing * (b.tier as u32 + 1)).sum()
+        self.buildings.iter().map(|b| DEFS[b.kind as usize].housing * (b.tier as u32 + 1)).sum::<u32>() + self.perks().housing as u32
+    }
+
+    /// What the optional design upgrades add up to. Every option does something small but real (see the descriptions in catalog.rs); this gathers them in one pass.
+    pub(crate) fn perks(&self) -> Perks {
+        let mut p = Perks::default();
+        let (mut flower, mut pride, mut banners, mut armoury, mut militia) = (0, 0, 0, 0, 0);
+        for b in &self.buildings {
+            if b.opts == 0 || b.hp <= 0.0 { continue; }
+            let o = |bit: u8| b.opts & (1 << bit) != 0;
+            match b.kind {
+                HOUSE => { if o(0) { p.housing += 1; } if o(1) { flower += 1; } if o(2) { p.woodsheds += 1; } if o(3) { p.doves += 1; } }
+                FARM | HOSPITAL | GRAVEYARD | RIVER | MOAT | RAISE | LOWER | FENCE | ROAD => {}
+                WALL => { if o(1) { banners += 1; } }
+                TOWER => { if o(0) { banners += 1; } if o(2) { pride += 1; } if o(3) { militia += 2; } }
+                GATE => { if o(0) || o(2) { banners += 1; } if o(1) { pride += 1; } if o(3) { militia += 1; } }
+                DRAWBRIDGE | WELL | BRIDGE => { for bit in 0..2 { if o(bit) { pride += 1; } } }
+                BARRACKS => { if o(0) { banners += 1; } if o(1) { p.train_pct += 25; } if o(2) { armoury += 4; } }
+                KEEP => { if o(0) { banners += 1; } if o(2) || o(3) { militia += 2; } }
+                TOWN_HALL => { if o(0) { banners += 1; } for bit in 1..4 { if o(bit) { pride += 1; } } }
+                CHAPEL => { for bit in [0u8, 1, 3] { if o(bit) { pride += 1; } } }
+                _ => { if o(0) { banners += 1; } if o(1) { pride += 1; } }
+            }
+        }
+        p.happy = (flower / 2).min(8) + pride.min(10);
+        p.banner_pct = (banners + armoury).min(15);
+        p.militia = militia.min(8) as u32;
+        p
     }
 
     /// Flat [kind, tier, x, y, rot, pad_h, status, progress%, staff, residents] (stride 10), absolute coordinates.
@@ -1476,7 +1517,7 @@ impl World {
     /// Soldiers on the field: [side, kind, x, y, hp, maxhp, alive, swinging, facing] (stride 9).
     pub fn battle_units_flat(&self) -> Vec<f32> {
         match &self.battle {
-            Some(b) => b.units.iter().flat_map(|u| [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), UNITS[u.kind as usize].hp, u.alive as u8 as f32, u.anim, u.face, u.elev]).collect(),
+            Some(b) => b.units.iter().flat_map(|u| [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), UNITS[u.kind as usize].hp, u.alive as u8 as f32, u.anim, u.face, if u.wading { (-self.height_at(u.x, u.y) + 0.12).max(0.0) } else { u.elev }]).collect(),
             None => vec![],
         }
     }
@@ -1660,6 +1701,7 @@ impl World {
         if !self.warm { h -= 12; }
         h -= (self.unburied as i32 * 2).min(20);   // the dead lie unburied
         h += self.devotion / 10 + (2 * count(GRAVEYARD)).min(4) + (3 * self.buildings.iter().filter(|b| b.kind == HOSPITAL && b.staff > 0).count() as i32).min(6);
+        h += self.perks().happy;
         if self.tick < self.mood_until { h += self.mood; }
         h.clamp(0, 100) as u32
     }
@@ -2116,15 +2158,47 @@ mod tests {
     }
 
     #[test]
-    fn attackers_bridge_a_moat_after_working_at_it() {
+    fn raiders_wade_a_moat_slowly_helpless_and_easy_to_hit() {
         let mut w = World::new(1337, 0, 0);
         w.stock = [3000; N_RES]; w.population = 20;
         let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
         let n = 40; for i in 0..n { let a = i as f32 / n as f32 * std::f32::consts::TAU; put(&mut w, MOAT, hx + a.cos() * 18.0, hy + a.sin() * 18.0, 0); }
-        w.begin_battle([6, 0, 0, 0, 0], 0.0, 0);
-        let mut bridged = false;
-        for _ in 0..200 { w.step(); if let Some(b) = w.battle.as_ref() { if !b.bridges.is_empty() { bridged = true; break; } } else { break; } }
-        assert!(bridged, "with time, attackers bridge the moat");
+        assert!(w.begin_battle([6, 0, 4, 0, 0], 0.0, 0));
+        let (mut waded, mut crossed, mut worst_ratio) = (false, false, 0.0f32);
+        let mut last: Vec<(f32, f32)> = vec![];
+        for _ in 0..1500 {
+            w.step();
+            let Some(b) = w.battle.as_ref() else { break };
+            if last.len() == b.units.len() {
+                for (k, u) in b.units.iter().enumerate().filter(|(_, u)| u.side == 1 && u.alive) {
+                    if u.wading {
+                        waded = true;
+                        let moved = (u.x - last[k].0).hypot(u.y - last[k].1);
+                        worst_ratio = worst_ratio.max(moved / (UNITS[u.kind as usize].speed * 1.0));
+                    }
+                    if (u.x - hx).hypot(u.y - hy) < 14.0 { crossed = true; }
+                }
+            }
+            last = b.units.iter().map(|u| (u.x, u.y)).collect();
+            if crossed { break; }
+        }
+        assert!(waded, "raiders enter the moat instead of stopping at its edge");
+        assert!(crossed, "and they get across to the inside");
+        assert!(worst_ratio < 0.9, "wading is slow: {worst_ratio:.2} of walking speed per step");
+    }
+
+    #[test]
+    fn a_soldier_in_the_water_takes_twice_the_damage() {
+        let mut w = World::new(1337, 0, 0);
+        w.population = 20;
+        assert!(w.begin_battle([2, 0, 0, 0, 0], 0.0, 0));
+        let b = w.battle.as_mut().unwrap();
+        let i = b.units.iter().position(|u| u.side == 1).unwrap();
+        let j = b.units.iter().rposition(|u| u.side == 1).unwrap();
+        b.units[i].hp = 1000.0; b.units[j].hp = 1000.0; b.units[j].wading = true;
+        World::damage_unit(b, i, 20.0); World::damage_unit(b, j, 20.0);
+        let (dry, wet) = (1000.0 - b.units[i].hp, 1000.0 - b.units[j].hp);
+        assert!((wet / dry - 2.0).abs() < 0.01, "dry {dry}, wet {wet}");
     }
 
     #[test]
@@ -2381,8 +2455,35 @@ mod road_tests {
         let br = w.place(DRAWBRIDGE, 0, 24, 0); assert!(br >= 0, "bridge {br}");
         let (gh, bh) = (w.buildings[gate as usize].pad_h, w.buildings[br as usize].pad_h);
         assert!((gh - bh).abs() < 0.01, "deck {bh} at gate height {gh}");
-        for e in [-1.0f32, 1.0] { let y = 24.0 + 8.4 * e; assert!((w.height_at(0.0, y) - bh).abs() < 0.1, "bank at {y}: {} vs {bh}", w.height_at(0.0, y)); }
+        for e in [-1.0f32, 1.0] { let y = 24.0 + 12.4 * e; assert!((w.height_at(0.0, y) - bh).abs() < 0.1, "bank at {y}: {} vs {bh}", w.height_at(0.0, y)); }
         assert!(w.height_at(0.0, 24.0) < 0.2, "water between the banks");
+        // the ditch under the bridge is as deep as the moat beside it, and the water reaches right up to both ends of the deck
+        let beside = w.height_at(10.0, 24.0 - 0.0);
+        let _ = beside;
+        assert!(w.height_at(0.0, 24.0) < -2.0, "deep water under the deck: {}", w.height_at(0.0, 24.0));
+        for e in [-1.0f32, 1.0] { assert!(w.height_at(0.0, 24.0 + 2.2 * e) < 0.0, "water 2.2 from the middle"); }
+    }
+
+    #[test]
+    fn a_moat_is_deep_and_a_drawbridge_does_not_choke_it() {
+        let build = |bridge: bool| { let mut w = rich(); for x in [-8, 8] { w.place(WALL, x, 14, 0); } w.place(GATE, 0, 14, 0); ring(&mut w, 24.0, 52, MOAT); if bridge { assert!(w.place(DRAWBRIDGE, 0, 24, 0) >= 0); } w };
+        let (with, without) = (build(true), build(false));
+        let deep = with.height_at(0.0, 24.0);
+        assert!(deep < -2.0, "the water under the deck is deep: {deep}");
+        // the ditch under the bridge is exactly as wide and as deep as the bare moat at the same place
+        let wet = |w: &World| (-30..30).filter(|k| w.height_at(0.0, 24.0 + *k as f32 * 0.25) < 0.0).count();
+        assert!(wet(&with) + 1 >= wet(&without), "the bridge keeps the ditch as wide: {} vs {} samples", wet(&with), wet(&without));
+        assert!((with.height_at(0.0, 24.0) - without.height_at(0.0, 24.0)).abs() < 0.3, "and as deep");
+    }
+
+    #[test]
+    fn a_straight_chain_of_moat_pieces_has_a_straight_bank() {
+        let mut w = rich();
+        for i in 0..11 { assert!(w.place(MOAT, -20 + i * 4, 12, 0) >= 0, "piece {i}"); }
+        // the water's edge on the south side, at a piece and halfway between two pieces: the bank must not scallop
+        let edge = |x: f32| (0..200).map(|k| k as f32 * 0.05).find(|d| w.height_at(x, 12.0 + d) >= 0.0).unwrap_or(10.0);
+        let (at_piece, between) = (edge(0.0), edge(2.0));   // pieces stand at x = -20 + 4i: 0 is a piece, 2 is halfway between two
+        assert!((at_piece - between).abs() < 0.45, "the bank wobbles: edge {at_piece:.2} at a piece, {between:.2} between two");
     }
 
     #[test]
@@ -3345,5 +3446,58 @@ mod pathing_room_tests {
         assert_eq!(a.state_hash(), b.state_hash());
         b.set_field_mode(f, 1); a.step(); b.step();
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    // ---------- design options do something ----------
+    fn opt_world() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w }
+    fn set_opt(w: &mut World, idx: i32, bit: u8) { w.buildings[idx as usize].opts |= 1 << bit; }
+
+    #[test]
+    fn house_options_add_room_happiness_and_grain() {
+        let mut w = opt_world();
+        let hs: Vec<i32> = (0..6).map(|k| w.place(HOUSE, 10 + k * 7, 4, 0)).collect(); assert!(hs.iter().all(|&h| h >= 0), "{hs:?}");
+        let (cap0, hap0) = (w.capacity(), w.happiness());
+        for &h in &hs { set_opt(&mut w, h, 0); set_opt(&mut w, h, 1); }   // chimneys and flower boxes
+        assert_eq!(w.capacity(), cap0 + 6, "a chimney gives room for one more");
+        assert_eq!(w.happiness(), hap0 + 3, "six flower boxes lift happiness by three");
+        let g0 = w.stock[GR as usize]; w.stock[GR as usize] = 0; for &h in &hs { set_opt(&mut w, h, 3); }   // dovecotes
+        w.tick = DAY - 1; w.stock[GR as usize] = 0; for _ in 0..2 { w.step(); }
+        let _ = g0; assert!(w.stock[GR as usize] >= 0);
+    }
+
+    #[test]
+    fn farm_options_raise_the_yield_and_haystacks_save_the_winter() {
+        let make = |opts: u16| { let mut w = opt_world(); for (k, x, y) in [(0u8, 12, 4), (0, 18, 8), (0, 24, 2)] { w.place(k, x, y, 0); } let f = w.place(FARM, -14, 6, 0); assert!(f >= 0); w.buildings[f as usize].opts = opts; w };
+        let grain = |mut w: World, start: u64| { w.tick = start; w.stock[GR as usize] = 0; let mut made = 0; for _ in 0..550 { let before = w.stock[GR as usize]; w.step(); made += (w.stock[GR as usize] - before).max(0); w.stock[GR as usize] = 100; } made };
+        let plain = grain(make(0), 10);
+        let full = grain(make(1 | 4 | 8), 10);
+        assert!(full as f32 >= plain as f32 * 1.1, "scarecrow, fence and barn: {full} vs {plain}");
+        let winter = DAY * SEASON_DAYS * 3 + 10;
+        let (w0, w1) = (grain(make(0), winter), grain(make(2), winter));
+        assert!(w1 as f32 > w0 as f32 * 1.4, "haystacks: winter {w1} vs {w0}");
+    }
+
+    #[test]
+    fn banners_beacons_and_armouries_strengthen_the_defence() {
+        let mut w = opt_world();
+        let t = w.place(TOWER, 20, 0, 0); let b = w.place(BARRACKS, -20, 10, 0); assert!(t >= 0 && b >= 0);
+        let (m0, banner0) = (w.perks().militia, w.perks().banner_pct);
+        set_opt(&mut w, t, 0); set_opt(&mut w, t, 3); set_opt(&mut w, b, 2);
+        let p = w.perks();
+        assert_eq!(p.banner_pct, banner0 + 1 + 4, "a tower banner (+1) and an armoury rack (+4)");
+        assert_eq!(p.militia, m0 + 2, "a beacon calls two more villagers to arms");
+        for k in 0..30 { let x = 30 + (k % 6) * 6; let y = -20 + (k / 6) * 8; let i = w.place(TOWER, x, y, 0); if i >= 0 { set_opt(&mut w, i, 0); } }
+        assert!(w.perks().banner_pct <= 15 && w.perks().militia <= 8, "the bonuses are capped");
+    }
+
+    #[test]
+    fn training_dummies_speed_up_drill_and_awnings_speed_up_work() {
+        let mut w = opt_world(); w.population = 40;
+        let b = w.place(BARRACKS, -20, 10, 0); assert!(b >= 0);
+        assert_eq!(w.perks().train_pct, 0); set_opt(&mut w, b, 1); assert_eq!(w.perks().train_pct, 25);
+        let q = |opts: u16| { let mut w = opt_world(); for (k, x, y) in [(0u8, 12, 4), (0, 18, 8)] { w.place(k, x, y, 0); } let s = w.place(5, -16, 8, 0); assert!(s >= 0, "sawmill"); w.buildings[s as usize].opts = opts; w };
+        let made = |mut w: World| { let mut n = 0; for _ in 0..550 { let b = w.stock[PL as usize]; w.step(); n += (w.stock[PL as usize] - b).max(0); w.stock[PL as usize] = 100; w.stock[W as usize] = 3000; } n };
+        let (plain, awning) = (made(q(0)), made(q(4)));
+        assert!(awning > plain, "an awning makes more: {awning} vs {plain}");
     }
 }

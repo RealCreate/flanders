@@ -18,7 +18,7 @@ body { background: #1a140e; color: var(--paper); font-family: var(--f-ui); font-
 .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse 80% 74% at 50% 50%, rgba(0,0,0,0) 58%, rgba(38,27,12,.34) 100%); }
 
 /* ---------- top bar ---------- */
-.topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; padding: 8px 14px 14px; background: linear-gradient(#1d160fee, #1d160fcc 72%, #1d160f00); pointer-events: none; }
+.topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 10; display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; padding: 8px 14px 14px; background: linear-gradient(#1d160fee, #1d160fcc 72%, #1d160f00); pointer-events: none; }
 .topbar > * { pointer-events: auto; }
 .brand { display: flex; flex-direction: column; line-height: 1; margin-right: 4px; }
 .brand h1 { font-family: var(--f-display); font-weight: 400; font-size: 25px; letter-spacing: .08em; margin: 0; color: var(--gold-soft); text-shadow: 0 1px 0 #000a; }

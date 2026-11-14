@@ -13,7 +13,7 @@ import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
 import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
-import { auditModel } from './render/buildings';
+import { auditModel, setNightLight } from './render/buildings';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
 import { Terrain } from './render/terrain';
@@ -26,7 +26,7 @@ import { Crowd } from './render/crowd';
 import { Effects2 } from './render/fx';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
-import { keys, digitOf } from './keys';
+import { keys, digitOf, prettyKey, type Action } from './keys';
 import { Perf } from './perf';
 import { Sound } from './audio';
 import { Minimap, type MapVillage } from './ui/minimap';
@@ -43,6 +43,7 @@ import { applyCmd, stepTo, validSavedLog } from './commands';
 import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
+import { dayPhase } from './daycycle';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
 import { showReplayBar, type ReplayBar } from './replayui';
@@ -106,6 +107,8 @@ let deposits!: Deposits, minimap!: Minimap, effects!: Effects, crowd!: Crowd, fx
 let lv!: Village;                           // your village
 interface Rival { key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number; broken?: boolean; log: Cmd[] }
 const tutorial = new Tutorial();
+tutorial.setKeys(a => { const b = keys.binds[a as Action]; return b && b.length ? b.slice(0, 2).map(k => prettyKey(k)).join(' / ') : a; });
+keys.onChange(() => tutorial.refresh());
 const ledger = new Ledger();               // what battles really gave (see ledger.ts)
 const rivals = new Map<string, Rival>();    // by public key
 const byPeer = new Map<string, string>();   // peerId -> pub
@@ -609,7 +612,7 @@ async function startGame(name: string, username: string) {
   renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: settings().antialias, powerPreference: 'high-performance' });
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, 1)); renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // the shadow map is redrawn every other frame (see frame())
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.78;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.72;
   scene = new THREE.Scene();
   ui.progress(10, 'Painting the sky…'); await nextFrame();
   atmo = new Atmosphere(scene, renderer);
@@ -799,7 +802,6 @@ function stepLocal() {
   pollTrade(); checkArrivals(); updateDets(); if (selectedDet !== null) showRoute();
   room?.broadcastHash(t, w.state_hash().toString());
   if (t % 3 === 0) deposits.sync(w.deposits_flat());
-  if (t % 20 === 0) atmo.setTime(0.12 + 0.76 * ((t / 1200) % 1)); // morning to evening, never dark
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
   if (forestDirtyFlag) rebuildForest();
@@ -1135,6 +1137,23 @@ function pickBuilding(r: THREE.Raycaster): number | null {
 }
 function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, rig.cam); return ray; }
 
+/** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
+ *  facing your hall, turned so its door faces the village. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
+function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
+  const d = defs[kind]; if (d.req !== 1) return null;
+  const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
+  let best = -1, bd = 18 * 18;
+  for (let i = 0; i + 4 < f.length; i += 5) {
+    if (f[i] !== d.reqArg || f[i + 3] <= 0 || terrain.heightAt(f[i + 1], f[i + 2]) < 0.3) continue;
+    const q = (f[i + 1] - px) ** 2 + (f[i + 2] - pz) ** 2; if (q < bd) { bd = q; best = i; }
+  }
+  if (best < 0) return null;
+  const nx = f[best + 1], nz = f[best + 2];
+  let ux = lv.ox - nx, uz = lv.oz - nz; const len = Math.hypot(ux, uz) || 1; ux /= len; uz /= len;
+  const off = kind === 6 ? 4.6 : 3.8, a = Math.atan2(ux, uz);   // (the model's door looks along +z; a turn of r steps points it at (sin, cos) of r * 45 degrees)
+  return { dx: Math.round(nx + ux * off - lv.ox), dy: Math.round(nz + uz * off - lv.oz), rot: ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8 };
+}
+
 function updateGhost(e: { clientX: number; clientY: number }) {
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
@@ -1156,6 +1175,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
   let code = w.can_place(selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
+  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } }   // a mine or quarry snaps onto its deposit
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
     if (t) { gx = Math.round(t.x - lv.ox); gy = Math.round(t.z - lv.oz); grot = t.rot; const st = Array.from(w.stocks()); code = defs[22].cost.every(([r, n]) => st[r] >= n) ? 0 : -6; } else code = -3;
@@ -1248,8 +1268,9 @@ function bindInput() {
         ghostCode = 99; previewKey = ''; afterLocalChange(); if (gres >= 0) placedFx(22, lv.ox + gx, lv.oz + gy); else ui.hint(PLACE_ERRORS[gres] ?? 'Cannot build a gate here', true);
         return;
       }
-      const res = lv.world.place(kind, dx, dy, rot);
-      if (res >= 0) { commit({ op: 'place', kind, x: dx, y: dy, rot }); ghostCode = 99; previewKey = ''; afterLocalChange(); placedFx(kind, lv.ox + dx, lv.oz + dy); updateGhost(e); }
+      const sn = depositSnap(kind, dx, dy), px = sn ? sn.dx : dx, py = sn ? sn.dy : dy, prot = sn ? sn.rot : rot;
+      const res = lv.world.place(kind, px, py, prot);
+      if (res >= 0) { commit({ op: 'place', kind, x: px, y: py, rot: prot }); ghostCode = 99; previewKey = ''; afterLocalChange(); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e); }
       else { ui.hint(PLACE_ERRORS[res] ?? 'Cannot build here', true); sound.error(); }
     } else {
       const det = pickArmy(e) ?? lv.field.pick(pointerRay(e));
@@ -1378,6 +1399,7 @@ function updateHallLabels(all: Village[]) {
 let worldShips: WorldShips | null = null;
 let tideLevel = 0;   // the water rises and falls a little, slowly
 let sCount = 0, sT = 0, fireBuf = new Float32Array(256);
+let lastPhase = -1;   // the day phase the light was last set for
 let last = 0, miniT = 0, scareT = 0, scares: { x: number; z: number }[] = [];
 /** Put the display settings into effect (at start, and whenever one changes). */
 function applySettings(s: Settings) {
@@ -1402,6 +1424,24 @@ function adaptResolution(frameMs: number) {
   if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
 }
 
+/** A handful of real point lights, moved each moment to the lanterns nearest the camera: at night they throw warm pools of light on the street. (Always in the scene, dark by day, so
+ *  the shaders never have to be rebuilt when evening comes.) */
+const lampLights: THREE.PointLight[] = [];
+let lampT = 0;
+function lightLamps(all: Village[], now: number) {
+  if (!lampLights.length) for (let i = 0; i < 4; i++) { const l = new THREE.PointLight(0xffb464, 0, 17, 1.5); scene.add(l); lampLights.push(l); }
+  const k = atmo.night;
+  if (k < 0.02) { for (const l of lampLights) l.intensity = 0; return; }
+  if (now - lampT > 150) {   // pick the nearest lanterns a few times a second, not every frame
+    lampT = now;
+    const near: { x: number; z: number; d: number }[] = [];
+    for (const v of all) for (const [x, z] of v.props.lamps) { const d = (x - rig.target.x) ** 2 + (z - rig.target.z) ** 2; if (d < 70 * 70) near.push({ x, z, d }); }
+    near.sort((a, b) => a.d - b.d);
+    lampLights.forEach((l, i) => { const q = near[i]; if (q) l.position.set(q.x, terrain.heightAt(q.x, q.z) + 2.8, q.z); l.userData.on = !!q; });
+  }
+  for (const l of lampLights) l.intensity = l.userData.on ? k * 26 : 0;
+}
+
 function frame(now: number) {
   { const cap = settings().fpsCap; if (cap && now - last < 1000 / cap - 2) { requestAnimationFrame(frame); return; } }   // frame rate limit
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last); last = now;   // never negative, never a big jump
@@ -1410,6 +1450,11 @@ function frame(now: number) {
   if (replay?.target !== lv && speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
   perf.stop('simulation');
   const all = allVillages();
+  { // the time of day: the light follows the village clock, smoothly between ticks
+    const ph = dayPhase(Number(lv.world.tick()) + (replay ? 0 : acc));
+    if (Math.abs(ph - lastPhase) > 0.0008 || lastPhase < 0) { lastPhase = ph; atmo.setClock(ph); setNightLight(atmo.night); for (const v of all) v.props.setNight(atmo.night); }
+  }
+  lightLamps(all, now);
   { const on = settings().crowds; for (const v of all) v.people.group.visible = v.army.group.visible = on; }
   perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) { v.boats.level = tideLevel; v.rivers.setTide(tideLevel); }   // open water ebbs and flows; sealed moats stay full
   forest.tick(now / 1000, rig.cam.position); perf.stop('camera + world');

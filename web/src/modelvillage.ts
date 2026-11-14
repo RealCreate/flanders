@@ -63,7 +63,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   reserved.push([0, 0, 6]);
 
   // 1. the inner ward: keep, church, court, barracks, well and a garden under the keep's walls
-  const keep = put(KEEP, 0, -21, 13, 0, 3);
+  const keep = put(KEEP, 0, -22, 13, 0, 3);
   const chapel = put(CHAPEL, -21, -2, 6, 0, 3);
   up(keep, 3); up(chapel, 2);   // the keep and the church grow to their full size first, so everything else is placed round them
   put(COURTHOUSE, 21, -12, 6, 0, 3); put(BARRACKS, 17, 15, 7, 0, 3); put(WELL, -3, 14, 2, 0, 2); put(GARDEN, -16, 17, 4, 0, 3);
