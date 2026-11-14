@@ -28,3 +28,12 @@ test('the head itself is at distance zero and a standing army (zero-length trail
   assert.deepEqual(trailAt([5, 5, 5, 5], 5, 5, 0, 1, 0), [5, 5]);
   const [x, z] = trailAt([5, 5, 5, 5, 5, 5], 5, 5, 0, 0, 1); assert.ok(near(x, 5) && near(z, 5));
 });
+
+import { dotsAlong } from '../src/render/trail.ts';
+test('a dotted line has its dots evenly spaced along the path, also round a corner', () => {
+  const d = dotsAlong([0, 0, 10, 0, 10, 10], 2, 0, 100);
+  assert.equal(d.length / 2, 11);   // 0..20 along the path in steps of 2
+  for (let i = 1; i < d.length / 2; i++) { const g = Math.hypot(d[2 * i] - d[2 * i - 2], d[2 * i + 1] - d[2 * i - 1]); assert.ok(g <= 2 + 1e-9 && g > 1.99, `gap ${g}`); }
+  assert.equal(dotsAlong([0, 0, 100, 0], 2, 0, 5).length / 2, 5, 'capped');
+  assert.deepEqual(dotsAlong([0, 0], 2, 0, 5), []);
+});

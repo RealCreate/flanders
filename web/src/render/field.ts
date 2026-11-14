@@ -25,11 +25,14 @@ interface Det {
   marching: boolean; walked: number;
   /** Where the centre was a frame ago (NaN before the first). */
   lx: number; lz: number;
+  /** Where the army has been ordered to go and the waypoints on the way (x, z pairs), for the dotted line and the flag. */
+  dest: [number, number] | null; wps: number[];
+  dots: THREE.InstancedMesh | null; flag: THREE.Group | null;
 }
 
 export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home'];
 
-import { GAP, trailAt } from './trail';
+import { GAP, trailAt, dotsAlong } from './trail';
 const TREE_R = 0.9;                     // soldiers keep this far from a trunk
 const MAX_SHOWN = 70;
 
@@ -70,21 +73,54 @@ export class FieldView {
         banner.add(pole, cloth); banner.userData.detId = id; pole.userData.detId = id; cloth.userData.detId = id;
         const hit = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 4.4, 8), new THREE.MeshBasicMaterial({ visible: false })); hit.position.y = 2.2; hit.userData.detId = id; banner.add(hit);
         this.group.add(banner);
-        d = { trail: [], col: 0, cspd: 0, marching: false, walked: 0, lx: NaN, lz: NaN, route: null, id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], sx: flat[o + 1], sz: flat[o + 2], segT: 1, segD: 1, lastSync: this.t, heading: 0, yaw: 0, units, state: 0, mode: 0, prog: 0, speed: 0, members: [], sig: '', width: 5, siege: [], banner, total: 0, boats: null };
+        d = { trail: [], col: 0, cspd: 0, marching: false, walked: 0, lx: NaN, lz: NaN, dest: null, wps: [], dots: null, flag: null, route: null, id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], sx: flat[o + 1], sz: flat[o + 2], segT: 1, segD: 1, lastSync: this.t, heading: 0, yaw: 0, units, state: 0, mode: 0, prog: 0, speed: 0, members: [], sig: '', width: 5, siege: [], banner, total: 0, boats: null };
         this.dets.set(id, d);
       }
       const nx = flat[o + 1], nz = flat[o + 2];
       if (Math.hypot(nx - d.tx, nz - d.tz) > 1e-3) {
         // the core moves the army once per tick; glide there in a straight line over the time one tick takes, so motion is continuous
         if (Math.hypot(nx - d.x, nz - d.z) > 40) { d.x = nx; d.z = nz; }
-        d.route = path ? this.smoothRoute(d, path(id)) : null;
+        const full = path ? path(id) : null;
+        d.route = full ? this.smoothRoute(d, full) : null;
+        d.wps = []; if (full) for (let i = 0; i + 2 < full.length; i += 3) d.wps.push(full[i], full[i + 1]);
+        d.dest = d.wps.length >= 2 ? [d.wps[d.wps.length - 2], d.wps[d.wps.length - 1]] : null;
         d.sx = d.x; d.sz = d.z; d.segT = 0; { const meas = Math.max(0.15, Math.min(4, this.t - d.lastSync)); d.segD = d.segD * 0.6 + meas * 0.4; } d.lastSync = this.t;
       }
       d.tx = nx; d.tz = nz; d.state = flat[o + 8]; d.mode = flat[o + 9]; d.prog = flat[o + 11]; d.speed = flat[o + 15];
       if (d.state === 1 || d.state === 2 || d.state === 7) d.heading = flat[o + 14];
       if (sig !== d.sig) this.rebuild(d, units, sig);
     }
-    for (const [id, d] of [...this.dets]) if (!seen.has(id)) { this.group.remove(d.banner); d.banner.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); }); d.siege.forEach(s => this.group.remove(s)); if (d.boats) this.group.remove(d.boats); this.dets.delete(id); }
+    for (const [id, d] of [...this.dets]) if (!seen.has(id)) { this.dropMarks(d); this.group.remove(d.banner); d.banner.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); }); d.siege.forEach(s => this.group.remove(s)); if (d.boats) this.group.remove(d.boats); this.dets.delete(id); }
+  }
+
+  private dotGeo = new THREE.CircleGeometry(0.22, 8).rotateX(-Math.PI / 2);
+  private dotMat = new THREE.MeshBasicMaterial({ color: 0xfff1b8, transparent: true, opacity: 0.9, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+  private flagPole = new THREE.CylinderGeometry(0.05, 0.05, 2.6, 5);
+  private tm = new THREE.Matrix4();
+
+  private dropMarks(d: Det) {
+    if (d.dots) { this.group.remove(d.dots); d.dots.dispose(); d.dots = null; }
+    if (d.flag) { this.group.remove(d.flag); d.flag.traverse(o => { const m = o as THREE.Mesh; if (m.material && o !== d.flag) (m.material as THREE.Material).dispose?.(); }); d.flag = null; }
+  }
+
+  /** A dotted line from the army to where it is going, and a little flag there, while it is on its way (or selected and about to). */
+  private drawMarks(d: Det) {
+    const on = !!d.dest && (d.state === 1 || d.state === 2 || d.state === 3 || d.state === 4 || d.state === 6 || d.state === 7) && Math.hypot(d.dest[0] - d.x, d.dest[1] - d.z) > 2.5;
+    if (!on) { if (d.dots) d.dots.visible = false; if (d.flag) d.flag.visible = false; return; }
+    if (!d.dots) { d.dots = new THREE.InstancedMesh(this.dotGeo, this.dotMat, 160); d.dots.frustumCulled = false; d.dots.renderOrder = 6; this.group.add(d.dots); }
+    if (!d.flag) {
+      const f = new THREE.Group(), pole = new THREE.Mesh(this.flagPole, new THREE.MeshStandardMaterial({ color: 0x4a3420 })); pole.position.y = 1.3; pole.castShadow = true;
+      const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.6, 4, 1), new THREE.MeshStandardMaterial({ color: this.friend, side: THREE.DoubleSide, roughness: 0.8 })); cloth.position.set(0.5, 2.25, 0); cloth.userData.cloth = true;
+      f.add(pole, cloth); this.group.add(f); d.flag = f;
+    }
+    d.dots.visible = d.flag.visible = true;
+    const line = [d.x, d.z, ...d.wps], dots = dotsAlong(line, 1.7, (this.t * 1.6) % 1.7, 160);
+    let n = 0;
+    for (let i = 0; i + 1 < dots.length; i += 2, n++) { this.tm.makeTranslation(dots[i], this.terrain.walkAt(dots[i], dots[i + 1]) + 0.22, dots[i + 1]); d.dots.setMatrixAt(n, this.tm); }
+    d.dots.count = n; d.dots.instanceMatrix.needsUpdate = true;
+    const [fx, fz] = d.dest!; d.flag.position.set(fx, this.terrain.walkAt(fx, fz), fz);
+    (d.flag.children[1] as THREE.Mesh).rotation.y = Math.sin(this.t * 3 + d.id) * 0.3;
+    ((d.flag.children[1] as THREE.Mesh).material as THREE.MeshStandardMaterial).color.setHex(this.friend);
   }
 
   /** The rounded route for an army that is walking: from where it is drawn now, through the core's position, along the remaining waypoints, up to the first stretch of water. */
@@ -190,6 +226,7 @@ export class FieldView {
         if (moved > 0.01) { const want2 = Math.atan2(m.x - m.px, m.z - m.pz); let dd = want2 - m.yaw; while (dd > Math.PI) dd -= 2 * Math.PI; while (dd < -Math.PI) dd += 2 * Math.PI; m.yaw += dd * Math.min(1, dt * 10); }
         else { let dd = d.yaw - m.yaw; while (dd > Math.PI) dd -= 2 * Math.PI; while (dd < -Math.PI) dd += 2 * Math.PI; m.yaw += dd * Math.min(1, dt * 3); }
       });
+      this.drawMarks(d);
       // siege engines follow in single file at the back
       const rows = Math.ceil(d.members.length / W);
       d.siege.forEach((g, i) => {

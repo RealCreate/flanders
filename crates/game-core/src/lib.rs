@@ -539,7 +539,7 @@ impl World {
             let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();
             if !(5.6..22.0).contains(&s) || c > 5.2 { continue; }
             let w = smoothstep(5.6, 6.6, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
-            h = lerp(h, b.pad_h, w);
+            h = lerp(h, b.pad_h, w * smoothstep(-0.2, 0.6, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
         }
         if !built { return h; }
         for s in &self.roads {
@@ -3583,6 +3583,46 @@ mod pathnet_tests {
         let after = w.net_flat(); assert!(before != after, "the network was rebuilt");
         let r2 = w.net_route(8.0, 4.0, 40.0, 4.0);
         if !r2.is_empty() { for p in r2[1..].chunks(2) { assert!((28.0 - p[0]).hypot(4.0 - p[1]) > footprint(HOUSE, 0) * 0.9, "the route avoids the new house"); } }
+    }
+
+    /// The x at which a route crosses the horizontal line y = `line`, for each crossing.
+    fn cross_x(r: &[f32], line: f32) -> Vec<f32> {
+        let mut pts: Vec<(f32, f32)> = vec![(0.0, 22.0)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1]))); pts.push((0.0, 38.0));   // (the route's own points, between the start and the goal)
+        pts.windows(2).filter(|p| (p[0].1 - line) * (p[1].1 - line) < 0.0).map(|p| p[0].0 + (p[1].0 - p[0].0) * (line - p[0].1) / (p[1].1 - p[0].1)).collect()
+    }
+    fn crossings(r: &[f32], f: impl Fn(f32, f32) -> bool) -> bool {   // does any sampled point of the route satisfy f?
+        let pts: Vec<(f32, f32)> = r[1..].chunks(2).map(|c| (c[0], c[1])).collect();
+        pts.windows(2).any(|p| (0..=40).any(|t| { let k = t as f32 / 40.0; f(p[0].0 + (p[1].0 - p[0].0) * k, p[0].1 + (p[1].1 - p[0].1) * k) }))
+    }
+
+    #[test]
+    fn the_network_respects_closed_gates_and_drawbridges() {
+        // a wall with a gatehouse: the way through is open until the doors are shut
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
+        let g = w.place(GATE, 0, 30, 0); assert!(g >= 0);
+        for _ in 0..2 { assert_eq!(w.upgrade(g as u32), 0); }
+        let open = w.net_route(0.0, 22.0, 0.0, 38.0);
+        assert!(!open.is_empty() && open[0] == 1.0, "a route through the open gate");
+        let xs = cross_x(&open, 30.0); assert!(!xs.is_empty() && xs.iter().all(|x| x.abs() < 4.0), "it goes through the gate: {xs:?}");
+        assert_eq!(w.gate_set(g as u32, true), 0);
+        let shut = w.net_route(0.0, 22.0, 0.0, 38.0);
+        assert!(shut.is_empty() || shut[0] == 0.0 || cross_x(&shut, 30.0).iter().all(|x| x.abs() > 12.5), "nobody passes the shut doors or squeezes round them: {shut:?}");
+        assert_eq!(w.gate_set(g as u32, false), 0);
+        let again = w.net_route(0.0, 22.0, 0.0, 38.0); assert!(!again.is_empty() && again[0] == 1.0, "open again");
+
+        // a moat: only a lowered drawbridge gets you across, and only along its deck
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let br = w.place(DRAWBRIDGE, 0, 20, 0); assert!(br >= 0);
+        let across = w.net_route(0.0, 8.0, 0.0, 36.0);
+        assert!(!across.is_empty() && across[0] == 1.0, "a route over the lowered drawbridge");
+        assert!(!crossings(&across, |x, y| w.height_at(x, y) < 0.2 && !(x.abs() <= 2.0 && (y - 20.0).abs() <= 7.5)), "it never wades: it is in water only on the deck");
+        assert!(crossings(&across, |x, y| (y - 20.0).abs() < 4.0 && x.abs() < 2.0), "and it uses the deck");
+        w.drawbridge_set(br as u32, true);
+        let up = w.net_route(0.0, 8.0, 0.0, 36.0);
+        assert!(up.is_empty() || up[0] == 0.0, "drawn up: no complete route");
+        assert!(up.is_empty() || !crossings(&up, |x, y| w.height_at(x, y) < 0.2), "and none through the water");
     }
 
     #[test]

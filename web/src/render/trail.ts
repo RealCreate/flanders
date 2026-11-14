@@ -18,3 +18,15 @@ function trailAt(trail: number[], hx: number, hz: number, s: number, fx: number,
   if (trail.length >= 4) { const k = 0, ex = trail[k] - trail[k + 2], ez = trail[k + 1] - trail[k + 3], l = Math.hypot(ex, ez); if (l > 1e-6) { dx = ex / l; dz = ez / l; } }
   return [ax + dx * (s - acc), az + dz * (s - acc)];
 }
+
+/** Points spaced `spacing` apart along a polyline [x, z, x, z, ...], starting `phase` (0..spacing) in, at most `max` of them: the dots of a dotted line. */
+export function dotsAlong(pts: number[], spacing: number, phase: number, max: number): number[] {
+  const out: number[] = []; let next = ((phase % spacing) + spacing) % spacing, acc = 0;
+  for (let k = 2; k < pts.length && out.length < max * 2; k += 2) {
+    const ax = pts[k - 2], az = pts[k - 1], len = Math.hypot(pts[k] - ax, pts[k + 1] - az);
+    if (len < 1e-9) continue;
+    while (next <= acc + len + 1e-9 && out.length < max * 2) { const f = (next - acc) / len; out.push(ax + (pts[k] - ax) * f, az + (pts[k + 1] - az) * f); next += spacing; }
+    acc += len;
+  }
+  return out;
+}
