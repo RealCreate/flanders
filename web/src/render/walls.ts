@@ -18,7 +18,7 @@ const STEP_RUN = 0.34;                    // one stair step
 
 interface Range { start: number; end: number; idx: number }
 interface Builder { pos: number[]; uv: number[]; col: number[]; ranges: Range[]; cur: number[] }
-interface Node { x: number; z: number; tier: number; rot: number; idx: number; kind: number; opts: number }
+interface Node { x: number; z: number; tier: number; rot: number; idx: number; kind: number; opts: number; shut?: boolean }
 /** A walk along the top of a connected stretch of wall, reached by a stair: guards use it. Points are [x, z, y]; `stair` is the foot of the stair, its top step, then the wall walk itself. */
 export interface WallWalk { stair: [number, number, number][]; walk: [number, number, number][] }
 
@@ -46,11 +46,12 @@ export class Walls {
   }
 
   /** Rebuild from the building list. `version` should change whenever the ground changed. */
-  update(flat: Float32Array, version: number, options: ArrayLike<number> = []) {
+  update(flat: Float32Array, version: number, options: ArrayLike<number> = [], shutGates: ArrayLike<number> = []) {
+    const shut = new Set<number>(Array.from(shutGates));
     const nodes: Node[] = [];
     this.hall = [flat[2] ?? 0, flat[3] ?? 0];
-    for (let i = 0; i < flat.length; i += S) { const k = flat[i]; if (k === WALL || k === FENCE || k === GATE) nodes.push({ x: flat[i + 2], z: flat[i + 3], tier: flat[i + 1], rot: flat[i + 4], idx: i / S, kind: k, opts: options[i / S] ?? 0 }); }
-    const sig = nodes.map(n => `${n.idx}:${n.kind}:${n.x}:${n.z}:${n.tier}:${n.rot}:${n.opts}`).join('|') + '#' + version;
+    for (let i = 0; i < flat.length; i += S) { const k = flat[i]; if (k === WALL || k === FENCE || k === GATE) nodes.push({ x: flat[i + 2], z: flat[i + 3], tier: flat[i + 1], rot: flat[i + 4], idx: i / S, kind: k, opts: options[i / S] ?? 0, shut: shut.has(i / S) }); }
+    const sig = nodes.map(n => `${n.idx}:${n.kind}:${n.x}:${n.z}:${n.tier}:${n.rot}:${n.opts}:${n.shut ? 1 : 0}`).join('|') + '#' + version;
     if (sig === this.sig) return; this.sig = sig;
 
     const { edges, adj, degree } = linkWalls(nodes);
@@ -88,7 +89,7 @@ export class Walls {
       if (n.kind === FENCE) { if (degree[i] === 0) { const a = n.rot * Math.PI / 4, dx = Math.cos(a) * 1.8, dz = -Math.sin(a) * 1.8; this.fenceRun(b[0], n.x - dx, n.z - dz, n.x + dx, n.z + dz, n.idx); } return; }
       if (n.kind === GATE) {
         const [ux, uz] = axis[i]!;
-        this.gate(b[th], n.x, n.z, ux, uz, th, n.idx, n.opts); return;
+        this.gate(b[th], n.x, n.z, ux, uz, th, n.idx, n.opts, !!n.shut); return;
       }
       if (degree[i] === 0) { const a = n.rot * Math.PI / 4, dx = Math.cos(a) * 2.4, dz = -Math.sin(a) * 2.4; this.segment(b[th], n.x - dx, n.z - dz, n.x + dx, n.z + dz, th, n.idx); }
       const dirs: [number, number][] = [...adj[i]].map(j => { const d = Math.hypot(nodes[j].x - n.x, nodes[j].z - n.z) || 1; return [(nodes[j].x - n.x) / d, (nodes[j].z - n.z) / d] as [number, number]; });
@@ -242,17 +243,24 @@ export class Walls {
   }
 
   /** A gateway: two pillars and a lintel across the opening, in the line of the wall (axis u). */
-  private gate(b: Builder, x: number, z: number, ux: number, uz: number, tier: number, idx: number, opts = 0) {
+  private gate(b: Builder, x: number, z: number, ux: number, uz: number, tier: number, idx: number, opts = 0, shut = false) {
     const start = b.pos.length / 9, H = HEIGHT[tier], pw = 0.72 + tier * 0.06, top = H + 1.5 + tier * 0.25, nx = -uz, nz = ux;
     const gTop = Math.max(this.gy(x, z), this.gy(x + ux * GATE_HALF, z + uz * GATE_HALF), this.gy(x - ux * GATE_HALF, z - uz * GATE_HALF)) + top;   // one height for both pillars and the lintel, even on a slope
     for (const s of [-1, 1]) this.pillar(b, x + ux * GATE_HALF * s, z + uz * GATE_HALF * s, pw, top, tier, true, gTop, [ux, uz]);
     // lintel: a beam between the pillars, clear of the ground by about 2.9
-    const yb = gTop - 0.08, ya = yb - 1.0, hl = pw + 0.07, a0 = -GATE_HALF, a1 = GATE_HALF;   // a hair lower and wider than the pillars, so no face lies in the same plane as theirs (that flickers)
+    const g0 = gTop - top, yb = gTop - 0.08, ya = yb - 1.0, hl = pw + 0.07, a0 = -GATE_HALF, a1 = GATE_HALF;   // a hair lower and wider than the pillars, so no face lies in the same plane as theirs (that flickers)
     const P = (s: number, side: number) => [x + ux * s + nx * hl * side, z + uz * s + nz * hl * side] as const;
     for (const side of [1, -1]) { const p = P(a0, side), q = P(a1, side); this.quad(b, [p[0], ya, p[1]], [q[0], ya, q[1]], [q[0], yb, q[1]], [p[0], yb, p[1]], [0, 0], [4, 0], [4, 1], [0, 1]); }
     { const p = P(a0, 1), q = P(a1, 1), r = P(a1, -1), s2 = P(a0, -1);
       this.quad(b, [p[0], yb, p[1]], [q[0], yb, q[1]], [r[0], yb, r[1]], [s2[0], yb, s2[1]], [0, 0], [4, 0], [4, 1], [0, 1]);
       this.quad(b, [s2[0], ya, s2[1]], [r[0], ya, r[1]], [q[0], ya, q[1]], [p[0], ya, p[1]], [0, 0], [4, 0], [4, 1], [0, 1]); }
+    if (shut) {   // the doors are closed: two heavy timber leaves with iron bands fill the opening between the pillars
+      const open = GATE_HALF - pw + 0.12, y0 = g0 - 0.3, y1 = ya + 0.02, gh = y1 - y0, wood: number[] = [0.42, 0.27, 0.15], iron: number[] = [0.2, 0.2, 0.22];
+      b.cur = wood; this.obox(b, x, z, ux, uz, open, 0.16, y0, y1, false);
+      b.cur = [0.3, 0.19, 0.1]; this.obox(b, x, z, ux, uz, 0.05, 0.19, y0, y1);   // the seam where the leaves meet
+      b.cur = iron; for (const f of [0.22, 0.52, 0.8]) this.obox(b, x, z, ux, uz, open, 0.19, y0 + gh * f - 0.1, y0 + gh * f + 0.1);
+      b.cur = [1, 1, 1];
+    } else
     // a few portcullis bars hanging under the lintel
     for (let k = -3; k <= 3; k++) { const p = P(k * 0.38, 0), w = 0.05; this.quad(b, [p[0] - nx * w, ya - 1.0, p[1] - nz * w], [p[0] + nx * w, ya - 1.0, p[1] + nz * w], [p[0] + nx * w, ya, p[1] + nz * w], [p[0] - nx * w, ya, p[1] - nz * w], [0, 0], [0.1, 0], [0.1, 0.5], [0, 0.5]); }
     if (tier >= 1) for (const sgn of [-1, 1]) this.door(b, x + ux * sgn * (GATE_HALF + pw + 0.015), z + uz * sgn * (GATE_HALF + pw + 0.015), ux * sgn, uz * sgn, this.gy(x + ux * GATE_HALF * sgn, z + uz * GATE_HALF * sgn) + HEIGHT[tier], tier);

@@ -103,7 +103,7 @@ impl NavStatic {
 fn cell_xy(i: usize) -> (f32, f32) { ((i as i32 % NC) as f32 * CELL + ORG + CELL / 2.0, (i as i32 / NC) as f32 * CELL + ORG + CELL / 2.0) }
 
 /// Per-request overlays: buildings, felled trees and bridges rasterised onto the grid.
-struct Ov { blocked: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool> }
+struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool> }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cl { Block, Free(f32), Water }
@@ -123,9 +123,10 @@ fn stamp(grid: &mut [bool], x: f32, y: f32, r: f32) {
 impl World {
     fn overlays(&self) -> Ov {
         let n = (NC * NC) as usize;
-        let mut ov = Ov { blocked: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n] };
+        let mut ov = Ov { blocked: vec![false; n], soft: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n] };
         for b in &self.buildings {
             match b.kind {
+                GATE if self.gate_shut(b) => stamp(&mut ov.blocked, b.x, b.y, 3.4),   // a barred gate: no way through
                 GATE | ROAD => {}                                             // an opening in the wall, or a road: nothing blocks it
                 BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); let st = (l / 1.0).ceil() as i32; for k in 0..=st { let t = k as f32 - l / 2.0; stamp(&mut ov.bridge, b.x + ux * t, b.y + uy * t, 1.8); } }   // a way over the water
                 MOAT | RIVER => stamp(&mut ov.moat, b.x, b.y, if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + 0.5),           // water to cross
@@ -135,7 +136,10 @@ impl World {
                     let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
                     for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.bridge, b.x + sx * t, b.y + sy * t, 1.6); }
                 }
-                _ => { let r = crate::footprint(b.kind, b.tier) + if b.kind == WALL || b.kind == FENCE { 1.0 } else { 0.7 }; stamp(&mut ov.blocked, b.x, b.y, r); }
+                _ => {
+                    stamp(&mut ov.blocked, b.x, b.y, crate::solid_radius(b.kind, b.tier));   // the solid part: no way through
+                    if !matches!(b.kind, WALL | FENCE) { stamp(&mut ov.soft, b.x, b.y, crate::footprint(b.kind, b.tier) + 0.7); }   // the margin round it: allowed, but avoided
+                }
             }
         }
         for f in &self.felled { stamp(&mut ov.cleared, f[0], f[1], f[2]); }
@@ -154,7 +158,7 @@ impl World {
         if ns.slope[i] > if siege { 0.85 } else { 1.6 } { return Cl::Block; }
         let d = if ov.cleared[i] { 0.0 } else { ns.dens[i] as f32 };
         if siege && d >= 2.0 { return Cl::Free(8.0 + d); }               // dense forest: needs felling
-        Cl::Free(1.0 + 0.3 * d + ns.slope[i] * 1.2)
+        Cl::Free(1.0 + 0.3 * d + ns.slope[i] * 1.2 + if ov.soft[i] { 1.6 } else { 0.0 })
     }
 
     fn near_free(&self, ns: &NavStatic, ov: &Ov, x: f32, y: f32, siege: bool) -> Option<usize> {
