@@ -16,7 +16,7 @@ jobs:
     name: Rust core (tests + wasm build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: web } }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: mcp } }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: mcp/package-lock.json }
       - run: npm ci
@@ -69,6 +69,6 @@ jobs:
     name: Rust dependencies (cargo audit)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit
