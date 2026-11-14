@@ -590,9 +590,6 @@ export class UI {
         ? `<select id="atk-target">${rows.map(r => `<option value="${esc(r.key)}">${esc(r.name)}</option>`).join('')}</select>
            <button class="pbtn danger" id="atk-sel" hidden></button>
            <p class="muted" id="atk-hint"></p>
-           <div id="atk-fresh"><p class="muted" id="atk-fresh-label">Or send soldiers straight from the barracks:</p>
-           <div class="atk-row">${units.slice(0, 5).map(u => `<label title="${u.name}">${UNIT_ICON[u.id]}<input type="number" min="0" value="0" id="atk-${u.id}"></label>`).join('')}</div>
-           <button class="pbtn danger" id="atk-go">⚔ March!</button></div>
            <h4>Trade</h4>
            <div class="atk-row"><select id="trd-res">${RES.map((r, i) => `<option value="${i}">${r.icon} ${r.name}</option>`).join('')}</select><label title="Amount">#<input type="number" min="1" max="500" value="50" id="trd-amt"></label><label title="Spearmen as escort">🛡<input type="number" min="0" value="0" id="trd-esc"></label></div>
            <div class="btnrow"><button class="pbtn" id="trd-send">🐴 Send caravan</button><button class="pbtn" id="trd-pact">🤝 Trade pact</button><button class="pbtn" id="trd-peace">🕊 Peace</button></div>
@@ -603,11 +600,6 @@ export class UI {
       for (const [id, a] of [['trd-send', 'caravan'], ['trd-pact', 'pact'], ['trd-peace', 'peace'], ['dip-envoy', 'envoy'], ['dip-ally', 'alliance'], ['dip-marry', 'marriage'], ['dip-war', 'war']] as const) { const b = document.getElementById(id); if (b) b.onclick = () => trade(a); }
       const goSel = document.getElementById('atk-sel');
       if (goSel) goSel.onclick = () => this.h.attackSelected(($('atk-target') as HTMLSelectElement).value);
-      const go = document.getElementById('atk-go');
-      if (go) go.onclick = () => {
-        const key = ($('atk-target') as HTMLSelectElement).value, u = units.slice(0, 5).map(x => Number(($(`atk-${x.id}`) as HTMLInputElement).value) || 0);
-        if (u.some(n => n > 0)) this.h.attack(key, u);
-      };
     }
     this.showAttackMode();
     const sel = document.getElementById('atk-target') as HTMLSelectElement | null, rel = document.getElementById('dip-rel');
@@ -621,13 +613,11 @@ export class UI {
   /** How many armies are selected on the map: with one or more, the attack box marches those; without, it musters soldiers from the barracks. */
   setSelectedArmies(n: number) { this.selectedArmies = n; this.showAttackMode(); }
   private showAttackMode() {
-    const go = document.getElementById('atk-sel') as HTMLButtonElement | null, hint = document.getElementById('atk-hint'), fresh = document.getElementById('atk-fresh');
-    if (!go || !hint || !fresh) return;
+    const go = document.getElementById('atk-sel') as HTMLButtonElement | null, hint = document.getElementById('atk-hint');
+    if (!go || !hint) return;
     const n = this.selectedArmies;
     go.hidden = n === 0; go.textContent = n > 1 ? `⚔ March the ${n} selected armies` : '⚔ March the selected army';
-    hint.textContent = n ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : 'Select an army on the map (or in the Army tab) first, then pick a village here to send it. Or send fresh soldiers:';
-    ($('atk-fresh-label') as HTMLElement).hidden = n > 0 ? false : true;
-    fresh.hidden = false;
+    hint.textContent = n ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.';
   }
 
   /** The red banner while a fight is on. */
