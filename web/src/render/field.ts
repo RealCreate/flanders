@@ -8,6 +8,10 @@ export interface TreeQuery { countTrees(x: number, z: number, r: number): number
 interface Member { kind: number; x: number; z: number; px: number; pz: number; yaw: number; gait: number; spd: number; seed: number; row: number;
   /** Where the soldier stood when the army set off, and whether it has been called into the column yet (see the march in `update`). */
   rx?: number; rz?: number; rel?: boolean; slot?: number; wait?: number;
+  /** True once the soldier is in the file and rides the head's trail; `s` is how far back along it (see `update`). */
+  on?: boolean; s?: number;
+  /** A soldier left standing when the line went by: it walks the head's trail to the end of the line (`fol`), at its own offset `ox`, `oz` from the trail that fades away. */
+  fol?: boolean; ox?: number; oz?: number;
   /** Position before the soldiers were pushed apart this frame. */
   qx?: number; qz?: number;
   /** The height it is drawn at: follows the ground or a deck, but never faster than a person could climb. */
@@ -32,7 +36,7 @@ interface Det {
 
 export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home'];
 
-import { GAP, trailAt, dotsAlong } from './trail';
+import { GAP, trailAt, dotsAlong, nearestOnTrail } from './trail';
 const TREE_R = 0.9;                     // soldiers keep this far from a trunk
 const MAX_SHOWN = 70;
 
@@ -171,7 +175,7 @@ export class FieldView {
       { const lt = d.trail.length;
         const cs = lt >= 2 ? Math.hypot(d.x - d.trail[lt - 2], d.z - d.trail[lt - 1]) : 0;
         if (lt < 2 || cs >= 0.45) d.trail.push(d.x, d.z);
-        let len = 0, cut = 0; const maxBack = (d.members.length + 4) * GAP + 6;
+        let len = 0, cut = 0; const maxBack = Math.max((d.members.length + 4) * GAP + 6, 160);   // (long enough that soldiers left standing can still find the way the head went)
         for (let k = d.trail.length - 2; k >= 2; k -= 2) { len += Math.hypot(d.trail[k] - d.trail[k - 2], d.trail[k + 1] - d.trail[k - 1]); if (len > maxBack) { cut = k - 2; break; } }
         if (cut > 0) d.trail.splice(0, cut);
         const px = Number.isFinite(d.lx) ? d.lx : d.x, pz = Number.isFinite(d.lz) ? d.lz : d.z; d.lx = d.x; d.lz = d.z;
@@ -179,8 +183,8 @@ export class FieldView {
         // setting off: the army does not all break into a line at once. Everybody stays where they stand; the soldier at the front walks off, and each next one joins the line as the
         // end of it comes past (see `rel` below). Stopping: the column draws up into ranks again, slowly.
         const going = d.state !== 4 && (d.marching ? d.cspd > 0.25 : d.cspd > 0.7);   // (a boat crew sits in its boats; hysteresis keeps a slow patch from flipping it back and forth)
-        if (going && !d.marching) { d.marching = true; d.walked = 0; for (const m of d.members) { m.rx = m.x; m.rz = m.z; m.rel = false; m.slot = undefined; m.wait = 0; } }
-        else if (!going && d.marching) d.marching = false;
+        if (going && !d.marching) { d.marching = true; d.walked = 0; for (const m of d.members) { m.rx = m.x; m.rz = m.z; m.rel = false; m.slot = undefined; m.wait = 0; m.on = false; m.s = undefined; m.fol = false; } }
+        else if (!going && d.marching) { d.marching = false; for (const m of d.members) { m.on = false; m.fol = false; } }
         if (d.marching) d.walked += Math.hypot(d.x - px, d.z - pz);
         if (d.marching) this.joinLine(d, dt);
         const want = d.marching ? 1 : 0;
@@ -204,21 +208,34 @@ export class FieldView {
         let gx = fxp, gz = fzp;
         if (d.marching) {
           // a soldier stands where it was until the end of the line comes by (see joinLine); then it steps in and follows its place in the file
-          if (m.rel) [gx, gz] = trailAt(d.trail, d.x, d.z, (m.slot ?? i) * GAP, fx, fz); else { gx = m.rx ?? m.x; gz = m.rz ?? m.z; }
+          if (m.rel) {
+            const want = (m.slot ?? i) * GAP;
+            if (m.on) {   // in the file: it rides the path the head took, so it goes where the head went (over a bridge, through a gate) and never cuts a corner
+              m.s = (m.s ?? want) + Math.max(-3 * dt, Math.min(3 * dt, want - (m.s ?? want)));
+              [gx, gz] = trailAt(d.trail, d.x, d.z, m.s, fx, fz);
+            } else {
+              [gx, gz] = trailAt(d.trail, d.x, d.z, want, fx, fz);
+              if (Math.hypot(gx - m.x, gz - m.z) < 0.9) { m.on = true; m.s = want; }   // stepped into its place
+            }
+          } else if (m.fol) { [gx, gz] = trailAt(d.trail, d.x, d.z, m.s ?? 0, fx, fz); gx += m.ox ?? 0; gz += m.oz ?? 0; }   // catching up along the trail
+          else { gx = m.rx ?? m.x; gz = m.rz ?? m.z; }
         } else if (d.col > 0.002) { const [cx2, cz2] = trailAt(d.trail, d.x, d.z, (m.slot ?? i) * GAP, fx, fz); gx = fxp + (cx2 - fxp) * d.col; gz = fzp + (cz2 - fzp) * d.col; }   // drawing up into ranks again
         m.row = row;
         m.px = m.x; m.pz = m.z;
-        const dx = gx - m.x, dz = gz - m.z, dist = Math.hypot(dx, dz);
-        // in a column every soldier must keep up with the head, or the file stretches out behind it: they walk at least as fast as the army's centre and hurry when they have fallen behind
-        const speedNow = Math.max((moving ? cruise : 3), d.col * (d.cspd * 1.1 + 0.5)) + d.col * Math.min(5, dist * 0.5), step = Math.min(dist, speedNow * dt * (0.95 + (m.seed % 1) * 0.1));
-        if (dist > 0.05) { m.x += dx / dist * step; m.z += dz / dist * step; }
-        // steer round things: trees, buildings, other soldiers
-        this.tmp.length = 0; this.trees.nearTrees(m.x, m.z, TREE_R + 0.5, this.tmp);
-        for (const t of this.tmp) { const ox = m.x - t.x, oz = m.z - t.z, od = Math.hypot(ox, oz) || 0.01; if (od < TREE_R) { m.x += ox / od * (TREE_R - od); m.z += oz / od * (TREE_R - od); } }
-        for (const b of obs) { const ox = m.x - b.x, oz = m.z - b.z, od = Math.hypot(ox, oz) || 0.01, rr = b.r + 0.5; if (od < rr) { m.x += ox / od * (rr - od); m.z += oz / od * (rr - od); } }
-        if (d.state !== 4) { const sn = this.terrain.snapToDeck(m.x, m.z); if (sn) { m.x = sn[0]; m.z = sn[1]; } }   // beside a bridge deck: up onto it
-        // never wade into water: a step into it is undone, unless a bridge or drawbridge deck is under the soldier (the check knows how wide the deck really is)
-        if (d.state !== 4 && this.terrain.wetAt(m.x, m.z) && !this.terrain.wetAt(m.px, m.pz)) { m.x = m.px; m.z = m.pz; }
+        if ((m.on || m.fol) && d.marching) { m.px = m.x; m.pz = m.z; m.x = gx; m.z = gz; }   // placed exactly on the trail: no steering, nothing can push it off the path
+        else {
+  const dx = gx - m.x, dz = gz - m.z, dist = Math.hypot(dx, dz);
+          // in a column every soldier must keep up with the head, or the file stretches out behind it: they walk at least as fast as the army's centre and hurry when they have fallen behind
+          const speedNow = Math.max((moving ? cruise : 3), d.col * (d.cspd * 1.1 + 0.5)) + d.col * Math.min(5, dist * 0.5), step = Math.min(dist, speedNow * dt * (0.95 + (m.seed % 1) * 0.1));
+          if (dist > 0.05) { m.x += dx / dist * step; m.z += dz / dist * step; }
+          // steer round things: trees, buildings, other soldiers
+          this.tmp.length = 0; this.trees.nearTrees(m.x, m.z, TREE_R + 0.5, this.tmp);
+          for (const t of this.tmp) { const ox = m.x - t.x, oz = m.z - t.z, od = Math.hypot(ox, oz) || 0.01; if (od < TREE_R) { m.x += ox / od * (TREE_R - od); m.z += oz / od * (TREE_R - od); } }
+          for (const b of obs) { const ox = m.x - b.x, oz = m.z - b.z, od = Math.hypot(ox, oz) || 0.01, rr = b.r + 0.5; if (od < rr) { m.x += ox / od * (rr - od); m.z += oz / od * (rr - od); } }
+          if (d.state !== 4) { const sn = this.terrain.snapToDeck(m.x, m.z); if (sn) { m.x = sn[0]; m.z = sn[1]; } }   // beside a bridge deck: up onto it
+          // never wade into water: a step into it is undone, unless a bridge or drawbridge deck is under the soldier (the check knows how wide the deck really is)
+          if (d.state !== 4 && this.terrain.wetAt(m.x, m.z) && !this.terrain.wetAt(m.px, m.pz)) { m.x = m.px; m.z = m.pz; }
+        }
         { const ty = d.state === 4 ? 0.35 : this.terrain.walkAt(m.x, m.z); m.dy = m.dy === undefined || !Number.isFinite(m.dy) ? ty : m.dy + Math.max(-9 * dt, Math.min(9 * dt, ty - m.dy)); }
         const moved = Math.hypot(m.x - m.px, m.z - m.pz);
         m.spd += (moved / Math.max(dt, 0.001) - m.spd) * Math.min(1, dt * 6);
@@ -266,11 +283,29 @@ export class FieldView {
     rel.forEach((m, k) => { m.slot = k; });   // (compact: places left by soldiers who fell are closed up)
     const left = d.members.filter(m => !m.rel); if (!left.length) return;
     for (const m of left) m.wait = (m.wait ?? 0) + dt;
-    const k = rel.length, fx = Math.sin(d.yaw), fz = Math.cos(d.yaw), [sx, sz] = trailAt(d.trail, d.x, d.z, k * GAP, fx, fz), last = rel[k - 1];
-    if (last && Math.hypot(last.x - sx, last.z - sz) < GAP * 0.85) return;   // the place is not free yet: the soldier in front is still stepping off it
+    let k = rel.length; const fx = Math.sin(d.yaw), fz = Math.cos(d.yaw);
+    // soldiers catching up: they walk the head's own trail (so never across water or round a corner the head did not take) to the end of the line, one behind another, and fall in when they reach it
+    const fol = left.filter(m => m.fol).sort((a, b) => (a.s ?? 0) - (b.s ?? 0)), pace = d.cspd * 1.2 + 1.5;
+    let prevS = k * GAP - GAP * 0.9, joined = false;
+    for (const m of fol) {
+      const tailS = k * GAP;
+      m.s = Math.max(Math.max(tailS, prevS + GAP * 0.9), (m.s ?? tailS) - pace * dt);
+      const fade = Math.exp(-3 * dt); m.ox = (m.ox ?? 0) * fade; m.oz = (m.oz ?? 0) * fade;
+      prevS = m.s;
+      if (!joined && m.s <= tailS + 0.05) { m.rel = true; m.slot = k; m.on = true; m.fol = false; k++; joined = true; prevS = k * GAP - GAP * 0.9; }
+    }
+    // the next free place: a standing soldier near it steps in once the one in front has moved a gap away
+    const [sx, sz] = trailAt(d.trail, d.x, d.z, k * GAP, fx, fz), last = k > 0 ? (rel[rel.length - 1] ?? d.members.find(m => m.rel && m.slot === k - 1)) : undefined;
+    const free = !last || Math.hypot(last.x - sx, last.z - sz) >= GAP * 0.85;
     let best: Member | null = null, bd = Infinity;
-    for (const m of left) { const dd = Math.hypot(m.x - sx, m.z - sz); if (dd < 3.2 + 1.2 * (m.wait ?? 0) && dd < bd) { bd = dd; best = m; } }
-    if (best) { best.rel = true; best.slot = k; }
+    if (free) for (const m of left) { if (m.rel || m.fol) continue; const dd = Math.hypot(m.x - sx, m.z - sz); if (dd < 3.2 + 1.2 * (m.wait ?? 0) && dd < bd) { bd = dd; best = m; } }
+    if (best) { best.rel = true; best.slot = k; return; }
+    // whoever has been left behind a while starts to follow the trail (if it is anywhere near it)
+    for (const m of left) {
+      if (m.rel || m.fol || (m.wait ?? 0) < 1.5) continue;
+      const n = nearestOnTrail(d.trail, d.x, d.z, m.x, m.z);
+      if (n.d < 14 && n.s > k * GAP + 1) { const [tx, tz] = trailAt(d.trail, d.x, d.z, n.s, fx, fz); m.fol = true; m.s = n.s; m.ox = m.x - tx; m.oz = m.z - tz; }
+    }
   }
 
   /** Soldiers keep their distance from every other soldier (also from other armies), pushed apart gently rather than snapped. */

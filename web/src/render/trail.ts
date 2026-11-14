@@ -30,3 +30,17 @@ export function dotsAlong(pts: number[], spacing: number, phase: number, max: nu
   }
   return out;
 }
+
+/** Where on the trail (head first, then newest to oldest) a spot is nearest: how far back along it (`s`) and how far the spot is from it (`d`). */
+export function nearestOnTrail(trail: number[], hx: number, hz: number, px: number, pz: number): { s: number; d: number } {
+  let ax = hx, az = hz, acc = 0, best = { s: 0, d: Math.hypot(px - hx, pz - hz) };
+  for (let k = trail.length - 2; k >= 0; k -= 2) {
+    const bx = trail[k], bz = trail[k + 1], dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz);
+    if (l > 1e-6) {
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / (l * l))), d = Math.hypot(px - (ax + dx * t), pz - (az + dz * t));
+      if (d < best.d) best = { s: acc + l * t, d };
+      acc += l; ax = bx; az = bz;
+    }
+  }
+  return best;
+}

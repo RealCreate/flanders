@@ -6,6 +6,7 @@ mod catalog;
 mod march;
 mod military;
 mod pathnet;
+mod wallnet;
 mod terrain;
 use catalog::*;
 use military::*;
@@ -71,7 +72,7 @@ const ARMY_MAX: u32 = 100_000;
 const LEVEL_BLEND: f32 = 9.0;  // how far a levelled patch of ground blends back into the land
 pub(crate) const MOAT_FLOOR: f32 = 3.0;  // flat bottom radius of a moat piece
 pub(crate) const RIVER_FLOOR: f32 = 2.0; // and of a river piece
-const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
+pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
 /// How far below the rim of the land the water of a moat stands.
 const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
@@ -3588,7 +3589,7 @@ mod pathnet_tests {
     /// The x at which a route crosses the horizontal line y = `line`, for each crossing.
     fn cross_x(r: &[f32], line: f32) -> Vec<f32> {
         let mut pts: Vec<(f32, f32)> = vec![(0.0, 22.0)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1]))); pts.push((0.0, 38.0));   // (the route's own points, between the start and the goal)
-        pts.windows(2).filter(|p| (p[0].1 - line) * (p[1].1 - line) < 0.0).map(|p| p[0].0 + (p[1].0 - p[0].0) * (line - p[0].1) / (p[1].1 - p[0].1)).collect()
+        pts.windows(2).filter(|p| (p[0].1 - line) * (p[1].1 - line) <= 0.0 && (p[0].1 - p[1].1).abs() > 1e-6).map(|p| p[0].0 + (p[1].0 - p[0].0) * (line - p[0].1) / (p[1].1 - p[0].1)).collect()
     }
     fn crossings(r: &[f32], f: impl Fn(f32, f32) -> bool) -> bool {   // does any sampled point of the route satisfy f?
         let pts: Vec<(f32, f32)> = r[1..].chunks(2).map(|c| (c[0], c[1])).collect();
@@ -3604,7 +3605,7 @@ mod pathnet_tests {
         for _ in 0..2 { assert_eq!(w.upgrade(g as u32), 0); }
         let open = w.net_route(0.0, 22.0, 0.0, 38.0);
         assert!(!open.is_empty() && open[0] == 1.0, "a route through the open gate");
-        let xs = cross_x(&open, 30.0); assert!(!xs.is_empty() && xs.iter().all(|x| x.abs() < 4.0), "it goes through the gate: {xs:?}");
+        let xs = cross_x(&open, 30.0); assert!(!xs.is_empty() && xs.iter().all(|x| x.abs() < 0.6), "it goes through the middle of the gate: {xs:?}");
         assert_eq!(w.gate_set(g as u32, true), 0);
         let shut = w.net_route(0.0, 22.0, 0.0, 38.0);
         assert!(shut.is_empty() || shut[0] == 0.0 || cross_x(&shut, 30.0).iter().all(|x| x.abs() > 12.5), "nobody passes the shut doors or squeezes round them: {shut:?}");
@@ -3623,6 +3624,26 @@ mod pathnet_tests {
         let up = w.net_route(0.0, 8.0, 0.0, 36.0);
         assert!(up.is_empty() || up[0] == 0.0, "drawn up: no complete route");
         assert!(up.is_empty() || !crossings(&up, |x, y| w.height_at(x, y) < 0.2), "and none through the water");
+    }
+
+    #[test]
+    fn nobody_walks_through_a_fence_between_its_posts_and_armies_march_through_the_middle_of_a_gate() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for x in (-10..=10).step_by(5) { assert!(w.place(FENCE, x, 24, 0) >= 0, "fence at {x}"); }
+        let u = [5u32, 0, 0, 0, 0];
+        for sx in [-9.0f32, -3.0, 0.0, 2.5, 8.0] {
+            let p = w.find_path(&u, sx, 18.0, sx, 30.0).expect("a way round the fence");
+            let mut all = vec![(sx, 18.0)]; all.extend(p.iter().map(|q| (q.x, q.y))); all.push((sx, 30.0));
+            for pair in all.windows(2) { for t in 0..=40 { let f = t as f32 / 40.0; let (x, y) = (pair[0].0 + (pair[1].0 - pair[0].0) * f, pair[0].1 + (pair[1].1 - pair[0].1) * f); assert!(!((y - 24.0).abs() < 0.5 && x.abs() <= 10.0), "walked through the fence at {x:.1},{y:.1} (from x = {sx})"); } }
+        }
+        // a gate in a wall: the marching route goes through the middle of the doorway
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
+        assert!(w.place(GATE, 0, 30, 0) >= 0);
+        let p = w.find_path(&u, 1.0, 22.0, -1.0, 40.0).expect("through the gate");
+        let mut all = vec![(1.0f32, 22.0f32)]; all.extend(p.iter().map(|q| (q.x, q.y)));
+        let xs: Vec<f32> = all.windows(2).filter(|q| (q[0].1 - 30.0) * (q[1].1 - 30.0) <= 0.0 && (q[0].1 - q[1].1).abs() > 1e-6).map(|q| q[0].0 + (q[1].0 - q[0].0) * (30.0 - q[0].1) / (q[1].1 - q[0].1)).collect();
+        assert!(!xs.is_empty() && xs.iter().all(|x| x.abs() < 1.0), "through the middle of the gate: {xs:?}");
     }
 
     #[test]

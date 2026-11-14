@@ -129,7 +129,12 @@ impl World {
                 GATE if self.gate_shut(b) => stamp(&mut ov.blocked, b.x, b.y, 3.4),   // a barred gate: no way through
                 GATE | ROAD => {}                                             // an opening in the wall, or a road: nothing blocks it
                 BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); let st = (l / 1.0).ceil() as i32; for k in 0..=st { let t = k as f32 - l / 2.0; stamp(&mut ov.bridge, b.x + ux * t, b.y + uy * t, 1.8); } }   // a way over the water
-                MOAT | RIVER => stamp(&mut ov.moat, b.x, b.y, if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + 0.5),           // water to cross
+                MOAT | RIVER => {   // water to cross: every cell round the piece whose real ground is below the shore line (the discs alone leave gaps between pieces)
+                    let reach = if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + CHANNEL_BANK + 1.0;
+                    let (i0, i1) = ((((b.x - reach - ORG) / CELL).floor() as i32).max(0), (((b.x + reach - ORG) / CELL).ceil() as i32).min(NC - 1));
+                    let (j0, j1) = ((((b.y - reach - ORG) / CELL).floor() as i32).max(0), (((b.y + reach - ORG) / CELL).ceil() as i32).min(NC - 1));
+                    for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cell_xy((j * NC + i) as usize); if (cx - b.x).hypot(cy - b.y) <= reach && self.height_ground(cx, cy) < 0.2 { ov.moat[(j * NC + i) as usize] = true; } } }
+                }
                 RAISE | LOWER => {}
                 DRAWBRIDGE if b.status == 5 || self.battle.is_some() => {}   // drawn up: no way across
                 DRAWBRIDGE => {                                               // a way across for your own armies
@@ -141,6 +146,11 @@ impl World {
                     if !matches!(b.kind, WALL | FENCE) { stamp(&mut ov.soft, b.x, b.y, crate::footprint(b.kind, b.tier) + 0.7); }   // the margin round it: allowed, but avoided
                 }
             }
+        }
+        let (segs, _) = self.wall_lines();
+        for sg in &segs {   // the runs of wall and fence between the pieces (the pieces alone leave gaps)
+            let l = (sg.bx - sg.ax).hypot(sg.by - sg.ay); let st = (l / 1.0).ceil().max(1.0) as i32;
+            for k in 0..=st { let t = k as f32 / st as f32; stamp(&mut ov.blocked, sg.ax + (sg.bx - sg.ax) * t, sg.ay + (sg.by - sg.ay) * t, sg.r + 0.4); }
         }
         for r in &self.roads {   // the village's roads: soldiers keep to them
             let (dx, dy) = (r[3] - r[0], r[4] - r[1]); let l = dx.hypot(dy).max(0.1); let st = (l / 1.0).ceil() as i32;
@@ -181,17 +191,62 @@ impl World {
     /// Find a route. Err codes: -2 unreachable, -3 siege engines need soldiers to clear the forest, -5 water too wide.
     /// Inside the village the army follows the path network (roads first, round the buildings along their rings); where the network ends (or does not help) it is worked out over the open ground.
     pub(crate) fn find_path(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32) -> Result<Vec<Wp>, i32> {
+        let grid = self.find_path_grid(units, sx, sy, tx, ty);
         let net = self.net();
+        let mut via_net: Option<Vec<Wp>> = None;
         if let Some((pts, complete)) = net.route((sx, sy), (tx, ty)) {
             let mut wps = vec![Wp { x: sx, y: sy, mode: 0 }];
             for p in &pts { wps.push(Wp { x: p.0, y: p.1, mode: 0 }); }
             if complete {
-                if net.ok_at(tx, ty) || net.clear(*pts.last().unwrap(), (tx, ty), 1.7) { wps.push(Wp { x: tx, y: ty, mode: 0 }); return Ok(wps); }
+                if net.ok_at(tx, ty) || net.clear(*pts.last().unwrap(), (tx, ty), 1.7) { wps.push(Wp { x: tx, y: ty, mode: 0 }); via_net = Some(wps); }
             } else if let Some(&(ex, ey)) = pts.last() {
-                if let Ok(rest) = self.find_path_grid(units, ex, ey, tx, ty) { for w in rest.into_iter().skip(1) { wps.push(w); } return Ok(wps); }
+                if let Ok(rest) = self.find_path_grid(units, ex, ey, tx, ty) { for w in rest.into_iter().skip(1) { wps.push(w); } via_net = Some(wps); }
             }
         }
-        self.find_path_grid(units, sx, sy, tx, ty)
+        // the network's way is taken unless the open-ground search found a clearly better one: no more water to cross, or a much shorter walk
+        let water = |p: &[Wp]| p.iter().filter(|w| w.mode != 0).count();
+        let len = |p: &[Wp]| p.windows(2).map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y)).sum::<f32>();
+        let chosen = match (via_net, grid) {
+            (Some(n), Ok(g)) => if water(&n) <= water(&g) && len(&n) <= len(&g) * 1.3 + 6.0 { Ok(n) } else { Ok(g) },
+            (Some(n), Err(_)) => Ok(n),
+            (None, g) => g,
+        };
+        chosen.map(|p| self.through_doors(p))
+    }
+
+    /// Wherever a route passes through an open gate or over a lowered drawbridge it is made to run along the middle of the doorway, straight in and straight out (the open-ground
+    /// search only knows grid cells, which would have it hug one side).
+    fn through_doors(&self, wps: Vec<Wp>) -> Vec<Wp> {
+        let (_, doors) = self.wall_lines();
+        // (centre, direction one walks through it, half-width across, nodes along it)
+        let mut lanes: Vec<(f32, f32, f32, f32, f32, &'static [f32])> = vec![];
+        const GATE_T: &[f32] = &[-7.5, -3.8, 0.0, 3.8, 7.5];
+        const DECK_T: &[f32] = &[-9.0, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0];
+        for d in &doors { if !self.gate_shut(&self.buildings[d.b]) { lanes.push((d.x, d.y, -d.uy, d.ux, crate::wallnet::GATE_HALF + 1.5, GATE_T)); } }
+        for b in &self.buildings { if b.kind == DRAWBRIDGE && b.status != 5 && self.battle.is_none() { let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; lanes.push((b.x, b.y, a.sin(), a.cos(), 3.0, DECK_T)); } }
+        if lanes.is_empty() { return wps; }
+        let mut out = wps;
+        for &(cx, cy, nx, ny, half, ts) in &lanes {
+            let mut i = 1;
+            while i < out.len() {
+                let (a, b) = (out[i - 1], out[i]);
+                if b.mode != 0 { i += 1; continue; }
+                let (ta, tb) = ((a.x - cx) * nx + (a.y - cy) * ny, (b.x - cx) * nx + (b.y - cy) * ny);
+                if ta * tb > 0.0 || (ta - tb).abs() < 1e-3 { i += 1; continue; }
+                let f = ta / (ta - tb); let (px, py) = (a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f);
+                if ((px - cx) * -ny + (py - cy) * nx).abs() > half { i += 1; continue; }   // not through this doorway
+                let dir = if tb > ta { 1.0f32 } else { -1.0 }; let far = if half > 3.5 { 3.8f32 } else { 6.0 };   // (a route that would step off the side halfway along is carried on to the far end of the doorway first)
+                let mut mids: Vec<f32> = ts.iter().copied().filter(|&t| dir * t > dir * ta + 1.5 && dir * t <= (dir * tb - 1.5).max(far)).collect();
+                if dir < 0.0 { mids.reverse(); }
+                let ub = -(b.x - cx) * ny + (b.y - cy) * nx;
+                if dir * tb < far && i + 1 < out.len() && ub.abs() <= half + 1.0 { out.remove(i); }   // (the waypoint where it stepped off the side is no longer wanted)
+                let ins: Vec<Wp> = mids.iter().map(|&t| Wp { x: cx + nx * t, y: cy + ny * t, mode: 0 }).collect();
+                let n = ins.len();
+                for (k, w) in ins.into_iter().enumerate() { out.insert(i + k, w); }
+                i += n + 1;
+            }
+        }
+        out
     }
 
     fn find_path_grid(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32) -> Result<Vec<Wp>, i32> {
@@ -212,7 +267,7 @@ impl World {
             for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                 let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { continue; }
                 let k = (b * NC + a) as usize;
-                let step = match self.classify(&ns, &ov, k, siege) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => 4.5 };
+                let step = match self.classify(&ns, &ov, k, siege) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => 40.0 };
                 if di != 0 && dj != 0 {   // no cutting corners through blocked cells
                     if self.classify(&ns, &ov, (cj * NC + a) as usize, siege) == Cl::Block || self.classify(&ns, &ov, (b * NC + ci) as usize, siege) == Cl::Block { continue; }
                 }

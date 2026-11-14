@@ -153,7 +153,7 @@ impl World {
         };
         for q in &self.buildings {
             match q.kind {
-                GATE => if self.gate_shut(q) { mark(&mut blocked, q.x, q.y, 3.0); },   // a barred gate breaks the path through the wall
+                GATE | WALL | FENCE => {}   // (pillars, shut doors and the runs of wall and fence are lines: see below)
                 MOAT | RIVER | RAISE | LOWER | ROAD => {}
                 BRIDGE => { let (ux, uy, l) = Self::bridge_dir(q); let st = (l / 0.8) as i32; for t in 0..=st { let t = t as f32 * 0.8 - l / 2.0; mark(&mut deck, q.x + ux * t, q.y + uy * t, 1.7); } }
                 DRAWBRIDGE => {
@@ -163,6 +163,11 @@ impl World {
                 }
                 _ => mark(&mut blocked, q.x, q.y, net_radius(q)),
             }
+        }
+        let (segs, doors) = self.wall_lines();
+        for sg in &segs {   // walls, fences, pillars and shut doors: the line between the pieces, not just a circle round each
+            let l = (sg.bx - sg.ax).hypot(sg.by - sg.ay); let st = (l / 0.5).ceil().max(1.0) as i32;
+            for k in 0..=st { let t = k as f32 / st as f32; mark(&mut blocked, sg.ax + (sg.bx - sg.ax) * t, sg.ay + (sg.by - sg.ay) * t, sg.r + 0.5); }
         }
         let mut ok = vec![false; cnt];
         for j in 0..ny { for i in 0..nx {
@@ -179,15 +184,23 @@ impl World {
         let mut ring: Vec<Vec<u32>> = vec![vec![]; self.buildings.len()];
         let mut road_pre: Vec<u32> = vec![];
         for (i, b) in self.buildings.iter().enumerate() {
-            if b.kind == GATE {   // the way through a wall: nodes round the opening, joined only if nothing (a shut door) is in between
-                for q in 0..8 { let a = q as f32 * std::f32::consts::TAU / 8.0; let (px, py) = (b.x + a.cos() * 3.8, b.y + a.sin() * 3.8); if net.ok_at(px, py) { ring[i].push(net.add(px, py)); } else { ring[i].push(u32::MAX); } }
-                for q in 0..8 { let (a, c) = (ring[i][q], ring[i][(q + 1) % 8]); if a != u32::MAX && c != u32::MAX && net.clear(net.nodes[a as usize], net.nodes[c as usize], 0.0) { net.link(a, c, false); } }
+            if b.kind == GATE {   // the way through a wall: a straight line of nodes through the middle of the doorway, square to the wall (cut when the doors are shut)
+                let Some(d) = doors.iter().find(|d| d.b == i) else { continue };
+                let (nx, ny) = (-d.uy, d.ux);
+                let mut prev = u32::MAX;
+                for t in [-11.0f32, -7.5, -3.8, 0.0, 3.8, 7.5, 11.0] {
+                    let (px, py) = (b.x + nx * t, b.y + ny * t);
+                    if !net.ok_at(px, py) { prev = u32::MAX; continue; }
+                    let id = net.add(px, py); road_pre.push(id);
+                    if prev != u32::MAX && net.clear(net.nodes[prev as usize], net.nodes[id as usize], 0.0) { net.link(prev, id, true); }
+                    prev = id;
+                }
                 continue;
             }
             if b.kind == DRAWBRIDGE {   // along the deck, which only exists while the bridge is down (a drawn-up bridge leaves water, which is not walkable)
                 let an = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
                 let mut prev = u32::MAX;
-                for t in [-9.0f32, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0] {
+                for t in [-16.0f32, -12.5, -9.0, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0, 12.5, 16.0] {
                     let (px, py) = (b.x + sx * t, b.y + sy * t);
                     if !net.ok_at(px, py) { prev = u32::MAX; continue; }
                     let id = net.add(px, py); road_pre.push(id);
