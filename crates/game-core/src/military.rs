@@ -77,6 +77,7 @@ pub struct Battle {
     pub start_side: [u32; 2],   // soldiers each side began with
     pub fled: [u32; 2],         // soldiers who ran off the field alive
     pub fled_kinds: [u32; 5],   // which attackers got away
+    pub fixed: Vec<[f32; 2]>,   // points along the player's own bridges: the water there can be crossed
 }
 
 #[derive(Clone, Copy)]

@@ -91,7 +91,7 @@ function makeMats() {
 const M = () => (_m ??= makeMats());
 /** Wall materials by tier: palisade, timber, stone, battlemented stone. */
 /** Kinds drawn by something else (walls, fences and gates by the Walls mesh, moats by the terrain): an empty placeholder keeps the indices lined up. */
-const PLAIN = new Set([2, 21, 22, 24, 32, 33, 34, 37]);
+const PLAIN = new Set([2, 21, 22, 24, 32, 33, 34, 37, 38]);
 export const wallMats = (): THREE.MeshStandardMaterial[] => [M().wood, M().timber, M().stone, M().stone];
 
 // ---------- geometry helpers ----------
@@ -756,7 +756,17 @@ const toll: Model = b => {
   if (t >= 2) b.flag(2.9, 2.0, 0.5, 1.8);
 };
 
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll];
+/** The ghost shown while placing a bridge (the real bridge is drawn by spans.ts): ten units of deck with posts, stretched to the real length. */
+/** The ghost of a road piece: a patch of beaten earth. */
+const roadPiece: Model = b => { b.box(2.2, 0.12, 2.2, M().mud, 0, 0.02, 0); };
+
+const bridgeGhost: Model = b => {
+  const m = M();
+  for (let s = -4.75; s <= 4.75; s += 0.5) b.box(0.46, 0.14, 2.4, m.wood, s, 0.55, 0);
+  for (const side of [-1, 1]) for (let s = -4.8; s <= 4.81; s += 2.4) b.box(0.2, 1.1, 0.2, m.darkwood, s, 0.5, side * 1.1);
+};
+
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,

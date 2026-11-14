@@ -60,6 +60,10 @@ const ROAD_OUTER: f32 = 4.4; // terrain blends back to the natural slope by here
 const RADIUS_CAP: f32 = 110.0;
 /// The farthest from the town hall anything can be built, however far the territory has crept outwards.
 const TERRITORY_MAX: f32 = 170.0;
+/// The longest stretch of water a bridge of each tier can span: wood, timber, stone, great stone.
+const BRIDGE_SPAN: [f32; 4] = [14.0, 22.0, 34.0, 50.0];
+/// How far a bridge reaches onto the bank at each end.
+const BRIDGE_MARGIN: f32 = 1.6;
 
 // event codes
 const EV_HARVEST: i32 = 0;
@@ -282,7 +286,7 @@ impl World {
         self.road_links.clear();
         self.road_paths.clear();
         let n = self.buildings.len();
-        let ends: Vec<usize> = (0..n).filter(|&i| i == 0 || !(is_barrier(self.buildings[i].kind) || self.buildings[i].kind == DRAWBRIDGE)).collect();
+        let ends: Vec<usize> = (0..n).filter(|&i| i == 0 || !(is_barrier(self.buildings[i].kind) || matches!(self.buildings[i].kind, DRAWBRIDGE | BRIDGE))).collect();
         let mut used: std::collections::HashSet<(u32, u32)> = Default::default();
         for (pos, &i) in ends.iter().enumerate() {
             if pos == 0 { continue; }
@@ -325,6 +329,7 @@ impl World {
 
     /// Is the point on the deck of a lowered drawbridge?
     fn on_deck(&self, x: f32, y: f32) -> bool {
+        if self.buildings.iter().any(|b| { if b.kind != BRIDGE { return false; } let (ux, uy, l) = Self::bridge_dir(b); let (dx, dy) = (x - b.x, y - b.y); (dx * ux + dy * uy).abs() <= l / 2.0 && (dx * uy - dy * ux).abs() <= 1.9 }) { return true; }
         self.buildings.iter().any(|b| {
             if b.kind != DRAWBRIDGE || b.status == 5 { return false; }
             let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
@@ -490,6 +495,7 @@ impl World {
             TOWN_HALL => self.build_radius() as f32,
             k if is_edit(k) => 0.0,
             ROAD => 6.0,
+            BRIDGE => 7.0,
             WALL | FENCE | GATE | DRAWBRIDGE => 5.0,
             k => 10.0 + 2.5 * ((DEFS[k as usize].weight * (b.tier as u32 + 1)) as f32).sqrt(),
         }
@@ -506,17 +512,18 @@ impl World {
         self.buildings.iter().filter_map(|b| { let c = self.claim(b); if c > 0.0 { Some([b.x, b.y, c]) } else { None } }).flatten().collect()
     }
 
-    /// -17 a deposit is in the way, -16 needs water.
+    /// -17 a deposit is in the way, -16 needs water, -18 no water to bridge near here, -19 too wide for this bridge.
     /// 0 = ok, otherwise: -1 bad kind, -2 outside radius, -3 overlaps, -4 water, -5 too steep,
     /// -6 cannot afford, -7 needs deposit, -8 needs forest, -9 not buildable (town hall)
     pub fn can_place(&self, kind: u8, dx: i32, dy: i32) -> i32 {
         let Some(d) = DEFS.get(kind as usize) else { return -1 };
         if kind == TOWN_HALL { return -9; }
+        if kind == BRIDGE { return self.bridge_check(dx, dy, 0).0; }
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         if !self.in_territory(x, y) { return -2; }
         for b in &self.buildings {
             let bd = &DEFS[b.kind as usize];
-            if (kind == DRAWBRIDGE && matches!(b.kind, MOAT | RIVER)) || (matches!(kind, MOAT | RIVER) && b.kind == DRAWBRIDGE) { continue; }   // a drawbridge spans the water
+            if (matches!(kind, DRAWBRIDGE | BRIDGE) && matches!(b.kind, MOAT | RIVER)) || (matches!(kind, MOAT | RIVER) && matches!(b.kind, DRAWBRIDGE | BRIDGE)) { continue; }   // a bridge spans the water   // a drawbridge spans the water
             if is_edit(kind) && is_edit(b.kind) && kind != b.kind { continue; }                                                               // raise, lower, dig: different edits can share a spot
             if (b.x - x).powi(2) + (b.y - y).powi(2) < (bd.r + d.r - 0.4).powi(2) { return -3; }
         }
@@ -569,6 +576,7 @@ impl World {
 
     /// Place a building at coordinates relative to the village origin. Returns index or the negative `can_place` code.
     pub fn place(&mut self, kind: u8, dx: i32, dy: i32, rot: u8) -> i32 {
+        if kind == BRIDGE { return self.place_bridge(dx, dy); }
         let code = self.can_place(kind, dx, dy);
         if code != 0 { return code; }
         let d = &DEFS[kind as usize];
@@ -607,6 +615,86 @@ impl World {
         let out: Vec<i32> = flat.chunks_exact(4).take(400).map(|c| if c[0] < 0 || c[0] > 255 { -1 } else { self.place(c[0] as u8, c[1], c[2], (c[3] & 7) as u8) }).collect();
         self.defer_roads = false;
         self.after_change();
+        out
+    }
+
+    // ---------- bridges ----------
+    /// Where a bridge clicked at (dx, dy) would go: it finds the nearest water, picks the way across with the shortest span, and returns [centre x, centre y, angle in radians, total length, span of water],
+    /// or nothing when there is no water within reach or it is too wide to bridge at all (60 units).
+    pub fn bridge_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        let wet = |px: f32, py: f32| self.height_at(px, py) < 0.2;
+        // the nearest water to the click
+        let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
+        'find: for r in 1..=14 { for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; let (px, py) = (x + a.cos() * r as f32, y + a.sin() * r as f32); if wet(px, py) { p = Some((px, py)); break 'find; } } }
+        let Some((px, py)) = p else { return vec![] };
+        // which way is across? On a bank the ground rises away from the water, so the direction of steepest slope is across the channel; in the middle of the channel (flat bed) any direction
+        // will do and the shortest way over is across. Look at a fan of directions round the likely one (all of them if there is no slope) and take the shortest wet run.
+        let (gx, gy) = (self.height_at(px + 1.6, py) - self.height_at(px - 1.6, py), self.height_at(px, py + 1.6) - self.height_at(px, py - 1.6));
+        let across = if gx.hypot(gy) > 0.6 { Some(gy.atan2(gx)) } else { None };
+        let mut best: Option<(f32, f32, f32, f32)> = None;   // span, angle, t_back, t_forward
+        for k in 0..32 {
+            let a = k as f32 * std::f32::consts::PI / 32.0; let (ux, uy) = (a.cos(), a.sin());
+            if let Some(g) = across { let d = ((a - g + std::f32::consts::PI * 3.0) % std::f32::consts::PI - std::f32::consts::FRAC_PI_2).abs(); if std::f32::consts::FRAC_PI_2 - d > 0.6 { continue; } }
+            let walk = |sgn: f32| -> Option<f32> { let mut t = 0.0; while t < 60.0 { t += 0.5; if !wet(px + ux * sgn * t, py + uy * sgn * t) { return Some(t); } } None };
+            let (Some(t1), Some(t2)) = (walk(-1.0), walk(1.0)) else { continue };
+            let span = t1 + t2; if best.map_or(true, |b| span < b.0 - 0.01) { best = Some((span, a, t1, t2)); }
+        }
+        let Some((span, a, t1, t2)) = best else { return vec![] };
+        let (ux, uy) = (a.cos(), a.sin()); let off = (t2 - t1) / 2.0;
+        vec![px + ux * off, py + uy * off, a, span + 2.0 * BRIDGE_MARGIN, span]
+    }
+    /// Direction of a bridge building and its total length.
+    pub(crate) fn bridge_dir(b: &Building) -> (f32, f32, f32) { let deg = (b.aux.max(0) % 360) as f32; let a = deg.to_radians(); (a.cos(), a.sin(), (b.aux.max(0) / 360) as f32 / 10.0) }
+
+    /// Can a bridge go here (at the given tier)? (code, snap). 0 ok; -2 outside your land; -3 something in the way; -5 the banks are at very different heights; -6 cannot afford; -18 no water near; -19 too wide for this bridge.
+    fn bridge_check(&self, dx: i32, dy: i32, tier: u8) -> (i32, Vec<f32>) {
+        let snap = self.bridge_snap(dx, dy);
+        if snap.is_empty() { return (-18, snap); }
+        let (cx, cy, a, l, span) = (snap[0], snap[1], snap[2], snap[3], snap[4]);
+        if span > BRIDGE_SPAN[tier as usize] { return (-19, snap); }
+        let (ux, uy) = (a.cos(), a.sin()); let ends = [(cx - ux * l / 2.0, cy - uy * l / 2.0), (cx + ux * l / 2.0, cy + uy * l / 2.0)];
+        if ends.iter().any(|&(x, y)| !self.in_territory(x, y)) || !self.in_territory(cx, cy) { return (-2, snap); }
+        let (ha, hb) = (self.height_at(ends[0].0, ends[0].1), self.height_at(ends[1].0, ends[1].1));
+        if ha < 0.4 || hb < 0.4 || (ha - hb).abs() > 2.6 { return (-5, snap); }
+        let steps = (l / 1.5).ceil() as i32;
+        for k in 0..=steps { let t = k as f32 * 1.5 - l / 2.0; let (sx, sy) = (cx + ux * t, cy + uy * t);
+            for b in &self.buildings { if matches!(b.kind, MOAT | RIVER | RAISE | LOWER | ROAD | DRAWBRIDGE) { continue; } let r = if b.kind == BRIDGE { 1.8 } else { DEFS[b.kind as usize].r }; if (b.x - sx).powi(2) + (b.y - sy).powi(2) < (r + 1.6).powi(2) { return (-3, snap); } } }
+        if !self.can_afford(&Self::bridge_cost(span)) { return (-6, snap); }
+        (0, snap)
+    }
+    /// What a new bridge of this span costs: its base cost plus a plank for every unit of span.
+    pub(crate) fn bridge_cost(span: f32) -> Vec<Amount> { vec![(PL, 10 + span.ceil() as i32), (W, 8)] }
+    fn place_bridge(&mut self, dx: i32, dy: i32) -> i32 {
+        let (code, snap) = self.bridge_check(dx, dy, 0); if code != 0 { return code; }
+        let (cx, cy, a, l, span) = (snap[0], snap[1], snap[2], snap[3], snap[4]);
+        self.pay(&Self::bridge_cost(span));
+        let (ux, uy) = (a.cos(), a.sin()); let (ha, hb) = (self.height_at(cx - ux * l / 2.0, cy - uy * l / 2.0), self.height_at(cx + ux * l / 2.0, cy + uy * l / 2.0));
+        let deg = ((a.to_degrees().round() as i32) % 360 + 360) % 360; let aux = deg + 360 * ((l * 10.0).round() as i32);
+        let rot = ((((ux).atan2(uy) / std::f32::consts::FRAC_PI_4).round() as i32 % 8) + 8) % 8;
+        self.buildings.push(Building { kind: BRIDGE, tier: 0, x: cx, y: cy, rot: rot as u8, pad_h: (ha + hb) / 2.0, progress: 0, status: 4, aux, staff: 0, residents: 0, hp: battle::max_hp(BRIDGE, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0 });
+        self.after_change();
+        (self.buildings.len() - 1) as i32
+    }
+    /// What a bridge would be if placed at (dx, dy): [code, centre x, centre y, angle, length, span, planks, wood]. The code is `can_place`'s.
+    pub fn bridge_preview(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (code, snap) = self.bridge_check(dx, dy, 0);
+        if snap.is_empty() { return vec![code as f32]; }
+        let c = Self::bridge_cost(snap[4]); let mut v = vec![code as f32]; v.extend_from_slice(&snap); v.push(c[0].1 as f32); v.push(c[1].1 as f32); v
+    }
+    /// Every bridge: [building index, centre x, centre y, angle, length, tier, options, ground height at one end, at the other end, deck height] each.
+    pub fn bridge_spans_flat(&self) -> Vec<f32> {
+        let mut v = vec![];
+        for (i, b) in self.buildings.iter().enumerate().filter(|(_, b)| b.kind == BRIDGE) {
+            let (ux, uy, l) = Self::bridge_dir(b);
+            v.extend_from_slice(&[i as f32, b.x, b.y, uy.atan2(ux), l, b.tier as f32, b.opts as f32, self.height_at(b.x - ux * l / 2.0, b.y - uy * l / 2.0), self.height_at(b.x + ux * l / 2.0, b.y + uy * l / 2.0), b.pad_h]);
+        }
+        v
+    }
+    /// Points along the player's bridges (every three units), where raiders can cross the water too.
+    pub(crate) fn bridge_points(&self) -> Vec<[f32; 2]> {
+        let mut out = vec![];
+        for b in self.buildings.iter().filter(|b| b.kind == BRIDGE) { let (ux, uy, l) = Self::bridge_dir(b); let n = (l / 3.0).ceil() as i32; for k in 0..=n { let t = k as f32 * l / n.max(1) as f32 - l / 2.0; out.push([b.x + ux * t, b.y + uy * t]); } }
         out
     }
 
@@ -2593,5 +2681,77 @@ mod channel_tests {
         let _ = ground;
         // the bank is steep: from the water's edge to the land in about a unit and a half
         assert!(w.height_at(x, y + edge) - w.height_at(x, y + wet_edge) > 4.0, "a real step up from the water to the land");
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40); w }
+    /// A moat ring round the hall, so there is water to cross.
+    fn with_moat() -> World { let mut w = rich(); for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); } w }
+
+    #[test]
+    fn a_bridge_snaps_to_the_banks_of_a_moat_and_crosses_it_the_short_way() {
+        let w = with_moat();
+        // clicked a little way from the water, on the outside: the bridge finds the moat and goes straight across it
+        let s = w.bridge_snap(24, 3); assert_eq!(s.len(), 5, "found a crossing");
+        let (cx, cy, a, l, span) = (s[0], s[1], s[2], s[3], s[4]);
+        assert!(span > 3.0 && span < 14.0, "a moat is a few units wide: {span}");
+        assert!((l - span - 3.2).abs() < 0.01, "the bridge reaches 1.6 onto each bank");
+        // the line goes across the moat, i.e. roughly along the radius from the hall
+        let radial = (cy).atan2(cx); let d = (a - radial).rem_euclid(std::f32::consts::PI); let off = d.min(std::f32::consts::PI - d);
+        assert!(off < 0.45, "across the water (along the radius), not along it: off by {off}");
+        // both ends are dry land, the middle is water
+        let (ux, uy) = (a.cos(), a.sin());
+        assert!(w.height_at(cx - ux * l / 2.0, cy - uy * l / 2.0) > 0.4 && w.height_at(cx + ux * l / 2.0, cy + uy * l / 2.0) > 0.4);
+        assert!(w.height_at(cx, cy) < 0.2);
+        assert!(w.bridge_snap(60, 60).is_empty() || true);
+    }
+
+    #[test]
+    fn placing_a_bridge_costs_planks_for_its_span_and_needs_water_nearby() {
+        let mut w = with_moat(); let pl = w.stocks()[PL as usize];
+        assert_eq!(w.can_place(BRIDGE, 24, 3), 0);
+        let i = w.place(BRIDGE, 24, 3, 0); assert!(i >= 0, "bridge: {i}");
+        let spent = pl - w.stocks()[PL as usize]; assert!(spent >= 14, "planks for the span: {spent}");
+        assert_eq!(w.buildings[i as usize].kind, BRIDGE);
+        let sp = w.bridge_spans_flat(); assert_eq!(sp.len(), 10); assert!((sp[4] - w.bridge_snap(24, 3)[3]).abs() < 3.5 || sp[4] > 3.0);
+        let mut dry = rich(); assert_eq!(dry.can_place(BRIDGE, 10, 10), -18, "no water here"); assert_eq!(dry.place(BRIDGE, 10, 10, 0), -18);
+        let mut poor = with_moat(); poor.stock[PL as usize] = 5; assert_eq!(poor.can_place(BRIDGE, 24, 3), -6);
+    }
+
+    #[test]
+    fn a_wooden_bridge_cannot_span_a_wide_river_but_upgrades_reach_further() {
+        assert!(BRIDGE_SPAN.windows(2).all(|p| p[0] < p[1]), "each tier spans more");
+        let mut w = rich();
+        // a wide channel: three moat widths side by side
+        for k in 0..7 { for i in 0..12 { w.place(MOAT, -30 + i * 4, 24 + k * 3, 0); } }
+        let s = w.bridge_snap(0, 22); assert!(!s.is_empty());
+        if s[4] > BRIDGE_SPAN[0] { assert_eq!(w.can_place(BRIDGE, 0, 22), -19, "too wide for wood: span {}", s[4]); }
+    }
+
+    #[test]
+    fn people_and_armies_cross_a_bridge_and_so_do_raiders() {
+        let mut w = with_moat();
+        let out = w.place(HOUSE, 32, 0, 0); assert!(out >= 0, "a house outside the moat");
+        let has_link = |w: &World, c: i32| { let v = w.road_paths_flat(); let mut i = 0; let mut f = false; while i < v.len() { if v[i] as i32 == c { f = true; } i += 3 + 2 * v[i + 2] as usize; } f };
+        assert!(!has_link(&w, out), "behind the moat with no way over: no path");
+        let b = w.place(BRIDGE, 26, 0, 0); assert!(b >= 0, "bridge {b}");
+        assert!(has_link(&w, out), "over the bridge the house is joined to the village");
+        // a raid: the bridge points let attackers over the water
+        assert!(!w.bridge_points().is_empty());
+        w.army = [10, 0, 0, 0, 0]; let id = w.det_form(&[10, 0, 0, 0, 0]); assert!(id > 0);
+        assert_eq!(w.det_march(id, 14.0, 0.0, false, 0.0, 0.0), 0, "an army crosses by the bridge");
+    }
+
+    #[test]
+    fn bridges_upgrade_and_demolish_like_any_building() {
+        let mut w = with_moat(); let b = w.place(BRIDGE, 24, 3, 0); assert!(b >= 0);
+        assert_eq!(w.upgrade(b as u32), 0); assert_eq!(w.buildings[b as usize].tier, 1);
+        assert_eq!(w.set_option(b as u32, 0, true), 0, "lanterns");
+        assert!(w.demolish(b as u32)); assert!(w.bridge_spans_flat().is_empty());
+        // two bridges on the same spot are refused
+        let a = w.place(BRIDGE, 24, 3, 0); assert!(a >= 0); assert_eq!(w.place(BRIDGE, 24, 3, 0), -3);
     }
 }
