@@ -80,7 +80,9 @@ export class RiverFlow {
       // are not left standing bare. Where the bank is a step the water sits behind it, and the terrain hides the rest, so it never spills over the edge.
       const floor = q.kind === MOAT ? CHANNEL.moatFloor * (1 + 0.13 * (q.rot & 7)) : CHANNEL.riverFloor, level = flags[i] ? SEALED_LEVEL : channelLevel(this.terrain, q.x, q.z, floor);
       if (q.kind === RIVER && nr < MAXP) { const a = q.rot * Math.PI / 4; dir.setXY(nr, Math.cos(a), -Math.sin(a)); this.ripple.push({ x: q.x, z: q.z, connected: flags[i], level }); nr++; }
-      if (!flags[i] && np < MAXP) { const r = floor + 1.1; sc.set(r, 1, r); m.compose(new THREE.Vector3(q.x, level, q.z), new THREE.Quaternion(), sc); this.pond.setMatrixAt(np++, m); }
+      // a river that reaches the sea still holds its water well above the sea's low level, up to a point (about a metre above it), so it is not a dry trench with a puddle in the bottom
+      const surface = flags[i] ? (q.kind === RIVER ? Math.min(channelLevel(this.terrain, q.x, q.z, floor), 1.0) : null) : level;
+      if (surface !== null && np < MAXP) { const r = floor + 1.1; sc.set(r, 1, r); m.compose(new THREE.Vector3(q.x, surface, q.z), new THREE.Quaternion(), sc); this.pond.setMatrixAt(np++, m); }
     });
     this.mesh.count = nr; this.pond.count = np; this.pond.instanceMatrix.needsUpdate = true; dir.needsUpdate = true;
     this.placeRipples(this.level, true);

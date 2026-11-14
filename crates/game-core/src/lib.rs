@@ -76,7 +76,7 @@ pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank ru
 /// How far below the rim of the land the water of a moat stands.
 const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
-const RIVER_BED: f32 = -0.7; // a river is shallower than a moat  // depth of the bottom
+const RIVER_BED: f32 = -2.0; // a river is shallower than a moat, but holds real water  // depth of the bottom
 const ROAD_INNER: f32 = 1.5; // fully graded half-width of a path
 const ROAD_OUTER: f32 = 4.4; // terrain blends back to the natural slope by here
 
