@@ -735,20 +735,29 @@ impl World {
     /// [x, y, turn] relative to the origin (the turn is in 45-degree steps, as `place` takes it), or nothing when no moat is within reach.
     pub fn drawbridge_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
         let (px, py) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
-        let pieces: Vec<(f32, f32)> = self.buildings.iter().filter(|b| matches!(b.kind, MOAT | RIVER)).map(|b| (b.x, b.y)).collect();
-        let Some(&(mx, my)) = pieces.iter().filter(|p| (p.0 - px).hypot(p.1 - py) <= 16.0).min_by(|a, b| (a.0 - px).hypot(a.1 - py).partial_cmp(&(b.0 - px).hypot(b.1 - py)).unwrap_or(std::cmp::Ordering::Equal)) else { return vec![] };
-        // the way the ditch runs here: between the nearest neighbours on either side of the piece (or towards the one it has)
-        let mut near: Vec<(f32, f32)> = pieces.iter().copied().filter(|p| { let d = (p.0 - mx).hypot(p.1 - my); d > 0.3 && d <= 8.0 }).collect();
-        near.sort_by(|a, b| (a.0 - mx).hypot(a.1 - my).partial_cmp(&(b.0 - mx).hypot(b.1 - my)).unwrap_or(std::cmp::Ordering::Equal));
-        let (mut tx, mut ty) = (1.0f32, 0.0f32);
-        if let Some(&n1) = near.first() {
-            let (v1x, v1y) = (n1.0 - mx, n1.1 - my);
-            if let Some(&n2) = near.iter().find(|p| (p.0 - mx) * v1x + (p.1 - my) * v1y < 0.0) { tx = n2.0 - n1.0; ty = n2.1 - n1.1; } else { tx = v1x; ty = v1y; }
+        // the ditch is the chain of its pieces: the spot is the nearest point on the line joining neighbouring pieces, so a bridge can go anywhere along it, not only on a piece
+        let pieces: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|b| matches!(b.kind, MOAT | RIVER)).map(|b| (b.x, b.y, if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + CHANNEL_BANK)).collect();
+        let mut best: Option<(f32, f32, f32, f32, f32, f32)> = None;   // (distance, x, y, tangent x, tangent y, reach)
+        for (i, a) in pieces.iter().enumerate() {
+            let d0 = (a.0 - px).hypot(a.1 - py);
+            if d0 <= 16.0 && best.map_or(true, |b| d0 < b.0) { best = Some((d0, a.0, a.1, 1.0, 0.0, a.2)); }
+            for b in &pieces[i + 1..] {
+                let (sx, sy) = (b.0 - a.0, b.1 - a.1); let sl = sx.hypot(sy);
+                if sl < 0.3 || sl > 8.0 { continue; }
+                let t = (((px - a.0) * sx + (py - a.1) * sy) / (sl * sl)).clamp(0.0, 1.0);
+                let (qx, qy) = (a.0 + sx * t, a.1 + sy * t); let d = (qx - px).hypot(qy - py);
+                if d <= 16.0 && best.map_or(true, |o| d < o.0 - 0.01) { best = Some((d, qx, qy, sx, sy, a.2.max(b.2))); }
+            }
+        }
+        let Some((_, qx, qy, mut tx, mut ty, reach)) = best else { return vec![] };
+        if 2.0 * reach > 12.4 { return vec![]; }   // too wide for the deck to reach from bank to bank
+        if tx == 1.0 && ty == 0.0 {   // a lone piece: the way the nearest neighbour lies, if any
+            if let Some(n) = pieces.iter().filter(|p| (p.0 - qx).hypot(p.1 - qy) > 0.3).min_by(|a, b| (a.0 - qx).hypot(a.1 - qy).partial_cmp(&(b.0 - qx).hypot(b.1 - qy)).unwrap_or(std::cmp::Ordering::Equal)) { tx = n.0 - qx; ty = n.1 - qy; }
         }
         let tl = tx.hypot(ty).max(1e-6); let (nx, ny) = (-ty / tl, tx / tl);   // square across the ditch
         let a = nx.atan2(ny);   // the deck runs along (sin a, cos a)
         let rot = ((a / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8);
-        vec![mx - self.ox as f32, my - self.oy as f32, rot as f32]
+        vec![qx.round() - self.ox as f32, qy.round() - self.oy as f32, rot as f32]
     }
 
     // ---------- bridges ----------
@@ -3701,6 +3710,22 @@ mod pathnet_tests {
         let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
         assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
         let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
+    }
+
+    #[test]
+    fn a_drawbridge_can_go_anywhere_along_a_moat_that_is_not_too_wide() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let placed = w.buildings.iter().filter(|b| b.kind == MOAT).count();
+        assert!(placed >= 10, "{placed} moat pieces");
+        // pointing at many different places along the ditch gives many different spots, each on the ditch and each turned square across it
+        let mut spots = std::collections::BTreeSet::new();
+        for k in 0..36 { let a = k as f32 / 36.0 * std::f32::consts::TAU; let (dx, dy) = ((a.cos() * 18.0).round() as i32, (a.sin() * 18.0).round() as i32); let s = w.drawbridge_snap(dx, dy); if s.len() == 3 { assert!((s[0].hypot(s[1]) - 20.0).abs() < 2.5, "on the ditch: {s:?}"); spots.insert((s[0] as i32, s[1] as i32)); } }
+        assert!(spots.len() >= 8, "many places to put it: {}", spots.len());
+        // a very wide moat is too wide for the deck
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 7); }
+        assert!(w.drawbridge_snap(3, 17).is_empty(), "the broadest moat is wider than a drawbridge");
     }
 
     #[test]
