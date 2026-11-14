@@ -40,7 +40,7 @@ fn no_command_panics_on_hostile_arguments() {
         let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x1234_5678_9ABC_DEF1));
         let mut w = village();
         for round in 0..4000 {
-            let op = r.next() % 41; if std::env::var("TRACE").is_ok() { eprintln!("seed {seed} round {round} op {op}"); }
+            let op = r.next() % 43; if std::env::var("TRACE").is_ok() { eprintln!("seed {seed} round {round} op {op}"); }
             let t0 = std::time::Instant::now();
             match op {
                 0 => { w.place(r.b(), r.i(), r.i(), r.b()); }
@@ -81,6 +81,8 @@ fn no_command_panics_on_hostile_arguments() {
                 35 => { w.gate_set(r.u(), r.next() % 2 == 0); }
                 38 => { let (a, b, c, d) = (r.b() % 4, r.i(), r.i(), r.i()); w.demo(a, b, c, d); }
                 39 => { w.forest_spot(r.f(), r.f(), r.f(), r.f()); }
+                40 => { w.set_field_mode(r.u(), r.b()); }
+                41 => { let _ = w.field_info(r.u()); }
                 _ => { let n = r.pick(&[1, 2, 5]); for _ in 0..n { w.step(); } }
             }
             if t0.elapsed().as_millis() > 5000 { eprintln!("SLOW op {op} seed {seed} round {round}: {:?}", t0.elapsed()); }

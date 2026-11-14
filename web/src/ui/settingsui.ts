@@ -25,7 +25,7 @@ const ROWS: { title: string; rows: Row[] }[] = [
 ];
 
 /** Build the display settings panel into `root`. It stays in step with the settings (a preset changes several controls at once). */
-export function mountSettings(root: HTMLElement, askReload: () => void) {
+export function mountSettings(root: HTMLElement, askReload: () => void, watchOwn: () => void = () => {}) {
   root.innerHTML = ROWS.map(g => `<h3>${g.title}</h3>` + g.rows.map(r => {
     const id = `set-${r.key}`;
     const ctl = r.kind === 'select' ? `<select id="${id}">${r.options!.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`
@@ -36,7 +36,7 @@ export function mountSettings(root: HTMLElement, askReload: () => void) {
     <label class="setrow"><span><b>TURN server</b><small>For example turn:turn.example.com:3478</small></span><input type="text" id="turn-urls" placeholder="turn:host:3478"></label>
     <label class="setrow"><span><b>User name</b></span><input type="text" id="turn-user" autocomplete="off"></label>
     <label class="setrow"><span><b>Password</b></span><input type="password" id="turn-cred" autocomplete="off"></label>` + `<h3>Your data</h3><p class="muted">Your village and your signing key live only in this browser: clearing site data or switching computers loses them. Save a backup file now and then. <b>The file holds your private key: keep it to yourself.</b></p>
-    <div class="btnrow"><button class="pbtn" id="data-export">Save a backup file</button><button class="pbtn" id="data-import">Restore from a backup file…</button><input type="file" id="data-file" accept="application/json,.json" hidden></div><p class="muted" id="data-msg" role="status"></p>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div>';
+    <div class="btnrow"><button class="pbtn" id="data-export">Save a backup file</button><button class="pbtn" id="data-import">Restore from a backup file…</button><button class="pbtn" id="data-replay" title="Play your village's whole history back, from the first day">▶ Watch my history</button><input type="file" id="data-file" accept="application/json,.json" hidden></div><p class="muted" id="data-msg" role="status"></p>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div>';
   const el = <T extends HTMLElement>(k: string) => root.querySelector<T>(`#set-${k}`)!;
   const sync = () => {
     const s = settings() as unknown as Record<string, unknown>;
@@ -67,6 +67,7 @@ export function mountSettings(root: HTMLElement, askReload: () => void) {
   }));
   const msg = (t: string) => { root.querySelector<HTMLElement>('#data-msg')!.textContent = t; };
   root.querySelector<HTMLElement>('#data-export')!.onclick = () => { try { msg(`Backup saved (${downloadBackup()} items). Keep the file somewhere safe.`); } catch (e) { msg(`Could not save the backup: ${(e as Error).message}`); } };
+  root.querySelector<HTMLElement>('#data-replay')!.onclick = () => watchOwn();
   const file = root.querySelector<HTMLInputElement>('#data-file')!;
   root.querySelector<HTMLElement>('#data-import')!.onclick = () => file.click();
   file.onchange = async () => {

@@ -3,7 +3,7 @@
 export type Action =
   | 'panUp' | 'panDown' | 'panLeft' | 'panRight' | 'panFast'
   | 'rotLeft' | 'rotRight' | 'tiltUp' | 'tiltDown' | 'zoomIn' | 'zoomOut'
-  | 'rotateBuilding' | 'deposits' | 'pause' | 'cancel' | 'perf' | 'help' | 'toggleLedger' | 'toggleMinimap' | 'fullMap' | 'fullscreen' | 'nextArmy' | 'haltArmy' | 'recallArmy' | 'musterAll' | 'penFinish' | 'penUndo';
+  | 'rotateBuilding' | 'deposits' | 'pause' | 'cancel' | 'perf' | 'help' | 'toggleLedger' | 'toggleMinimap' | 'fullMap' | 'fullscreen' | 'photo' | 'nextArmy' | 'haltArmy' | 'recallArmy' | 'musterAll' | 'penFinish' | 'penUndo';
 
 export const ACTIONS: { id: Action; label: string; group: string; defaults: string[] }[] = [
   { id: 'panUp', label: 'Move forward', group: 'Camera', defaults: ['w', 'z', 'arrowup'] },
@@ -33,6 +33,7 @@ export const ACTIONS: { id: Action; label: string; group: string; defaults: stri
   { id: 'fullMap', label: 'Full-screen map', group: 'Interface', defaults: ['m'] },
   { id: 'toggleMinimap', label: 'Hide / show the minimap', group: 'Interface', defaults: ['n'] },
   { id: 'fullscreen', label: 'Full-screen mode', group: 'Interface', defaults: ['f11'] },
+  { id: 'photo', label: 'Photo mode (hide the interface, save a picture)', group: 'Interface', defaults: ['f9'] },
 ];
 
 const STORE = 'flanders:keys';

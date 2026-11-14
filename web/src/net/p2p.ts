@@ -90,21 +90,27 @@ export class Room {
   private chains = new Map<string, Promise<void>>();
   private selfId = '';
   private ready: Promise<void>;
+  private stopLonely: () => void = () => {};
   peers = new Set<string>();
 
   constructor(world: string, private identity: Identity, private hello: () => Hello, private log: () => Signed[], private h: RoomHandlers) {
     // players behind strict networks (some phones, offices) can only connect through a TURN relay; one can be set in Display settings -> Network and is kept in this browser
     let turn: { urls: string; username?: string; credential?: string }[] | undefined;
     try { const t = JSON.parse(localStorage.getItem('flanders:turn') ?? 'null'); if (t && typeof t.urls === 'string' && /^turns?:/.test(t.urls)) turn = [{ urls: t.urls, username: t.username, credential: t.credential }]; } catch { /* none */ }
+    // a relay the host of this build chose for everybody (VITE_TURN_URLS, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL at build time); a relay set in Display settings wins
+    if (!turn) { const env = import.meta.env; const urls = String(env.VITE_TURN_URLS ?? '').split(',').map((u: string) => u.trim()).filter((u: string) => /^turns?:/.test(u)); if (urls.length) turn = [{ urls: urls[0], username: env.VITE_TURN_USERNAME || undefined, credential: env.VITE_TURN_CREDENTIAL || undefined }]; }
     this.room = joinRoom({ appId: 'flanders-medieval-p2p-v7', ...(turn ? { turnConfig: turn as never } : {}) }, world);
     const hello_ = this.room.makeAction('hello'), cmd_ = this.room.makeAction('cmd'), log_ = this.room.makeAction('log'), hash_ = this.room.makeAction('hash');
     this.sendHello = (d, o) => hello_.send(d as never, o); this.sendCmd = (d, o) => cmd_.send(d as never, o);
     this.sendLog = (d, o) => log_.send(d as never, o); this.sendHash = (d, o) => hash_.send(d as never, o);
     this.ready = this.room.getSelf().then(s => { this.selfId = s.peerId; }).catch(() => { /* without our own id no hello can be checked, so nobody gets introduced */ });
     h.onStatus('Looking for other players in this world…');
+    // nobody after a while: either nobody else is here, or a strict network is blocking the direct connection. Say so, with the way out.
+    const lonely = setTimeout(() => { if (!this.peers.size) h.onStatus('Nobody yet. If a friend is online in this world and you cannot see them, your network may block direct connections: set a TURN relay under Display settings → Network.'); }, 25000);
+    this.stopLonely = () => clearTimeout(lonely);
     const count = () => `${this.peers.size} other player${this.peers.size === 1 ? '' : 's'} nearby`;
     this.room.onPeerJoin(({ peerId }) => {
-      this.peers.add(peerId); h.onStatus(count());
+      this.stopLonely(); this.peers.add(peerId); h.onStatus(count());
       this.state.set(peerId, { seq: new Sequence(), cmds: new Bucket(100, 600), logs: new Bucket(0.2, 3), hashes: new Bucket(5, 30), strikes: 0, banned: false });
       void this.helloTo(peerId); this.sendLog(this.log(), { target: peerId }).catch(() => { /* peer left */ });
     });
@@ -183,5 +189,5 @@ export class Room {
   broadcastCmd(s: Signed) { if (this.peers.size) this.sendCmd(s).catch(() => { /* peers left */ }); }
   broadcastHash(tick: number, hash: string) { if (this.peers.size) this.sendHash({ tick, hash }).catch(() => { /* peers left */ }); }
   pubOf(peerId: string) { return this.pubs.get(peerId); }
-  leave() { this.room.leave(); }
+  leave() { this.stopLonely(); this.room.leave(); }
 }

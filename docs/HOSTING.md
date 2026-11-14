@@ -42,3 +42,6 @@ The sandbox this was written in cannot reach the Nostr relays, so peer discovery
 
 ## Security headers
 GitHub Pages cannot send custom headers, so the page carries a Content-Security-Policy in a `<meta>` tag. On Cloudflare Pages or Netlify, `web/public/_headers` is published with the build and adds what a meta tag cannot (framing protection, nosniff, long caching for hashed assets). See [SECURITY.md](SECURITY.md).
+
+## A relay for everybody (optional)
+Some networks cannot connect peer to peer. You can bake a TURN relay into your build so nobody has to set one: build with `VITE_TURN_URLS=turn:your.host:3478 VITE_TURN_USERNAME=... VITE_TURN_CREDENTIAL=... npm run build` (the GitHub Pages workflow can pass these from repository variables). A player's own setting under Display settings → Network still wins. **Anything in the build is public:** a static credential can be copied by anyone and will carry their traffic on your bill. Use a relay with a usage cap or a short-lived credential service, and rotate the secret if it leaks. No relay is configured by default, because there is no free one I could verify is safe to point everybody at. When nobody connects within 25 seconds the game now says how to set one.

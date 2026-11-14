@@ -41,7 +41,18 @@ struct Building {
     garrison: u8,   // archers stationed inside (towers and keeps)
     born: u32,      // tick when it was founded: roads to it grow in over the following days
     opts: u16,      // optional design upgrades chosen for this building (bit per option, see catalog::OPTIONS)
+    fert: u16,      // farms: soil fertility in hundredths of a percent (FERT_MAX = rich soil). Sowing wears it down, a fallow field recovers
+    mode: u8,       // farms: 0 always sow, 1 fallow (rest the field), 2 rotate (rest when worn, sow again when restored), 3 rotating and resting right now
 }
+
+/// Soil fertility is counted in hundredths of a percent: FERT_MAX is rich soil. A farm cycle is 8 seconds, so 1 200 cycles make a game year: sown every cycle a field
+/// loses FERT_WEAR hundredths a harvest (about 70% of its richness in a year, and it yields only half at the very worst); a resting field regains FERT_REST a cycle.
+const FERT_MAX: u16 = 10_000;
+const FERT_WEAR: u16 = 6;
+const FERT_REST: u16 = 12;
+/// Rotation: a field rests when its soil drops to the first figure and is sown again at the second.
+const FERT_TIRED: u16 = 4_500;
+const FERT_RESTORED: u16 = 9_000;
 
 /// A moat piece's width: its rotation value (0..7) widens the ditch from 1x to 1.9x, so a moat can be thin in places and broad in others.
 pub(crate) fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 }
@@ -283,7 +294,7 @@ impl World {
         w.stock[GD as usize] = 30;
         let (x, y) = (ox as f32, oy as f32);
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0, opts: 0 });
+        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
         w.neutral_done = vec![false; terrain::neutrals(seed).len()];
         w.reveal(x, y, 110.0);
         w.after_change();
@@ -661,7 +672,7 @@ impl World {
         }
         let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg).map_or(-1, |i| i as i32) } else { -1 };
         let status = if d.cycle > 0 { 1 } else { 4 };
-        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0 });
+        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
         if is_edit(kind) { self.terrain_ver += 1; }   // the ground changed: everything standing on it must be re-fitted
         if kind == DRAWBRIDGE {   // clear a way through the trees on the far side so a path can run out from the gate
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
@@ -736,7 +747,7 @@ impl World {
         let (ux, uy) = (a.cos(), a.sin()); let (ha, hb) = (self.height_at(cx - ux * l / 2.0, cy - uy * l / 2.0), self.height_at(cx + ux * l / 2.0, cy + uy * l / 2.0));
         let deg = ((a.to_degrees().round() as i32) % 360 + 360) % 360; let aux = deg + 360 * ((l * 10.0).round() as i32);
         let rot = ((((ux).atan2(uy) / std::f32::consts::FRAC_PI_4).round() as i32 % 8) + 8) % 8;
-        self.buildings.push(Building { kind: BRIDGE, tier: 0, x: cx, y: cy, rot: rot as u8, pad_h: (ha + hb) / 2.0, progress: 0, status: 4, aux, staff: 0, residents: 0, hp: battle::max_hp(BRIDGE, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0 });
+        self.buildings.push(Building { kind: BRIDGE, tier: 0, x: cx, y: cy, rot: rot as u8, pad_h: (ha + hb) / 2.0, progress: 0, status: 4, aux, staff: 0, residents: 0, hp: battle::max_hp(BRIDGE, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
         self.after_change();
         (self.buildings.len() - 1) as i32
     }
@@ -900,9 +911,17 @@ impl World {
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
-            let yield_of = |r: u8, n: i32| { let q = scale(n); if r == GR { (q * GRAIN_BY_SEASON[season as usize] / 100).max(1) } else { q } };
+            let soil = if kind == FARM { 500 + self.buildings[i].fert as i32 / 20 } else { 1000 };   // per mille: rich soil 100%, worn out 50%
+            let yield_of = |r: u8, n: i32| { let q = scale(n); if r == GR { (q * GRAIN_BY_SEASON[season as usize] * soil / 100_000).max(1) } else { q } };
             let mut status = self.buildings[i].status;
             while p >= need {
+                if kind == FARM {   // soil: a resting field makes nothing and recovers; a sown one wears the soil down (see FERT_*)
+                    let m = self.buildings[i].mode;
+                    if m == 1 || m == 3 {
+                        let b = &mut self.buildings[i]; b.fert = (b.fert + FERT_REST).min(FERT_MAX); if b.mode == 3 && b.fert >= FERT_RESTORED { b.mode = 2; }
+                        status = 4; p -= need; continue;
+                    }
+                }
                 // requirement checks
                 let mut dep_idx: Option<usize> = None;
                 if d.req == 1 {
@@ -926,6 +945,7 @@ impl World {
                 }
                 status = 0;
                 p -= need;
+                if kind == FARM { let b = &mut self.buildings[i]; b.fert = b.fert.saturating_sub(FERT_WEAR); if b.mode == 2 && b.fert <= FERT_TIRED { b.mode = 3; } }
                 if kind == 4 { let (cx, cy) = (self.buildings[i].x, self.buildings[i].y); self.clear_trees(cx, cy); }
             }
             self.buildings[i].progress = p;
@@ -1544,6 +1564,17 @@ impl World {
         let mut v = vec![d.x, d.y, 0.0]; for w in d.path.iter().skip(d.wi) { v.extend_from_slice(&[w.x, w.y, w.mode as f32]); } v
     }
     pub fn map_version(&self) -> u32 { self.map_ver }
+    /// Choose what a farm does with its field: 0 always sow, 1 let it lie fallow, 2 rotate (rest when the soil is worn, sow again when it is restored). 0 ok, -1 not a farm, -2 bad mode.
+    pub fn set_field_mode(&mut self, idx: u32, mode: u8) -> i32 {
+        let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
+        if b.kind != FARM { return -1; }
+        if mode > 2 { return -2; }
+        b.mode = if mode == 2 && b.fert <= FERT_TIRED { 3 } else { mode }; 0
+    }
+    /// A farm's field: [soil in hundredths of a percent (10000 = rich), what it does (0 sow, 1 fallow, 2 rotate), resting right now (0/1)]; empty for anything that is not a farm.
+    pub fn field_info(&self, idx: u32) -> Vec<i32> {
+        match self.buildings.get(idx as usize) { Some(b) if b.kind == FARM => vec![b.fert as i32, if b.mode == 3 { 2 } else { b.mode as i32 }, (b.mode == 1 || b.mode == 3) as i32], _ => vec![] }
+    }
     /// Kept groves [x, y, radius] each: forest that stands inside a cleared area.
     pub fn groves_flat(&self) -> Vec<f32> { self.groves.iter().flatten().copied().collect() }
     /// Testing tool for the model village. Positions are relative to the town hall.
@@ -1559,7 +1590,7 @@ impl World {
                 self.map_ver += 1; self.terrain_ver += 1; 0
             }
             1 => {
-                if !(0..4).contains(&a) || b.abs() > 400 || c.abs() > 400 { return -1; }
+                if !(0..4).contains(&a) || !(-400..=400).contains(&b) || !(-400..=400).contains(&c) { return -1; }
                 let kind = a as u8; let (x, y) = (hx + b as f32, hy + c as f32);
                 let slot = self.deposits.iter().position(|d| d.kind == kind && d.max == 0)
                     .or_else(|| self.deposits.iter().enumerate().filter(|(_, d)| d.kind == kind).min_by(|(_, p), (_, q)| (p.x - hx).hypot(p.y - hy).total_cmp(&(q.x - hx).hypot(q.y - hy))).map(|(i, _)| i));
@@ -1568,7 +1599,7 @@ impl World {
                 self.deposits[i] = Deposit { kind, x, y, rem: amount, max: amount };
                 self.map_ver += 1; self.terrain_ver += 1; i as i32
             }
-            2 => { if b.abs() > 400 || a.abs() > 400 || self.groves.len() >= 16 { return -1; } self.groves.push([hx + a as f32, hy + b as f32, (c as f32).clamp(5.0, 60.0)]); self.map_ver += 1; 0 }
+            2 => { if !(-400..=400).contains(&a) || !(-400..=400).contains(&b) || self.groves.len() >= 16 { return -1; } self.groves.push([hx + a as f32, hy + b as f32, (c as f32).clamp(5.0, 60.0)]); self.map_ver += 1; 0 }
             _ => -1,
         }
     }
@@ -1656,7 +1687,7 @@ impl World {
         for s in &self.stock { mix(*s as i64 as u64); }
         for b in &self.buildings {
             mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
-            mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64);
+            mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
         }
         for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); }
         for k in 0..5 { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); }
@@ -2004,7 +2035,7 @@ mod tests {
 
     fn put(w: &mut World, kind: u8, x: f32, y: f32, rot: u8) {
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0 });
+        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
     }
 
     #[test]
@@ -3254,5 +3285,65 @@ mod pathing_room_tests {
         assert_eq!(p[0], 1.0, "a route exists: {:?}", &p[..5.min(p.len())]);
         let mut len = 0.0; let mut prev = (0.0f32, 12.0f32); for q in p[5..].chunks(3) { len += ((q[0] - prev.0).powi(2) + (q[1] - prev.1).powi(2)).sqrt(); prev = (q[0], q[1]); }
         assert!(len < 70.0, "it goes through the gaps, not all the way round the row: {len:.0} units");
+    }
+
+    // ---------- soil fertility and crop rotation ----------
+    fn fert_world() -> (World, u32) {
+        let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.cheat(3, 0, 0);
+        for (k, x, y) in [(0u8, 12, 4), (0, 18, 8), (0, 24, 2)] { w.place(k, x, y, 0); }
+        let f = w.place(FARM, -14, 6, 0); assert!(f >= 0, "a farm fits: {f}");
+        (w, f as u32)
+    }
+    fn run_keeping_fed(w: &mut World, ticks: u32) { for _ in 0..ticks { w.step(); w.stock[GR as usize] = 100; w.stock[W as usize] = 600; } }
+
+    #[test]
+    fn sown_soil_wears_out_and_yields_less() {
+        // (short runs: bandits raid after tick 600)
+        let (mut w, f) = fert_world();
+        assert_eq!(w.field_info(f), vec![10_000, 0, 0], "a new field has rich soil");
+        run_keeping_fed(&mut w, 550);
+        let worn = w.field_info(f)[0];
+        assert!(worn < 10_000 && worn > 9_000, "soil wears a little each harvest: {worn}");
+        // the same farm on worn soil makes less per cycle than on rich soil
+        let (mut rich, _) = fert_world(); let (mut poor, _) = fert_world();
+        poor.buildings[f as usize].fert = 0; rich.buildings[f as usize].fert = FERT_MAX;
+        let mut made = [0i32; 2];
+        for (k, w) in [&mut rich, &mut poor].into_iter().enumerate() { for _ in 0..550 { let before = w.stock[GR as usize]; w.step(); w.stock[GR as usize] = before.max(0) + (w.stock[GR as usize] - before).max(0); made[k] += (w.stock[GR as usize] - before).max(0); w.stock[GR as usize] = 100; } }
+        assert!(made[1] < made[0], "worn soil {} vs rich {}", made[1], made[0]);
+    }
+
+    #[test]
+    fn a_fallow_field_recovers_and_makes_nothing() {
+        let (mut w, f) = fert_world();
+        w.buildings[f as usize].fert = 3_000;
+        assert_eq!(w.set_field_mode(f, 1), 0);
+        assert_eq!(w.field_info(f)[2], 1);
+        run_keeping_fed(&mut w, 550);
+        assert!(w.field_info(f)[0] > 3_000 + 500, "it recovers: {:?}", w.field_info(f));
+        assert_eq!(w.set_field_mode(f, 0), 0); assert_eq!(w.field_info(f)[2], 0);
+        assert_eq!(w.set_field_mode(f, 9), -2); assert_eq!(w.set_field_mode(0, 1), -1, "the town hall is no farm"); assert_eq!(w.set_field_mode(9999, 1), -1);
+    }
+
+    #[test]
+    fn rotation_rests_a_worn_field_and_sows_it_again() {
+        let (mut w, f) = fert_world();
+        w.buildings[f as usize].fert = FERT_TIRED;
+        assert_eq!(w.set_field_mode(f, 2), 0);
+        assert_eq!(w.field_info(f), vec![FERT_TIRED as i32, 2, 1], "a worn field set to rotate starts resting");
+        w.buildings[f as usize].fert = FERT_RESTORED - 20;
+        run_keeping_fed(&mut w, 200);
+        assert_eq!(w.field_info(f)[2], 0, "restored soil is sown again: {:?}", w.field_info(f));
+        assert_eq!(w.field_info(f)[1], 2, "and it is still on rotation");
+        w.buildings[f as usize].fert = FERT_TIRED + 2;
+        run_keeping_fed(&mut w, 200);
+        assert_eq!(w.field_info(f)[2], 1, "worn soil rests again: {:?}", w.field_info(f));
+    }
+
+    #[test]
+    fn soil_is_part_of_the_state_hash() {
+        let (mut a, f) = fert_world(); let (mut b, _) = fert_world();
+        assert_eq!(a.state_hash(), b.state_hash());
+        b.set_field_mode(f, 1); a.step(); b.step();
+        assert_ne!(a.state_hash(), b.state_hash());
     }
 }

@@ -25,6 +25,7 @@ export class Spans {
       const prims = planSpan({ length: L, tier, hA, hB, options: opts, bed: s => this.terrain.heightAt(cx + ux * s, cz + uz * s) });
       for (const p of prims) {
         const g = new THREE.BoxGeometry(p.ls, p.lh, p.lt).toNonIndexed(), c = new THREE.Color(p.color), n = g.attributes.position.count, col = new Float32Array(n * 3);
+        { const h = Math.sin(p.s * 12.9898 + p.t * 78.233 + p.y * 37.719) * 43758.5453; c.multiplyScalar(0.94 + 0.12 * (h - Math.floor(h))); }   // a little variation from block to block, so a stone span does not read as one flat tone
         for (let i = 0; i < n; i++) col.set([c.r, c.g, c.b], i * 3);
         g.setAttribute('color', new THREE.BufferAttribute(col, 3)); g.deleteAttribute('uv');
         if (p.pitch) g.rotateZ(p.pitch);

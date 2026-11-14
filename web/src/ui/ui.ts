@@ -33,6 +33,8 @@ export interface Handlers {
   attack(peerKey: string, units: number[]): void;
   trade(peerKey: string, action: string, res: number, amount: number, escort: number): void;
   focusPeer(key: string): void;
+  /** Watch a player's history ('' = your own). */
+  watch(key: string): void;
   copyLink(): void;
   cheat(action: number, a: number, b: number): void;
   toggleMute(): void;
@@ -273,7 +275,7 @@ export class UI {
     this.initTitleTips();
     $('btn-help').onclick = () => this.modal('help', true);
     $('btn-display').onclick = () => this.modal('display', true);
-    mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'));
+    mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => this.modal(b.dataset.close!, false));
     $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').textContent = '✓ Copied'; setTimeout(() => ($('mp-copy').textContent = '📋 Copy invite link'), 1800); };
@@ -294,7 +296,7 @@ export class UI {
       const r = this.minimap.getBoundingClientRect();
       this.h.minimapClick(((e.clientX - r.left) / r.width - 0.5) * HALF * 2, ((e.clientY - r.top) / r.height - 0.5) * HALF * 2);
     };
-    $('pane-village').onclick = $('mp').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-peer]'); if (b) { this.h.focusPeer(b.dataset.peer!); this.modal('mp', false); } };
+    $('pane-village').onclick = $('mp').onclick = e => { const wb = (e.target as HTMLElement).closest<HTMLElement>('[data-watch]'); if (wb) { this.modal('mp', false); this.h.watch(wb.dataset.watch!); return; } const b = (e.target as HTMLElement).closest<HTMLElement>('[data-peer]'); if (b) { this.h.focusPeer(b.dataset.peer!); this.modal('mp', false); } };
     addEventListener('keydown', e => {
       if ((e.target as HTMLElement)?.matches?.('input,textarea')) return;
       if (e.key === 'Escape') { document.querySelectorAll('.overlay.clear').forEach(o => ((o as HTMLElement).hidden = true)); }
@@ -567,7 +569,7 @@ export class UI {
     this.peers = rows;
     $('mp-count').textContent = rows.length ? `${rows.length + 1} players` : 'Online';
     $('mp-world').textContent = world;
-    const list = rows.length ? rows.map(r => `<li><b>${esc(r.name)}</b> — ${r.pop} villagers, ${r.buildings} buildings · ${r.sync} <button class="chip" data-peer="${esc(r.key)}">Visit</button></li>`).join('') : '<li class="muted">Nobody else is here yet.</li>';
+    const list = rows.length ? rows.map(r => `<li><b>${esc(r.name)}</b> — ${r.pop} villagers, ${r.buildings} buildings · ${r.sync} <button class="chip" data-peer="${esc(r.key)}">Visit</button> <button class="chip" data-watch="${esc(r.key)}" title="Replay this player's history">Watch history</button></li>`).join('') : '<li class="muted">Nobody else is here yet.</li>';
     $('peer-list').innerHTML = list; $('mp-peers').innerHTML = list;
     const form = $('attack-form');
     const sig = rows.map(r => r.key + r.busy).join(',');

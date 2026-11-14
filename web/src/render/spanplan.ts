@@ -4,7 +4,7 @@ export interface SpanIn { length: number; tier: number; hA: number; hB: number; 
 
 export const WIDTH = [2.4, 2.8, 3.4, 4.2];             // deck width by tier: footbridge, timber, stone, great
 export const PIER_GAP = [5.5, 6.5, 8.5, 11];           // distance between supports by tier
-const PALETTE = [{ deck: [0x8a6a46, 0x7a5a3a], post: 0x4a3420, rail: 0x6a4a2e }, { deck: [0x9a7a52, 0x8a6a46], post: 0x56402a, rail: 0x7a5a3a }, { deck: [0xa8a49a, 0x9a968c], post: 0x8c887e, rail: 0xb4afa4 }, { deck: [0xb8b2a6, 0xaaa498], post: 0x9a958a, rail: 0xc4beb2 }];
+const PALETTE = [{ deck: [0x8a6a46, 0x7a5a3a], post: 0x4a3420, rail: 0x6a4a2e }, { deck: [0x9a7a52, 0x8a6a46], post: 0x56402a, rail: 0x7a5a3a }, { deck: [0x77705f, 0x6a6354], post: 0x58524a, rail: 0x827b6c }, { deck: [0x817a6a, 0x726b5c], post: 0x625c52, rail: 0x8d8678 }];   // (stone is drawn with flat vertex colours under a strong sun: light greys such as 0xb8b2a6 blow out to white, so these are mid greys)
 export const BANK = 1.6;                                // how far the deck reaches onto each bank (the core's margin)
 
 /** Where the supports stand along a bridge of this length: none under a short span, otherwise evenly spaced between the two bank ends. */

@@ -1,0 +1,64 @@
+// Applying commands to a World, and reading a saved history back. Shared by your own village, the replicas of other players and the replay.
+import type { World } from './wasm/game_core.js';
+import { parseCmd } from './net/validate.ts';
+import type { Cmd, Signed } from './net/p2p.ts';
+
+export function applyCmd(w: World, c: Cmd) {
+  switch (c.op) {
+    case 'place': w.place(c.kind!, c.x!, c.y!, c.rot ?? 0); break;
+    case 'upgrade': w.upgrade(c.idx!); break;
+    case 'demolish': w.demolish(c.idx!); break;
+    case 'train': w.train(c.kind!, c.x!); break;
+    case 'attack': w.send_army(Uint32Array.from(c.units ?? [])); break;
+    case 'raid': w.start_raid(c.angle ?? 0, Uint32Array.from(c.units ?? []), c.tag ?? 1); break;
+    case 'cheat': w.cheat(c.kind ?? 0, c.x ?? 0, c.y ?? 0); break;
+    case 'repair': w.repair(c.idx!); break;
+    case 'garrison': w.garrison_set(c.idx!, c.kind ?? 0); break;
+    case 'bridge': w.drawbridge_set(c.idx!, (c.kind ?? 0) === 1); break;
+    case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
+    case 'flatten': w.flatten(c.x ?? 60); break;
+    case 'batch': w.place_batch(Int32Array.from(c.units ?? [])); break;   // [kind, dx, dy, rot] per piece, rebuilt once
+    case 'visit': w.visit_neutral(c.idx!); break;
+    case 'hero': w.hero_hire(); break;
+    case 'field': w.set_field_mode(c.idx!, c.kind ?? 0); break;
+    case 'style': w.set_style(c.kind ?? 0); break;
+    case 'goods': break;   // a notice that a caravan arrived: the receiver acts on it (see onCmd), nothing to replay
+    case 'accept': w.receive_goods(c.kind ?? 0, c.x ?? 0); break;
+    case 'settle': w.settle(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;
+    case 'choose': w.choose(c.kind ?? 0); break;
+    case 'treaty': if ((c.y ?? 1) === 0) w.treaty_end(c.idx!, c.kind ?? 0); else w.treaty_set(c.idx!, c.kind ?? 0, c.x ?? 10); break;
+    case 'envoy': w.envoy(c.idx!); break;
+    case 'marriage': w.marriage(c.idx!); break;
+    case 'war': w.declare_war(c.idx!); break;
+    case 'clear': w.clear_deposit(c.idx!); break;
+    case 'demo': w.demo(c.kind ?? 0, c.x ?? 0, c.y ?? 0, c.idx ?? 0); break;   // model-village testing tool
+    case 'gate': w.gate_set(c.idx!, (c.kind ?? 0) === 1); break;
+    case 'caravan': w.caravan_send(c.kind ?? 0, c.x ?? 0, c.idx ?? 0, c.y ?? 0, c.ax ?? 0); break;
+    case 'rebuild': w.rebuild(c.idx!); break;
+    case 'form': w.det_form(Uint32Array.from(c.units ?? [])); break;
+    case 'march': w.det_march(c.idx!, c.x!, c.y!, !!c.to, c.ax ?? 0, c.ay ?? 0); break;
+    case 'recall': w.det_recall(c.idx!); break;
+    case 'split': w.det_split(c.idx!, Uint32Array.from(c.units ?? [])); break;
+    case 'merge': w.det_merge(c.idx!, c.kind!); break;
+    case 'halt': w.det_halt(c.idx!); break;
+    case 'sendatk': w.det_send(c.idx!); break;
+    case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;
+    default: break; // 'refuse' has no effect on the issuer's own world
+  }
+}
+export const stepTo = (w: World, t: number) => { let n = 0; while (w.tick() < BigInt(t) && n++ < 20000) w.step(); };
+
+
+/** The saved history of your own village, read back carefully: a damaged or edited save must not crash the game. Testing-tool commands are your own and stay. */
+export function validSavedLog(log: unknown): { signed: Signed; cmd: Cmd }[] {
+  if (!Array.isArray(log)) return [];
+  const out: { signed: Signed; cmd: Cmd }[] = []; let n = -1, t = 0;
+  for (const s of log.slice(0, 60000)) {
+    if (!s || typeof s.cmd !== 'string' || typeof s.sig !== 'string') break;
+    const cmd = parseCmd(s.cmd, true) as Cmd | null;
+    if (!cmd || cmd.n <= n || cmd.tick < t) break;
+    n = cmd.n; t = cmd.tick; out.push({ signed: { cmd: s.cmd, sig: s.sig }, cmd });
+  }
+  return out;
+}
+
