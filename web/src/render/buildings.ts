@@ -1024,7 +1024,36 @@ class Smoke {
 }
 
 // ---------- scene sync ----------
-interface Item { sig: string; group: THREE.Group; status: number; pop?: number; cell: string }
+interface Item { sig: string; group: THREE.Group; status: number; pop?: number; cell: string; build?: Construction }
+
+/** A building going up: it is cut into storeys that rise out of the ground one after another as the builders get to them, inside a scaffold that climbs with them. Purely visual: the
+ *  building exists in the game at once. */
+interface Construction {
+  t: number; dur: number; top: number; scaffold: THREE.Group; w: number; d: number; level: number;
+  bands: { holder: THREE.Group; y0: number; shown: boolean; grow: number }[];
+  whole: { m: THREE.Object3D; y0: number }[];   // parts that are not cut (they move, or are single things), shown once the builders reach their foot
+  original: THREE.Mesh[];                       // the real meshes, hidden while the storeys stand in for them
+}
+/** Cut a geometry into horizontal slices by the height of each triangle's middle: [slice index] -> geometry (in the same coordinates). */
+function sliceByHeight(geo: THREE.BufferGeometry, bandOf: (y: number) => number, bands: number): (THREE.BufferGeometry | null)[] {
+  const pos = geo.attributes.position, idx = geo.index, names = Object.keys(geo.attributes), tris = (idx ? idx.count : pos.count) / 3;
+  const out: number[][][] = Array.from({ length: bands }, () => names.map(() => []));
+  const get = (k: number) => (idx ? idx.getX(k) : k);
+  for (let t = 0; t < tris; t++) {
+    const i0 = get(t * 3), i1 = get(t * 3 + 1), i2 = get(t * 3 + 2), y = (pos.getY(i0) + pos.getY(i1) + pos.getY(i2)) / 3, b = bandOf(y), arrs = out[b];
+    names.forEach((n, k) => { const at = geo.attributes[n]; for (const i of [i0, i1, i2]) for (let c = 0; c < at.itemSize; c++) arrs[k].push(at.array[i * at.itemSize + c]); });
+  }
+  return out.map(arrs => {
+    if (!arrs[0].length) return null;
+    const g = new THREE.BufferGeometry();
+    names.forEach((n, k) => { const at = geo.attributes[n]; g.setAttribute(n, new THREE.BufferAttribute(new (at.array.constructor as new (a: number[]) => ArrayLike<number> & ArrayBufferView)(arrs[k]) as never, at.itemSize, at.normalized)); });
+    return g;
+  });
+}
+const SCAFFOLD_WOOD = new THREE.MeshStandardMaterial({ color: 0x8a6a3e, roughness: 0.95 });
+const SCAFFOLD_POLE = new THREE.BoxGeometry(0.14, 1, 0.14), SCAFFOLD_PLANK = new THREE.BoxGeometry(1, 0.1, 0.5), SCAFFOLD_BEAM = new THREE.BoxGeometry(1, 0.1, 0.1);
+/** Kinds that are put up piece by piece or are only ground work: no scaffold for these. */
+const NO_SCAFFOLD = new Set([2, 21, 22, 24, 32, 33, 34, 37, 38, 23]);
 /** Static parts are merged per square of this many units, so a change re-merges one square (not the whole village) and the GPU can skip squares that are off screen. */
 const CELL = 36;
 const cellOf = (x: number, z: number) => `${Math.floor(x / CELL)}:${Math.floor(z / CELL)}`;
@@ -1054,8 +1083,9 @@ export class VillageView {
       const [kind, tier, x, z, rot, pad, status] = [flat[i * 10], flat[i * 10 + 1], flat[i * 10 + 2], flat[i * 10 + 3], flat[i * 10 + 4], flat[i * 10 + 5], flat[i * 10 + 6]];
       const opt = options?.[i] ?? 0, sig = `${kind}:${tier}:${x}:${z}:${rot}:${opt}`;
       let it = this.items.get(i);
+      const prevTier = it && it.sig.split(':')[0] === String(kind) && it.sig.split(':')[2] === String(x) ? 1 : 0;   // (same building, new tier or option: an upgrade, built a little quicker)
       if (!it || it.sig !== sig) {
-        if (it) { this.touch(it.cell); this.dispose(it.group); }
+        if (it) { this.touch(it.cell); this.endBuild(it); this.dispose(it.group); }
         // walls are drawn by the Walls renderer as one connected structure; keep an empty placeholder so indices line up
         const g = PLAIN.has(kind) ? Object.assign(new THREE.Group(), { userData: { smoke: [], spin: [] } }) : buildModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), opt, this.flag);
         g.userData.variant = Math.floor(Math.abs(x * 7.3 + z * 13.1)) % 4;
@@ -1063,7 +1093,7 @@ export class VillageView {
         g.userData.idx = i; g.userData.kind = kind;
         this.root.add(g); it = { sig, group: g, status, cell: cellOf(x, z) };
         this.items.set(i, it); this.touch(it.cell);
-        if (this.animateNew) { g.scale.setScalar(0.02); it.pop = 0; }
+        if (this.animateNew) { if (NO_SCAFFOLD.has(kind) || PLAIN.has(kind)) { g.scale.setScalar(0.02); it.pop = 0; } else it.build = this.startBuild(g, radii[kind] ?? 3, tier, !!prevTier); }
       }
       it.status = status; it.group.userData.status = status;
       if (health) {
@@ -1072,8 +1102,70 @@ export class VillageView {
       }
       clear.push({ x, z, r: radii[kind] * 1.15 + 3.5 });
     }
-    for (const [i, it] of [...this.items]) if (i >= n) { this.dispose(it.group); this.items.delete(i); this.touch(it.cell); }
+    for (const [i, it] of [...this.items]) if (i >= n) { this.endBuild(it); this.dispose(it.group); this.items.delete(i); this.touch(it.cell); }
     return clear;
+  }
+
+  /** Cut a new model into storeys and put a scaffold round it: see `Construction`. */
+  private startBuild(g: THREE.Group, r: number, tier: number, upgrade: boolean): Construction {
+    g.updateMatrixWorld(true);
+    const inv = new THREE.Matrix4().copy(g.matrixWorld).invert(), box = new THREE.Box3(), all = new THREE.Box3(), meshes: THREE.Mesh[] = [];
+    g.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh && m.visible) { box.setFromObject(m); if (!box.isEmpty()) { all.union(box); meshes.push(m); } } });
+    const top = Math.max(1.5, all.max.y - g.position.y), w = Math.max(2.2, all.max.x - all.min.x), d = Math.max(2.2, all.max.z - all.min.z);
+    const n = Math.max(3, Math.min(14, Math.ceil(top / 1.4))), bandH = top / n, bandOf = (y: number) => Math.max(0, Math.min(n - 1, Math.floor(y / bandH)));
+    const bands = Array.from({ length: n }, (_, k) => ({ holder: new THREE.Group(), y0: k * bandH, shown: false, grow: 0 }));
+    const whole: { m: THREE.Object3D; y0: number }[] = [], original: THREE.Mesh[] = [];
+    for (const m of meshes) {
+      box.setFromObject(m);
+      if (!m.userData.baked || Array.isArray(m.material)) { m.visible = false; whole.push({ m, y0: box.min.y - g.position.y }); continue; }
+      const geo = m.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld));   // into the building's own coordinates
+      const slices = sliceByHeight(geo, bandOf, n); geo.dispose();
+      slices.forEach((sg, k) => {
+        if (!sg) return;
+        sg.translate(0, -bands[k].y0, 0);   // each storey grows from its own floor
+        const part = new THREE.Mesh(sg, m.material); part.castShadow = m.castShadow; part.receiveShadow = m.receiveShadow; bands[k].holder.add(part);
+      });
+      m.visible = false; original.push(m);
+    }
+    for (const b of bands) { b.holder.position.y = b.y0; b.holder.visible = false; b.holder.scale.y = 0.05; g.add(b.holder); }
+    const dur = Math.min(9, 2.6 + r * 0.7 + tier * 0.6) * (upgrade ? 0.65 : 1);
+    const scaffold = new THREE.Group(); scaffold.position.set((all.max.x + all.min.x) / 2, g.position.y, (all.max.z + all.min.z) / 2);
+    this.batchRoot.add(scaffold);   // (not in `root`, whose children are buildings)
+    return { t: 0, dur, top, scaffold, w: w + 0.8, d: d + 0.8, level: -1, bands, whole, original };
+  }
+
+  private stepBuild(it: Item, dt: number) {
+    const b = it.build!; b.t += Math.min(dt, 0.1);
+    const p = Math.min(1, b.t / b.dur), ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;   // builders get going, then settle into a pace, then finish off
+    const level = ease * (b.top + 0.4);
+    for (const q of b.whole) if (!q.m.visible && q.y0 <= level) q.m.visible = true;
+    for (const k of b.bands) {
+      if (!k.shown && k.y0 <= level) { k.shown = true; k.holder.visible = true; }
+      if (k.shown && k.grow < 1) { k.grow = Math.min(1, k.grow + dt / 0.7); const t = k.grow, c1 = 1.2, c3 = c1 + 1; k.holder.scale.y = Math.max(0.05, 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2)); }   // each storey rises into place
+    }
+    // the scaffold: four poles, and a plank walkway all round at every storey that has been reached
+    const s = b.scaffold, want = Math.ceil((level + 1.2) / 1.7);
+    if (b.level !== want) {
+      b.level = want;
+      while (s.children.length) { const c = s.children.pop()!; s.remove(c); }
+      const h = want * 1.7 + 0.6;
+      for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const pole = new THREE.Mesh(SCAFFOLD_POLE, SCAFFOLD_WOOD); pole.scale.y = h; pole.position.set(sx * b.w / 2, h / 2, sz * b.d / 2); pole.castShadow = true; s.add(pole); }
+      for (let k = 1; k <= want; k++) {
+        const y = k * 1.7 - 0.3;
+        for (const sz of [-1, 1]) { const beam = new THREE.Mesh(SCAFFOLD_BEAM, SCAFFOLD_WOOD); beam.scale.x = b.w; beam.position.set(0, y + 0.55, sz * b.d / 2); s.add(beam); const pl = new THREE.Mesh(SCAFFOLD_PLANK, SCAFFOLD_WOOD); pl.scale.x = b.w; pl.position.set(0, y, sz * b.d / 2); pl.castShadow = true; s.add(pl); }
+        for (const sx of [-1, 1]) { const beam = new THREE.Mesh(SCAFFOLD_BEAM, SCAFFOLD_WOOD); beam.scale.x = b.d; beam.rotation.y = Math.PI / 2; beam.position.set(sx * b.w / 2, y + 0.55, 0); s.add(beam); const pl = new THREE.Mesh(SCAFFOLD_PLANK, SCAFFOLD_WOOD); pl.scale.x = b.d; pl.rotation.y = Math.PI / 2; pl.position.set(sx * b.w / 2, y, 0); pl.castShadow = true; s.add(pl); }
+      }
+    }
+    if (p >= 1 && b.bands.every(k => k.grow >= 1)) { this.endBuild(it); this.touch(it.cell); }
+  }
+
+  /** Finish (or abandon) a construction: every part shows, the scaffold comes down. */
+  private endBuild(it: Item) {
+    const b = it.build; if (!b) return;
+    for (const q of b.whole) q.m.visible = true;
+    for (const m of b.original) m.visible = true;
+    for (const k of b.bands) { k.holder.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); }); k.holder.parent?.remove(k.holder); }
+    this.batchRoot.remove(b.scaffold); it.build = undefined;
   }
 
   /** Something changed in this square: its merged meshes give way to the individual parts again, and it is merged afresh once things have been quiet for a moment. */
@@ -1088,6 +1180,7 @@ export class VillageView {
       it.group.scale.set(k, Math.max(0.02, k * (1 + 0.1 * Math.sin(t * Math.PI))), k);
       if (t >= 1) { it.group.scale.setScalar(1); it.pop = undefined; this.idle = Math.min(this.idle, 0.9); }
     }
+    for (const it of this.items.values()) if (it.build) this.stepBuild(it, dt);
     if (this.dirtyCells.size) {
       this.idle += dt;
       if (this.idle > 1.5) {   // at most a few squares a frame, so a whole new village does not stall one frame
@@ -1100,7 +1193,7 @@ export class VillageView {
     const per = new Map<THREE.Material, THREE.BufferGeometry[]>(), hidden: THREE.Mesh[] = [];
     for (const it of this.items.values()) {
       if (it.cell !== cell) continue;
-      const g = it.group; if (PLAIN.has(g.userData.kind) || g.userData.charred || it.pop !== undefined) continue;
+      const g = it.group; if (PLAIN.has(g.userData.kind) || g.userData.charred || it.pop !== undefined || it.build) continue;
       g.updateMatrixWorld(true);
       g.traverse(o => {
         const m = o as THREE.Mesh;

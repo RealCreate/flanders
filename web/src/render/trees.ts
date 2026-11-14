@@ -184,6 +184,7 @@ export class Forest {
   /** Per frame: wind, and swap each tile between its rich and cheap geometry by distance to the camera. */
   tick(t: number, cam?: THREE.Vector3) {
     this.uTime.value = t;
+    if (this.job) { this.deadline = performance.now() + 5; if (this.job.next().done) this.job = null; }
     if (!cam) return;
     this.tileCentre.forEach((c, i) => {
       const d = Math.hypot(c.x - cam.x, c.z - cam.z), want = this.detail && (c.hi ? d < 95 : d < 75);
@@ -206,16 +207,40 @@ export class Forest {
 
   /** Rebuild instances; trees inside any `clear` disc (x, z, radius) are removed. */
   rebuild(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[] = [], keep: { x: number; z: number; r: number }[] = []) {
+    this.job = null; this.deadline = Infinity;
+    const g = this.steps(clear, lines, keep); while (!g.next().done);
+  }
+
+  /** The same, spread over the next frames (a few milliseconds of each): the forest is rebuilt behind the scenes and swapped in when it is done, so placing a building does not stall a frame. */
+  rebuildLater(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[] = [], keep: { x: number; z: number; r: number }[] = []) {
+    this.job = this.steps(clear, lines, keep);
+  }
+  private job: Generator<void, void, void> | null = null; private deadline = Infinity;
+  get busy() { return this.job !== null; }
+
+  private *steps(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[], keep: { x: number; z: number; r: number }[]): Generator<void, void, void> {
     const L = lines.map(l => ({ ...l, minx: Math.min(l.ax, l.bx) - l.r, maxx: Math.max(l.ax, l.bx) + l.r, minz: Math.min(l.az, l.bz) - l.r, maxz: Math.max(l.az, l.bz) + l.r, dx: l.bx - l.ax, dz: l.bz - l.az }));
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
-    const col = new THREE.Color(), used = new Array<number>(this.meshes.length).fill(0);   // felled and drowned trees are left out, not drawn as zero-size instances
+    const col = new THREE.Color(), used = new Array<number>(this.meshes.length).fill(0);
+    const tm = this.meshes.map(mm => new Float32Array(mm.instanceMatrix.array.length)), tc = this.meshes.map(mm => new Float32Array(mm.instanceMatrix.array.length / 16 * 3));   // (written aside and swapped in at the end)   // felled and drowned trees are left out, not drawn as zero-size instances
+    // the clearings and paths are filed by the square of ground they touch, so a tree looks only at the few round it (a village has hundreds of them, a forest has tens of thousands of trees)
+    const SQ = 24, sk = (a: number, b: number) => (a + 8192) * 16384 + (b + 8192);
+    const dgrid = new Map<number, number[]>(), lgrid = new Map<number, number[]>();
+    const file = (grid: Map<number, number[]>, i: number, x0: number, x1: number, z0: number, z1: number) => {
+      const a0 = Math.floor(x0 / SQ), a1 = Math.floor(x1 / SQ), b0 = Math.floor(z0 / SQ), b1 = Math.floor(z1 / SQ);
+      for (let a = a0; a <= a1; a++) for (let b = b0; b <= b1; b++) { const k = sk(a, b); const l = grid.get(k); if (l) l.push(i); else grid.set(k, [i]); }
+    };
+    clear.forEach((c, i) => file(dgrid, i, c.x - c.r, c.x + c.r, c.z - c.r, c.z + c.r));
+    L.forEach((l, i) => file(lgrid, i, l.minx, l.maxx, l.minz, l.maxz));
     for (let ti = 0; ti < this.trees.length; ti++) {
+      if ((ti & 2047) === 0 && performance.now() > this.deadline) yield;
       const t = this.trees[ti];
       let hidden = false;
-      for (const c of clear) { const dx = t.x - c.x, dz = t.z - c.z; if (dx * dx + dz * dz < c.r * c.r) { hidden = true; break; } }
+      const near = dgrid.get(sk(Math.floor(t.x / SQ), Math.floor(t.z / SQ))), nearL = lgrid.get(sk(Math.floor(t.x / SQ), Math.floor(t.z / SQ)));
+      if (near) for (const ci of near) { const c = clear[ci], dx = t.x - c.x, dz = t.z - c.z; if (dx * dx + dz * dz < c.r * c.r) { hidden = true; break; } }
       // a kept grove stands even inside a big cleared area (the model village's woodcutter grove); small clearings (moats, scorch, felled spots) still win
-      if (hidden && keep.length && clear.every(c => c.r >= 30 || (t.x - c.x) ** 2 + (t.z - c.z) ** 2 >= c.r * c.r) && keep.some(k => (t.x - k.x) ** 2 + (t.z - k.z) ** 2 < k.r * k.r)) hidden = false;
-      if (!hidden) for (const l of L) {            // trees never grow on a path
+      if (hidden && keep.length && !near!.some(ci => clear[ci].r < 30 && (t.x - clear[ci].x) ** 2 + (t.z - clear[ci].z) ** 2 < clear[ci].r ** 2) && keep.some(k => (t.x - k.x) ** 2 + (t.z - k.z) ** 2 < k.r * k.r)) hidden = false;
+      if (!hidden && nearL) for (const li of nearL) { const l = L[li];            // trees never grow on a path
         if (t.x < l.minx || t.x > l.maxx || t.z < l.minz || t.z > l.maxz) continue;
         const len2 = l.dx * l.dx + l.dz * l.dz || 1, k = clamp(((t.x - l.ax) * l.dx + (t.z - l.az) * l.dz) / len2, 0, 1), px = l.ax + l.dx * k, pz = l.az + l.dz * k;
         if ((t.x - px) ** 2 + (t.z - pz) ** 2 < l.r * l.r) { hidden = true; break; }
@@ -228,14 +253,18 @@ export class Forest {
         else { const hx = this.terrain.heightAt(t.x + 1.5, t.z), hz = this.terrain.heightAt(t.x, t.z + 1.5); if (Math.hypot(hx - h0, hz - h0) / 1.5 > 1.25) hidden = true; }
       }
       this.hidden[ti] = hidden ? 1 : 0;
-      const mesh = this.meshes[t.mesh];
       if (hidden) continue;
       t.slot = used[t.mesh]++; t.y = h0;
       q.setFromAxisAngle(up, t.rot); p.set(t.x, t.y - 0.1, t.z); s.set(t.s * (t.type === 0 ? 1.1 : 1), t.s * (1 + ((t.rot * 3.7) % 1) * 0.25), t.s * (t.type === 0 ? 1.1 : 1));
-      m.compose(p, q, s); mesh.setMatrixAt(t.slot, m);
+      m.compose(p, q, s); m.toArray(tm[t.mesh], t.slot * 16);
       const v = 0.88 + ((t.rot * 7.3) % 1) * 0.26, hue = (t.x * 0.13) % 0.12;
-      col.setRGB(v * (1 + hue * 0.6), v * (1 + hue * 0.2), v * (0.9 + hue)); mesh.setColorAt(t.slot, col);
+      col.setRGB(v * (1 + hue * 0.6), v * (1 + hue * 0.2), v * (0.9 + hue)); col.toArray(tc[t.mesh], t.slot * 3);
     }
-    this.meshes.forEach((mm, i) => { mm.count = used[i]; mm.instanceMatrix.needsUpdate = true; if (mm.instanceColor) mm.instanceColor.needsUpdate = true; mm.computeBoundingSphere(); mm.computeBoundingBox(); });
+    this.meshes.forEach((mm, i) => {
+      mm.instanceMatrix.array.set(tm[i].subarray(0, used[i] * 16));
+      if (!mm.instanceColor) mm.setColorAt(0, col);
+      (mm.instanceColor!.array as Float32Array).set(tc[i].subarray(0, used[i] * 3));
+      mm.count = used[i]; mm.instanceMatrix.needsUpdate = true; mm.instanceColor!.needsUpdate = true; mm.computeBoundingSphere(); mm.computeBoundingBox();
+    });
   }
 }

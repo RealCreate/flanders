@@ -726,10 +726,12 @@ async function warmUp() {
 
 // ---------- scene sync ----------
 let forestDirtyFlag = false;
-function rebuildForest() {
+function rebuildForest(later = false) {
   const all = [lv, ...[...rivals.values()].map(r => r.village)];
   const rocks: { x: number; z: number; r: number }[] = []; { const d = lv.world.deposits_flat(); for (let i = 0; i + 4 < d.length; i += 5) if (d[i + 4] > 0) rocks.push({ x: d[i + 1], z: d[i + 2], r: 5 }); }   // trees do not grow through ore and rock
-  forest.rebuild([...all.flatMap(v => v.clear), ...rocks], all.flatMap(v => v.clearLines), all.flatMap(v => v.keep)); forestDirtyFlag = false;
+  const clear = [...all.flatMap(v => v.clear), ...rocks], lines = all.flatMap(v => v.clearLines), keep = all.flatMap(v => v.keep);
+  if (later) forest.rebuildLater(clear, lines, keep); else forest.rebuild(clear, lines, keep);
+  forestDirtyFlag = false;
   obstCache = all.flatMap(v => v.obstacles);
 }
 
@@ -739,12 +741,31 @@ function allScorch() {
 }
 
 /** Re-level the ground of a whole village: pads, graded paths, craters and burn scars. */
-function refreshTerrain(w: World) {
+function refreshTerrain(w: World, box: [number, number, number, number] | null = null) {
   terrain.scorch = allScorch();
   const ox = w.origin_x(), oz = w.origin_y();
   const others = [...rivals.values()].map(r => ({ x: r.village.ox, z: r.village.oz })).concat(lv ? [{ x: lv.ox, z: lv.oz }] : []).filter(p => Math.hypot(p.x - ox, p.z - oz) > 1);
-  terrain.refresh(w, ox, oz, w.build_radius() + 12, others);
+  if (box) terrain.refreshBox(w, box[0], box[1], box[2], box[3], ox, oz, others);
+  else terrain.refresh(w, ox, oz, w.build_radius() + 12, others);
   deposits?.refit();
+}
+/** The ground that changes when this building is put up or upgraded: the building and its levelled pad, and the paths that run to it. (Everything else is brought up to date a moment later: see `settleTerrain`.) */
+function focusBox(idx: number): [number, number, number, number] | null {
+  const w = lv.world, f = w.buildings_flat(), o = idx * 10; if (idx < 0 || o + 3 >= f.length) return null;
+  const kind = f[o]; if (kind === 24 || kind === 32 || kind === 33 || kind === 34 || kind === 2 || kind === 21 || kind === 22) return null;   // earthworks and walls reshape more ground than that
+  const r = (shared.radii[kind] ?? 4) * 1.4 + 10; let x0 = f[o + 2] - r, x1 = f[o + 2] + r, z0 = f[o + 3] - r, z1 = f[o + 3] + r;
+  const rd = w.roads_flat();
+  for (let i = 0; i + 5 < rd.length; i += 6) if (rd[i + 4] === idx || rd[i + 5] === idx) { x0 = Math.min(x0, rd[i] - 7, rd[i + 2] - 7); x1 = Math.max(x1, rd[i] + 7, rd[i + 2] + 7); z0 = Math.min(z0, rd[i + 1] - 7, rd[i + 3] - 7); z1 = Math.max(z1, rd[i + 1] + 7, rd[i + 3] + 7); }
+  return [x0, z0, x1, z1];
+}
+/** After a local refresh, the rest of the village's ground is re-read in a few slices over the next moments (in case a path elsewhere was re-routed), not all in one frame. */
+let settleTimer: number | undefined;
+function settleTerrain() {
+  clearTimeout(settleTimer);
+  settleTimer = window.setTimeout(() => {
+    const w = lv.world, R = w.build_radius() + 12, ox = w.origin_x(), oz = w.origin_y();
+    for (let k = 0; k < 4; k++) window.setTimeout(() => { if (lv.world === w) refreshTerrain(w, [ox - R, oz - R + (2 * R * k) / 4, ox + R, oz - R + (2 * R * (k + 1)) / 4]); }, 70 * k);
+  }, 1500);
 }
 function refreshAll() { refreshTerrain(lv.world); for (const r of rivals.values()) refreshTerrain(r.village.world); lv.syncFull(); for (const r of rivals.values()) r.village.syncFull(); }
 
@@ -762,7 +783,9 @@ function applyFlag(f: Flag) {
   if (lv.world.set_style(n)) { commit({ op: 'style', kind: n }); lv.syncFull(); }
 }
 
-function afterLocalChange() { refreshTerrain(lv.world); lv.syncFull(); deposits?.attach(lv.world.buildings_flat()); lv.afterTick(); if (forestDirtyFlag) rebuildForest(); updateSelection(); updateHud(); }
+function afterLocalChange(focus?: number) {
+  const box = focus !== undefined ? focusBox(focus) : null;
+  refreshTerrain(lv.world, box); if (box) settleTerrain(); lv.syncFull(); deposits?.attach(lv.world.buildings_flat()); lv.afterTick(); if (forestDirtyFlag) rebuildForest(true); updateSelection(); updateHud(); }
 
 /** How we stand with another village: feeling, marriage and treaties (1 trade pact, 2 peace, 4 alliance). */
 function relOf(key: string) {
@@ -818,7 +841,7 @@ function stepLocal() {
   if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
-  if (forestDirtyFlag) rebuildForest();
+  if (forestDirtyFlag) rebuildForest(true);
 }
 
 function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r => r.online)) n = Math.min(n, 1); speed = n; ui.setSpeed(n); }
@@ -1095,7 +1118,7 @@ function onAct(a: string) {
     const code = w.upgrade(selectedIdx);
     if (code === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit({ op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
     else if (code === -3) { ui.toast('Not enough room to grow: demolish the buildings in the way (hover Upgrade to see them).', 'bad'); sound.error(); }
-    afterLocalChange();
+    afterLocalChange(selectedIdx ?? undefined);
   } else if (a === 'demolish') {
     if (w.demolish(selectedIdx)) { const f = w.buildings_flat(); void f; commit({ op: 'demolish', idx: selectedIdx }); sound.demolish(); selectedIdx = null; afterLocalChange(); rig.shake(0.25); }
   }
@@ -1287,7 +1310,7 @@ function bindInput() {
       }
       const sn = depositSnap(kind, dx, dy), px = sn ? sn.dx : dx, py = sn ? sn.dy : dy, prot = sn ? sn.rot : rot;
       const res = lv.world.place(kind, px, py, prot);
-      if (res >= 0) { commit({ op: 'place', kind, x: px, y: py, rot: prot }); ghostCode = 99; previewKey = ''; afterLocalChange(); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e); }
+      if (res >= 0) { commit({ op: 'place', kind, x: px, y: py, rot: prot }); ghostCode = 99; previewKey = ''; afterLocalChange(res); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e); }
       else { ui.hint(PLACE_ERRORS[res] ?? 'Cannot build here', true); sound.error(); }
     } else {
       const det = pickArmy(e) ?? lv.field.pick(pointerRay(e));
