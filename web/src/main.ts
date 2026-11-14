@@ -161,6 +161,7 @@ function applyCmd(w: World, c: Cmd) {
     case 'marriage': w.marriage(c.idx!); break;
     case 'war': w.declare_war(c.idx!); break;
     case 'clear': w.clear_deposit(c.idx!); break;
+    case 'gate': w.gate_set(c.idx!, (c.kind ?? 0) === 1); break;
     case 'caravan': w.caravan_send(c.kind ?? 0, c.x ?? 0, c.idx ?? 0, c.y ?? 0, c.ax ?? 0); break;
     case 'rebuild': w.rebuild(c.idx!); break;
     case 'form': w.det_form(Uint32Array.from(c.units ?? [])); break;
@@ -308,8 +309,8 @@ function updateGoals() {
 
 // ---------- testing tools ----------
 /** Test tool: forget every saved village (all worlds) in this browser and start again from the empty map. Your identity and settings are kept. */
-function fullReset() {
-  if (!confirm('This deletes every saved village in this browser, in every world, and restarts from the empty map. Other players keep their own copies of your old village until they leave. Continue?')) return;
+async function fullReset() {
+  if (!(await ui.confirm('This deletes every saved village in this browser, in every world, and restarts from the empty map. Other players keep their own copies of your old village until they leave.', 'Delete everything', 'Reset the whole map?'))) return;
   resetting = true;
   try { for (const k of Object.keys(localStorage)) if (k.startsWith('flanders:save:')) localStorage.removeItem(k); } catch { /* blocked */ }
   location.reload();
@@ -319,16 +320,17 @@ function fullReset() {
 let showroom: THREE.Group | null = null;
 function toggleShowroom() {
   const hide = (on: boolean) => { terrain.mesh.visible = on; deposits.group.visible = on; forest.group.visible = on && settings().trees; wildlife.group.visible = on && settings().crowds; };   // the hall stands on its own platform: the land and its trees would clip through it
-  if (showroom) { scene.remove(showroom); showroom = null; hide(true); rig.focus(lv.ox, lv.oz, 75); ui.toast('Back at your village.', 'info'); return; }
+  if (showroom) { scene.remove(showroom); showroom = null; hide(true); ui.hallExit(false, toggleShowroom); rig.focus(lv.ox, lv.oz, 75); ui.toast('Back at your village.', 'info'); return; }
   const x0 = 960, z0 = -560, sr = buildShowroom(defs.map(d => ({ id: d.id, name: d.name, maxTier: d.maxTier })), tierName, x0, z0);
   showroom = sr.group; showroom.position.y = Math.max(1, terrain.heightAt(sr.spawn.x, sr.spawn.z)); scene.add(showroom); hide(false); rig.focus(sr.spawn.x, sr.spawn.z, 70);
+  ui.hallExit(true, toggleShowroom);
   ui.toast('Test hall: one row per building, tiers left to right, then tier 2 and the top tier with every design option. Pan along the rows; press the button again to leave.', 'info');
 }
 
 /** Clear every building except the town hall and build the planned model village (see modelvillage.ts). Everything goes through signed commands. */
 const MODEL_FLAT_RADIUS = 90;
-function runModelVillage(ask: boolean) {
-  if (ask && !confirm('This clears every building except the town hall and builds a model village in its place. Continue?')) return;
+async function runModelVillage(ask: boolean) {
+  if (ask && !(await ui.confirm('This clears every building except the town hall and builds a model village in its place.', 'Build it', 'Build the model village?'))) return;
   const w = lv.world;
   if (w.battle_active()) { ui.toast('Not during a battle.', 'bad'); return; }
   if (w.cheat(8, 0, 0)) commit({ op: 'cheat', kind: 8, x: 0, y: 0 });   // clear old earthworks, craters, scorch and ruins first
@@ -363,8 +365,9 @@ function runModelVillage(ask: boolean) {
 }
 
 function doCheat(action: number, a: number, b: number) {
+  if (action === 103) { toggleShowroom(); return; }
+  if (showroom) toggleShowroom();   // any other test action takes you back to your village first (the hall is only a drawing)
   if (action === 100) { runModelVillage(true); return; }
-  if (action === 101) { toggleShowroom(); return; }
   if (action === 101) { fullReset(); return; }
   if (action === 102) { if (lv.world.flatten(a) === 0) { commit({ op: 'flatten', x: a }); afterLocalChange(); refreshTerrain(lv.world); ui.toast('The ground is levelled.', 'good'); } return; }
   if (action === 5) a = selectedIdx ?? -1;           // "burn selected building"
@@ -673,7 +676,7 @@ async function startGame(name: string, username: string) {
   updateGoals();
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
-  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => doCheat(a, x, y), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
+  (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
   last = performance.now(); requestAnimationFrame(frame);
 }
 
@@ -967,6 +970,14 @@ function updateSelection() {
       <div class="btnrow"><button class="pbtn primary" data-act="bridge">${up ? 'Lower the drawbridge' : 'Draw it up'}</button></div>
       <p class="muted">${up ? 'Nobody crosses while it is up, your own armies included.' : 'Your people and armies cross freely.'} It is drawn up automatically when raiders attack, and lowered again afterwards.</p></div>`;
   }
+  if (kind === 22) {
+    if (tier >= 2) {
+      const shut = f[o + 6] === 5, inBattle = lv.world.battle_active();
+      html += `<div><h3>Gate doors</h3><div class="stats"><div class="stat"><b>${shut || inBattle ? 'Shut' : 'Open'}</b><span>State</span></div></div>
+        <div class="btnrow"><button class="pbtn primary" data-act="gate">${shut ? 'Open the gate' : 'Close the gate'}</button></div>
+        <p class="muted">${shut ? 'Barred: nobody marches through, your own armies included.' : 'People and armies pass freely.'} The doors shut by themselves when raiders attack, and open again afterwards (unless you closed them).</p></div>`;
+    } else html += `<p class="muted">A wooden gate has no doors. Upgrade it to a stone gatehouse to get doors that can be closed.</p>`;
+  }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.cycle) {
     html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>👷 ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
@@ -1022,6 +1033,12 @@ function onAct(a: string) {
     if (code === 0) { commit({ op: 'repair', idx: selectedIdx }); sound.upgrade(); ui.toast('Repaired.', 'good'); afterLocalChange(); } else ui.toast(PLACE_ERRORS[code] ?? 'Cannot repair that.', 'bad');
     return;
   }
+  if (a === 'gate') {
+    const closed = lv.world.buildings_flat()[selectedIdx * 10 + 6] === 5, code = lv.world.gate_set(selectedIdx, !closed);
+    if (code === 0) { commit({ op: 'gate', idx: selectedIdx, kind: closed ? 0 : 1 }); sound.click(); ui.toast(closed ? 'The gate is opened.' : 'The gate is shut and barred.', 'info'); afterLocalChange(); }
+    else if (code === -2) ui.toast('Only a stone gatehouse has doors: upgrade the gate.', 'bad');
+    return;
+  }
   if (a === 'bridge') {
     const up = lv.world.buildings_flat()[selectedIdx * 10 + 6] === 5;   // status 5 = drawn up
     if (lv.world.drawbridge_set(selectedIdx, !up) === 0) { commit({ op: 'bridge', idx: selectedIdx, kind: up ? 0 : 1 }); sound.click(); ui.toast(up ? 'The drawbridge is lowered.' : 'The drawbridge is drawn up.', 'info'); afterLocalChange(); }
@@ -1062,6 +1079,7 @@ function openContext(e: PointerEvent) {
     title = tierName(kind, tier);
     if (tier < defs[kind].maxTier) items.push({ label: 'Upgrade', run: () => { selectBuilding(idx); onAct('upgrade'); } });
     if (hurt) items.push({ label: 'Repair', run: () => { selectBuilding(idx); onAct('repair'); } });
+    if (kind === 22 && tier >= 2) items.push({ label: f[o + 6] === 5 ? 'Open the gate' : 'Close the gate', run: () => { selectBuilding(idx); onAct('gate'); } });
     if (kind === 23) items.push({ label: f[o + 6] === 5 ? 'Lower the drawbridge' : 'Draw up the drawbridge', run: () => { selectBuilding(idx); onAct('bridge'); } });
     if (kind === 3 || kind === 26) items.push({ label: 'Fill with archers', run: () => { selectBuilding(idx); onAct('garfill'); } }, { label: 'Empty the tower', run: () => { selectBuilding(idx); onAct('garempty'); } });
     if (kind !== 15) items.push('-', { label: 'Demolish', run: () => { selectBuilding(idx); onAct('demolish'); } });

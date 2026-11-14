@@ -120,7 +120,7 @@ table.res td.r { text-align: right; }
 @keyframes tin { from { transform: translateX(-20px); opacity: 0; } }
 #hint { position: fixed; z-index: 4; left: 50%; bottom: 16px; transform: translateX(calc(-50% - 187px)); background: #1d160fe6; border: 1px solid #6b5536; border-radius: 3px; padding: 6px 14px; font-family: var(--f-old); font-size: 15px; color: var(--paper); pointer-events: none; max-width: 56vw; text-align: center; }
 #hint.bad { border-color: #d9604e; color: #ffb4a6; }
-#tooltip { position: fixed; z-index: 9; pointer-events: none; background: #1d160ff2; border: 1px solid var(--gold); color: var(--paper); padding: 6px 10px; border-radius: 3px; font-size: 13.5px; max-width: 260px; box-shadow: 0 6px 18px #000a; }
+#tooltip { position: fixed; z-index: 60; pointer-events: none; background: #1d160ff2; border: 1px solid var(--gold); color: var(--paper); padding: 6px 10px; border-radius: 3px; font-size: 13.5px; max-width: 260px; box-shadow: 0 6px 18px #000a; }
 #tooltip b { font-family: var(--f-display); font-weight: 400; color: var(--gold-soft); font-size: 15px; letter-spacing: .03em; }
 #tooltip small { color: #cdbb95; display: block; }
 .lbl { position: absolute; transform: translate(-50%, -100%); font-size: 18px; filter: drop-shadow(0 2px 3px #000c); pointer-events: none; text-align: center; }
@@ -279,3 +279,14 @@ kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5
 #display-body h3 { margin: 14px 0 2px; }
 .setrow small { text-transform: none; letter-spacing: 0; }
 .setrow input[type=text], .setrow input[type=password] { width: 230px; font-size: 14px; padding: 3px 5px; }
+
+/* top bar: the everyday controls stay, the rest live in one menu */
+.menuwrap { position: relative; }
+#menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; display: flex; flex-direction: column; gap: 2px; min-width: 220px; padding: 6px; background: #261c12f2; border: 1px solid #6b5536; border-radius: 4px; box-shadow: 0 10px 30px #000a; }
+#menu .btn { text-align: left; display: flex; align-items: center; gap: 8px; background: transparent; border-color: transparent; }
+#menu .btn:hover { background: #3a2c1c; border-color: #6b5536; }
+#menu .btn svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
+#menu .ml { flex: 1; }
+
+#hall-exit { position: fixed; z-index: 12; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 9px 18px; font-size: 16px; }
+#confirm .sheet { width: min(460px, 92vw); } #confirm p { line-height: 1.45; }
