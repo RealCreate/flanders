@@ -674,8 +674,8 @@ export class UI {
     li.innerHTML = `<small>Day ${Math.floor(tick / 240) + 1}</small> ${text}`;
     const ul = $('log'); ul.prepend(li); if (++this.logCount > 40) ul.lastElementChild?.remove();
   }
-  toast(text: string, tone = 'info') {
-    const t = document.createElement('div'); t.className = 'toast ' + tone; t.textContent = text; $('toasts').appendChild(t);
+  toast(text: string, tone = 'info', iconName?: string) {
+    const t = document.createElement('div'); t.className = 'toast ' + tone; if (iconName) t.innerHTML = `${icon(iconName, 16, { mono: true })} ${esc(text)}`; else t.textContent = text; $('toasts').appendChild(t);
     setTimeout(() => { t.style.transition = 'opacity .5s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 6000);
   }
   hint(text: string | null, bad = false) { const h = $('hint'); h.hidden = !text; if (text) { h.innerHTML = esc(text).replace(/&lt;kbd&gt;(.*?)&lt;\/kbd&gt;/g, '<kbd>$1</kbd>'); h.classList.toggle('bad', bad); } }   // key names come as <kbd> tags: keep those, escape the rest

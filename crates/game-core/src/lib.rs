@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 
 mod battle;
 mod catalog;
+mod lend;
 mod march;
 mod military;
 mod pathnet;
@@ -46,6 +47,15 @@ struct Building {
     fert: u16,      // farms: soil fertility in hundredths of a percent (FERT_MAX = rich soil). Sowing wears it down, a fallow field recovers
     mode: u8,       // farms: 0 always sow, 1 fallow (rest the field), 2 rotate (rest when worn, sow again when restored), 3 rotating and resting right now
 }
+
+pub(crate) const DB_UP: u8 = 5;
+pub(crate) const DB_LENT: u8 = 6;
+pub(crate) const DB_LENT_FIGHT: u8 = 7;
+/// Seconds a drawbridge stays raised against armies after the player raised it by hand.
+pub(crate) const VETO_SECS: u32 = 120;
+/// Seconds a lent drawbridge stays down after the last soldier needing it has gone (in a battle: one second, so raiders get no time to use it).
+pub(crate) const LEND_HOLD: u32 = 4;
+pub(crate) const LEND_HOLD_FIGHT: u32 = 1;
 
 /// Soil fertility is counted in hundredths of a percent: FERT_MAX is rich soil. A farm cycle is 8 seconds, so 1 200 cycles make a game year: sown every cycle a field
 /// loses FERT_WEAR hundredths a harvest (about 70% of its richness in a year, and it yields only half at the very worst); a resting field regains FERT_REST a cycle.
@@ -231,6 +241,7 @@ pub struct World {
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
+    db_want: Vec<u32>,           // drawbridges that own soldiers in the fight are waiting to cross this tick (transient: filled by the battle, used by drawbridge_step and cleared)
     map_ver: u32,                // changes when trees are felled or bridges built
 }
 
@@ -302,7 +313,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -1095,6 +1106,7 @@ impl World {
         self.training_step();
         self.march_step();
         self.defence_step();
+        self.drawbridge_step();
         self.builders_step();
         self.trade_step();
         self.toll_step();
@@ -1483,13 +1495,24 @@ impl World {
 
     // ---------- tower garrisons ----------
     fn garrison_cap_of(b: &Building) -> u32 { match b.kind { TOWER => 2 * (b.tier as u32 + 1) + 2, KEEP => 4 * (b.tier as u32 + 1) + 4, _ => 0 } }
-    /// Raise (true) or lower (false) a drawbridge. A raised one cannot be crossed; every drawbridge is drawn up while a battle is on. 0 ok, -1 not a drawbridge.
+    /// Raise (true) or lower (false) a drawbridge by hand. A raised one cannot be crossed by anybody but your own armies, which lower it for themselves while they march over it (see `drawbridge_step`);
+    /// every drawbridge counts as drawn up while a battle is on. A manual raise wins over the automatic lowering: for `VETO_SECS` no army lowers it, and any army whose route ran over it plans
+    /// another way (a bridge of its own, or a ferry). 0 ok, -1 not a drawbridge.
     pub fn drawbridge_set(&mut self, idx: u32, up: bool) -> i32 {
         let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
         if b.kind != DRAWBRIDGE { return -1; }
-        b.status = if up { 5 } else { 4 };
+        b.status = if up { DB_UP } else { 4 };
+        b.progress = if up { VETO_SECS } else { 0 };
+        if up { self.replan_over_deck(idx as usize); }
         0
     }
+    /// A drawbridge's own states (`status`): 4 lowered, 5 drawn up by hand (`progress` counts down the seconds an army may not lower it), 6 lowered for an army (was drawn up), 7 lowered for an
+    /// army during a battle (was lowered: every drawbridge counts as drawn up while a battle is on). `progress` of a lent one counts the seconds nobody has needed it.
+    pub(crate) fn db_lent(b: &Building) -> bool { b.kind == DRAWBRIDGE && matches!(b.status, DB_LENT | DB_LENT_FIGHT) }
+    /// Is this drawbridge drawn up right now (so that nobody can cross it)? Raised by hand, or any that is not lent while raiders attack.
+    pub(crate) fn drawn_up(&self, b: &Building) -> bool { b.kind == DRAWBRIDGE && (b.status == DB_UP || (self.battle.is_some() && !Self::db_lent(b))) }
+    /// May an army lower it for itself? (Not for `VETO_SECS` after the player raised it.)
+    pub(crate) fn db_lendable(&self, b: &Building) -> bool { self.drawn_up(b) && !(b.status == DB_UP && b.progress > 0) }
     /// Close (true) or open (false) the doors of a stone gatehouse (tier 3 up). A closed gate cannot be passed by your own armies; every stone gatehouse is shut while a battle is on and
     /// opens again afterwards. 0 ok, -1 not a gate, -2 a wooden gate has no doors.
     pub fn gate_set(&mut self, idx: u32, closed: bool) -> i32 {
@@ -1837,6 +1860,7 @@ impl World {
                 for b in &self.buildings {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
                     mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
+                    if matches!(b.kind, DRAWBRIDGE | GATE) { mix(b.status as u64); }
                 }
                 for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
             }),
@@ -1892,6 +1916,9 @@ pub fn rules_fingerprint(seed: u64) -> String {
 }
 
 fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
+
+#[cfg(test)]
+mod lend_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2314,7 +2341,7 @@ mod tests {
         let n = 40; for i in 0..n { let a = i as f32 / n as f32 * std::f32::consts::TAU; put(&mut w, MOAT, hx + a.cos() * 18.0, hy + a.sin() * 18.0, 0); }
         assert!(w.begin_battle([6, 0, 4, 0, 0, 0], 0.0, 0));
         let (mut waded, mut crossed, mut worst_ratio) = (false, false, 0.0f32);
-        let mut last: Vec<(f32, f32)> = vec![];
+        let mut last: Vec<(f32, f32)> = vec![]; let mut last_wet: Vec<bool> = vec![];
         for _ in 0..1500 {
             w.step();
             let Some(b) = w.battle.as_ref() else { break };
@@ -2323,12 +2350,12 @@ mod tests {
                     if u.wading {
                         waded = true;
                         let moved = (u.x - last[k].0).hypot(u.y - last[k].1);
-                        worst_ratio = worst_ratio.max(moved / (UNITS[u.kind as usize].speed * 1.0));
+                        if last_wet[k] { worst_ratio = worst_ratio.max(moved / (UNITS[u.kind as usize].speed * 1.0)); }   // (a raider that stepped into the water in the last quarter of the second has walked the rest of it)
                     }
                     if (u.x - hx).hypot(u.y - hy) < 14.0 { crossed = true; }
                 }
             }
-            last = b.units.iter().map(|u| (u.x, u.y)).collect();
+            last = b.units.iter().map(|u| (u.x, u.y)).collect(); last_wet = b.units.iter().map(|u| u.wading).collect();
             if crossed { break; }
         }
         assert!(waded, "raiders enter the moat instead of stopping at its edge");

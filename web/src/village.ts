@@ -1,4 +1,5 @@
 import { NetView } from './render/netview';
+import { drawnUp } from './defence';
 import { settings } from './settings';
 import { deck, type Deck } from './render/terrain';
 import { MoatWater } from './render/moatwater';
@@ -85,7 +86,7 @@ export class Village {
   private updateDecks(w: World, f: Float32Array) {
     const list: Deck[] = [];
     for (let i = 0; i + 9 < f.length; i += 10) {
-      if (f[i] !== 23 || f[i + 6] === 5) continue;   // a drawbridge that is drawn up has no deck to cross
+      if (f[i] !== 23 || drawnUp(f[i + 6], this.view.raised)) continue;   // a drawbridge that is drawn up has no deck to cross (one lent to an army is down, in a fight too)
       const a = (f[i + 4] & 7) * Math.PI / 4, sx = Math.sin(a), sz = Math.cos(a), x = f[i + 2], z = f[i + 3], y = f[i + 5] + 0.02;   // (the top of the deck planks lies flush with the pad: see the model)
       list.push(deck(x - sx * 6.4, z - sz * 6.4, x + sx * 6.4, z + sz * 6.4, 1.5, y, y));
     }
