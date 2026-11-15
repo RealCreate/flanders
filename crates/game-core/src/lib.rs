@@ -3,9 +3,11 @@ use wasm_bindgen::prelude::*;
 
 mod battle;
 mod catalog;
+mod lend;
 mod march;
 mod military;
 mod pathnet;
+mod plague;
 mod wallnet;
 #[cfg(test)]
 mod roadcheck;
@@ -48,6 +50,15 @@ struct Building {
     fert: u16,      // farms: soil fertility in hundredths of a percent (FERT_MAX = rich soil). Sowing wears it down, a fallow field recovers
     mode: u8,       // farms: 0 always sow, 1 fallow (rest the field), 2 rotate (rest when worn, sow again when restored), 3 rotating and resting right now
 }
+
+pub(crate) const DB_UP: u8 = 5;
+pub(crate) const DB_LENT: u8 = 6;
+pub(crate) const DB_LENT_FIGHT: u8 = 7;
+/// Seconds a drawbridge stays raised against armies after the player raised it by hand.
+pub(crate) const VETO_SECS: u32 = 120;
+/// Seconds a lent drawbridge stays down after the last soldier needing it has gone (in a battle: one second, so raiders get no time to use it).
+pub(crate) const LEND_HOLD: u32 = 4;
+pub(crate) const LEND_HOLD_FIGHT: u32 = 1;
 
 /// Soil fertility is counted in hundredths of a percent: FERT_MAX is rich soil. A farm cycle is 8 seconds, so 1 200 cycles make a game year: sown every cycle a field
 /// loses FERT_WEAR hundredths a harvest (about 70% of its richness in a year, and it yields only half at the very worst); a resting field regains FERT_REST a cycle.
@@ -210,6 +221,8 @@ pub struct World {
     mood_until: u64,
     share_until: u64,            // winter: everyone huddles together, firewood lasts twice as long
     quarantine_until: u64,       // while quarantined, plague kills fewer and heals faster but the sick do no work
+    plague_start: u64,           // when the latest outbreak began and when it is due to end (see plague.rs); zeros before the first
+    plague_end: u64,
     caravans: Vec<Caravan>,   // goods on the road to another village
     journeys: Vec<Journey>,   // envoys, treaty offers, brides and war heralds on the road to another village (part of the state)
     arrivals: Vec<[i32; 4]>,  // [kind, tag, arg, tick] of journeys that arrived since the last call to take_arrivals (a notice for the player's own client, not part of the state)
@@ -253,6 +266,7 @@ pub struct World {
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
+    db_want: Vec<u32>,           // drawbridges that own soldiers in the fight are waiting to cross this tick (transient: filled by the battle, used by drawbridge_step and cleared)
     map_ver: u32,                // changes when trees are felled or bridges built
 }
 
@@ -322,9 +336,9 @@ impl World {
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(), road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -371,7 +385,7 @@ impl World {
         if self.neutral_done.get(ni).copied().unwrap_or(true) { return -3; }
         let cap = self.storage_cap(); let h = terrain::h01(self.seed ^ 0x52, ni as i32, 3);
         match kind {
-            0 => { self.sick = 0; self.mood = 12; self.mood_until = self.tick + 15 * DAY; }
+            0 => { self.end_plague(); self.mood = 12; self.mood_until = self.tick + 15 * DAY; }
             1 => { for (r, base) in [(ST, 120), (IR, 20), (GD, 80), (PL, 60)] { let n = (base as f32 * (0.6 + h)) as i32; self.stock[r as usize] = Self::add_capped(self.stock[r as usize], n, cap); } }
             _ => {
                 let power: f32 = (0..NK).map(|k| units[k] as f32 * UNITS[k].hp * UNITS[k].dmg / UNITS[k].cd.max(0.5)).sum();
@@ -1126,24 +1140,8 @@ impl World {
         // seasons, warmth and the generations
         self.household_step();
 
-        // disease
-        let wells = self.buildings.iter().filter(|b| b.kind == WELL).count() as u32;
-        let parks = self.buildings.iter().filter(|b| b.kind == PARK).count() as u32;
-        let chapels: u32 = self.buildings.iter().filter(|b| b.kind == CHAPEL).map(|b| b.tier as u32 + 1).sum();
-        if self.sick > 0 {
-            let q = self.tick < self.quarantine_until;
-            let heal = (1 + chapels) * if q { 2 } else { 1 };
-            let wards: u32 = self.buildings.iter().filter(|b| b.kind == HOSPITAL && b.staff > 0 && b.opts & 2 != 0).count() as u32;
-            let dead = (self.sick / if q || wards > 0 { 10 } else { 5 }).min(self.population).saturating_sub(chapels.min(self.sick / 5)).saturating_sub(self.hospital_beds() / 6);
-            self.kill(dead, DIED_PLAGUE, 2);
-            self.sick = (self.sick - dead.min(self.sick)).saturating_sub(heal);
-            if self.sick == 0 { self.push_event(EV_PLAGUE_END, 0, 0); }
-        } else if self.population > 15 && self.rng.range((450 + 200 * wells + 400 * chapels + 150 * parks + 120 * self.hospital_beds()) / if self.warm { 1 } else { 2 }) == 0 {
-            self.sick = self.population / 8 + 1;
-            self.push_event(EV_PLAGUE, self.sick as i32, 0);
-            self.offer(CH_PLAGUE);
-        }
-        self.sick = self.sick.min(self.population);
+        // disease (an outbreak runs for many days: see plague.rs)
+        self.plague_step();
 
         // random events
         if self.rng.range(200) == 0 {
@@ -1167,10 +1165,10 @@ impl World {
         self.training_step();
         self.march_step();
         self.defence_step();
+        self.drawbridge_step();
         self.builders_step();
         self.trade_step();
         self.toll_step();
-        self.hospital_step();
         self.caravan_step();
         self.journey_step();
         for _ in 0..4 { self.fire_substep(); self.battle_substep(); }
@@ -1198,7 +1196,7 @@ impl World {
         }
     }
     /// Decide. 0 ok, -1 nothing to decide or no such option, -6 cannot afford it.
-    /// Plague: 0 quarantine the sick (they stop working for 5 days; fewer die, more are healed), 1 carry on.
+    /// Plague: 0 quarantine the sick (they stop working for 7 days; fewer die, more are healed, the peak is lower), 1 carry on.
     /// Preacher: 0 welcome him (20 coins; spirits rise for 10 days), 1 turn him away.
     /// Noble: 0 hold a feast (100 grain and 30 coins; he leaves 90 coins and the people are cheered), 1 decline politely.
     /// Winter: 0 buy firewood (60 coins for 80 wood), 1 share what there is (everyone is a bit worse off but nothing is spent), 2 do nothing.
@@ -1210,7 +1208,7 @@ impl World {
         i = 0; while i + 1 < cost.len() { self.stock[cost[i] as usize] -= cost[i + 1]; i += 2; }
         let day = DAY; let now = self.tick;
         match (kind, opt) {
-            (CH_PLAGUE, 0) => { self.quarantine_until = now + 5 * day; }
+            (CH_PLAGUE, 0) => { self.quarantine_until = now + plague::QUARANTINE_DAYS * day; }
             (CH_PREACHER, 0) => { self.mood = 10; self.mood_until = now + 10 * day; }
             (CH_NOBLE, 0) => { let cap = self.storage_cap(); self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], 90, cap); self.mood = 8; self.mood_until = now + 6 * day; }
             (CH_WINTER, 0) => { let cap = self.storage_cap(); self.stock[W as usize] = Self::add_capped(self.stock[W as usize], 80, cap); }
@@ -1278,12 +1276,6 @@ impl World {
     }
     /// Beds in staffed hospitals (4 a tier, more with a quarantine ward) and how many of them are manned.
     pub fn hospital_beds(&self) -> u32 { self.buildings.iter().filter(|b| b.kind == HOSPITAL && b.staff > 0).map(|b| 4 * (b.tier as u32 + 1) * (b.staff.min(3 * (b.tier as u32 + 1)) * 100 / (3 * (b.tier as u32 + 1))).max(34) / 100).sum() }
-    fn hospital_step(&mut self) {
-        if self.sick == 0 || self.tick % 10 != 0 { return; }
-        let herb = self.buildings.iter().filter(|b| b.kind == HOSPITAL && b.staff > 0 && b.opts & 1 != 0).count() as u32;
-        let cured = (self.hospital_beds() / 2 + herb).min(self.sick);
-        if cured > 0 { self.sick -= cured; }
-    }
     /// How many sit in the care of the church: devotion 0..100.
     pub fn devotion(&self) -> i32 { self.devotion }
 
@@ -1581,13 +1573,24 @@ impl World {
 
     // ---------- tower garrisons ----------
     fn garrison_cap_of(b: &Building) -> u32 { match b.kind { TOWER => 2 * (b.tier as u32 + 1) + 2, KEEP => 4 * (b.tier as u32 + 1) + 4, _ => 0 } }
-    /// Raise (true) or lower (false) a drawbridge. A raised one cannot be crossed; every drawbridge is drawn up while a battle is on. 0 ok, -1 not a drawbridge.
+    /// Raise (true) or lower (false) a drawbridge by hand. A raised one cannot be crossed by anybody but your own armies, which lower it for themselves while they march over it (see `drawbridge_step`);
+    /// every drawbridge counts as drawn up while a battle is on. A manual raise wins over the automatic lowering: for `VETO_SECS` no army lowers it, and any army whose route ran over it plans
+    /// another way (a bridge of its own, or a ferry). 0 ok, -1 not a drawbridge.
     pub fn drawbridge_set(&mut self, idx: u32, up: bool) -> i32 {
         let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
         if b.kind != DRAWBRIDGE { return -1; }
-        b.status = if up { 5 } else { 4 };
+        b.status = if up { DB_UP } else { 4 };
+        b.progress = if up { VETO_SECS } else { 0 };
+        if up { self.replan_over_deck(idx as usize); }
         0
     }
+    /// A drawbridge's own states (`status`): 4 lowered, 5 drawn up by hand (`progress` counts down the seconds an army may not lower it), 6 lowered for an army (was drawn up), 7 lowered for an
+    /// army during a battle (was lowered: every drawbridge counts as drawn up while a battle is on). `progress` of a lent one counts the seconds nobody has needed it.
+    pub(crate) fn db_lent(b: &Building) -> bool { b.kind == DRAWBRIDGE && matches!(b.status, DB_LENT | DB_LENT_FIGHT) }
+    /// Is this drawbridge drawn up right now (so that nobody can cross it)? Raised by hand, or any that is not lent while raiders attack.
+    pub(crate) fn drawn_up(&self, b: &Building) -> bool { b.kind == DRAWBRIDGE && (b.status == DB_UP || (self.battle.is_some() && !Self::db_lent(b))) }
+    /// May an army lower it for itself? (Not for `VETO_SECS` after the player raised it.)
+    pub(crate) fn db_lendable(&self, b: &Building) -> bool { self.drawn_up(b) && !(b.status == DB_UP && b.progress > 0) }
     /// Close (true) or open (false) the doors of a stone gatehouse (tier 3 up). A closed gate cannot be passed by your own armies; every stone gatehouse is shut while a battle is on and
     /// opens again afterwards. 0 ok, -1 not a gate, -2 a wooden gate has no doors.
     pub fn gate_set(&mut self, idx: u32, closed: bool) -> i32 {
@@ -1785,7 +1788,8 @@ impl World {
             3 => { let cap = self.storage_cap(); for r in 0..N_RES { self.stock[r] = cap; } true }
             4 => { let f = self.bandit_force(b.clamp(0, 1000) as f32 / 1000.0); self.begin_battle(f, a as f32 * 0.01, 0) }
             5 => { self.ignite(a.max(0) as usize); true }
-            6 => { self.sick = 0; true }
+            6 => { self.end_plague(); true }
+            9 => { if self.plague_active() { false } else { self.start_plague(); true } }   // an outbreak now
             7 => {   // put out every fire (buildings and wildfires)
                 for b in self.buildings.iter_mut() { b.burning = 0.0; }
                 self.wildfires.clear(); true
@@ -1964,13 +1968,14 @@ impl World {
         let part = |f: &dyn Fn(&mut dyn FnMut(u64))| -> u64 { let mut h: u64 = 0xcbf29ce484222325 ^ self.seed; f(&mut |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); }); h };
         vec![
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
-                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
+                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
             part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
                 for b in &self.buildings {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
                     mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
+                    if matches!(b.kind, DRAWBRIDGE | GATE) { mix(b.status as u64); }
                 }
                 for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
             }),
@@ -2014,7 +2019,9 @@ pub fn rules_fingerprint(seed: u64) -> String {
     w.cheat(3, 0, 0);
     for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 18, 8), (FARM, -14, 6), (4, 20, -10), (BARRACKS, -20, 16), (TOWER, 30, 30), (WALL, 34, 30), (WALL, 38, 30), (WALL, 42, 30)] { w.place(k, x, y, 0); }
     w.cheat(2, 0, 12); w.cheat(2, 1, 6); w.cheat(2, 2, 6);
-    for t in 0..360u32 {
+    for t in 0..600u32 {
+        if t == 100 { w.cheat(1, 30, 0); w.start_plague(); }   // an outbreak, so the plague rules are part of what the fingerprint tells apart
+        if t == 110 { w.choose(0); }
         if t == 40 { let id = w.det_form(&[8, 3, 3, 0, 0]); w.det_march(id, 150.0, -90.0, false, 0.0, 0.0); }
         if t == 200 { w.start_raid(1.1, &[4, 2, 1, 0, 0], 7); }
         if t % 40 == 0 { w.cheat(3, 0, 0); }
@@ -2026,6 +2033,9 @@ pub fn rules_fingerprint(seed: u64) -> String {
 }
 
 fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
+
+#[cfg(test)]
+mod lend_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2448,7 +2458,7 @@ mod tests {
         let n = 40; for i in 0..n { let a = i as f32 / n as f32 * std::f32::consts::TAU; put(&mut w, MOAT, hx + a.cos() * 18.0, hy + a.sin() * 18.0, 0); }
         assert!(w.begin_battle([6, 0, 4, 0, 0, 0], 0.0, 0));
         let (mut waded, mut crossed, mut worst_ratio) = (false, false, 0.0f32);
-        let mut last: Vec<(f32, f32)> = vec![];
+        let mut last: Vec<(f32, f32)> = vec![]; let mut last_wet: Vec<bool> = vec![];
         for _ in 0..1500 {
             w.step();
             let Some(b) = w.battle.as_ref() else { break };
@@ -2457,12 +2467,12 @@ mod tests {
                     if u.wading {
                         waded = true;
                         let moved = (u.x - last[k].0).hypot(u.y - last[k].1);
-                        worst_ratio = worst_ratio.max(moved / (UNITS[u.kind as usize].speed * 1.0));
+                        if last_wet[k] { worst_ratio = worst_ratio.max(moved / (UNITS[u.kind as usize].speed * 1.0)); }   // (a raider that stepped into the water in the last quarter of the second has walked the rest of it)
                     }
                     if (u.x - hx).hypot(u.y - hy) < 14.0 { crossed = true; }
                 }
             }
-            last = b.units.iter().map(|u| (u.x, u.y)).collect();
+            last = b.units.iter().map(|u| (u.x, u.y)).collect(); last_wet = b.units.iter().map(|u| u.wading).collect();
             if crossed { break; }
         }
         assert!(waded, "raiders enter the moat instead of stopping at its edge");
@@ -3632,15 +3642,17 @@ mod care_tests {
     fn hospitals_cure_the_sick_when_staffed() {
         let run = |hospital: bool| {
             let mut dead = 0;
-            for k in 0..30u64 {
+            for k in 0..40u64 {
                 let mut w = town(); w.rng = Rng(k * 17 + 3); w.cheat(1, 40, 0);
                 if hospital { let h = w.place(HOSPITAL, 10, -22, 0); assert!(h >= 0, "hospital {h}"); w.staffing(); assert!(w.buildings[h as usize].staff > 0); }
-                w.sick = 30; w.tick = 9; w.step(); dead += w.sick();
+                let p0 = w.population; w.start_plague(); w.tick = (w.tick / 24 + 1) * 24;
+                for t in 0..(6 * DAY) { w.step(); if t % 5 == 0 { w.stock[GR as usize] = 3000; w.stock[W as usize] = 3000; } }
+                let _ = p0; dead += w.died[DIED_PLAGUE];
             }
             dead
         };
         let (with, without) = (run(true), run(false));
-        assert!(with < without, "a staffed hospital cures the sick: {with} vs {without} still ill");
+        assert!(with < without, "a staffed hospital saves lives: {with} dead with one, {without} without");
         let mut w = town(); let h = w.place(HOSPITAL, 10, -22, 0); w.buildings[h as usize].staff = 0; assert!(w.hospital_beds() == 0, "no staff, no beds counted"); w.buildings[h as usize].staff = 3; assert_eq!(w.hospital_beds(), 4);
         w.upgrade(h as u32); w.buildings[h as usize].staff = 6; assert_eq!(w.hospital_beds(), 8, "a better hospital has more beds");
     }
@@ -3863,12 +3875,13 @@ mod pathing_room_tests {
     #[test]
     fn farm_options_raise_the_yield_and_haystacks_save_the_winter() {
         let make = |opts: u16| { let mut w = opt_world(); for (k, x, y) in [(0u8, 12, 4), (0, 18, 8), (0, 24, 2)] { w.place(k, x, y, 0); } let f = w.place(FARM, -14, 6, 0); assert!(f >= 0); w.buildings[f as usize].opts = opts; w };
-        let grain = |mut w: World, start: u64| { w.tick = start; w.stock[GR as usize] = 0; let mut made = 0; for _ in 0..550 { let before = w.stock[GR as usize]; w.step(); made += (w.stock[GR as usize] - before).max(0); w.stock[GR as usize] = 100; } made };
-        let plain = grain(make(0), 10);
-        let full = grain(make(1 | 4 | 8), 10);
+        // (random harvest gifts also count as grain, so the comparison is summed over several random streams)
+        let grain = |mk: &dyn Fn() -> World, start: u64| { let mut made = 0; for k in 0..8u64 { let mut w = mk(); w.rng = Rng(k * 101 + 7); w.tick = start; w.stock[GR as usize] = 0; for _ in 0..550 { let before = w.stock[GR as usize]; w.step(); made += (w.stock[GR as usize] - before).max(0); w.stock[GR as usize] = 100; } } made };
+        let plain = grain(&|| make(0), 10);
+        let full = grain(&|| make(1 | 4 | 8), 10);
         assert!(full as f32 >= plain as f32 * 1.1, "scarecrow, fence and barn: {full} vs {plain}");
         let winter = DAY * SEASON_DAYS * 3 + 10;
-        let (w0, w1) = (grain(make(0), winter), grain(make(2), winter));
+        let (w0, w1) = (grain(&|| make(0), winter), grain(&|| make(2), winter));
         assert!(w1 as f32 > w0 as f32 * 1.4, "haystacks: winter {w1} vs {w0}");
     }
 
