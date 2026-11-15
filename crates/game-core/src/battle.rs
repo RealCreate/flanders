@@ -6,7 +6,7 @@ use crate::military::*;
 const SUBSTEP: f32 = 0.25;
 
 /// What stopped an attacker: a wall, fence or gate (index into the substep's list) or water.
-enum Block { Bar(usize) }
+pub(crate) enum Block { Bar(usize) }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Tunables: the numbers that decide how hard combat bites. Change them here (and only here). Changing any of them changes the

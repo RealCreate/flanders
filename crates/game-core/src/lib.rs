@@ -3864,3 +3864,6 @@ mod pathnet_tests {
         assert!(!w.on_road(60.0, 60.0));
     }
 }
+
+#[cfg(test)]
+mod combat_tests;
