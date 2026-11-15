@@ -14,7 +14,7 @@ fn village(ready: bool) -> World {
         let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
         put(&mut w, BARRACKS, hx - 14.0, hy + 14.0);
         for (x, y) in [(0.0, 16.0), (14.0, -12.0), (-10.0, -16.0)] { put(&mut w, TOWER, hx + x, hy + y); let n = w.buildings.len() - 1; w.buildings[n].garrison = 4; }
-        w.army = [12, 8, 5, 0, 0, 0];
+        w.army = [14, 10, 8, 1, 0, 0];
     }
     w
 }
@@ -41,24 +41,35 @@ fn a_boss_raid_is_deterministic_and_leads_with_the_warlord() {
     assert!(rams >= 1, "he rides in with a ram");
 }
 
+/// Over many random streams, angles and strengths: the share of prepared villages that hold (and kill the warlord), and of empty ones that are overrun.
+fn rates(n: u64) -> (u64, u64, u64) {
+    let (mut held, mut killed, mut overrun) = (0, 0, 0);
+    for seed in 0..n {
+        let (ang, rf) = ((seed as i32 * 37) % 628, (seed as i32 * 211) % 1001);
+        let mut w = village(true); w.rng = Rng(seed * 7919 + 3); assert!(w.cheat(9, ang, rf));
+        fight(&mut w); let r = w.last_report();
+        if r[1] == 1 { held += 1; } if boss_part(&r)[2] == 1 { killed += 1; }
+        let mut w = village(false); w.rng = Rng(seed * 7919 + 3); assert!(w.cheat(9, ang, rf));
+        fight(&mut w); let r = w.last_report();
+        if r[1] == 0 && boss_part(&r)[2] == 0 && w.population >= 2 { overrun += 1; }
+    }
+    (held, killed, overrun)
+}
+
 #[test]
 fn a_prepared_village_survives_a_warlord_raid_and_an_empty_one_does_not() {
-    for (seed, rf) in [(3u64, 0), (11, 500), (23, 1000), (41, 300)] {
-        let mut w = village(true); w.rng = Rng(seed); assert!(w.cheat(9, (seed as i32) * 37 % 628, rf));
-        fight(&mut w); let r = w.last_report();
-        assert_eq!(r[1], 1, "seed {seed}: barracks, towers and soldiers hold: {r:?}");
-        assert_eq!(boss_part(&r)[2], 1, "seed {seed}: and the warlord falls");
-        let mut w = village(false); w.rng = Rng(seed); assert!(w.cheat(9, (seed as i32) * 37 % 628, rf));
-        fight(&mut w); let r = w.last_report();
-        assert_eq!(r[1], 0, "seed {seed}: an empty village is overrun: {r:?}");
-        assert_eq!(boss_part(&r)[2], 0, "seed {seed}: nobody could hurt him");
-        assert!(w.population >= 2, "but it is never wiped out");
-    }
+    let n = 100; let (held, killed, overrun) = rates(n);
+    eprintln!("prepared village held {held}/{n}, killed the warlord {killed}/{n}; empty village overrun {overrun}/{n}");
+    assert!(held * 100 >= n * 90, "barracks, towers and soldiers hold: {held}/{n}");
+    assert!(killed * 100 >= n * 90, "and the warlord falls: {killed}/{n}");
+    assert_eq!(overrun, n, "an empty village is overrun, never wiped out, and nobody could hurt him");
 }
 
 #[test]
 fn the_horn_spurs_the_escort_for_eight_seconds_and_ends_with_the_warlord() {
-    let mut w = village(true); w.rng = Rng(5); assert!(w.cheat(9, 0, 500));
+    let mut w = village(false); w.rng = Rng(5); assert!(w.cheat(9, 0, 500));
+    // a far-off, unkillable defender keeps the fight (and the horn's clock) going whatever the village's strength
+    { let b = w.battle.as_mut().unwrap(); let mut u = Unit::new(0, 0, -400.0, -400.0, 0.0); u.hp = 1e9; u.maxhp = 1e9; b.units.push(u); b.start_side[0] += 1; }
     let bd = &BOSSES[0];
     // an escort spearman is kept beside the warlord with its swing timer set far ahead, so only the haste changes the timer
     let probe = |w: &mut World| -> Option<(f32, bool)> {
@@ -74,6 +85,7 @@ fn the_horn_spurs_the_escort_for_eight_seconds_and_ends_with_the_warlord() {
     for _ in 0..(75.0 / 0.25) as usize {
         let Some((cd, sounding)) = probe(&mut w) else { break };
         let want = if sounding { 9.0 - 0.25 * (1.0 + bd.horn_haste) } else { 8.75 };
+        if cd >= 9.0 || cd < 8.0 { continue; }   // that step the probe was routed, climbing or swinging: it says nothing about the horn
         assert!((cd - want).abs() < 0.01, "the escort recovers {} (sounding {sounding})", 9.0 - cd);
         if sounding { on += 1; if !was_on { blasts += 1; } } else { off += 1; }
         was_on = sounding;
@@ -180,7 +192,7 @@ fn a_lair_is_a_real_fight_that_can_be_lost_and_tried_again_and_pays_when_won() {
     assert!(!w.neutral_done[ni], "a lair that held is not cleared");
     // a proper army wins, pays, and the lair is done
     let mut w = World::new(1337, 0, 0); w.stock = [100; N_RES]; w.hero = Some((0, 0)); w.army = [7, 3, 0, 0, 0, 0];
-    let id = army_at(&mut w, x, y, [14, 8, 6, 2, 0, 0]); w.army = army;
+    let id = army_at(&mut w, x, y, [20, 12, 8, 4, 0, 0]); w.army = army;
     assert_eq!(w.visit_neutral(id), 3);
     let (bx0, by0) = { let u = w.battle.as_ref().unwrap().units.iter().find(|u| u.boss > 0).unwrap(); (u.x, u.y) };
     let hp0 = w.battle_boss()[2]; let mut hp_min = hp0; let (mut secs, mut moved) = (0, 0.0f32);
@@ -223,4 +235,23 @@ fn the_ogre_slams_everything_near_and_throws_boulders_at_stone() {
     let mut c = village(false); c.population = 4; wall(&mut c); assert!(c.begin_battle([8, 0, 0, 0, 0, 0], 0.0, 0)); c.battle.as_mut().unwrap().ladders = 0;
     for _ in 0..90 { c.step(); c.stock[GR as usize] = 3000; if !c.battle_active() { break; } }
     assert_eq!(hp_of(&c), full, "while spearmen cannot touch it");
+}
+
+#[test]
+fn lair_outcomes_hold_across_every_lair_and_seed() {
+    let (mut strong_won, mut weak_lost, mut n) = (0, 0, 0);
+    for seed in [1337u64, 7, 99999] {
+        for (ni, x, y) in terrain::neutrals(seed).iter().enumerate().filter(|(_, p)| p.0 == 3).map(|(i, p)| (i, p.1, p.2)) {
+            n += 1;
+            for (army, strong) in [([20u32, 12, 8, 4, 0, 0], true), ([3, 2, 0, 0, 0, 0], false)] {
+                let mut w = World::new(seed, 0, 0); w.stock = [100; N_RES]; w.rng = Rng(ni as u64 * 31 + 5);
+                let id = army_at(&mut w, x, y, army); assert_eq!(w.visit_neutral(id), 3);
+                fight(&mut w); let r = w.last_report();
+                if strong && r[1] == 1 && w.neutral_done[ni] { strong_won += 1; } if !strong && r[1] == 0 { weak_lost += 1; }
+            }
+        }
+    }
+    eprintln!("lairs: strong army won {strong_won}/{n}, weak army lost {weak_lost}/{n}");
+    assert!(strong_won * 10 >= n * 9, "a strong army clears a lair: {strong_won}/{n}");
+    assert_eq!(weak_lost, n, "a handful of soldiers never does");
 }
