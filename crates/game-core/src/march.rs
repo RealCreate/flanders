@@ -22,6 +22,7 @@ pub const S_FERRY: u8 = 4;
 pub const S_ARRIVED: u8 = 5;
 pub const S_WAIT: u8 = 6;
 pub const S_HOME: u8 = 7;
+pub const S_FIGHT: u8 = 8;   // its soldiers are in the battle (see battle::det_join)
 
 /// A waypoint; `mode` describes the leg that ends here: 0 walk, 1 fell trees, 2 cross water.
 #[derive(Clone, Copy, Debug)]
@@ -32,7 +33,7 @@ pub struct Wp { pub x: f32, pub y: f32, pub mode: u8 }
 /// (`tied`) and wait at such a place until the soldiers have made it passable.
 #[derive(Clone)]
 pub struct Grp {
-    pub units: [u32; 5],
+    pub units: [u32; NK],
     pub x: f32, pub y: f32,
     pub path: Vec<Wp>,
     pub wi: usize,
@@ -44,7 +45,7 @@ pub struct Grp {
 #[derive(Clone)]
 pub struct Det {
     pub id: u32,
-    pub units: [u32; 5],
+    pub units: [u32; NK],
     pub x: f32,
     pub y: f32,
     pub path: Vec<Wp>,
@@ -60,6 +61,7 @@ pub struct Det {
     pub speed: f32,
     pub since_fell: f32,
     pub grp: Vec<Grp>,      // riders and engines marching apart (see Grp); their soldiers are still counted in `units`
+    pub defend: bool,       // sent to fight in the battle at home: joins it as soon as it is close to an attacker
 }
 
 pub struct NavStatic { h: Vec<f32>, slope: Vec<f32>, dens: Vec<u8>, tun: Vec<bool> }
@@ -173,7 +175,7 @@ impl World {
                     for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.bridge, b.x + sx * t, b.y + sy * t, 1.6); }
                 }
                 _ => {
-                    if b.kind == FARM {   // its fields are blocked as the rectangles they are (nobody walks across a crop)
+                    if matches!(b.kind, FARM | GARDEN | PARK | MARKET) {   // its fields, beds and stalls are blocked as the rectangles they are (nobody walks across a crop)
                         let (i0, i1) = ((((b.x - 18.0 - ORG) / CELL).floor() as i32).max(0), (((b.x + 18.0 - ORG) / CELL).ceil() as i32).min(NC - 1));
                         let (j0, j1) = ((((b.y - 18.0 - ORG) / CELL).floor() as i32).max(0), (((b.y + 18.0 - ORG) / CELL).ceil() as i32).min(NC - 1));
                         for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cell_xy((j * NC + i) as usize); if crate::pathnet::in_fields(b, cx, cy, 0.9) { ov.blocked[(j * NC + i) as usize] = true; } } }
@@ -201,7 +203,23 @@ impl World {
     }
 
     // Trees slow soldiers only a little (densest forest: 1.5x slower, was 3.7x), and the margin round a building (gardens, yards) is barely avoided, so soldiers cut through town.
-    fn classify(&self, ns: &NavStatic, ov: &Ov, i: usize, siege: bool) -> Cl {
+    /// How a cell can be crossed. `lvl` is how much room the traveller needs: 0 a foot soldier; 1 a siege engine (gentler slopes, dense forest must be felled); 2 an engine that also keeps a cell
+    /// clear of cliffs and open water; 3 one that also keeps clear of buildings, walls and fields. An engine is about three paces wide: it needs a road, not a path.
+    fn classify(&self, ns: &NavStatic, ov: &Ov, i: usize, lvl: u8) -> Cl {
+        let c = self.classify_cell(ns, ov, i, lvl > 0);
+        if lvl < 2 || !matches!(c, Cl::Free(_)) || ov.bridge[i] || (ns.tun[i] && !ov.moat[i]) { return c; }
+        let (ci, cj) = (i as i32 % NC, i as i32 / NC);
+        for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+            let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { return Cl::Block; }
+            let k = (b * NC + a) as usize;
+            if ov.bridge[k] { continue; }
+            if ns.h[k] < 0.2 || ov.moat[k] || ns.slope[k] > 0.85 { return Cl::Block; }
+            if lvl >= 3 && ov.blocked[k] { return Cl::Block; }
+        }
+        c
+    }
+
+    fn classify_cell(&self, ns: &NavStatic, ov: &Ov, i: usize, siege: bool) -> Cl {
         let (x, y) = cell_xy(i);
         if x.abs() > 1192.0 || y.abs() > 1192.0 || ov.blocked[i] { return Cl::Block; }
         if ns.tun[i] && !ov.moat[i] { return Cl::Free(1.3); }
@@ -213,7 +231,7 @@ impl World {
         Cl::Free(if ov.road[i] { c * crate::pathnet::ROAD_COST } else { c })
     }
 
-    fn near_free(&self, ns: &NavStatic, ov: &Ov, x: f32, y: f32, siege: bool) -> Option<usize> {
+    fn near_free(&self, ns: &NavStatic, ov: &Ov, x: f32, y: f32, siege: u8) -> Option<usize> {
         let c = ns.idx(x, y)?;
         let (ci, cj) = (c as i32 % NC, c as i32 / NC);
         for r in 0..8i32 { for dj in -r..=r { for di in -r..=r {
@@ -228,31 +246,35 @@ impl World {
     /// One graph serves everybody: the base grid of the whole world (terrain, slopes, forest), adjusted by what is built (buildings, walls and fences block it; roads, bridges and open
     /// gates open lines through it), plus the village's path network (roads, rings round buildings, doorways, decks), which joins the grid wherever it touches it. The route is the
     /// cheapest way along those lines; roads cost little, so they are preferred.
-    pub(crate) fn find_path(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32) -> Result<Vec<Wp>, i32> {
+    pub(crate) fn find_path(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32) -> Result<Vec<Wp>, i32> {
         self.route_on_graph(units, sx, sy, tx, ty, false)
     }
 
     /// The same for somebody on foot who will not wade (villagers): [1, x, y, x, y, ...] or empty when there is no dry way.
     pub(crate) fn walk_route_inner(&self, sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> {
-        match self.route_on_graph(&[1, 0, 0, 0, 0], sx, sy, tx, ty, true) {
+        match self.route_on_graph(&[1, 0, 0, 0, 0, 0], sx, sy, tx, ty, true) {
             Ok(p) => { let mut v = vec![1.0]; for w in p.iter().skip(1) { v.extend_from_slice(&[w.x, w.y]); } v }
             Err(_) => vec![],
         }
     }
 
-    pub(crate) fn route_on_graph(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
+    pub(crate) fn route_on_graph(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
         let margins: [f32; 3] = if no_water { [30.0, 90.0, 500.0] } else { [45.0, 180.0, 2500.0] };
         let mut last = Err(-2);
-        for m in margins {
-            last = self.route_in_window(units, sx, sy, tx, ty, m, no_water);
-            if !matches!(last, Err(-2)) { break; }
+        // a siege engine looks for a road wide enough for it first, and only if there is none makes do with a narrower one
+        let levels: &[u8] = if units[4] > 0 { &[3, 2, 1] } else { &[0] };
+        'search: for &lvl in levels {
+            for m in margins {
+                last = self.route_in_window(units, sx, sy, tx, ty, m, no_water, lvl);
+                if !matches!(last, Err(-2)) { break 'search; }
+            }
         }
         last.map(|p| self.through_doors(p))
     }
 
-    fn route_in_window(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32, margin: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
+    fn route_in_window(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, margin: f32, no_water: bool, siege: u8) -> Result<Vec<Wp>, i32> {
         let ns = nav_static(self.seed); let ov = self.ov(); let net = self.net();
-        let siege = units[4] > 0; let workers = units[0] + units[2];
+        let workers = units[0] + units[2];
         let (Some(s), Some(g)) = (self.near_free(&ns, &ov, sx, sy, siege), self.near_free(&ns, &ov, tx, ty, siege)) else { return Err(-2) };
         let ((scx, scy), (gcx, gcy)) = (cell_xy(s), cell_xy(g));
         let i0 = (((scx.min(gcx) - margin - ORG) / CELL).floor() as i32).max(0); let i1 = (((scx.max(gcx) + margin - ORG) / CELL).ceil() as i32).min(NC - 1);
@@ -286,7 +308,7 @@ impl World {
                     }
                     next.push((kl, step * if di != 0 && dj != 0 { 1.414 } else { 1.0 }));
                 }
-                if let Some(v) = at_cell.get(&i) { for &n in v { next.push((ncell + n as usize, 0.4)); } }
+                if siege == 0 { if let Some(v) = at_cell.get(&i) { for &n in v { next.push((ncell + n as usize, 0.4)); } } }   // (the village's footpaths are for people: an engine keeps to open ground)
             } else {
                 let n = i - ncell;
                 for &(to, l, road) in &net.adj[n] { next.push((ncell + to as usize, l / CELL * if road { crate::pathnet::ROAD_COST } else { 1.0 })); }
@@ -368,18 +390,18 @@ impl World {
         out
     }
 
-    fn march_speed(units: &[u32; 5]) -> f32 {
-        let mut m = f32::MAX; for k in 0..5 { if units[k] > 0 { m = m.min(UNITS[k].speed); } }
+    fn march_speed(units: &[u32; NK]) -> f32 {
+        let mut m = f32::MAX; for k in 0..NK { if units[k] > 0 { m = m.min(UNITS[k].speed); } }
         if m == f32::MAX { 3.0 } else { m * 1.1 }
     }
 
     /// Who marches as the army proper and who apart from it. With foot soldiers along, knights and siege engines each make a group of their own; an army of riders or engines alone is one body.
-    pub(crate) fn split_groups(units: &[u32; 5]) -> ([u32; 5], Vec<[u32; 5]>) {
-        if units[0] + units[1] + units[2] == 0 || units[3] + units[4] == 0 { return (*units, vec![]); }
-        let mut head = *units; head[3] = 0; head[4] = 0;
+    pub(crate) fn split_groups(units: &[u32; NK]) -> ([u32; NK], Vec<[u32; NK]>) {
+        if units[0] + units[1] + units[2] == 0 || units[3] + units[4] + units[5] == 0 { return (*units, vec![]); }
+        let mut head = *units; head[3] = 0; head[4] = 0; head[5] = 0;
         let mut g = vec![];
-        if units[3] > 0 { g.push([0, 0, 0, units[3], 0]); }
-        if units[4] > 0 { g.push([0, 0, 0, 0, units[4]]); }
+        if units[3] > 0 { g.push([0, 0, 0, units[3], 0, 0]); }
+        if units[4] + units[5] > 0 { g.push([0, 0, 0, 0, units[4], units[5]]); }
         (head, g)
     }
 
@@ -387,20 +409,23 @@ impl World {
 
     // ---------------------------------------------------------------- commands
     /// Take soldiers out of the barracks into a new field army. Returns its id, or 0 if impossible.
-    pub(crate) fn det_form_inner(&mut self, units: [u32; 5]) -> u32 {
-        if units.iter().all(|&u| u == 0) || (0..5).any(|k| units[k] > self.army[k]) { return 0; }
-        for k in 0..5 { self.army[k] -= units[k]; }
+    pub(crate) fn det_form_inner(&mut self, units: [u32; NK]) -> u32 {
+        if units.iter().all(|&u| u == 0) || (0..NK).any(|k| units[k] > self.army[k]) { return 0; }
+        if !self.battle_release_army(units) { return 0; }   // (in a fight the soldiers must be ones still standing in it)
+        for k in 0..NK { self.army[k] -= units[k]; }
         self.next_det += 1;
         let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
         let (bx, by) = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hx + 10.0, hy + 10.0), |b| (b.x, b.y + 8.0));
         let ns = nav_static(self.seed); let ov = self.ov();
-        let (x, y) = self.near_free(&ns, &ov, bx, by, units[4] > 0).map_or((bx, by), cell_xy);
-        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, grp: vec![] });
+        let (x, y) = self.near_free(&ns, &ov, bx, by, if units[4] > 0 { 1 } else { 0 }).map_or((bx, by), cell_xy);
+        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![] });
         self.next_det
     }
 
     /// Order a field army to march. `attack` = the position of the village it is going to attack.
     pub(crate) fn det_march_inner(&mut self, id: u32, tx: f32, ty: f32, attack: Option<(f32, f32)>, home: bool) -> i32 {
+        if self.det_index(id).is_none() { return -1; }
+        self.det_disengage(id);   // an army in the fight breaks off to go where it is told
         let Some(i) = self.det_index(id) else { return -1 };
         let (u, x, y) = (self.dets[i].units, self.dets[i].x, self.dets[i].y);
         let (hu, gus) = Self::split_groups(&u);
@@ -417,16 +442,17 @@ impl World {
                     };
                     grps.push(Grp { units: gu, x: gx, y: gy, path, wi: 1, heading: 0.0, speed: 0.0, tied });
                 }
-                let d = &mut self.dets[i]; d.grp = grps; d.path = p; d.wi = 1; d.state = if home { S_HOME } else { S_MARCH }; d.phase = 0; d.atk = attack; d.home = home; d.sx = x; d.sy = y; 0 }
+                let d = &mut self.dets[i]; d.grp = grps; d.path = p; d.wi = 1; d.state = if home { S_HOME } else { S_MARCH }; d.phase = 0; d.atk = attack; d.home = home; d.defend = false; d.sx = x; d.sy = y; 0 }
             Err(e) => e,
         }
     }
 
-    pub(crate) fn det_split_inner(&mut self, id: u32, take: [u32; 5]) -> u32 {
+    pub(crate) fn det_split_inner(&mut self, id: u32, take: [u32; NK]) -> u32 {
         let Some(i) = self.det_index(id) else { return 0 };
         let d = self.dets[i].clone();
-        if take.iter().all(|&u| u == 0) || (0..5).any(|k| take[k] > d.units[k]) || (0..5).all(|k| take[k] == d.units[k]) { return 0; }
-        for k in 0..5 { self.dets[i].units[k] -= take[k]; }
+        if d.state == S_FIGHT { return 0; }
+        if take.iter().all(|&u| u == 0) || (0..NK).any(|k| take[k] > d.units[k]) || (0..NK).all(|k| take[k] == d.units[k]) { return 0; }
+        for k in 0..NK { self.dets[i].units[k] -= take[k]; }
         self.next_det += 1;
         self.dets[i].grp.clear();
         let mut n = d; n.id = self.next_det; n.units = take; n.grp.clear(); self.dets.push(n);
@@ -435,15 +461,15 @@ impl World {
 
     pub(crate) fn det_merge_inner(&mut self, a: u32, b: u32) -> bool {
         let (Some(i), Some(j)) = (self.det_index(a), self.det_index(b)) else { return false };
-        if i == j || ((self.dets[i].x - self.dets[j].x).powi(2) + (self.dets[i].y - self.dets[j].y).powi(2)).sqrt() > 10.0 { return false; }
-        let u = self.dets[j].units; for k in 0..5 { self.dets[i].units[k] += u[k]; }
+        if i == j || self.dets[i].state == S_FIGHT || self.dets[j].state == S_FIGHT || ((self.dets[i].x - self.dets[j].x).powi(2) + (self.dets[i].y - self.dets[j].y).powi(2)).sqrt() > 10.0 { return false; }
+        let u = self.dets[j].units; for k in 0..NK { self.dets[i].units[k] += u[k]; }
         self.dets.remove(j); let i = self.det_index(a).unwrap(); self.dets[i].state = S_IDLE; self.dets[i].path.clear(); self.dets[i].grp.clear(); true
     }
 
     /// Hand an arrived army over to the attack on another village. Returns its soldiers.
-    pub(crate) fn det_send_inner(&mut self, id: u32) -> Option<[u32; 5]> {
-        let i = self.det_index(id)?; let u = self.dets[i].units; self.dets.remove(i);
-        for k in 0..5 { self.away[k] += u[k]; } Some(u)
+    pub(crate) fn det_send_inner(&mut self, id: u32) -> Option<[u32; NK]> {
+        let i = self.det_index(id)?; if self.dets[i].state == S_FIGHT { return None; } let u = self.dets[i].units; self.dets.remove(i);
+        for k in 0..NK { self.away[k] += u[k]; } Some(u)
     }
 
     // ---------------------------------------------------------------- simulation (one tick = one game second)
@@ -525,7 +551,7 @@ impl World {
             }
             if travelling && d.wi >= d.path.len() && d.grp.iter().all(|g| g.wi >= g.path.len()) {   // everybody is there
                 d.path.clear(); d.phase = 0; d.grp.clear();
-                if d.home { for k in 0..5 { self.army[k] += d.units[k]; } remove = true; }
+                if d.home { for k in 0..NK { self.army[k] += d.units[k]; } remove = true; }
                 else if d.atk.is_some() { d.state = S_ARRIVED; } else { d.state = S_IDLE; }
             }
             if !remove { let (rx, ry) = (d.x, d.y); let scouts = d.units.iter().sum::<u32>() <= 4; self.reveal(rx, ry, if scouts { 120.0 } else { 70.0 }); }   // a small party travels light and sees further   // an army on the march lifts the fog round it
@@ -534,7 +560,7 @@ impl World {
     }
 
     /// What is left of the army once its riders and engines are counted out: the foot soldiers, whose pace is the army's.
-    fn head_units(d: &Det) -> [u32; 5] { let mut u = d.units; for g in &d.grp { for k in 0..5 { u[k] = u[k].saturating_sub(g.units[k]); } } u }
+    fn head_units(d: &Det) -> [u32; NK] { let mut u = d.units; for g in &d.grp { for k in 0..NK { u[k] = u[k].saturating_sub(g.units[k]); } } u }
 
     /// One tick of a group's march: at its own speed (slowed by woods, quickened on a road), along its own route. A tied group does not pass a place that needs felling or a crossing until the
     /// army (whose waypoint index is `head_wi`) has got through it.
@@ -573,7 +599,7 @@ impl World {
     }
 
     /// A planned route without giving any order: [ok, seconds, planks, wood, count, x, y, mode, ...].
-    pub(crate) fn plan(&self, units: &[u32; 5], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> {
+    pub(crate) fn plan(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> {
         let (head, gus) = Self::split_groups(units); let units = if units[4] > 0 { units } else { &head };   // (the army's route, which engines need to be able to follow; riders go their own way)
         match self.find_path(units, sx, sy, tx, ty) {
             Err(e) => vec![e as f32, 0.0, 0.0, 0.0, 0.0],

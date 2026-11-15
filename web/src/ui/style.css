@@ -159,8 +159,12 @@ table.res td.r { text-align: right; }
 .atk-row label { display: flex; flex-direction: column; align-items: center; font-size: 16px; }
 .atk-row input { width: 100%; text-align: center; }
 #battle { position: fixed; z-index: 7; top: 74px; left: 50%; transform: translateX(calc(-50% - 187px)); background: #4a1510ee; border: 1px solid #d9604e; color: #ffd8cf; padding: 8px 20px; border-radius: 3px; font-family: var(--f-display); letter-spacing: .08em; font-size: 17px; box-shadow: 0 8px 30px #000a; animation: pulse 1.6s ease-in-out infinite; pointer-events: none; text-align: center; }
-#battle.clickable { pointer-events: auto; cursor: pointer; }
+#battle.clickable { pointer-events: auto; }
+#battle.clickable #battle-text { cursor: pointer; }
 #battle.clickable:hover { background: #6a1c14ee; }
+#battle-acts { display: flex; gap: 8px; justify-content: center; margin-top: 6px; }
+#battle-acts:empty { display: none; }
+#battle-acts .pbtn { font-size: 13px; padding: 3px 10px; letter-spacing: 0; }
 #battle small { display: block; font-family: var(--f-ui); font-size: 13px; letter-spacing: 0; color: #f0b8aa; margin-top: 2px; }
 @keyframes pulse { 50% { box-shadow: 0 8px 36px #d9604e88; } }
 .log li .chip { margin-left: 6px; padding: 0 8px; font-size: 13px; }
@@ -180,6 +184,7 @@ table.res td.r { text-align: right; }
 #perf td i { display: block; height: 6px; background: #8a6a2a; border-radius: 1px; }
 #perf tr.top td { color: #ffd98a; font-weight: 700; } #perf tr.top td i { background: #e0a030; }
 #perf .hot { background: #3a2a14; border-left: 3px solid #e0a030; padding: 4px 7px; margin: 4px 0; }
+#perf .kv-line { margin: 0 0 5px; user-select: text; color: #d8cba6; }
 #perf .kv { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; margin-bottom: 8px; } #perf .kv b { font-variant-numeric: tabular-nums; text-align: right; }
 #perf .eyebrow { color: #b9a982; letter-spacing: .1em; text-transform: uppercase; font-size: 10.5px; margin-top: 6px; }
 #perf .pb button { width: 100%; font: 700 12.5px var(--f-ui); padding: 6px; background: #8a6a2a; color: #fff6dc; border: 1px solid #c9a24a; border-radius: 3px; cursor: pointer; }

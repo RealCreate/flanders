@@ -184,12 +184,14 @@ export class Village {
   fresh = true;
   markCaughtUp() { this.view.animateNew = true; this.fresh = false; const r = this.world.last_report(); if (r.length) this.reportSeq = r[0]; }
 
-  /** Advance a replica to `tick`. Battle projectiles are dropped when catching up a long way. */
-  advanceTo(tick: number) {
+  /** Advance a replica to `tick`. Battle projectiles are dropped when catching up a long way. Returns whether it got there: it stops after 8000 steps (a command that far ahead
+   *  is not applied, because it would land at the wrong tick). */
+  advanceTo(tick: number): boolean {
     const w = this.world; let n = 0;
-    while (w.tick() < BigInt(tick)) { w.step(); n++; if (n > 4000) break; }
+    while (w.tick() < BigInt(tick)) { w.step(); n++; if (n >= 8000) break; }
     if (n > 8) w.take_shots();
     if (n > 0) this.afterTick();
+    return w.tick() >= BigInt(tick);
   }
 
   /** Field armies, bridges and the soldiers' progress. */
@@ -200,7 +202,7 @@ export class Village {
     for (let i = 0; i < bf.length; i += 10) if (bf[i] === 23) { const a = bf[i + 4] * Math.PI / 4, sx = Math.sin(a) * 6.4, sz = Math.cos(a) * 6.4; br.push(bf[i + 2] - sx, bf[i + 3] - sz, bf[i + 2] + sx, bf[i + 3] + sz); }   // drawbridges carry soldiers too
     this.field.setBridges(Float32Array.from(br));
     const partial: number[][] = [];
-    for (let o = 0; o < flat.length; o += 16) if (flat[o + 8] === 3) { const p = w.det_path(flat[o]); if (p.length >= 6) partial.push([p[0], p[1], p[3], p[4], flat[o + 11]]); }
+    for (let o = 0; o < flat.length; o += 17) if (flat[o + 8] === 3) { const p = w.det_path(flat[o]); if (p.length >= 6) partial.push([p[0], p[1], p[3], p[4], flat[o + 11]]); }
     this.bridges.update(Array.from(w.bridges_flat()), partial);
   }
 

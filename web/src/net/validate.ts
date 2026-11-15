@@ -3,7 +3,7 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'defend', 'retreat', 'reinforce'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {
@@ -78,6 +78,31 @@ export function isSigned(v: unknown): v is { cmd: string; sig: string } {
     && (v as { cmd: string }).cmd.length <= LIMITS.maxCmdChars && (v as { sig: string }).sig.length <= LIMITS.maxSigChars;
 }
 
+/** The state hash a player broadcasts every tick: the clock, the hash of the whole state, how many commands their history holds so far, the hashes of its sections, and whether
+ *  they have used testing tools (which change their village without leaving a command that others could replay). */
+export interface WireHash { tick: number; hash: string; c: number; p: string[]; tools: boolean }
+const DIGITS = /^[0-9]{1,20}$/;
+/** Check a hash message. An older build sends only `tick` and `hash`: those come back with `c` of -1, which means "cannot be compared". */
+export function sanitizeHash(raw: unknown): WireHash | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (!isInt(r.tick) || r.tick < 0 || r.tick > LIMITS.maxTick || typeof r.hash !== 'string' || !DIGITS.test(r.hash)) return null;
+  let c = -1;
+  if (r.c !== undefined) { if (!isInt(r.c) || r.c < 0 || r.c > 1_000_000) return null; c = r.c; }
+  let p: string[] = [];
+  if (r.p !== undefined) { if (!Array.isArray(r.p) || r.p.length > 16 || !r.p.every(x => typeof x === 'string' && DIGITS.test(x))) return null; p = r.p as string[]; }
+  return { tick: r.tick, hash: r.hash, c, p, tools: r.tools === true };
+}
+
+/** The build a peer says it runs: the message protocol and the fingerprint of its simulation rules. Missing (an older build) gives protocol 0 and no fingerprint. */
+export function sanitizeBuild(raw: unknown): { v: number; rules: string } | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const v = r.v === undefined ? 0 : r.v, rules = r.rules === undefined ? '' : r.rules;
+  if (!isInt(v) || v < 0 || v > 1_000_000 || typeof rules !== 'string' || !/^[0-9a-f]{0,32}$/.test(rules)) return null;
+  return { v, rules };
+}
+
 /** What we remember about each player's stream of commands, to refuse replays and absurd jumps. */
 export class Sequence {
   lastN = -1; lastTick = 0;
@@ -85,6 +110,11 @@ export class Sequence {
   acceptLive(c: { n: number; tick: number }): boolean {
     if (c.n <= this.lastN || c.tick < this.lastTick || c.tick > this.lastTick + LIMITS.maxLiveJump) return false;
     this.lastN = c.n; this.lastTick = c.tick; return true;
+  }
+  /** `dup` is a command we already have (a history and the live copy of its last command can both arrive): it is dropped quietly, not punished. */
+  classify(c: { n: number; tick: number }): 'ok' | 'dup' | 'bad' {
+    if (c.n <= this.lastN) return 'dup';
+    return this.acceptLive(c) ? 'ok' : 'bad';
   }
   /** A whole log replaces what we knew: it must itself be in order. Returns the entries to keep (up to the first one out of order). */
   static checkLog<T extends { n: number; tick: number }>(cmds: T[]): T[] {
