@@ -206,7 +206,7 @@ impl World {
                 MOAT | RIVER | RAISE | LOWER | ROAD => {}
                 BRIDGE => { let (ux, uy, l) = Self::bridge_dir(q); let st = (l / 0.8) as i32; for t in 0..=st { let t = t as f32 * 0.8 - l / 2.0; mark(&mut deck, q.x + ux * t, q.y + uy * t, 1.7); } }
                 DRAWBRIDGE => {
-                    if q.status == 5 || self.battle.is_some() { continue; }   // drawn up: no way across
+                    if self.drawn_up(q) { continue; }   // drawn up: no way across
                     let an = q.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
                     for t in -9..=9 { let t = t as f32 * 0.8; mark(&mut deck, q.x + sx * t, q.y + sy * t, 1.7); }
                 }

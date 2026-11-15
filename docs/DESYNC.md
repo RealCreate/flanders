@@ -64,6 +64,28 @@ Sections (`state_hash_part_names()`): `core` (clock, random stream, people), `st
 * Counters per player (desyncs, re-syncs, last diagnosis with tick, sections and commands) in the performance panel (F3, "Multiplayer sync") and in the console: `flandersSync()` and a `console.warn`
   at every new desync.
 
+## Armies and water: lent drawbridges and soldiers who do not wade
+
+A new rule set, all of it a pure function of the world's state, run once per tick by every copy in the same place (`World::step`: after `march_step` and `defence_step`; the fight's own movement in `battle_substep`).
+No new command exists: the player's `bridge` command (`drawbridge_set`) is the only input, and it is already in `PEER_OPS` and checked in `validate.ts`.
+
+* **Lent drawbridges** (`crates/game-core/src/lend.rs`). A drawbridge's `status` is part of the hash (buildings section; it was not before): 4 lowered, 5 drawn up by hand, 6 lowered for an army (was up),
+  7 lowered for an army during a battle (was lowered; every drawbridge counts as drawn up in a battle). `progress` of a drawbridge (otherwise unused, and hashed) is its timer: for a lent one the seconds nobody
+  has needed it, for one drawn up by hand the seconds (`VETO_SECS` = 120) in which no army may lower it.
+* **Who needs a drawbridge:** a travelling army or group whose route ahead runs over the deck within 20 units, or that is on or within 5 units of the deck; soldiers in the fight who stand on a deck or have
+  chosen it as their crossing (`World::db_want`, filled by the battle's substeps and consumed in `drawbridge_step` of the next tick; it is empty between ticks, so it is not part of the hash).
+* **Raised again** 4 s after the last need (1 s in a battle, so raiders get no time). A manual raise (`drawbridge_set(.., true)`) wins: status 5 with a 120 s hold, and armies whose route ran over the deck are
+  re-planned at once (`replan_over_deck`, deterministic: ascending army order). A manual lowering sets status 4 and no timer. Raiders never get dry feet from a lent deck: `bridge_points` and `Battle::fixed` do
+  not include drawbridges, so the raiders' wading rule is unchanged.
+* **Routes:** for armies (not villagers) the deck of a drawn-up, not vetoed drawbridge is dry ground (`Ov::deck_up`, part of the overlay cache key together with the battle flag and the veto state); otherwise
+  water is bridged (`S_BRIDGE`) or ferried as before. The same planning serves marches, sallies, defence marches and reinforcements.
+* **In the fight** own soldiers (`Battle::own_walk`) never step into water: a straight way is taken only if it is dry, otherwise they walk to the nearest bridge, soldier-built bridge or drawbridge (asking for
+  it), cross, and go on; with no way over they wait at the water's edge. Raiders wade as before.
+* Gates: left as they are. A shut stone gate (status 5, or any in a battle) is not opened for armies.
+* Tests: `lend_tests.rs` (bridge lowered, crossing on the deck, raised again, manual raise wins, planks for a narrow moat, ferry for a wide one, nobody of ours in water, raiders get no bridge) and
+  `replay_sync.rs::a_moat_a_lent_drawbridge_and_a_defending_army_replay_identically` (owner and replicas agree tick by tick, silent / drawn every tick / drawn now and then).
+* Rules and hashes differ from older builds (a drawbridge's status is hashed now, and defenders across a moat play out differently), so builds with and without this show "different game version" to each other, as designed.
+
 ## Versions
 
 `hello` carries `v` (`SYNC_PROTOCOL`, bumped when the hash message or hello changes) and `rules`: `rules_fingerprint(seed)`, the hash of a small scripted game (buildings, soldiers marching through woods, a raid)

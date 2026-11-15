@@ -6,7 +6,7 @@ use game_core::World;
 #[derive(Clone, Debug)]
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
-    Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Choose(u8),
+    Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
     Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
 }
 
@@ -27,6 +27,7 @@ fn apply(w: &mut World, c: &C) {
         C::Raid(a, u, t) => { w.start_raid(*a, u, *t); }
         C::Batch(v) => { w.place_batch(v); }
         C::Split(id, u) => { w.det_split(*id, u); }
+        C::Defend(id) => { w.det_defend(*id); }
         C::Choose(o) => { w.choose(*o); }
         C::Rel(t, d) => { w.rel_add(*t, *d); }
         C::Journey(k, t, a, d) => { w.journey_start(*k, *t, *a, *d); }
@@ -160,6 +161,45 @@ fn the_rules_fingerprint_is_stable_and_depends_on_the_map() {
     let f = game_core::rules_fingerprint(1337);
     assert_eq!(f, game_core::rules_fingerprint(1337), "the same build always gives the same fingerprint");
     assert_eq!(f.len(), 16);
+}
+
+/// A village inside a moat with a drawbridge and a field army that is sent out against raiders: the drawbridge is lowered and raised again by the rules of the core, the soldiers in the
+/// fight walk to the deck, and a copy that replays the commands must agree tick by tick, however it is looked at.
+#[test]
+fn a_moat_a_lent_drawbridge_and_a_defending_army_replay_identically() {
+    game_core::warm_navigation(1337);
+    let mut w = World::new(1337, 0, 0);
+    let mut log: Vec<(u64, C)> = vec![]; let mut hashes = vec![];
+    let issue = |w: &mut World, log: &mut Vec<(u64, C)>, c: C| { apply(w, &c); log.push((w.tick(), c)); };
+    issue(&mut w, &mut log, C::Cheat(3, 0, 0));
+    for i in 0..52 { let a = i as f32 / 52.0 * std::f32::consts::TAU; issue(&mut w, &mut log, C::Place(24, (a.cos() * 24.0).round() as i32, (a.sin() * 24.0).round() as i32, 0)); }
+        for (k, x, y) in [(0u8, 12, 4), (0, -12, 6)] { issue(&mut w, &mut log, C::Place(k, x, y, 0)); }
+    let before = w.building_count();
+    issue(&mut w, &mut log, C::Place(23, 0, 24, 0));
+    let bridge = if w.building_count() > before { (w.building_count() - 1) as u32 } else { panic!("the drawbridge was not placed") };
+    issue(&mut w, &mut log, C::Bridge(bridge, true));
+    let mut lowered = 0; let mut raised_after = false; let mut seen_down = false;
+    for t in 0..300u64 {
+        if t == 3 { issue(&mut w, &mut log, C::Cheat(3, 0, 0)); }
+        if t == 5 { issue(&mut w, &mut log, C::Cheat(2, 0, 10)); issue(&mut w, &mut log, C::Cheat(2, 1, 4)); }
+        if t % 40 == 0 { issue(&mut w, &mut log, C::Cheat(3, 0, 0)); }
+        if t == 60 { issue(&mut w, &mut log, C::Form([8, 4, 0, 0, 0])); }
+        if t == 62 { issue(&mut w, &mut log, C::Raid(std::f32::consts::FRAC_PI_2, [8, 3, 0, 0, 0], 0)); }
+        if t == 63 { let id = w.det_flat().first().copied().unwrap_or(0.0) as u32; if id > 0 { issue(&mut w, &mut log, C::Defend(id)); } }
+        if t == 150 { issue(&mut w, &mut log, C::Cheat(2, 0, 6)); issue(&mut w, &mut log, C::Form([6, 0, 0, 0, 0])); }
+        if t == 152 { let f = w.det_flat(); let id = f.chunks(17).last().map_or(0.0, |c| c[0]) as u32; if id > 0 { issue(&mut w, &mut log, C::March(id, 0.0, 50.0)); } }
+        if t == 157 { issue(&mut w, &mut log, C::Bridge(bridge, true)); }   // the player raises it by hand while the army is crossing: a manual order wins
+        if t == 230 { issue(&mut w, &mut log, C::Bridge(bridge, false)); }
+        w.step(); hashes.push(w.state_hash());
+        let status = w.buildings_flat()[bridge as usize * 10 + 6] as u8;
+        if status == 6 || status == 7 { lowered += 1; seen_down = true; } else if seen_down && status == 5 { raised_after = true; }
+    }
+    eprintln!("drawbridge lent for {lowered} ticks, drawn up again after: {raised_after}, fight on at the end: {}", w.battle_active());
+    assert!(lowered > 0 && raised_after, "the scenario really lowers and raises the drawbridge");
+    let r = |name: &str, res: Option<(usize, usize)>| if let Some((t, c)) = res { panic!("replay ({name}) diverged at tick {t} after {c} of {} commands", log.len()) };
+    r("silent", replay(1337, 0, 0, &log, &hashes, &mut |_, _| {}));
+    r("drawn every tick", replay(1337, 0, 0, &log, &hashes, &mut |w, _| { look(w); }));
+    r("drawn now and then", replay(1337, 0, 0, &log, &hashes, &mut |w, t| if t % 5 == 2 { look(w); }));
 }
 
 /// A plague runs for many days, so a copy that joins late or replays with other habits must follow it through every wave to the same village, tick by tick: the spread, the deaths,
