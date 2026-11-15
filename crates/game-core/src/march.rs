@@ -625,12 +625,15 @@ impl World {
     /// A walkable route between two buildings for the village's paths, found like an army route (same blocking rules) but only over a small window round them.
     /// Buildings and walls block, gates are open, lowered drawbridges carry you over water, open water stops you. None if there is no way.
     pub(crate) fn route_local(&self, ia: usize, ib: usize) -> Option<Vec<(f32, f32)>> {
-        const RC: f32 = 2.0;
         let (a, b) = (&self.buildings[ia], &self.buildings[ib]);
         let m = 16.0;
         let (x0, y0) = (a.x.min(b.x) - m, a.y.min(b.y) - m);
-        let (nx, ny) = ((((a.x.max(b.x) + m) - x0) / RC).ceil() as i32 + 1, (((a.y.max(b.y) + m) - y0) / RC).ceil() as i32 + 1);
-        if nx * ny > 12000 { return None; }
+        let (wx, wy) = (a.x.max(b.x) + m - x0, a.y.max(b.y) + m - y0);
+        // a fine grid (so a road bends round a house, not in jumps of two) wherever the window is small enough, a coarse one for the long links
+        #[allow(non_snake_case)]
+        let RC: f32 = if (wx * wy) <= 24000.0 { 1.0 } else { 2.0 };
+        let (nx, ny) = ((wx / RC).ceil() as i32 + 1, (wy / RC).ceil() as i32 + 1);
+        if nx * ny > 24000 { return None; }
         let cxy = |i: i32, j: i32| (x0 + (i as f32 + 0.5) * RC, y0 + (j as f32 + 0.5) * RC);
         let n = (nx * ny) as usize;
         let mut h = vec![0.0f32; n];
@@ -659,6 +662,8 @@ impl World {
             let k = (j * nx + i) as usize;
             if blocked[k] && !deck[k] { return None; }
             if h[k] < 0.2 && !deck[k] { return None; }
+            // on the fine grid a road needs a little room: no squeezing through a one-cell gap between water cells (a road is wider than that)
+            if RC < 1.5 && !deck[k] && [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(di, dj)| { let (p, q) = (i + di, j + dj); p >= 0 && q >= 0 && p < nx && q < ny && h[(q * nx + p) as usize] < 0.2 && !deck[(q * nx + p) as usize] }) { return None; }
             let mut sl = 0.0f32;
             if !deck[k] { for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] { let (p, q) = (i + di, j + dj); if p >= 0 && q >= 0 && p < nx && q < ny { sl = sl.max((h[(q * nx + p) as usize] - h[k]).abs() / RC); } } }
             if sl > 1.6 { return None; }
@@ -666,7 +671,7 @@ impl World {
         };
         let near = |x: f32, y: f32| -> Option<(i32, i32)> {
             let (ci, cj) = (((x - x0) / RC).floor() as i32, ((y - y0) / RC).floor() as i32);
-            for r in 0..7i32 { for dj in -r..=r { for di in -r..=r { if di.abs().max(dj.abs()) != r { continue; } if free(ci + di, cj + dj).is_some() { return Some((ci + di, cj + dj)); } } } }
+            for r in 0..(14.0 / RC) as i32 { for dj in -r..=r { for di in -r..=r { if di.abs().max(dj.abs()) != r { continue; } if free(ci + di, cj + dj).is_some() { return Some((ci + di, cj + dj)); } } } }
             None
         };
         let (s, g) = (near(a.x, a.y)?, near(b.x, b.y)?);
