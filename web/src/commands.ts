@@ -42,6 +42,9 @@ export function applyCmd(w: World, c: Cmd) {
     case 'merge': w.det_merge(c.idx!, c.kind!); break;
     case 'halt': w.det_halt(c.idx!); break;
     case 'sendatk': w.det_send(c.idx!); break;
+    case 'defend': w.det_defend(c.idx!); break;   // a field army marches to the fight at home and joins the defenders
+    case 'retreat': if (c.tag) w.battle_retreat(c.tag); break;   // (the attacker's own call has no `tag`: it is only a request, which the defender's village carries out and records with the tag)
+    case 'reinforce': if (c.tag) w.battle_reinforce(c.tag, Uint32Array.from(c.units ?? [])); break;
     case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
     case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;
     default: break; // 'refuse' has no effect on the issuer's own world

@@ -82,7 +82,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
       const world = w(), st = Array.from(world.stocks()), fl = Array.from(world.flows()), cap = world.storage();
       const stock: Record<string, { amount: number; per_second: number }> = {}; RES.forEach((r, i) => { stock[r.key] = { amount: st[i], per_second: fl[i] }; });
       const a = Array.from(world.army()), q = Array.from(world.queued()), away = Array.from(world.away());
-      const names = units.slice(0, 5).map(u => u.name);
+      const names = units.slice(0, 6).map(u => u.name);
       const unitMap = (v: number[]) => Object.fromEntries(names.map((n, i) => [n, v[i]]));
       return {
         tick: Number(world.tick()), day: Math.floor(Number(world.tick()) / 240) + 1, storage_cap_per_resource: cap, stock,
@@ -95,7 +95,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
       return {
         resources: RES.map((r, i) => ({ id: i, key: r.key, name: r.name })),
         buildings: defs.map(d => ({ id: d.id, name: d.name, category: d.cat, radius: d.r, cost: d.cost.map(([r, n]) => ({ resource: RES[r].key, amount: n })), inputs: d.inputs.map(([r, n]) => ({ resource: RES[r].key, amount: n })), outputs: d.outputs.map(([r, n]) => ({ resource: RES[r].key, amount: n })), cycle_seconds: d.cycle, jobs: d.jobs, housing: d.housing, max_tier: d.maxTier, options: (d.opts ?? []).map((o, i) => ({ bit: i, name: o.n, adds: o.d, needs_tier: o.t })), description: d.desc })),
-        units: units.slice(0, 5).map((u, i) => ({ id: i, name: u.name })),
+        units: units.slice(0, 6).map((u, i) => ({ id: i, name: u.name })),
         notes: ['Coordinates are relative to your town hall: x east, y south.', 'Tier 0..3 is the upgrade level.', 'Optional design options are set per building with the `option` tool.'],
       };
     },
@@ -149,7 +149,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
     garrison(a) { const idx = int(a.idx, 0, 100000, 'idx'), n = int(a.archers, 0, 20, 'archers'), code = w().garrison_set(idx, n); if (code === 0) { host.commit({ op: 'garrison', idx, kind: n }); host.afterChange(); } return { ok: code === 0, code }; },
     drawbridge(a) { const idx = int(a.idx, 0, 100000, 'idx'), up = a.up === true, code = w().drawbridge_set(idx, up); if (code === 0) { host.commit({ op: 'bridge', idx, kind: up ? 1 : 0 }); host.afterChange(); } return { ok: code === 0 }; },
     form_army(a) {
-      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length !== 5) throw new Error('units must be 5 numbers: spearmen, archers, swordsmen, knights, catapults');
+      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length === 5) u.push(0); if (u.length !== 6) throw new Error('units must be 6 numbers: spearmen, archers, swordsmen, knights, catapults, rams');
       const id = w().det_form(Uint32Array.from(u)); if (!id) return { ok: false, reason: 'not enough soldiers in the barracks' }; host.commit({ op: 'form', units: u }); host.afterChange(); return { ok: true, army_id: id };
     },
     march_army(a) {
@@ -164,7 +164,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
     attack(a) {
       if (!allowAttack) throw new Error('attacking other players is switched off. The human must open the game with allow_attack=1 to allow it.');
       if (a.confirm_attack !== true) throw new Error('attack needs confirm_attack: true. This starts a real battle against another person\'s village.');
-      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length !== 5) throw new Error('units must be 5 numbers');
+      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length === 5) u.push(0); if (u.length !== 6) throw new Error('units must be 6 numbers');
       return { ok: host.attack(String(a.key), u) };
     },
   };
