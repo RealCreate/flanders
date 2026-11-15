@@ -367,7 +367,7 @@ const mine = (gold: boolean): Model => b => {
   const post = t >= 2 ? m.stone : m.darkwood;
   b.box(3.6, 0.5, 2.6, m.rock, 0, -0.2, -1.2);   // a shelf of spoil in front of the face, so the door is not left floating on a slope
   b.box(0.45, 2.4, 0.45, post, -1.1, 0, -1.9); b.box(0.45, 2.4, 0.45, post, 1.1, 0, -1.9); b.box(3, 0.5, 0.6, post, 0, 2.2, -1.9);
-  b.box(1.8, 1.9, 0.2, new THREE.MeshBasicMaterial({ color: 0x050505 }), 0, 0, -2.0);
+  b.box(1.8, 1.9, 0.2, new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 1 }), 0, 0, -2.0);
   for (let i = 0; i < 3; i++) b.box(0.18, 0.18, 1.2, m.iron, -0.3 + i * 0.3, 0.02, 2.5 + i * 0.5).visible = false;
   b.box(1.3, 0.7, 0.9, m.wood, 2, 0.25, 2.4, 0.4); for (const dx of [-0.4, 0.4]) b.cyl(0.25, 0.25, 0.1, m.iron, 2 + dx, 0.15, 2.9, 10).rotation.x = Math.PI / 2;
   const pile = gold ? m.goldPile : m.ironPile;
@@ -517,7 +517,7 @@ const townhall: Model = b => {
     // The Castle: a rectangular walled castle in the manner of Caerphilly or Harlech, not a square of four towers. A curtain wall 18 x 12 with round corner and side towers and a
     // twin-towered gatehouse at the front (+z); inside, a T-shaped palace (the great hall along the back wall, a wing running out towards the gate), a donjon rising behind it,
     // and the small buildings of a courtyard: chapel, stable, smithy, well. It fills the largest footprint of any building (see `footprint` in the core).
-    const W = 9, D = 6, wh = 5.0, black = new THREE.MeshBasicMaterial({ color: 0x0a0806 });
+    const W = 9, D = 6, wh = 5.0, black = new THREE.MeshStandardMaterial({ color: 0x0a0806, roughness: 1 });
     const merlons = (x0: number, z0: number, x1: number, z1: number, y: number, n: number) => { for (let i = 0; i < n; i++) { const f = (i + 0.5) / n; b.box(0.55, 0.7, 0.55, m.stone, x0 + (x1 - x0) * f, y, z0 + (z1 - z0) * f); } };
     b.box(W * 2 + 2.4, 3, D * 2 + 2.4, m.darkstone, 0, -3, 0);   // the foundation, deep enough to stand square on a slope
     // the curtain wall
