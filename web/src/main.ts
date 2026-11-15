@@ -7,8 +7,9 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation, state_hash_part_names, rules_fingerprint } from './wasm/game_core.js';
+import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon } from './ui/icons';
+import { parseLedger, steadyRate } from './flowrate';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
@@ -141,7 +142,8 @@ let selRing!: SelectionMark, growRing!: SelectionMark; const blockRings: Selecti
 const borderRing = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd34d, transparent: true, opacity: 0.6 }));
 borderRing.frustumCulled = false; let borderKey = '';
 let speed = 1, acc = 0, showDeposits = false;
-const rates = new Array(RES.length).fill(0);
+const rates = new Array(RES.length).fill(0);   // steady net rate of each resource per day (from the core's ledger: see flowrate.ts)
+let LEDGER_EXTRAS: string[] = [];
 const depLabels: HTMLElement[] = [];
 const hallLabels = new Map<string, HTMLElement>();
 let pathLine!: PathLine;
@@ -880,7 +882,7 @@ async function startGame(name: string, username: string) {
   rebuildForest(); updateHud();
   rig.focus(o.x, o.z, 75); rig.snap();
   await warmUp();
-  PART_NAMES = state_hash_part_names().split(',');
+  PART_NAMES = state_hash_part_names().split(','); LEDGER_EXTRAS = ledger_extra_names().split(',');
   try { myRules = rules_fingerprint(seedBig); } catch { /* without a fingerprint other players cannot tell our build */ }
   if (saved && (saved.v !== SYNC_PROTOCOL || saved.rules !== myRules)) console.warn(`This village was last saved by another build (${saved.v ?? 'unknown'}/${saved.rules ?? 'unknown'}); its history is replayed with the rules of this one (${SYNC_PROTOCOL}/${myRules}).`);
   ui.setTab('build');
@@ -999,10 +1001,12 @@ function relOf(key: string) {
 function updateHud() {
   const w = lv.world;
   let barracks = -1; const f = w.buildings_flat(); for (let i = 0; i < f.length; i += 10) if (f[i] === 19) barracks = Math.max(barracks, f[i + 1]);
+  const flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS); for (let i = 0; i < rates.length; i++) rates[i] = steadyRate(flow, i);
+  const kinds = new Array(defs.length).fill(0); for (let i = 0; i < f.length; i += 10) kinds[f[i]]++;
   showPopulationInfo(w); if (!document.getElementById('flag-design')?.firstChild) showFlagDesigner();
   showChoice(w, doDecide);
   ui.update({
-    tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, pop: w.population(), cap: w.capacity(), sick: w.sick(),
+    tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, flow, kinds, pop: w.population(), cap: w.capacity(), sick: w.sick(),
     joy: w.happiness(), eff: w.efficiency(), jobs: w.jobs(), radius: w.build_radius(), buildings: w.building_count(), storage: w.storage(),
     army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
     vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(),
@@ -1138,8 +1142,6 @@ let lentBridges: Set<number> = new Set();   // the drawbridges that are down for
 function stepLocal() {
   const w = lv.world;
   w.step();
-  const f = w.flows();
-  for (let i = 0; i < rates.length; i++) rates[i] = rates[i] * 0.9 + f[i] * 60 * 0.1;
   const ev = w.take_events();
   for (let i = 0; i < ev.length; i += 4) { const e = EVENT_TEXT(ev[i], ev[i + 1], ev[i + 2]); ui.toast(e.text, e.tone); ui.log(e.text, e.tone, ev[i + 3]); if (e.tone === 'bad') sound.alert(); else if (e.tone === 'good') sound.coin(); }
   const t = Number(w.tick());
