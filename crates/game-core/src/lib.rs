@@ -483,7 +483,7 @@ impl World {
                 if !joined || tried > 150 { break; }
             }
         }
-        // buildings that stand close together are joined into blocks: a short extra road between two neighbours that the tree only reaches the long way round (3 to 5 roads about)
+        // buildings that stand near each other are joined into blocks: a direct road between two neighbours that the tree only reaches the long way round (3 roads or more about)
         // closes a loop, so the roads there form squares and no awkward gap is left. It is only laid where it crosses none of the roads already laid.
         let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
         for &(i, j, _) in &chosen { adj[i].push(j); adj[j].push(i); }
@@ -497,16 +497,17 @@ impl World {
             }))
         };
         for &(d, a, b) in &cand {
-            if d > 16.0 { break; }
+            if d > 44.0 { break; }
             let (i, j) = (ends[b], ends[a]);   // the later building is the child
-            if adj[i].contains(&j) || adj[i].len() >= 4 || adj[j].len() >= 4 { continue; }
+            if adj[i].contains(&j) || adj[i].len() >= 5 || adj[j].len() >= 5 { continue; }
             // how many roads lead from one to the other through the roads laid so far
             let mut hops = vec![u32::MAX; n]; hops[j] = 0; let mut q = std::collections::VecDeque::from([j]);
             while let Some(x) = q.pop_front() { for &y in &adj[x] { if hops[y] == u32::MAX { hops[y] = hops[x] + 1; q.push_back(y); } } }
-            if !(3..=5).contains(&hops[i]) { continue; }
+            if hops[i] < 3 { continue; }
             let Some(r) = self.route_for(&mut memo, &net, &ctx, base_stamp, i, j, 0) else { continue };   // (only the clean kind of road closes a loop)
             let len: f32 = r.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
-            if len > 24.0 || laid.iter().any(|l| cross(&r, l)) { continue; }
+            let (pi, pj) = (&self.buildings[i], &self.buildings[j]);
+            if len > 1.4 * (pi.x - pj.x).hypot(pi.y - pj.y) + 6.0 || laid.iter().any(|l| cross(&r, l)) { continue; }
             chosen.push((i, j, 0)); adj[i].push(j); adj[j].push(i); laid.push(r);
         }
         chosen.sort();

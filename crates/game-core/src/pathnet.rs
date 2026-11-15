@@ -287,19 +287,23 @@ impl World {
         net.ok_at(x + nx, y + ny) && net.ok_at(x - nx, y - ny)
     }
 
+    /// Does the straight stretch between two points keep clear all along its length for a road (with `half` room each side)?
+    fn road_seg_free(&self, net: &Net, ctx: &RoadCtx, pa: (f32, f32), pb: (f32, f32), half: f32) -> bool {
+        let (x0, x1, y0, y1) = (pa.0.min(pb.0) - half, pa.0.max(pb.0) + half, pa.1.min(pb.1) - half, pa.1.max(pb.1) + half);
+        // only what is near this stretch matters: sort it out once, not at every point
+        let near: Vec<usize> = ctx.solids.iter().copied().filter(|&i| { let b = &self.buildings[i]; let r = ring_radius(b.kind, b.tier) + half; b.x + r >= x0 && b.x - r <= x1 && b.y + r >= y0 && b.y - r <= y1 }).collect();
+        let segs: Vec<&crate::wallnet::Seg> = ctx.segs.iter().filter(|s| s.ax.max(s.bx) + s.r + half >= x0 && s.ax.min(s.bx) - s.r - half <= x1 && s.ay.max(s.by) + s.r + half >= y0 && s.ay.min(s.by) - s.r - half <= y1).collect();
+        let l = (pb.0 - pa.0).hypot(pb.1 - pa.1); let st = (l / 0.6).ceil().max(1.0) as i32;
+        let dir = if l > 1e-4 { ((pb.0 - pa.0) / l, (pb.1 - pa.1) / l) } else { (1.0, 0.0) };
+        (0..=st).all(|q| { let t = q as f32 / st as f32; self.road_point_free(net, &near, &segs, pa.0 + (pb.0 - pa.0) * t, pa.1 + (pb.1 - pa.1) * t, dir, half) })
+    }
+
     /// Does the network edge between two nodes keep clear all along its length for a road?
     fn road_edge_free(&self, net: &Net, ctx: &RoadCtx, a: u32, b: u32, tight: bool) -> bool {
         let half = if tight { ROAD_TIGHT } else { ROAD_HALF };
         let key = (a.min(b), a.max(b), tight);
         if let Some(&v) = ctx.memo.borrow().get(&key) { return v; }
-        let (pa, pb) = (net.nodes[a as usize], net.nodes[b as usize]);
-        let (x0, x1, y0, y1) = (pa.0.min(pb.0) - half, pa.0.max(pb.0) + half, pa.1.min(pb.1) - half, pa.1.max(pb.1) + half);
-        // only what is near this edge matters: sort it out once, not at every point
-        let near: Vec<usize> = ctx.solids.iter().copied().filter(|&i| { let b = &self.buildings[i]; let r = ring_radius(b.kind, b.tier) + half; b.x + r >= x0 && b.x - r <= x1 && b.y + r >= y0 && b.y - r <= y1 }).collect();
-        let segs: Vec<&crate::wallnet::Seg> = ctx.segs.iter().filter(|s| s.ax.max(s.bx) + s.r + half >= x0 && s.ax.min(s.bx) - s.r - half <= x1 && s.ay.max(s.by) + s.r + half >= y0 && s.ay.min(s.by) - s.r - half <= y1).collect();
-        let l = (pb.0 - pa.0).hypot(pb.1 - pa.1); let st = (l / 0.6).ceil().max(1.0) as i32;
-        let dir = if l > 1e-4 { ((pb.0 - pa.0) / l, (pb.1 - pa.1) / l) } else { (1.0, 0.0) };
-        let v = (0..=st).all(|q| { let t = q as f32 / st as f32; self.road_point_free(net, &near, &segs, pa.0 + (pb.0 - pa.0) * t, pa.1 + (pb.1 - pa.1) * t, dir, half) });
+        let v = self.road_seg_free(net, ctx, net.nodes[a as usize], net.nodes[b as usize], half);
         ctx.memo.borrow_mut().insert(key, v);
         v
     }
@@ -323,6 +327,18 @@ impl World {
         if let Some(p) = fb { pts.push(p); }
         pts.dedup();
         if pts.len() < 2 { return None; }
+        // pull the road taut: from each point on to the farthest one that it can run straight to with all the room it needs, so a road does not wind from node to node round the rings of the
+        // buildings on its way, but runs as straight as the ground allows
+        if level < 2 && pts.len() > 2 {
+            let half = if level == 1 { ROAD_TIGHT } else { ROAD_HALF };
+            let mut out = vec![pts[0]]; let mut i = 0usize;
+            while i < pts.len() - 1 {
+                let mut j = (pts.len() - 1).min(i + 14);
+                while j > i + 1 && !self.road_seg_free(net, ctx, pts[i], pts[j], half) { j -= 1; }
+                out.push(pts[j]); i = j;
+            }
+            pts = out;
+        }
         Some(pts)
     }
 
