@@ -87,6 +87,24 @@ export class Effects2 {
     this.shots.push({ m, t: 0, dur: Math.max(0.35, d / (stone ? 15 : 30)), a, b, arc: stone ? d * 0.35 : d * 0.08, fire, stone, alive: true });
   }
 
+  /** The ogre's slam: a ring of dust and small stones thrown outward from where he struck. */
+  slam(x: number, z: number, reach = 3.5) {
+    const y = this.terrain.heightAt(x, z) + 0.3;
+    for (let i = 0; i < 44; i++) { const a = i / 44 * 6.283 + Math.random() * 0.1, s = reach * (1.2 + Math.random() * 0.8); this.dust.emit(x, y, z, Math.cos(a) * s, 0.6 + Math.random() * 1.4, Math.sin(a) * s, 0.7 + Math.random() * 0.5, 0.8, 2.6, 0.5, 0.42, 0.33, 0.8); }
+    for (let i = 0; i < 8; i++) { const a = Math.random() * 6.283, s = 2 + Math.random() * 3; this.dust.emit(x, y, z, Math.cos(a) * s, 3 + Math.random() * 3, Math.sin(a) * s, 0.6, 0.3, 0.15, 0.4, 0.37, 0.33, 1); }
+  }
+
+  /** A war horn: a ring of gold light spreading out over the field as far as it spurs the escort on. */
+  hornBlast(x: number, z: number, reach = 32) {
+    const y = this.terrain.heightAt(x, z) + 1.6, life = 1.1;
+    for (let i = 0; i < 70; i++) { const a = i / 70 * 6.283, s = reach / life; this.flames.emit(x, y, z, Math.cos(a) * s * 0.9, 0.2, Math.sin(a) * s * 0.9, life, 1.5, 0.7, 1, 0.78, 0.28, 0.55); }
+  }
+
+  /** Embers rising off an enraged boss (call a few times a second). */
+  rageSpark(x: number, y: number, z: number) {
+    for (let i = 0; i < 3; i++) this.flames.emit(x + (Math.random() - 0.5) * 1.6, y + Math.random() * 1.8, z + (Math.random() - 0.5) * 1.6, (Math.random() - 0.5) * 0.6, 1.2 + Math.random() * 1.2, (Math.random() - 0.5) * 0.6, 0.7, 0.9, 0.2, 1, 0.18 + Math.random() * 0.2, 0.05, 0.8);
+  }
+
   arrowAt(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) {
     const m = new THREE.Mesh(this.arrowGeo, this.arrowMat); this.group.add(m);
     const a = new THREE.Vector3(x0, y0, z0), b = new THREE.Vector3(x1, y1, z1), d = a.distanceTo(b);

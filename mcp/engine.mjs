@@ -117,7 +117,7 @@ export class Game {
       stock: Array.from(w.stocks()), per60: Array.from(w.flows()).map(v => Math.round(v * 60)), max: w.storage(),
       army: Array.from(w.army()), queued: Array.from(w.queued()), hall: c.hall,
     };
-    if (w.battle_active()) s.attack = 1;
+    if (w.battle_active()) { s.attack = 1; const b = w.battle_boss(); if (b.length) s.boss = { kind: b[0] === 1 ? 'warlord' : 'ogre', hp: Math.round(b[2]), max: Math.round(b[3]), enraged: b[4] > 0, alive: b[5] > 0, lair: w.battle_lair().length > 0 }; }   // (a boss leads the attack, or guards the lair your army is in)
     const fires = Array.from(w.fires_flat()).filter((_, i) => i % 4 === 0).length; if (fires) s.fires = fires;
     if (ch.length) s.choice = { q: CHOICES[ch[0]]?.[0], opts: CHOICES[ch[0]]?.[1], days: ch[2] };
     const goals = GOALS.filter(([, ok]) => !ok(c)).slice(0, 3).map(([text]) => text); if (goals.length) s.next = goals;
@@ -168,7 +168,7 @@ export class Game {
     return out.sort((a, b) => Math.hypot(a[1], a[2]) - Math.hypot(b[1], b[2])).slice(0, limit);
   }
 
-  /** Field armies [id, spear, archer, sword, knight, catapult, dx, dy, state, ram]; and the neutral places you have found [kind, dx, dy, done]. */
+  /** Field armies [id, spear, archer, sword, knight, catapult, dx, dy, state, ram]; and the neutral places you have found [kind, dx, dy, done] (kind 0 abbey, 1 ruined castle, 2 bandit camp, 3 lair: a boss and his escort, a real fight). */
   armies() {
     const d = this.world.det_flat(), out = [];
     for (let i = 0; i < d.length; i += 17) { const [x, y] = this.rel(d[i + 1], d[i + 2]); out.push([d[i], d[i + 3], d[i + 4], d[i + 5], d[i + 6], d[i + 7], x, y, d[i + 8], d[i + 16]]); }
@@ -235,7 +235,7 @@ export class Game {
       case 'form': { const u = a.slice(1); if (u.length === 5) u.push(0); if (u.length !== 6 || !u.every(v => isInt(v) && v >= 0 && v <= 300)) return fail('six counts: spear archer sword knight catapult ram (the ram may be left out)'); const id = w.det_form(Uint32Array.from(u)); return id ? logged({ ok: true, id }, ['form', ...u]) : fail('not enough soldiers in the barracks'); }
       case 'march': { const [, id, dx, dy] = a; if (![id, dx, dy].every(isInt) || Math.abs(dx) > 1100 || Math.abs(dy) > 1100) return fail('bad arguments'); const c = w.det_march(id, this.origin.x + dx, this.origin.z + dy, false, 0, 0); return c === 0 ? logged({ ok: true }, ['march', id, dx, dy]) : fail(c === -1 ? 'no such army' : c === -2 ? 'unreachable' : c === -3 ? 'catapults need soldiers to clear forest' : 'water too wide'); }
       case 'recall': { if (!isInt(idx)) return fail('bad arguments'); const c = w.det_recall(idx); return c === 0 ? logged({ ok: true }, ['recall', idx]) : fail('no such army'); }
-      case 'visit': { if (!isInt(idx)) return fail('bad arguments'); const c = w.visit_neutral(idx); return c >= 0 ? logged({ ok: true, kind: c }, ['visit', idx]) : fail(c === -1 ? 'no such army' : c === -2 ? 'not close enough to a place' : 'already visited'); }
+      case 'visit': { if (!isInt(idx)) return fail('bad arguments'); const c = w.visit_neutral(idx); return c >= 0 ? logged({ ok: true, kind: c }, ['visit', idx]) : fail(c === -1 ? 'no such army' : c === -2 ? 'not close enough to a place' : c === -4 ? 'a fight is already on' : 'already visited'); }
       case 'decide': { if (!isInt(idx) || idx < 0 || idx > 2) return fail('bad arguments'); const c = w.choose(idx); return c === 0 ? logged({ ok: true }, ['decide', idx]) : fail('no decision waiting'); }
       default: return fail('unknown action ' + String(op));
     }

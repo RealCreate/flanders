@@ -97,7 +97,7 @@ pub static BOSSES: [BossDef; N_BOSSES] = [
 pub fn boss_hp(boss: u8, scale: f32) -> f32 { BOSSES[(boss - 1) as usize].hp * scale }
 
 pub fn bosses_json() -> String {
-    let items: Vec<String> = BOSSES.iter().enumerate().map(|(i, b)| format!("{{\"id\":{},\"name\":\"{}\",\"names\":[{}],\"hp\":{},\"dmg\":{},\"speed\":{},\"armor\":{},\"desc\":\"{}\"}}", i + 1, b.name, b.names.iter().map(|n| format!("\"{}\"", n)).collect::<Vec<_>>().join(","), b.hp, b.dmg, b.speed, b.armor, b.desc)).collect();
+    let items: Vec<String> = BOSSES.iter().enumerate().map(|(i, b)| format!("{{\"id\":{},\"name\":\"{}\",\"names\":[{}],\"hp\":{},\"dmg\":{},\"speed\":{},\"armor\":{},\"hornReach\":{},\"hornSecs\":{},\"slamReach\":{},\"gold\":{},\"iron\":{},\"desc\":\"{}\"}}", i + 1, b.name, b.names.iter().map(|n| format!("\"{}\"", n)).collect::<Vec<_>>().join(","), b.hp, b.dmg, b.speed, b.armor, b.horn_reach, b.horn_secs, b.slam_reach, b.gold, b.iron, b.desc)).collect();
     format!("[{}]", items.join(","))
 }
 

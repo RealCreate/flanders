@@ -33,12 +33,12 @@ export function pickFoe(defenders: number, wanted: number): number {
   return wanted;
 }
 
-/** Index of the nearest enemy that is alive, or -1. `u` is World.battle_units_flat (stride 10: side, kind, x, y, hp, max, alive, swing, facing, elev). */
-export function nearestFoe(u: ArrayLike<number>, i: number): number {
-  const n = u.length / 10; let best = -1, bd = Infinity;
+/** Index of the nearest enemy that is alive, or -1. `u` is World.battle_units_flat (stride 14: side, kind, x, y, hp, max, alive, swing, facing, elev, boss, phase, name, aura). */
+export function nearestFoe(u: ArrayLike<number>, i: number, stride = 14): number {
+  const n = u.length / stride; let best = -1, bd = Infinity;
   for (let j = 0; j < n; j++) {
-    if (u[j * 10] === u[i * 10] || u[j * 10 + 6] <= 0) continue;
-    const d = (u[j * 10 + 2] - u[i * 10 + 2]) ** 2 + (u[j * 10 + 3] - u[i * 10 + 3]) ** 2;
+    if (u[j * stride] === u[i * stride] || u[j * stride + 6] <= 0) continue;
+    const d = (u[j * stride + 2] - u[i * stride + 2]) ** 2 + (u[j * stride + 3] - u[i * stride + 3]) ** 2;
     if (d < bd) { bd = d; best = j; }
   }
   return best;

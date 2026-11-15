@@ -44,6 +44,8 @@ export class Village {
   obstacles: { x: number; z: number; r: number }[] = [];
   private count = -1; private version = -1; private reportSeq = 0; private mapVersion = -1;
   onReport?: (report: number[]) => void;
+  /** A boss's slam (2) or horn (3) went off at (x, z): the page plays the sound. Set once, for every village. */
+  static onBossFx: ((kind: number, x: number, z: number) => void) | null = null;
   fireData: Float32Array = new Float32Array(0);
 
   constructor(public world: World, public key: string, public name: string, public mine: boolean, private sh: Shared, color: number) {
@@ -52,7 +54,7 @@ export class Village {
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
-    this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k);
+    this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k); this.army.onRage = (x, y, z) => sh.fx.rageSpark(x, y, z);
     this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
     this.army.plan = (ax, az, bx, bz) => { const p = this.world.plan_march(Uint32Array.from([1, 0, 0, 0, 0]), ax, az, bx, bz); return p[0] === 1 ? Array.from(p.slice(5)) : null; };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
@@ -173,7 +175,11 @@ export class Village {
     this.people.hidden = fighting; this.view.raised = fighting;
     const tk = Number(w.tick()), jumped = tk - this.lastShotTick > 8; this.lastShotTick = tk;   // after loading or catching up, old shots must not fly again
     const s = w.take_shots();
-    if (!jumped) for (let i = 0; i < s.length; i += 7) this.sh.fx.shot(s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4], s[i + 5] > 0.5, s[i] === 0 ? this.army.shooterHeight(s[i + 1], s[i + 2]) : 1.5);
+    if (!jumped) for (let i = 0; i < s.length; i += 7) {
+      if (s[i] === 2) { this.sh.fx.slam(s[i + 1], s[i + 2], 3.5); Village.onBossFx?.(2, s[i + 1], s[i + 2]); }   // a boss's slam
+      else if (s[i] === 3) { this.sh.fx.hornBlast(s[i + 1], s[i + 2], 32); Village.onBossFx?.(3, s[i + 1], s[i + 2]); }   // a warlord's horn
+      else this.sh.fx.shot(s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4], s[i + 5] > 0.5, s[i] === 0 ? this.army.shooterHeight(s[i + 1], s[i + 2]) : 1.5);
+    }
     const r = w.last_report();
     if (r.length && r[0] !== this.reportSeq) { this.reportSeq = r[0]; if (!this.fresh) this.onReport?.(Array.from(r)); }
   }

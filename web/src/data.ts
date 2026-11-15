@@ -1,5 +1,6 @@
 import { icon, KIND_ICON_NAMES, UNIT_ICON_NAMES, CAT_ICON_NAMES } from './ui/icons';
-import init, { catalog, units as unitsJson } from './wasm/game_core.js';
+import init, { catalog, units as unitsJson, bosses as bossesJson } from './wasm/game_core.js';
+import { bossTitle, type BossDef } from './bosses';
 
 await init(); // the building catalog comes from the Rust core, so wasm must be ready before this module evaluates
 
@@ -104,6 +105,8 @@ export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; ton
     case 17: return { text: `Robbers waylaid a caravan: ${a} ${RES[b]?.name.toLowerCase() ?? 'goods'} lost.`, tone: 'bad' };
     case 15: return a >= 0 ? { text: `Merchants at your port bought ${RES[b]?.name.toLowerCase() ?? 'goods'} for ${a} gold.`, tone: 'good' } : { text: `Merchants sold you grain for ${-a} gold.`, tone: 'info' };
     case 10: return { text: `A new ${UNIT_NAMES[a] ?? 'soldier'} finished training.`, tone: 'good' };
+    case 25: return { text: `${bossTitle(bosses, a >> 4, a & 15)}, has fallen!`, tone: 'good' };
+    case 26: return { text: 'Your army goes into a lair.', tone: 'info' };
     default: return { text: 'Something happened.', tone: 'info' };
   }
 };
@@ -117,5 +120,7 @@ export const fmtCost = (c: [number, number][]) => c.map(([r, n]) => `${resIcon(r
 
 export interface UnitDef { id: number; name: string; hp: number; dmg: number; range: number; speed: number; armor: number; cost: [number, number][]; tier: number; time: number; desc: string }
 export const units: UnitDef[] = JSON.parse(unitsJson());
+/** The bosses (Warlord, Ogre of the Marches): ids start at 1, as in the battle data. */
+export const bosses: BossDef[] = JSON.parse(bossesJson());
 export const UNIT_ICON = UNIT_ICON_NAMES;
 export const UNIT_NAMES = units.map(u => u.name);
