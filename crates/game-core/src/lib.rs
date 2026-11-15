@@ -927,6 +927,9 @@ impl World {
         vec![]
     }
 
+    /// The turn (45-degree steps, as `place` takes it) whose deck direction (sin, cos) lies closest to the unit direction (nx, ny).
+    pub(crate) fn drawbridge_turn(nx: f32, ny: f32) -> i32 { ((nx.atan2(ny) / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8) }
+
     /// Where a drawbridge clicked at (dx, dy) goes: snapped onto the nearest piece of moat or river (its middle line) and turned square across it, so the deck spans the water from bank to bank.
     /// [x, y, turn] relative to the origin (the turn is in 45-degree steps, as `place` takes it), or nothing when no moat is within reach.
     pub fn drawbridge_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
@@ -950,9 +953,10 @@ impl World {
         if tx == 1.0 && ty == 0.0 {   // a lone piece: the way the nearest neighbour lies, if any
             if let Some(n) = pieces.iter().filter(|p| (p.0 - qx).hypot(p.1 - qy) > 0.3).min_by(|a, b| (a.0 - qx).hypot(a.1 - qy).partial_cmp(&(b.0 - qx).hypot(b.1 - qy)).unwrap_or(std::cmp::Ordering::Equal)) { tx = n.0 - qx; ty = n.1 - qy; }
         }
-        let tl = tx.hypot(ty).max(1e-6); let (nx, ny) = (-ty / tl, tx / tl);   // square across the ditch
-        let a = nx.atan2(ny);   // the deck runs along (sin a, cos a)
-        let rot = ((a / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8);
+        let tl = tx.hypot(ty).max(1e-6); let (mut nx, mut ny) = (-ty / tl, tx / tl);   // square across the ditch
+        // the hinge is on the village side and the far end points outward: flip the normal if it points at the hall (the order of the moat pieces decides which way (-ty, tx) falls)
+        if nx * (qx - self.ox as f32) + ny * (qy - self.oy as f32) < 0.0 { nx = -nx; ny = -ny; }
+        let rot = Self::drawbridge_turn(nx, ny);
         vec![qx.round() - self.ox as f32, qy.round() - self.oy as f32, rot as f32]
     }
 
@@ -4291,6 +4295,43 @@ mod pathnet_tests {
         let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
         assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
         let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
+    }
+
+    #[test]
+    fn a_snapped_drawbridge_faces_outward_across_the_moat_at_every_angle() {
+        // turn -> (sin, cos) of the deck direction, the same convention as the model and `on_deck`
+        let dir = |r: f32| { let a = r * std::f32::consts::FRAC_PI_4; (a.sin(), a.cos()) };
+        for radius in [16.0f32, 22.0] {
+            let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+            for i in 0..56 { let a = i as f32 / 56.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * radius).round() as i32, (a.sin() * radius).round() as i32, 0); }
+            let mut seen = std::collections::BTreeSet::new();
+            for k in 0..48 {
+                let a = k as f32 / 48.0 * std::f32::consts::TAU;
+                let s = w.drawbridge_snap((a.cos() * (radius - 2.0)).round() as i32, (a.sin() * (radius - 2.0)).round() as i32);
+                if s.len() != 3 { continue; }
+                let (ux, uy) = dir(s[2]);
+                let (rx, ry) = (s[0], s[1]); let rl = rx.hypot(ry).max(1e-3);
+                // the ditch is a ring, so square across it is the radial direction: the deck points away from the hall, within a 45-degree step (plus the rounding of the spot and of the ring pieces)
+                let cos = (ux * rx + uy * ry) / rl;
+                assert!(cos > 0.8, "radius {radius}, snap {s:?}: deck must point outward (cos {cos:.3})");
+                seen.insert(s[2] as i32);
+            }
+            assert!(seen.len() >= 6, "the bridge turns all the way round the ring: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_bridge_placed_where_it_snapped_is_crossed_by_a_route_while_lowered() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let s = w.drawbridge_snap(0, 18); assert_eq!(s.len(), 3);
+        assert_eq!(s[2], 0.0, "south of the hall the deck runs south, away from it");
+        let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "{br}");
+        let across = w.net_route(0.0, 8.0, 0.0, 36.0);
+        assert!(!across.is_empty() && across[0] == 1.0, "a route over the lowered snapped drawbridge");
+        // and the other side of the hall: a bridge snapped on the north must point north
+        let n = w.drawbridge_snap(0, -18); assert_eq!(n.len(), 3);
+        assert_eq!(n[2], 4.0, "north of the hall the deck runs north: {n:?}");
     }
 
     #[test]
