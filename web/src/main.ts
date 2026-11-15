@@ -47,7 +47,7 @@ import { applyCmd, stepTo, validSavedLog } from './commands';
 import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
-import { dayPhase } from './daycycle';
+import { dayPhase, DAY_TICKS } from './daycycle';
 import { cleanWorld, inviteLink, withWorld } from './worldname';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
@@ -1319,6 +1319,7 @@ function updateSelection() {
       <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="gar+" ${cur >= cap || avail < 1 ? 'disabled' : ''}>+ Archer</button><button class="pbtn" data-act="gar-" ${cur < 1 ? 'disabled' : ''}>− Archer</button><button class="pbtn" data-act="garfill" ${cur >= cap || avail < 1 ? 'disabled' : ''}>Fill</button><button class="pbtn" data-act="garempty" ${cur < 1 ? 'disabled' : ''}>Empty</button></div>
       <p class="muted">${cur === 0 ? 'The tower is empty — it only defends once you station archers in it. Train archers at a barracks.' : 'Archers fire from the walkway at the top. They come from the barracks and go back when you empty the tower.'}</p></div>`;
   }
+  if (kind === 28) { const mg = w.market_goods(); if (mg.length) html += ui.marketHtml(mg, stocks, Number(w.tick()), DAY_TICKS, w.storage_limit()); }
   if (kind === 38) { const sp = w.bridge_spans_flat(); for (let i = 0; i + 9 < sp.length; i += 10) if (sp[i] === selectedIdx) html += `<p class="muted">${sp[i + 4].toFixed(0)} units long. A footbridge spans up to 14 units of water, a timber bridge 22, a stone bridge 34 and a great bridge 50. Supports stand in the middle wherever the water is wide.</p>`; }
   if (kind === 23) {
     const up = f[o + 6] === 5;
@@ -1396,6 +1397,12 @@ function onAct(a: string) {
   if (a === 'repair') {
     const code = lv.world.repair(selectedIdx);
     if (code === 0) { commit({ op: 'repair', idx: selectedIdx }); sound.upgrade(); ui.toast('Repaired.', 'good'); afterLocalChange(); } else ui.toast(PLACE_ERRORS[code] ?? 'Cannot repair that.', 'bad');
+    return;
+  }
+  if (a.startsWith('buy:')) {
+    const [, rs, ns] = a.split(':'), res = Number(rs), n = Number(ns), code = lv.world.buy(res, n);
+    if (code === 0) { commit({ op: 'buy', kind: res, idx: n }); sound.click(); ui.toast(`Bought ${n} ${RES[res].name.toLowerCase()}.`, 'good'); afterLocalChange(); updateHud(); }
+    else ui.toast(code === -2 ? 'The stalls have not that much left.' : code === -6 ? 'You cannot pay for that.' : code === -7 ? 'The stores have no room for that.' : 'That is not for sale.', 'bad');
     return;
   }
   if (a.startsWith('field:')) {
