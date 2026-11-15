@@ -46,6 +46,9 @@ export class Perf {
   stop(name: string) { const t = performance.now() - (this.starts.get(name) ?? performance.now()); this.sections.set(name, (this.sections.get(name) ?? t) * 0.9 + t * 0.1); }
   time<T>(name: string, fn: () => T): T { this.start(name); try { return fn(); } finally { this.stop(name); } }
   counts(c: Record<string, number>) { this.stats = c; }
+  /** Lines about the multiplayer sync (one per other player), shown under the timings. They are plain text: names come from other players, so they are escaped here. */
+  netNotes(lines: string[]) { this.net = lines; }
+  private net: string[] = [];
 
   /** Render with timing. While profiling, the GPU is synchronised so the time is the true cost. */
   render(renderer: THREE.WebGLRenderer, scene: THREE.Scene, cam: THREE.Camera) {
@@ -103,6 +106,7 @@ export class Perf {
     html += `<div class="kv"><span>GPU time</span><b>${this.gpuOk ? this.gpuMs.toFixed(2) + ' ms' : 'not available'}</b><span>Render call</span><b>${this.renderMs.toFixed(2)} ms</b>
       <span>Draw calls</span><b>${info.calls}</b><span>Triangles</span><b>${(info.triangles / 1000).toFixed(0)}k</b><span>Geometries / textures</span><b>${info.geometries} / ${info.textures}</b>
       ${Object.entries(this.stats).map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join('')}</div>`;
+    if (this.net.length) html += '<div class="eyebrow">Multiplayer sync</div>' + this.net.map(l => `<div class="kv-line">${l.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))}</div>`).join('');
     if (this.prof && !this.prof.done) html += `<div class="hot">Profiling… ${this.layers[this.prof.idx - 1]?.name ?? 'baseline'} (${this.prof.idx}/${this.layers.length})</div>`;
     if (this.lastRes) {
       const r = [...this.lastRes.results].sort((a, b) => b.ms - a.ms);

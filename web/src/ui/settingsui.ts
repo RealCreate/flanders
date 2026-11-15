@@ -8,6 +8,7 @@ const ROWS: { title: string; rows: Row[] }[] = [
     { key: 'quality', label: 'Quality preset', hint: 'Sets most of the options below at once. Change any of them and it becomes Custom.', kind: 'select', options: [['low', 'Low: smooth on weak computers'], ['medium', 'Medium'], ['high', 'High (default)'], ['ultra', 'Ultra: for strong graphics cards'], ['custom', 'Custom']] },
     { key: 'fpsCap', label: 'Frame rate limit', hint: 'Lower limits save battery and keep a laptop cool.', kind: 'select', options: [['0', 'Unlimited (screen speed)'], ['60', '60 per second'], ['30', '30 per second']] },
     { key: 'showPaths', label: 'Show walking paths', hint: 'Draws the invisible path network as red lines (bright on roads): where soldiers and villagers may walk. For checking how they get about.', kind: 'toggle' },
+    { key: 'jumpToRaiders', label: 'Jump to raiders', hint: 'When raiders attack your village, the camera moves to them by itself at the start of the fight (the red banner also takes you there when you click it).', kind: 'toggle' },
     { key: 'showFps', label: 'Show frame rate', hint: 'The small counter in the corner (also F3 for details).', kind: 'toggle' },
   ] },
   { title: 'Image', rows: [

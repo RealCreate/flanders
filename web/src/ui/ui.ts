@@ -384,15 +384,15 @@ export class UI {
 
   // ---- field armies ----
   private buildMuster() {
-    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<div class="mrow"><span class="mi">${unitIcon(u.id, 24)}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
+    $('muster-row').innerHTML = units.slice(0, 6).map(u => `<div class="mrow"><span class="mi">${unitIcon(u.id, 24)}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
       <span class="step"><button type="button" data-step="-5" data-u="${u.id}" title="Five fewer">−5</button><button type="button" data-step="-1" data-u="${u.id}">−</button><input type="number" min="0" value="0" id="mus-${u.id}" aria-label="${u.name}"><button type="button" data-step="1" data-u="${u.id}">+</button><button type="button" data-step="5" data-u="${u.id}" title="Five more">+5</button></span></div>`).join('');
     $('muster-row').onclick = e => {
       const b = (e.target as HTMLElement).closest<HTMLElement>('[data-step]'); if (!b) return;
       const input = $(`mus-${b.dataset.u}`) as HTMLInputElement, max = Number(input.max) || 0, v = Math.max(0, Math.min(max, (Number(input.value) || 0) + Number(b.dataset.step)));
       input.value = String(v);
     };
-    $('muster-all').onclick = () => { const u = units.slice(0, 5).map(x => this.armyNow[x.id] ?? 0); if (u.some(n => n > 0)) this.h.muster(u); };
-    $('muster-go').onclick = () => { const u = units.slice(0, 5).map(x => Number(($(`mus-${x.id}`) as HTMLInputElement).value) || 0); if (u.some(n => n > 0)) { this.h.muster(u); units.slice(0, 5).forEach(x => (($(`mus-${x.id}`) as HTMLInputElement).value = '0')); } };
+    $('muster-all').onclick = () => { const u = units.slice(0, 6).map(x => this.armyNow[x.id] ?? 0); if (u.some(n => n > 0)) this.h.muster(u); };
+    $('muster-go').onclick = () => { const u = units.slice(0, 6).map(x => Number(($(`mus-${x.id}`) as HTMLInputElement).value) || 0); if (u.some(n => n > 0)) { this.h.muster(u); units.slice(0, 6).forEach(x => (($(`mus-${x.id}`) as HTMLInputElement).value = '0')); } };
     $('det-list').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-da]'); if (b) this.h.detAction(b.dataset.da!, Number(b.dataset.id)); };
   }
   private detSig = '';
@@ -406,9 +406,9 @@ export class UI {
         <div class="army-h"><span class="army-n">${bi('muster')} Army ${d.id}</span><span class="badge">${n} soldier${n === 1 ? '' : 's'}</span></div>
         <div class="army-u">${mix}</div>
         <div class="army-s">${esc(d.text)}</div>
-        <div class="army-b"><button class="pbtn ${d.selected ? 'primary' : ''}" data-da="select" data-id="${d.id}">${d.selected ? 'Selected' : 'Select'}</button>
-          <button class="pbtn" data-da="halt" data-id="${d.id}" title="Stop where it stands (G)">Halt</button><button class="pbtn" data-da="recall" data-id="${d.id}" title="Send it home (B)">Home</button>
-          <button class="pbtn" data-da="split" data-id="${d.id}" title="Split the army in two halves">Split</button><button class="pbtn" data-da="merge" data-id="${d.id}" title="Join the army next to it">Merge</button></div></div>`;
+        <div class="army-b"><button class="pbtn ${d.selected ? 'primary' : ''}" data-da="select" data-id="${d.id}">${d.selected ? bi('check') + ' Selected' : 'Select'}</button>
+          <button class="pbtn" data-da="halt" data-id="${d.id}" title="Stop where it stands (G)">${bi('halt')} Halt</button><button class="pbtn" data-da="recall" data-id="${d.id}" title="Send it home (B)">${bi('home')} Home</button>
+          <button class="pbtn" data-da="split" data-id="${d.id}" title="Split the army in two halves">${bi('split')} Split</button><button class="pbtn" data-da="merge" data-id="${d.id}" title="Join the army next to it">${bi('merge')} Merge</button></div></div>`;
     }).join('') : '<p class="muted">No field armies yet. Muster one below.</p>';
   }
 
@@ -438,7 +438,7 @@ export class UI {
     $('btn-cheat').hidden = !enabled; if (!enabled) return;
     $('btn-cheat').onclick = () => this.modal('cheats', true);
     $('cheat-res').innerHTML = RES.map((r, i) => `<span>${resIcon(i)} ${r.name}</span><button class="pbtn" data-ch="0,${i},100">+100</button><button class="pbtn" data-ch="0,${i},1000">+1000</button>`).join('');
-    $('cheat-army').innerHTML = units.slice(0, 5).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${unitIcon(u.id, 16)} +10 ${u.name}</button>`).join('');
+    $('cheat-army').innerHTML = units.slice(0, 6).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${unitIcon(u.id, 16)} +10 ${u.name}</button>`).join('');
     $('cheats').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
   }
 
@@ -502,7 +502,7 @@ export class UI {
 
   private buildUnits() {
     const el = $('unit-cards');
-    units.slice(0, 5).forEach(u => {
+    units.slice(0, 6).forEach(u => {
       const c = document.createElement('div'); c.className = 'card unit'; c.dataset.u = String(u.id);
       c.innerHTML = `<div class="ico">${unitIcon(u.id, 30)}</div><div><div class="nm"><span>${u.name}</span><span class="key">tier ${u.tier + 1}</span></div>
         <div class="ds">${u.desc}</div><div class="io">${bi('heart', 14)} ${u.hp} · ${bi('attack', 14)} ${u.dmg} · ${bi('archer', 14)} range ${u.range} · ${bi('shield', 14)} ${u.armor}</div>
@@ -644,13 +644,22 @@ export class UI {
 
   /** The red banner while a fight is on. */
   /** The attack banner. With `onClick` it is a button (e.g. to look at where the attackers are). */
-  battle(text: string | null, onClick?: () => void) {
+  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string }[] = []) {
     const b = $('battle'); b.hidden = !text;
-    if (text) b.innerHTML = text;
-    b.classList.toggle('clickable', !!onClick); b.onclick = onClick ?? null; b.title = onClick ? 'Click to look at the attackers' : '';
+    if (!text) return;
+    let body = document.getElementById('battle-text'), bar = document.getElementById('battle-acts');
+    if (!body || !bar) { b.innerHTML = '<div id="battle-text"></div><div id="battle-acts"></div>'; body = $('battle-text'); bar = $('battle-acts'); }
+    body.innerHTML = text;   // (the text changes every second; the buttons are only rebuilt when they change, so a click is never lost to a refresh)
+    const sig = actions.map(a => a.label).join('|');
+    if (bar.dataset.sig !== sig) {
+      bar.dataset.sig = sig; bar.innerHTML = '';
+      for (const a of actions) { const btn = document.createElement('button'); btn.className = 'pbtn'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.dataset.label = a.label; bar.appendChild(btn); }
+    }
+    bar.onclick = e => { const t = (e.target as HTMLElement).closest('button'); if (!t) return; e.stopPropagation(); actions.find(a => a.label === t.dataset.label)?.run(); };
+    b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
   }
   private armyNow: number[] = [];
-  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 5).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
+  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 6).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
 
   setSelectedPane(html: string | null) {
     const tab = $('tab-sel');

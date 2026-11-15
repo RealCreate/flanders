@@ -8,7 +8,7 @@
 //   3. sanity (validate.ts): fixed fields, ranges and sizes; a strictly increasing command number; no huge jumps in time; per-peer rate limits.
 // A peer that keeps sending bad data is cut off for the session.
 import { joinRoom } from 'trystero';
-import { LIMITS, Sequence, Bucket, isKey, isSigned, isTestingOp, parseCmd, cleanName, type PeerOp } from './validate';
+import { LIMITS, Sequence, Bucket, isKey, isSigned, isTestingOp, parseCmd, cleanName, sanitizeHash, sanitizeBuild, type PeerOp, type WireHash } from './validate';
 
 export interface Cmd {
   /** `cheat` and `flatten` are testing tools: they can be signed into your own history but other players never accept them. */
@@ -63,13 +63,15 @@ export async function verifyText(pub: string, text: string, sig: string): Promis
 export function tagOf(pub: string): number { let h = 7; for (let i = 0; i < pub.length; i++) h = (h * 31 + pub.charCodeAt(i)) % 2147483000; return h + 1; }
 
 /** Who a peer says it is. `sig` proves it: it signs the other fields plus the id of the peer the hello is addressed to, so a hello cannot be replayed to somebody else or relayed by a third party. */
-export interface Hello { pub: string; site: number; name: string; tick: number; world: string; sig?: string }
+export interface Hello { pub: string; site: number; name: string; tick: number; world: string; sig?: string;
+  /** The build of the sender: `v` is the version of the sync protocol, `rules` the fingerprint of the simulation rules (see sync.ts). Builds that differ cannot replay each other's histories faithfully. */
+  v?: number; rules?: string }
 
 export interface RoomHandlers {
   onHello(peerId: string, h: Hello): void;
   onCmd(peerId: string, c: Cmd): void;
   onLog(peerId: string, cmds: Cmd[]): void;
-  onHash(peerId: string, tick: number, hash: string): void;
+  onHash(peerId: string, msg: WireHash): void;
   onLeave(peerId: string): void;
   onStatus(s: string): void;
 }
@@ -77,14 +79,15 @@ export interface RoomHandlers {
 /** The text a hello signature covers. */
 const helloText = (h: Hello, to: string) => JSON.stringify({ t: 'hello', pub: h.pub, site: h.site, name: h.name, world: h.world, to });
 
-interface PeerState { seq: Sequence; cmds: Bucket; logs: Bucket; hashes: Bucket; strikes: number; banned: boolean; pendingLog?: unknown }
+interface PeerState { seq: Sequence; cmds: Bucket; logs: Bucket; hashes: Bucket; wants: Bucket; strikes: number; banned: boolean; pendingLog?: unknown }
 
 export class Room {
   private room: ReturnType<typeof joinRoom>;
   private sendHello: (d: Hello, o?: { target?: string }) => Promise<unknown>;
   private sendCmd: (d: Signed, o?: { target?: string }) => Promise<unknown>;
   private sendLog: (d: Signed[], o?: { target?: string }) => Promise<unknown>;
-  private sendHash: (d: { tick: number; hash: string }, o?: { target?: string }) => Promise<unknown>;
+  private sendHash: (d: WireHash, o?: { target?: string }) => Promise<unknown>;
+  private sendWant: (d: { t: number }, o?: { target?: string }) => Promise<unknown>;
   private pubs = new Map<string, string>();
   private state = new Map<string, PeerState>();
   private chains = new Map<string, Promise<void>>();
@@ -100,9 +103,9 @@ export class Room {
     // a relay the host of this build chose for everybody (VITE_TURN_URLS, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL at build time); a relay set in Display settings wins
     if (!turn) { const env = import.meta.env; const urls = String(env.VITE_TURN_URLS ?? '').split(',').map((u: string) => u.trim()).filter((u: string) => /^turns?:/.test(u)); if (urls.length) turn = [{ urls: urls[0], username: env.VITE_TURN_USERNAME || undefined, credential: env.VITE_TURN_CREDENTIAL || undefined }]; }
     this.room = joinRoom({ appId: 'flanders-medieval-p2p-v7', ...(turn ? { turnConfig: turn as never } : {}) }, world);
-    const hello_ = this.room.makeAction('hello'), cmd_ = this.room.makeAction('cmd'), log_ = this.room.makeAction('log'), hash_ = this.room.makeAction('hash');
+    const hello_ = this.room.makeAction('hello'), cmd_ = this.room.makeAction('cmd'), log_ = this.room.makeAction('log'), hash_ = this.room.makeAction('hash'), want_ = this.room.makeAction('want');
     this.sendHello = (d, o) => hello_.send(d as never, o); this.sendCmd = (d, o) => cmd_.send(d as never, o);
-    this.sendLog = (d, o) => log_.send(d as never, o); this.sendHash = (d, o) => hash_.send(d as never, o);
+    this.sendLog = (d, o) => log_.send(d as never, o); this.sendHash = (d, o) => hash_.send(d as never, o); this.sendWant = (d, o) => want_.send(d as never, o);
     this.ready = this.room.getSelf().then(s => { this.selfId = s.peerId; }).catch(() => { /* without our own id no hello can be checked, so nobody gets introduced */ });
     h.onStatus('Looking for other players in this world…');
     // nobody after a while: either nobody else is here, or a strict network is blocking the direct connection. Say so, with the way out.
@@ -111,7 +114,7 @@ export class Room {
     const count = () => `${this.peers.size} other player${this.peers.size === 1 ? '' : 's'} nearby`;
     this.room.onPeerJoin(({ peerId }) => {
       this.stopLonely(); this.peers.add(peerId); h.onStatus(count());
-      this.state.set(peerId, { seq: new Sequence(), cmds: new Bucket(100, 600), logs: new Bucket(0.2, 3), hashes: new Bucket(5, 30), strikes: 0, banned: false });
+      this.state.set(peerId, { seq: new Sequence(), cmds: new Bucket(100, 600), logs: new Bucket(0.2, 3), hashes: new Bucket(8, 60), wants: new Bucket(0.2, 2), strikes: 0, banned: false });
       void this.helloTo(peerId); this.sendLog(this.log(), { target: peerId }).catch(() => { /* peer left */ });
     });
     this.room.onPeerLeave(({ peerId }) => {
@@ -128,17 +131,25 @@ export class Room {
     cmd_.onMessage((d, { peerId }) => queue(peerId, async st => {
       if (!st.cmds.take()) return this.strike(peerId, st, 'too many commands');
       const c = await this.check(peerId, st, d); if (!c || c === 'skip') return;
-      if (!st.seq.acceptLive(c)) return this.strike(peerId, st, 'a command out of order');
+      const k = st.seq.classify(c);
+      if (k === 'dup') return;   // we have it already (it came in their history too)
+      if (k === 'bad') return this.strike(peerId, st, 'a command out of order');
       h.onCmd(peerId, c);
     }));
     log_.onMessage((d, { peerId }) => queue(peerId, async st => {
       if (!this.pubs.has(peerId)) { st.pendingLog = d; return; }   // the history beat the hello: keep it until the peer has been introduced
       await this.acceptLog(peerId, st, d);
     }));
-    hash_.onMessage((d, { peerId }) => {
-      const st = this.state.get(peerId); if (!st || st.banned || !this.pubs.has(peerId) || !st.hashes.take()) return;
-      const x = d as { tick?: unknown; hash?: unknown } | null;
-      if (x && typeof x.tick === 'number' && Number.isInteger(x.tick) && x.tick >= 0 && x.tick <= LIMITS.maxTick && typeof x.hash === 'string' && x.hash.length <= 30) h.onHash(peerId, x.tick, x.hash);
+    // a hash is only meaningful after every command sent before it, so it goes through the same queue: a command still being checked would otherwise be overtaken by the hash that follows it,
+    // and the copy would run on past the tick the command belongs to
+    hash_.onMessage((d, { peerId }) => queue(peerId, async st => {
+      if (!this.pubs.has(peerId) || !st.hashes.take()) return;
+      const x = sanitizeHash(d); if (x) h.onHash(peerId, x);
+    }));
+    // a player whose copy of our village went wrong asks for our history again: we are the authority, so we only ever answer, and not more than once in a while
+    want_.onMessage((_d, { peerId }) => {
+      const st = this.state.get(peerId); if (!st || st.banned || !this.pubs.has(peerId) || !st.wants.take()) return;
+      this.sendLog(this.log(), { target: peerId }).catch(() => { /* peer left */ });
     });
   }
 
@@ -156,13 +167,14 @@ export class Room {
 
   private async acceptHello(peerId: string, st: PeerState, d: unknown) {
     const x = d as Partial<Hello> | null;
-    const ok = !!x && isKey(x.pub) && typeof x.sig === 'string' && x.sig.length <= LIMITS.maxSigChars && Number.isInteger(x.site) && (x.site as number) >= 0 && (x.site as number) < 4096
+    const build = sanitizeBuild(d);
+    const ok = !!x && !!build && isKey(x.pub) && typeof x.sig === 'string' && x.sig.length <= LIMITS.maxSigChars && Number.isInteger(x.site) && (x.site as number) >= 0 && (x.site as number) < 4096
       && typeof x.world === 'string' && x.world.length <= 64 && typeof x.name === 'string' && x.name.length <= 80 && typeof x.tick === 'number';
     if (!ok || !this.selfId) return this.strike(peerId, st, 'an invalid hello');
     const h = x as Hello;
     if (!(await verifyText(h.pub, helloText(h, this.selfId), h.sig!))) return this.strike(peerId, st, 'a hello with a bad signature');
     this.pubs.set(peerId, h.pub);
-    this.h.onHello(peerId, { pub: h.pub, site: h.site, name: cleanName(h.name), tick: h.tick, world: h.world });
+    this.h.onHello(peerId, { pub: h.pub, site: h.site, name: cleanName(h.name), tick: h.tick, world: h.world, v: build!.v, rules: build!.rules });
     if (st.pendingLog !== undefined) { const d = st.pendingLog; st.pendingLog = undefined; await this.acceptLog(peerId, st, d); }
   }
 
@@ -187,7 +199,9 @@ export class Room {
 
   announce() { for (const p of this.peers) void this.helloTo(p); }
   broadcastCmd(s: Signed) { if (this.peers.size) this.sendCmd(s).catch(() => { /* peers left */ }); }
-  broadcastHash(tick: number, hash: string) { if (this.peers.size) this.sendHash({ tick, hash }).catch(() => { /* peers left */ }); }
+  broadcastHash(msg: WireHash) { if (this.peers.size) this.sendHash(msg).catch(() => { /* peers left */ }); }
+  /** Ask a player for their whole history again (our copy of their village went wrong). */
+  requestLog(peerId: string) { this.sendWant({ t: 1 }, { target: peerId }).catch(() => { /* peer left */ }); }
   pubOf(peerId: string) { return this.pubs.get(peerId); }
   /** Our own id in this room (empty until the room has told us). */
   get self() { return this.selfId; }

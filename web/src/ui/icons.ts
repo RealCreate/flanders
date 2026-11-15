@@ -103,6 +103,7 @@ export const ICONS: Record<string, S> = {
   swordsman: P('M12 2 L14 5 V15 H10 V5Z', IR2) + L('M12 5 V15', IR, 0.6) + R(6, 15, 12, 2.2, GD2, 0.5) + R(11, 17, 2, 4, WD2) + C(12, 22, 1.3, GD),
   knight: P('M6 21 V10 Q6 3 12 3 Q18 3 18 10 V21Z', IR) + R(7, 10, 10, 2, K) + L('M12 12 V19 M9 14 H9.01 M15 14 H15.01', K, 1.2) + P('M12 3 Q16 -0.5 21 3 Q17 3.5 15 6Z', RD),
   catapult: R(3, 16, 18, 3, WD) + C(6, 20, 2.4, WD2) + C(18, 20, 2.4, WD2) + L('M10 16 L19 5', WD2, 2.2) + P('M16 4 H22 L21 8 H17Z', WD2) + C(20, 2.4, 1.6, ST) + L('M9 16 V12 H13', WD, 1.2),
+  ram: P('M3 9 L12 4 L21 9 V12 H3Z', WD2) + L('M6 8 L7 12 M12 5.5 V12 M18 8 L17 12', WD3, 0.9) + R(2, 12, 20, 3, WD) + C(7, 19, 2.6, WD2) + C(17, 19, 2.6, WD2) + P('M2 15 L0.5 17 H3Z', IR) + P('M22 15 H17 L21 17.5 L23.5 15Z', IR2) + L('M20 15 L23.8 15', IR, 1),
   militia: L('M12 22 V9', WD2, 1.8) + L('M7 3 V8 Q7 10.5 12 10.5 Q17 10.5 17 8 V3 M12 3 V10.5', IR, 1.8),
 
   // ---- actions ----
@@ -190,7 +191,7 @@ export const ICON_NAMES = Object.keys(ICONS);
 /** Building kind id (catalog.rs order) to icon name. */
 export const KIND_ICON_NAMES = ['house', 'farm', 'wall', 'watchtower', 'woodcutter', 'sawmill', 'quarry', 'claypit', 'brickworks', 'ironmine', 'goldmine', 'charcoalburner', 'smelter', 'blacksmith', 'mint', 'townhall', 'well', 'chapel', 'hunterslodge', 'barracks', 'buildersyard', 'spikedlogs', 'gate', 'drawbridge', 'moat', 'storehouse', 'keep', 'courthouse', 'market', 'waterwheel', 'garden', 'park', 'river', 'raiseground', 'lowerground', 'port', 'tollpost', 'road', 'bridge', 'infirmary', 'graveyard'];
 /** Unit id (military.rs order) to icon name. */
-export const UNIT_ICON_NAMES = ['spearman', 'archer', 'swordsman', 'knight', 'catapult', 'militia'];
+export const UNIT_ICON_NAMES = ['spearman', 'archer', 'swordsman', 'knight', 'catapult', 'ram', 'militia'];
 /** Building category (CATS order) to icon name. */
 export const CAT_ICON_NAMES = ['house', 'grain', 'pick', 'work', 'shield', 'chapel', 'raiseground'];
 
