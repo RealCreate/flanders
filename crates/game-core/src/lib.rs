@@ -165,7 +165,9 @@ const BACKUP_BELOW: i32 = 60;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
-pub const WHEEL_REACH: f32 = 4.4;
+pub const WHEEL_REACH: f32 = 5.2;
+/// Where the house's stone footing ends on the water side: the bank. The wheel's axle hangs `WHEEL_REACH - WHEEL_FOOT` beyond it, over the water, clear of the footing.
+pub const WHEEL_FOOT: f32 = 3.2;
 pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
@@ -837,7 +839,7 @@ impl World {
             // walk back from the water along the opposite of the wheel's way to the first dry bank
             let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
             for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
-                let back = t + 3.4 + extra - (WHEEL_REACH - 3.4);
+                let back = t + WHEEL_FOOT + extra;   // the footing ends at the bank
                 let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
                 let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
                 let code = self.can_place(WATERWHEEL, cx as i32, cy as i32);
@@ -4134,6 +4136,10 @@ mod pathnet_tests {
             assert!(w.height_at(x, y) >= 0.4, "the house is on dry land: {s:?}");
             assert!(w.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2, "the wheel hangs over water: {s:?}");
             assert_eq!(w.waterwheel_snap(cx, cy), s, "snapping is a pure function");
+            // the footing (to WHEEL_FOOT from the middle) ends at the bank, and the wheel's axle hangs beyond it: no water under the footing, none of the wheel over dry ground
+            let foot = WHEEL_FOOT - 1.0; assert!(w.height_at(x + ux * foot, y + uy * foot) >= 0.3, "the footing stands on land: {s:?}");
+            let mut bank = 0.0f32; while bank < WHEEL_REACH && w.height_at(x + ux * bank, y + uy * bank) >= 0.45 { bank += 0.25; }
+            assert!(bank >= WHEEL_FOOT - 0.5, "the footing ends ({WHEEL_FOOT}) no later than the bank ({bank}): {s:?}");
             // turned the other way the wheel would be in the air over dry ground
             assert_eq!(w.place(WATERWHEEL, dx, dy, (rot + 4) & 7), -16, "wheel facing the land is refused");
             if seen == 1 {

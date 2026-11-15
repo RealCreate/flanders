@@ -792,10 +792,11 @@ const market: Model = b => {
 // Waterwheel: a mill house with a big paddle wheel on its side, turning while it works.
 const waterwheel: Model = b => {
   const t = b.t, m = M(), W = 4.2 + t * 0.5, D = 3.6, h = 2.5 + t * 0.4, wm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
-  b.box(W + 0.4, 0.4, D + 0.4, m.stone, 0, -0.1, 0); b.box(W, h, D, wm, 0, 0.3, 0); b.gable(W, D, 1.6 + t * 0.3, t >= 1 ? m.tile : m.thatch, 0, h + 0.3, 0, 0.5);
+  // the stone footing only covers the land side: from behind the house to the bank (FOOT, as the core's WHEEL_FOOT); the wheel hangs beyond it over the water
+  const FOOT = 3.2, back = -(W / 2 + 0.2), footing = b.box(FOOT - back, 0.4, D + 0.4, m.stone, (FOOT + back) / 2, -0.1, 0); footing.name = 'footing'; b.box(W, h, D, wm, 0, 0.3, 0); b.gable(W, D, 1.6 + t * 0.3, t >= 1 ? m.tile : m.thatch, 0, h + 0.3, 0, 0.5);
   b.box(0.9, 1.6, 0.14, m.door, 0, 0.3, D / 2 + 0.03); b.window(W * 0.28, 1.6, D / 2 + 0.02); b.chimney(-W * 0.3, h + 1.2, -0.4, 1.2);
   // the wheel hangs out over the water on a long axle (the core snaps the house to the bank so the point WHEEL_REACH out from its middle is over the water) and dips below the pad
-  const R = 1.7 + t * 0.15, AX = 4.4, DIP = 0.9, pivot = new THREE.Group(); pivot.position.set(AX, R - DIP, 0); pivot.rotation.y = Math.PI / 2; b.g.add(pivot);
+  const R = 1.7 + t * 0.15, AX = 5.2, DIP = 0.9, pivot = new THREE.Group(); pivot.position.set(AX, R - DIP, 0); pivot.rotation.y = Math.PI / 2; pivot.name = 'wheel'; b.g.add(pivot);
   const wheel = new THREE.Group(); pivot.add(wheel);
   const part = (geo: THREE.BufferGeometry, mat: THREE.Material) => { const q = new THREE.Mesh(geo, mat); q.castShadow = true; return q; };
   for (const s of [-0.5, 0.5]) { const rim = part(new THREE.TorusGeometry(R, 0.1, 6, 20), m.darkwood); rim.position.z = s; wheel.add(rim); }
