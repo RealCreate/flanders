@@ -119,7 +119,35 @@ fn fish_hash_and_wide_stock_are_deterministic() {
     let mut a = moat_world(); let b = moat_world();
     a.stock[SF as usize] += 1;
     assert_ne!(a.state_hash_parts()[1], b.state_hash_parts()[1], "smoked fish is in the stock section of the hash");
-}
+}
+
+/// The hut's stone footing in the model's frame (+x towards the water): x from `FISH_FOOT_MIN` to `FISH_FOOT_MAX`, z within `FISH_FOOT_HALF_D`. Mirrors `fishingHut` in buildings.ts (tier 3, the widest).
+const FISH_FOOT_MIN: f32 = -2.7; const FISH_FOOT_MAX: f32 = 1.5; const FISH_FOOT_HALF_D: f32 = 1.45;
+
+#[test]
+fn a_fishing_huts_footing_stays_on_the_land_side_of_the_bank_at_every_turn() {
+    let mut rivers = World::new(1337, 0, 0); rivers.stock = [500; N_RES];
+    for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 17, 4), (HOUSE, 22, 4), (HOUSE, -12, 6), (TOWER, 0, 16), (TOWER, 8, -16)] { rivers.place(k, x, y, 0); }
+    for i in 0..6 { assert!(rivers.place(RIVER, 20 + i * 4, -30, 2) >= 0); }
+    let moat = moat_world();
+    let mut seen = 0;
+    for (w, clicks) in [(&rivers, vec![(24, -22), (30, -24), (28, -40), (36, -30), (34, -36), (22, -23)]), (&moat, vec![(0, 33), (33, 0), (-33, 0), (0, -33), (24, 24), (-24, 24), (24, -24), (-24, -24)])] {
+        for (cx, cy) in clicks {
+            let s = w.fishing_hut_snap(cx, cy);
+            if s.is_empty() { continue; }
+            seen += 1;
+            let (x, y, rot) = ((w.ox + s[0] as i32) as f32, (w.oy + s[1] as i32) as f32, s[2] as u8);
+            let (ux, uy) = World::wheel_dir(rot); let (vx, vy) = (-uy, ux);
+            // the visible bank along the turn, and along the two sides of the footing too (the bank may run oblique)
+            for &l in &[-FISH_FOOT_HALF_D, 0.0, FISH_FOOT_HALF_D] {
+                let (ox, oy) = (x + vx * l, y + vy * l);
+                let mut e = 0.0f32; while e < 8.0 && w.height_at(ox + ux * e, oy + uy * e) >= 0.3f32.max(w.moat_level_at(ox + ux * e, oy + uy * e)) { e += 0.1; }
+                assert!(e >= FISH_FOOT_MAX + 0.5, "the footing (to {FISH_FOOT_MAX}) must end 0.5 before the water, which starts at {e:.1} (side {l}): {s:?} from {cx},{cy}");
+            }
+        }
+    }
+    assert!(seen >= 10, "enough snaps checked ({seen})");
+}
 
 #[test]
 fn hunters_bring_meat_and_a_smokehouse_smokes_fish_or_meat() {

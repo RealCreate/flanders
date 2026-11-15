@@ -179,6 +179,8 @@ pub const SEASON_DAYS: u64 = 10;
 pub const WHEEL_REACH: f32 = 5.2;
 /// Where the house's stone footing ends on the water side: the bank. The wheel's axle hangs `WHEEL_REACH - WHEEL_FOOT` beyond it, over the water, clear of the footing.
 pub const WHEEL_FOOT: f32 = 3.2;
+/// The fishing hut stands this far from the bank (middle to bank): its footing (to 1.5 out) then ends well short of the water even where the bank runs oblique to the turn; its jetty carries on over the water.
+pub const HUT_FOOT: f32 = 3.8;
 pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
@@ -951,7 +953,7 @@ impl World {
             // walk back from the water along the opposite of the wheel's way to the first dry bank
             let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
             for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
-                let back = t + WHEEL_FOOT + extra;   // the footing ends at the bank
+                let back = t + if kind == FISHING_HUT { HUT_FOOT } else { WHEEL_FOOT } + extra;   // the footing ends at the bank
                 let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
                 let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
                 let code = self.can_place(kind, cx as i32, cy as i32);
