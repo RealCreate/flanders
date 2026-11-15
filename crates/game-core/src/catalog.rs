@@ -70,6 +70,7 @@ pub const BRIDGE: u8 = 38;
 pub const HOSPITAL: u8 = 39;
 pub const GRAVEYARD: u8 = 40;
 pub const FISHING_HUT: u8 = 41;
+#[allow(dead_code)]   // named for the tests; the building is found through its table row
 pub const SMOKEHOUSE: u8 = 42;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
