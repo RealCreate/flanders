@@ -160,3 +160,67 @@ fn reports_name_the_boss_and_a_kill_pays() {
     // a raid without him reports none
     let mut w = village(true); assert!(w.cheat(4, 0, 300)); fight(&mut w); assert_eq!(boss_part(&w.last_report()), [0, 0, 0, 0]);
 }
+
+fn lair_of(seed: u64) -> Option<(usize, f32, f32)> { terrain::neutrals(seed).iter().enumerate().find(|(_, n)| n.0 == 3).map(|(i, n)| (i, n.1, n.2)) }
+fn army_at(w: &mut World, x: f32, y: f32, units: [u32; NK]) -> u32 { w.army = units; let id = w.det_form(&units); let i = w.dets.iter().position(|d| d.id == id).unwrap(); w.dets[i].x = x; w.dets[i].y = y - 8.0; id }
+
+#[test]
+fn a_lair_is_a_real_fight_that_can_be_lost_and_tried_again_and_pays_when_won() {
+    for seed in [1u64, 7, 1337, 99999] { assert!(terrain::neutrals(seed).iter().any(|n| n.0 == 3), "seed {seed} has a lair"); }
+    let (ni, x, y) = lair_of(1337).expect("a lair on the main test map");
+    let mut w = World::new(1337, 0, 0); w.stock = [100; N_RES]; w.army = [7, 3, 0, 0, 0, 0];
+    let (hall_hp, stock, army) = (w.buildings[0].hp, w.stock, w.army);
+    // too few soldiers: they lose, the lair stays, and they may try again
+    let weak = army_at(&mut w, x, y, [3, 2, 0, 0, 0, 0]); w.army = army;
+    assert_eq!(w.visit_neutral(weak), 3, "the fight begins at once");
+    assert!(w.battle_active() && !w.battle_lair().is_empty() && w.battle_boss()[0] == 2.0, "a real battle, at the lair, with the ogre in it");
+    assert_eq!(w.visit_neutral(weak), -4, "one fight at a time");
+    fight(&mut w);
+    let r = w.last_report(); assert_eq!(r[1], 0); assert_eq!(boss_part(&r), [2, boss_part(&r)[1], 0, 1], "a lair report: the ogre stood, lair = 1");
+    assert!(!w.neutral_done[ni], "a lair that held is not cleared");
+    // a proper army wins, pays, and the lair is done
+    let mut w = World::new(1337, 0, 0); w.stock = [100; N_RES]; w.hero = Some((0, 0)); w.army = [7, 3, 0, 0, 0, 0];
+    let id = army_at(&mut w, x, y, [14, 8, 6, 2, 0, 0]); w.army = army;
+    assert_eq!(w.visit_neutral(id), 3);
+    let (bx0, by0) = { let u = w.battle.as_ref().unwrap().units.iter().find(|u| u.boss > 0).unwrap(); (u.x, u.y) };
+    let hp0 = w.battle_boss()[2]; let mut hp_min = hp0; let (mut secs, mut moved) = (0, 0.0f32);
+    while w.battle_active() && secs < 400 {
+        w.step(); secs += 1;
+        let b = w.battle_boss(); if !b.is_empty() { hp_min = hp_min.min(b[2]); }
+        if let Some(bt) = &w.battle { if let Some(u) = bt.units.iter().find(|u| u.boss > 0) { moved = moved.max(((u.x - bx0).powi(2) + (u.y - by0).powi(2)).sqrt()); } }
+    }
+    let r = w.last_report(); eprintln!("{secs}s, report {r:?}, boss moved {moved:.1}, hp {hp0} -> {hp_min}");
+    assert!(secs > 12, "a fight with a hit-point-rich boss takes time: {secs}s");
+    assert!(hp_min < 0.05 * hp0, "the ogre fell: {hp_min} of {hp0}"); assert!(moved >= 0.0);
+    assert_eq!(r[1], 1); assert_eq!(boss_part(&r)[0], 2); assert_eq!(boss_part(&r)[2], 1); assert_eq!(boss_part(&r)[3], 1);
+    assert!(w.neutral_done[ni], "cleared"); assert_eq!(w.visit_neutral(id), -3, "and done");
+    assert!(w.stock[GD as usize] >= 100 + BOSSES[1].gold && w.stock[IR as usize] >= 100 + BOSSES[1].iron, "the reward: gold {} iron {}", w.stock[GD as usize], w.stock[IR as usize]);
+    assert!(w.hero.unwrap().1 >= BOSSES[1].xp, "the lord's experience");
+    assert!(w.dets.iter().any(|d| d.units.iter().sum::<u32>() > 0), "the survivors are still an army in the field");
+    assert_eq!(w.buildings[0].hp, hall_hp, "the village was not touched"); assert_eq!(w.army, army, "nor its standing army"); let _ = stock;
+}
+
+#[test]
+fn the_ogre_slams_everything_near_and_throws_boulders_at_stone() {
+    // the slam: soldiers within reach are hurt (less at the rim), soldiers beyond it are not
+    let mut w = village(false); assert!(w.begin_battle_boss([0; NK], 0.0, 0, OGRE, 0, 1.0));
+    { let b = w.battle.as_mut().unwrap();
+      let (ox, oy) = { let o = b.units.iter().find(|u| u.boss > 0).unwrap(); (o.x, o.y) };
+      for (dx, side) in [(1.0f32, 0u8), (3.0, 0), (9.0, 0), (1.0, 1)] { let mut u = Unit::new(side, 0, ox + dx, oy + 8.0 - 8.0, 0.0); u.hp = 70.0; b.units.push(u); }
+      b.units.iter_mut().find(|u| u.boss > 0).unwrap().t2 = 0.0; }
+    w.battle_substep();
+    let b = w.battle.as_ref().unwrap(); let hp = |i: usize| b.units[b.units.len() - 4 + i].hp;
+    eprintln!("slam: near {} rim {} far {} own side {}", hp(0), hp(1), hp(2), hp(3));
+    assert!(hp(0) < 50.0 && hp(1) < 60.0 && hp(1) > hp(0), "the slam hurts, most at the middle");
+    assert_eq!(hp(2), 70.0, "beyond its reach nothing happens"); assert_eq!(hp(3), 70.0, "and his own side is spared");
+    // boulders: a stone wall that no spearman can scratch breaks under an ogre
+    let wall = |w: &mut World| { let (hx, hy) = (w.buildings[0].x, w.buildings[0].y); for k in -9..=9 { put(w, WALL, hx + 24.0, hy + k as f32 * 3.0); let n = w.buildings.len() - 1; w.buildings[n].tier = 2; w.buildings[n].hp = battle::max_hp(WALL, 2); } };
+    let hp_of = |w: &World| -> f32 { w.buildings.iter().filter(|b| b.kind == WALL).map(|b| b.hp).sum() };
+    let mut a = village(false); a.population = 4; wall(&mut a); let full = hp_of(&a);
+    assert!(a.begin_battle_boss([0; NK], 0.0, 0, OGRE, 0, 1.0)); for _ in 0..90 { a.step(); a.stock[GR as usize] = 3000; if !a.battle_active() { break; } }
+    let lost = full - hp_of(&a); eprintln!("ogre: stone wall lost {lost:.0} of {full:.0}");
+    assert!(lost > 150.0, "boulders break stone: {lost}");
+    let mut c = village(false); c.population = 4; wall(&mut c); assert!(c.begin_battle([8, 0, 0, 0, 0, 0], 0.0, 0)); c.battle.as_mut().unwrap().ladders = 0;
+    for _ in 0..90 { c.step(); c.stock[GR as usize] = 3000; if !c.battle_active() { break; } }
+    assert_eq!(hp_of(&c), full, "while spearmen cannot touch it");
+}

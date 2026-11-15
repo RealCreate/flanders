@@ -192,7 +192,7 @@ fn tunnels_uncached(seed: u64) -> Vec<[f32; 4]> {
     out
 }
 
-/// Neutral places scattered over the map: (kind, x, y). 0 abbey (heals), 1 ruined castle (loot), 2 bandit camp (to be cleared). Worked out from the natural terrain: on dry,
+/// Neutral places scattered over the map: (kind, x, y). 0 abbey (heals), 1 ruined castle (loot), 2 bandit camp (to be cleared), 3 lair (a boss and his escort: a real fight). Worked out from the natural terrain: on dry,
 /// gentle ground, away from every village site, one candidate per 160-unit cell, chosen by hash.
 pub fn neutrals(seed: u64) -> Vec<(u8, f32, f32)> {
     thread_local! { static N: std::cell::RefCell<Vec<(u64, Vec<(u8, f32, f32)>)>> = const { std::cell::RefCell::new(Vec::new()) }; }
@@ -215,7 +215,7 @@ fn neutrals_uncached(seed: u64) -> Vec<(u8, f32, f32)> {
         let h = base_height_s(seed, &s, x, y);
         if h < 2.0 || h > 40.0 || slope(seed, x, y) > 0.5 { continue; }
         if site_dist(&s, x, y) < 110.0 { continue; }
-        let k = h01(seed ^ 0x51, cx, cy); let kind = if k < 0.3 { 0 } else if k < 0.6 { 1 } else { 2 };
+        let k = h01(seed ^ 0x51, cx, cy); let kind = if k < 0.3 { 0 } else if k < 0.6 { 1 } else if k < 0.86 { 2 } else { 3 };
         out.push((kind, x, y));
     } }
     out

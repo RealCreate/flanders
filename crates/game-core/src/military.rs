@@ -71,7 +71,7 @@ pub struct BossDef {
     pub boulder: f32,
     /// Below this share of its hit points it is enraged: blows land `rage_dmg` times harder and it moves `rage_speed` times as fast.
     pub rage_at: f32, pub rage_dmg: f32, pub rage_speed: f32,
-    /// Strength: hit points scale between `scale_min` and `scale_max` of the above with the village's size and age (see World::boss_scale).
+    /// Strength: hit points scale between `scale_min` and `scale_max` of the above, for a raid boss with the village's size and age (see World::boss_scale), for a lair boss with the place's own strength.
     pub scale_min: f32, pub scale_max: f32,
     /// What it brings: escorts (spearmen, archers, swordsmen, knights) and rams at scale 1.0.
     pub escort: [u32; 4], pub rams: u32,
@@ -86,10 +86,10 @@ pub static BOSSES: [BossDef; N_BOSSES] = [
         slam_every: 0.0, slam_reach: 0.0, slam_dmg: 0.0, boulder: 0.0, rage_at: 0.5, rage_dmg: 1.25, rage_speed: 1.15, scale_min: 0.8, scale_max: 1.3,
         escort: [5, 3, 2, 1], rams: 1, gold: 260, iron: 40, xp: 120, mood: 8, mood_days: 10, prize_rams: 1,
         desc: "Leads a great raid in heavy plate that only siege engines and heavy blows hurt, and sounds a war horn that spurs his men on. Break the horn's rhythm and kill him." },
-    BossDef { name: "Ogre of the Marches", names: ["Grum", "Thokk", "Ulg", "Mor the Wide"], base: 2, hp: 900.0, dmg: 38.0, range: 3.0, speed: 1.9, cd: 1.8, armor: 1.0,
+    BossDef { name: "Ogre of the Marches", names: ["Grum", "Thokk", "Ulg", "Mor the Wide"], base: 2, hp: 2400.0, dmg: 55.0, range: 3.2, speed: 1.9, cd: 2.0, armor: 2.0,
         heavy: 0.0, soft: 1.0, horn_every: 0.0, horn_secs: 0.0, horn_reach: 0.0, horn_haste: 0.0, horn_first: 0.0,
-        slam_every: 6.0, slam_reach: 3.2, slam_dmg: 34.0, boulder: 4.0, rage_at: 0.5, rage_dmg: 1.3, rage_speed: 1.3, scale_min: 1.0, scale_max: 1.0,
-        escort: [6, 3, 1, 0], rams: 0, gold: 220, iron: 30, xp: 160, mood: 6, mood_days: 8, prize_rams: 0,
+        slam_every: 5.0, slam_reach: 3.5, slam_dmg: 40.0, boulder: 4.0, rage_at: 0.5, rage_dmg: 1.3, rage_speed: 1.3, scale_min: 0.9, scale_max: 1.2,
+        escort: [7, 4, 2, 0], rams: 0, gold: 220, iron: 30, xp: 160, mood: 6, mood_days: 8, prize_rams: 0,
         desc: "A huge brute who lairs in the hills. Slow, with a great deal of hit points, a slam that hurts everyone around him and boulders for walls. Shoot him from a distance." },
 ];
 

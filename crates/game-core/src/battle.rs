@@ -47,6 +47,8 @@ pub fn is_stone(kind: u8, tier: u8) -> bool { matches!(kind, WALL | GATE) && tie
 pub const OIL_DPS: f32 = 22.0;
 /// How far an ogre throws a boulder at a wall or building.
 pub const BOULDER_REACH: f32 = 12.0;
+/// A fight at a lair is called off (the army is not winning) after this many seconds.
+pub const LAIR_SECS: f32 = 200.0;
 
 /// How hard a ram hits what it is set against.
 fn ram_mult(kind: u8) -> f32 { match kind { GATE => RAM_VS_GATE, WALL | FENCE => RAM_VS_WALL, _ => RAM_VS_OTHER } }
@@ -425,7 +427,7 @@ impl World {
                 acted = true;
             }
             if acted { continue; }
-            if u.side == 1 {
+            if u.side == 1 && b.lair < 0 {
                 // attackers go for the nearest building
                 let mut tb = usize::MAX; let mut td = f32::MAX;
                 let hurls = u.boss > 0 && BOSSES[(u.boss - 1) as usize].boulder > 0.0;   // an ogre throws boulders at walls
@@ -703,7 +705,7 @@ impl World {
         let atk = b.units.iter().filter(|u| u.side == 1 && u.alive).count();
         let def = b.units.iter().filter(|u| u.side == 0 && u.alive).count();
         if def == 0 && atk > 0 { b.pillage += SUBSTEP; }
-        let done = atk == 0 || b.pillage > 14.0 || b.t > 170.0;
+        let done = atk == 0 || b.pillage > 14.0 || b.t > if b.lair >= 0 { LAIR_SECS } else { 170.0 };
         if done { self.finish_battle(); }
     }
 
@@ -718,13 +720,14 @@ impl World {
         }
         self.dets.retain(|d| d.units.iter().sum::<u32>() > 0);
         let atk_alive = b.units.iter().filter(|u| u.side == 1 && u.alive).count() as u32;
-        let won = atk_alive == 0 || b.pillage <= 0.0;   // holding out until the time limit is a defence, not a defeat
+        let lair = b.lair >= 0;
+        let won = if lair { atk_alive == 0 } else { atk_alive == 0 || b.pillage <= 0.0 };   // (at a lair only a cleared place is a win) holding out until the time limit is a defence, not a defeat
         // the standing army loses the soldiers that fell (anything added during the fight, such as new recruits, stays)
         let mut fell = [0u32; NK];
         for u in b.units.iter().filter(|u| u.side == 0 && u.from_army && !u.alive && (u.kind as usize) < NK) { fell[u.kind as usize] += 1; }
         for k in 0..NK { self.army[k] = self.army[k].saturating_sub(fell[k]); }
         // archers who fell in a tower are gone from its garrison
-        for t in self.buildings.iter_mut().filter(|t| matches!(t.kind, TOWER | KEEP)) {
+        for t in self.buildings.iter_mut().filter(|t| !lair && matches!(t.kind, TOWER | KEEP)) {
             let alive = b.units.iter().filter(|u| u.side == 0 && u.kind == 1 && !u.from_army && u.alive && (u.hx - t.x).abs() < 0.01 && (u.hy - t.y).abs() < 0.01).count() as u8;
             t.garrison = t.garrison.min(alive);
         }
@@ -734,24 +737,48 @@ impl World {
         for k in 0..NK { surv[k] += b.fled_kinds[k]; }   // the ones who ran off come home too
         // loot: raiders that pillaged take a share of the stores
         let mut loot = [0i32; N_RES];
-        if !won && b.pillage > 0.0 {
+        if !won && b.pillage > 0.0 && !lair {
             for r in 0..N_RES { let pct = if r == GD as usize { 35 } else { 15 }; let take = self.stock[r] * pct / 100; self.stock[r] -= take; loot[r] = take; }
         }
         let boss_down = b.boss > 0 && b.units.iter().any(|u| u.boss > 0 && !u.alive && !u.escaped);
         if boss_down { self.boss_rewards(b.boss, b.bname); }
+        if lair && won { if let Some(d) = self.neutral_done.get_mut(b.lair as usize) { *d = true; } self.reveal(b.lair_at[0], b.lair_at[1], 80.0); self.push_event(EV_VISIT, 3, 0); }
         self.report_seq += 1;
         self.report = vec![self.report_seq as i32, won as i32, b.tag, atk_alive as i32, b.def_dead as i32, b.bld_lost as i32];
         self.report.extend(surv.iter().map(|&x| x as i32));
         self.report.extend(loot.iter());
-        self.report.extend([b.boss as i32, b.bname as i32, boss_down as i32, 0]);   // the boss that led the raid, its name, whether it fell, and whether this was a lair (see docs/BOSSES.md)
+        self.report.extend([b.boss as i32, b.bname as i32, boss_down as i32, lair as i32]);   // the boss that led the raid, its name, whether it fell, and whether this was a lair (see docs/BOSSES.md)
         self.report.extend([b.fled[1] as i32, b.fled[0] as i32]);   // attackers and defenders who ran away
-        let ev = if won { EV_REPELLED } else { EV_RAID };
-        self.push_event(ev, loot[GD as usize], b.def_dead as i32);
+        if !lair { let ev = if won { EV_REPELLED } else { EV_RAID }; self.push_event(ev, loot[GD as usize], b.def_dead as i32); }
         // the lord learns from a defence, and may fall in a defeat
-        if let Some((name, xp)) = self.hero {
+        if let Some((name, xp)) = self.hero.filter(|_| !lair) {
             if won { let gain = 10 + b.atk_dead.min(40); let before = Self::hero_level(xp); let now = xp + gain; self.hero = Some((name, now)); if Self::hero_level(now) > before { self.push_event(EV_HERO, name as i32, Self::hero_level(now) as i32); } }
             else if self.rf() < 0.3 { self.hero = None; self.push_event(EV_HERO, name as i32, -1); }
         }
+    }
+
+    /// The army that stands at a lair goes in: the lair's boss and his escort (stronger for a stronger place, `h` 0..1) against the army's soldiers, in the field round the lair. Needs no village buildings:
+    /// the lair's side holds its ground and fights whoever comes near. The army wins by killing every one of them (the boss included).
+    pub(crate) fn begin_lair_battle(&mut self, di: usize, ni: usize, nx: f32, ny: f32, h: f32) -> bool {
+        if self.battle.is_some() || di >= self.dets.len() { return false; }
+        let d = &BOSSES[(LAIR_BOSS - 1) as usize];
+        let sc = d.scale_min + (d.scale_max - d.scale_min) * h;
+        let esc = |x: u32| (x as f32 * (0.8 + 0.5 * h)).round() as u32;
+        let counts = [esc(d.escort[0]), esc(d.escort[1]), esc(d.escort[2]), esc(d.escort[3])];
+        let face = (self.dets[di].y - ny).atan2(self.dets[di].x - nx);
+        let mut boss = Unit::new(1, d.base, nx, ny, face);
+        boss.boss = LAIR_BOSS; boss.bname = (h * 3.99) as u8; boss.hp = boss_hp(LAIR_BOSS, sc); boss.maxhp = boss.hp; boss.t2 = 3.0;
+        let mut units = vec![boss];
+        let mut j = 0u32;
+        for (kind, &n) in counts.iter().enumerate() { for _ in 0..n {
+            let a = face + (j as f32 - 4.0) * 0.55; let r = 3.5 + (j / 7) as f32 * 1.8;
+            units.push(Unit::new(1, kind as u8, nx + a.cos() * r, ny + a.sin() * r, face + std::f32::consts::PI)); j += 1;
+        } }
+        let n1 = units.len() as u32;
+        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8 });
+        self.det_join(di);
+        self.push_event(EV_LAIR, ni as i32, 0);
+        true
     }
 
     /// A boss has fallen: its table's gold and iron, a lift in spirits, experience for the lord and, for some, a captured ram.

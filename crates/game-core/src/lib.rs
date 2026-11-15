@@ -116,6 +116,7 @@ const EV_HERO: i32 = 21;
 const EV_MIASMA: i32 = 22;
 const EV_SERVICE: i32 = 23;
 const EV_DIPLO: i32 = 24;
+const EV_LAIR: i32 = 26;   // the army went into a lair: a = place
 const EV_BOSS: i32 = 25;   // a boss fell: a = boss * 16 + name, b = 1
 /// Causes of death, for the village's ledger.
 pub const DIED_OLD: usize = 0;
@@ -339,19 +340,24 @@ impl World {
 
     /// The fog of war: FOG_N x FOG_N cells, 1 where your people have been or can see.
     pub fn explored_flat(&self) -> Vec<u8> { self.explored.clone() }
-    /// Neutral places you know about: [kind, x, y, done] each (kind 0 abbey, 1 ruined castle, 2 bandit camp). Unseen places are left out.
+    /// Neutral places you know about: [kind, x, y, done] each (kind 0 abbey, 1 ruined castle, 2 bandit camp, 3 lair). Unseen places are left out.
     pub fn neutrals_flat(&self) -> Vec<f32> {
         terrain::neutrals(self.seed).iter().enumerate().filter(|(_, n)| self.is_seen(n.1, n.2)).flat_map(|(i, n)| [n.0 as f32, n.1, n.2, self.neutral_done.get(i).copied().unwrap_or(false) as u8 as f32]).collect()
     }
     /// Send a field army (that has stopped near one) into a neutral place. Abbey: the sick are healed and spirits rise. Ruined castle: its hoard is carried off. Bandit camp: a fight,
-    /// won by strength, whose loser is the army (half of it falls) or the camp (cleared, its coin taken). Returns the kind (0..2) on success, -1 no such army, -2 nothing close enough, -3 already visited.
+    /// won by strength, whose loser is the army (half of it falls) or the camp (cleared, its coin taken). Lair (kind 3): a real battle starts on the spot (3 is returned at once; the fight, its report and the reward come as for a raid). Returns the kind (0..3) on success, -1 no such army, -2 nothing close enough, -3 already visited, -4 a fight is already on.
     pub fn visit_neutral(&mut self, army_id: u32) -> i32 {
+        if self.battle.is_some() && self.dets.iter().any(|d| d.id == army_id) { return -4; }   // a fight is on
         let Some(di) = self.dets.iter().position(|d| d.id == army_id) else { return -1 };
         let (ax, ay, units) = (self.dets[di].x, self.dets[di].y, self.dets[di].units);
         let list = terrain::neutrals(self.seed);
         let Some((ni, &(kind, nx, ny))) = list.iter().enumerate().filter(|(_, n)| ((n.1 - ax).powi(2) + (n.2 - ay).powi(2)).sqrt() < 14.0).next() else { return -2 };
         if self.neutral_done.get(ni).copied().unwrap_or(true) { return -3; }
         let cap = self.storage_cap(); let h = terrain::h01(self.seed ^ 0x52, ni as i32, 3);
+        if kind == 3 {   // a lair: a real fight, won or lost on the field (see begin_lair_battle); not done until the boss is dead
+            if self.dets[di].state == march::S_FIGHT { return -4; }
+            return if self.begin_lair_battle(di, ni, nx, ny, h) { 3 } else { -4 };
+        }
         match kind {
             0 => { self.sick = 0; self.mood = 12; self.mood_until = self.tick + 15 * DAY; }
             1 => { for (r, base) in [(ST, 120), (IR, 20), (GD, 80), (PL, 60)] { let n = (base as f32 * (0.6 + h)) as i32; self.stock[r as usize] = Self::add_capped(self.stock[r as usize], n, cap); } }
@@ -2964,7 +2970,7 @@ mod neutral_tests {
     fn neutral_places_sit_on_dry_land_away_from_villages() {
         for seed in [1u64, 7, 1337, 99999] {
             let list = terrain::neutrals(seed); assert!(list.len() >= 6, "seed {seed}: {} places", list.len());
-            for &(k, x, y) in &list { assert!(k <= 2); assert!(terrain::base_height(seed, x, y) > 1.5, "dry"); for (sx, sy) in terrain::sites(seed) { assert!((x - sx).hypot(y - sy) > 100.0, "away from villages"); } }
+            for &(k, x, y) in &list { assert!(k <= 3); assert!(terrain::base_height(seed, x, y) > 1.5, "dry"); for (sx, sy) in terrain::sites(seed) { assert!((x - sx).hypot(y - sy) > 100.0, "away from villages"); } }
             assert!([0u8, 1, 2].iter().all(|&k| list.iter().any(|n| n.0 == k)), "seed {seed} has every kind");
         }
     }
