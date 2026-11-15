@@ -32,6 +32,8 @@ pub struct Net {
     pub ring: Vec<Vec<u32>>,
     /// (to, length, road)
     pub adj: Vec<Vec<(u32, f32, bool)>>,
+    /// The piece of the network each node belongs to (nodes that can be walked between have the same number): what water and walls keep apart is different pieces.
+    pub comp: Vec<u32>,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -102,7 +104,7 @@ pub fn field_distance(b: &Building, x: f32, y: f32) -> f32 {
 pub(crate) struct RoadCtx { segs: Vec<crate::wallnet::Seg>, solids: Vec<usize>, memo: std::cell::RefCell<std::collections::HashMap<(u32, u32, bool), bool>> }
 
 impl Net {
-    fn empty() -> Net { Net { x0: 0.0, y0: 0.0, nx: 0, ny: 0, ok: vec![], nodes: vec![], ring: vec![], adj: vec![] } }
+    fn empty() -> Net { Net { x0: 0.0, y0: 0.0, nx: 0, ny: 0, ok: vec![], nodes: vec![], ring: vec![], adj: vec![], comp: vec![] } }
 
     fn cell(&self, x: f32, y: f32) -> Option<usize> {
         let (i, j) = (((x - self.x0) / RC).floor() as i32, ((y - self.y0) / RC).floor() as i32);
@@ -158,6 +160,21 @@ impl Net {
             best = best.min((cx - x).abs().max((cy - y).abs()) - 0.5 * RC);   // (a cell blocks the whole of its square)
         } }
         best.max(0.0)
+    }
+
+    /// The node of building `i`'s ring that its roads start from: the one at the door's exit point, or when that stands on ground that is not walkable (a neighbour's yard), the nearest
+    /// walkable one round the ring, a few steps along it at most.
+    pub fn door_node(&self, i: usize) -> Option<u32> {
+        let r = self.ring.get(i)?; let k = r.len() as i32; if k == 0 { return None; }
+        for d in 0..=3.min(k / 2) { for s in [d, -d] { let id = r[((s % k) + k) as usize % k as usize]; if id != u32::MAX { return Some(id); } } }
+        None
+    }
+
+    /// Can one walk from building `a` to building `b` over the network at all (is some node of the ring of one in the same piece as some node of the other's)?
+    pub fn joined(&self, a: usize, b: usize) -> bool {
+        let (ra, rb) = (self.ring.get(a), self.ring.get(b));
+        let (Some(ra), Some(rb)) = (ra, rb) else { return false };
+        ra.iter().filter(|&&n| n != u32::MAX).any(|&n| rb.iter().any(|&m| m != u32::MAX && self.comp[n as usize] == self.comp[m as usize]))
     }
 
     fn add(&mut self, x: f32, y: f32) -> u32 { self.nodes.push((x, y)); self.adj.push(vec![]); (self.nodes.len() - 1) as u32 }
@@ -312,10 +329,16 @@ impl World {
     /// of the network where the ribbon has room (level 0: all of `ROAD_HALF`; level 1: at least `ROAD_TIGHT`; level 2: the plain cheapest route over the network, for a building that has no such way). A building without a ring (a piece of road) is joined at its own middle.
     /// None when the network does not join them.
     pub(crate) fn road_route(&self, net: &Net, ctx: &RoadCtx, ia: usize, ib: usize, level: u8) -> Option<Vec<(f32, f32)>> {
+        self.road_route_from(net, ctx, ia, ib, level, false).or_else(|| if level >= 2 { self.road_route_from(net, ctx, ia, ib, level, true) } else { None })
+    }
+
+    fn road_route_from(&self, net: &Net, ctx: &RoadCtx, ia: usize, ib: usize, level: u8, whole_ring: bool) -> Option<Vec<(f32, f32)>> {
         let ends = |i: usize| -> (Vec<u32>, Option<(f32, f32)>) {
             let b = &self.buildings[i];
             let ring: Vec<u32> = net.ring.get(i).map(|r| r.iter().copied().filter(|&id| id != u32::MAX).collect()).unwrap_or_default();
-            if !ring.is_empty() { return (ring, None); }
+            // a road starts and ends at the building's door node (the first node of its ring, where the door's own short road leaves the plot), so all the roads of a building meet there and
+            // the network is one piece; only a building whose door node stands on ground that is not walkable, or that the network cannot join from there, uses the rest of its ring
+            if !ring.is_empty() { return (match net.door_node(i) { Some(d) if !whole_ring => vec![d], _ => ring }, None); }
             (net.reach((b.x, b.y)).into_iter().map(|c| c.0).collect(), Some((b.x, b.y)))
         };
         let ((from, fa), (to, fb)) = (ends(ia), ends(ib));
@@ -419,7 +442,7 @@ impl World {
             for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] { let (p, q) = (i + di, j + dj); if p >= 0 && q >= 0 && p < nx && q < ny { sl = sl.max((h[(q * nx + p) as usize] - h[k]).abs() / RC); } }
             ok[k] = sl <= 1.6;
         } }
-        let mut net = Net { x0, y0, nx, ny, ok, nodes: vec![], ring: vec![], adj: vec![] };
+        let mut net = Net { x0, y0, nx, ny, ok, nodes: vec![], ring: vec![], adj: vec![], comp: vec![] };
 
         // a ring of nodes round every solid building
         let mut ring: Vec<Vec<u32>> = vec![vec![]; self.buildings.len()];
@@ -457,8 +480,9 @@ impl World {
             if matches!(b.kind, WALL | FENCE | MOAT | RIVER | RAISE | LOWER | BRIDGE) { continue; }
             let r = ring_radius(b.kind, b.tier);
             let k = ((std::f32::consts::TAU * r / 3.5).ceil() as usize).clamp(10, 32);
+            let a0 = crate::doors::exit_angle(b);   // (the first node of the ring is where the door's road leaves the plot: every road of this building starts there)
             for q in 0..k {
-                let a = q as f32 * std::f32::consts::TAU / k as f32; let (px, py) = (b.x + a.cos() * r, b.y + a.sin() * r);
+                let a = a0 + q as f32 * std::f32::consts::TAU / k as f32; let (px, py) = (b.x + a.cos() * r, b.y + a.sin() * r);
                 ring[i].push(if net.ok_at(px, py) { net.add(px, py) } else { u32::MAX });
             }
             for q in 0..k {
@@ -527,6 +551,10 @@ impl World {
             }
         }
         net.ring = ring;
+        // which nodes can be walked between (water and walls keep the rest apart)
+        let nn = net.nodes.len(); let mut cn = vec![u32::MAX; nn]; let mut k = 0u32;
+        for s0 in 0..nn { if cn[s0] != u32::MAX { continue; } cn[s0] = k; let mut st = vec![s0]; while let Some(a) = st.pop() { for e in &net.adj[a] { if cn[e.0 as usize] == u32::MAX { cn[e.0 as usize] = k; st.push(e.0 as usize); } } } k += 1; }
+        net.comp = cn;
         net
     }
 

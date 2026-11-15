@@ -9,12 +9,15 @@ mod market;
 mod march;
 mod military;
 mod pathnet;
+pub mod doors;
 mod plague;
 mod wallnet;
 #[cfg(test)]
 mod roadcheck;
 #[cfg(test)]
 mod farmcheck;
+#[cfg(test)]
+mod roadnet_tests;
 mod terrain;
 use catalog::*;
 use military::*;
@@ -480,7 +483,7 @@ impl World {
             for _round in 0..64 {
                 let main = find(&mut comp, 0);
                 let mut far: Vec<(f32, usize, usize)> = vec![];
-                for a in 0..m { if find(&mut comp, a) == main { continue; } for b in 0..m { if find(&mut comp, b) != main { continue; } let d = dist(self, a, b); if d < 220.0 { far.push((d, a, b)); } } }
+                for a in 0..m { if find(&mut comp, a) == main { continue; } for b in 0..m { if find(&mut comp, b) != main { continue; } let d = dist(self, a, b); if d < 220.0 && net.joined(ends[a], ends[b]) { far.push((d, a, b)); } } }
                 if far.is_empty() { break 'chain; }
                 far.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
                 let mut joined = false;
@@ -521,6 +524,30 @@ impl World {
         }
         chosen.sort();
         for (i, j, l) in chosen { if let Some(Some(pts)) = memo.get(&(i, j, l)).cloned() { self.lay_road(i, j, pts); } }
+        // the door's own short road: from the real door of every building that has a road to the point where it leaves the plot, which is the node every road of the building starts from.
+        // (child == parent marks it; it is part of the building's design, and a building without a road has none, or it would be a stub of its own)
+        let mut has_road = vec![false; n];
+        for (c, p, _) in &self.road_paths { has_road[*c as usize] = true; has_road[*p as usize] = true; }
+        for i in 0..n {
+            if !has_road[i] { continue; }
+            if self.buildings[i].kind == ROAD || net.ring.get(i).map_or(true, |r| r.is_empty()) { continue; }
+            let (door, exit) = doors::door_world(&self.buildings[i]);
+            let h = self.buildings[i].pad_h;
+            // where the roads of this building actually start (normally the door node; a building whose door node is blocked, or that had to use its whole ring, starts them elsewhere on it)
+            let mut at_pts: Vec<(f32, f32)> = vec![];
+            for (c, p, pts) in &self.road_paths {
+                if *c as usize == i { if let Some(q) = pts.first() { at_pts.push(*q); } }
+                if *p as usize == i { if let Some(q) = pts.last() { at_pts.push(*q); } }
+            }
+            at_pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
+            at_pts.dedup();
+            // (the door's road runs to the point where it leaves the plot; from there to each place a road of the building starts, along the ring)
+            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 { self.roads.push([door.0, door.1, h, exit.0, exit.1, h]); self.road_links.push((i as u32, i as u32)); }
+            for q in at_pts {
+                if (q.0 - exit.0).hypot(q.1 - exit.1) < 0.3 { continue; }
+                self.roads.push([exit.0, exit.1, h, q.0, q.1, h]); self.road_links.push((i as u32, i as u32));
+            }
+        }
         // drop cache entries that point at buildings which no longer exist
         if self.road_cache.len() > 4 * n + 64 { self.road_cache.retain(|k, _| (k.0 as usize) < n && (k.1 as usize) < n); }
         let mut h: u64 = 0xcbf29ce484222325;
@@ -1693,7 +1720,8 @@ impl World {
     /// nearest ground that is not walkable (a building and its yard, a field, a wall, water), at most 6. The drawing rounds the corners of a road by no more than this lets it.
     pub fn road_clear_flat(&self) -> Vec<f32> {
         let net = self.net_base();
-        self.roads.iter().flat_map(|s| [net.clearance(s[0], s[1]), net.clearance(s[3], s[4])]).collect()
+        // (a door's own road runs inside the building's plot, which the network keeps clear of: it has all the room it needs)
+        self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| if l.0 == l.1 { [6.0, 6.0] } else { [net.clearance(s[0], s[1]), net.clearance(s[3], s[4])] }).collect()
     }
 
     /// The path network as [n, e, x, y (n times), a, b, road (e times)] (see pathnet.rs).
@@ -2321,8 +2349,10 @@ mod tests {
         w.place(HOUSE, 16, 0, 0);
         w.place(HOUSE, 28, 4, 0);
         let r = w.roads_flat();
-        assert_eq!(r.len(), 12, "two buildings, two path segments");
-        assert_eq!(r[5], 0.0, "first house links to the town hall");
+        let links: Vec<&[f32]> = r.chunks(6).filter(|s| s[4] != s[5]).collect();
+        assert!(links.len() >= 2, "two buildings, each linked");
+        assert_eq!(r.chunks(6).filter(|s| s[4] == s[5]).map(|s| s[4] as i32).collect::<std::collections::BTreeSet<_>>().len(), 3, "and the hall and the two houses each have the road from their door");
+        assert_eq!(links[0][5], 0.0, "first house links to the town hall");
         // the middle of the path is graded to the line between the endpoint pads
         let f = w.buildings_flat();
         let (a, b) = (f[10 + 5], f[0 + 5]);
