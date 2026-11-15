@@ -27,9 +27,12 @@ export function applyCmd(w: World, c: Cmd) {
     case 'settle': w.settle(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;
     case 'choose': w.choose(c.kind ?? 0); break;
     case 'treaty': if ((c.y ?? 1) === 0) w.treaty_end(c.idx!, c.kind ?? 0); else w.treaty_set(c.idx!, c.kind ?? 0, c.x ?? 10); break;
+    case 'buy': w.buy(c.kind ?? 0, c.idx ?? 0); break;   // kind = the good, idx = how many
     case 'envoy': w.envoy(c.idx!); break;
     case 'marriage': w.marriage(c.idx!); break;
     case 'war': w.declare_war(c.idx!); break;
+    case 'journey': w.journey_start(c.kind ?? 0, c.idx ?? 0, c.x ?? 0, c.y ?? 0); break;   // an errand sets out for another village: the treaty, gifts, wedding or war is done when it arrives
+    case 'arrive': break;   // a notice that an errand reached its village: the receiver answers it (see onTrade), nothing to replay
     case 'clear': w.clear_deposit(c.idx!); break;
     case 'demo': w.demo(c.kind ?? 0, c.x ?? 0, c.y ?? 0, c.idx ?? 0); break;   // model-village testing tool
     case 'gate': w.gate_set(c.idx!, (c.kind ?? 0) === 1); break;

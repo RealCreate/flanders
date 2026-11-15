@@ -71,13 +71,15 @@ export class Minimap {
       const [x, y] = this.p(a.x, a.z), r = big ? 5 : 3.2;
       c.fillStyle = a.color; c.strokeStyle = '#000d'; c.lineWidth = 1; c.beginPath(); c.moveTo(x, y - r); c.lineTo(x + r, y); c.lineTo(x, y + r); c.lineTo(x - r, y); c.closePath(); c.fill(); c.stroke();
     }
-    // neutral places you have found: abbey, ruined castle, bandit camp
-    // drawn as little shapes (no font): a cross for an abbey, a tower for a ruined castle, crossed blades for a bandit camp
-    const marks = [new Path2D('M-1.2 -4 H1.2 V-1.2 H4 V1.2 H1.2 V4 H-1.2 V1.2 H-4 V-1.2 H-1.2Z'), new Path2D('M-3.5 4 V-1 H-2.2 V-3 H-0.8 V-1.6 H0.8 V-3 H2.2 V-1 H3.5 V4Z'), new Path2D('M-4 -4 L4 4 M4 -4 L-4 4')];
+    // neutral places you have found: abbey, ruined castle, bandit camp, lair
+    // drawn as little shapes (no font): a cross for an abbey, a tower for a ruined castle, crossed blades for a bandit camp, a banner with a skull for a lair
+    const marks = [new Path2D('M-1.2 -4 H1.2 V-1.2 H4 V1.2 H1.2 V4 H-1.2 V1.2 H-4 V-1.2 H-1.2Z'), new Path2D('M-3.5 4 V-1 H-2.2 V-3 H-0.8 V-1.6 H0.8 V-3 H2.2 V-1 H3.5 V4Z'), new Path2D('M-4 -4 L4 4 M4 -4 L-4 4'), new Path2D('M-3.6 4.5 V-4.5 M-3.6 -4 H4.2 V1 L0.3 3 L-3.6 1Z')];   // (the last is a pole with a banner: a lair)
     if (o.neutrals) for (let i = 0; i + 3 < o.neutrals.length; i += 4) {
       const [x, y] = this.p(o.neutrals[i + 1], o.neutrals[i + 2]), k = o.neutrals[i], sc = big ? 1.6 : 1.05;
       c.save(); c.translate(x, y); c.scale(sc, sc); c.globalAlpha = o.neutrals[i + 3] ? 0.45 : 1; c.fillStyle = '#ffe9a8'; c.strokeStyle = '#000c'; c.lineWidth = 1.6 / sc; c.lineJoin = 'round';
-      if (k === 2) { c.stroke(marks[k]); c.strokeStyle = '#ffe9a8'; c.lineWidth = 0.9 / sc; c.stroke(marks[k]); } else { c.stroke(marks[k]); c.fill(marks[k]); }
+      if (k === 2) { c.stroke(marks[k]); c.strokeStyle = '#ffe9a8'; c.lineWidth = 0.9 / sc; c.stroke(marks[k]); }
+      else if (k === 3) { c.fillStyle = '#c0392b'; c.stroke(marks[k]); c.fill(marks[k]); c.fillStyle = '#ffe9a8'; c.beginPath(); c.arc(0.3, -1.1, 1.3, 0, 6.3); c.fill(); }   // a lair: a red banner with a pale skull on it
+      else { c.stroke(marks[k]); c.fill(marks[k]); }
       c.restore();
     }
     // the fog of war: ground nobody has seen is dimmed

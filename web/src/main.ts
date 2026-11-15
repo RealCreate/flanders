@@ -9,7 +9,8 @@ import './ui/style.css';
 import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation, state_hash_part_names, rules_fingerprint } from './wasm/game_core.js';
 import { icon } from './ui/icons';
-import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
+import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses } from './data';
+import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
 import { buildShowroom } from './render/showroom';
@@ -24,6 +25,8 @@ import { Forest } from './render/trees';
 import { buildModel, Effects } from './render/buildings';
 import { Deposits } from './render/deposits';
 import { Crowd } from './render/crowd';
+import { Travellers, type TVillage } from './render/travellers';
+import { JK, arrivedText } from './render/journey';
 import { Effects2 } from './render/fx';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
@@ -44,7 +47,7 @@ import { applyCmd, stepTo, validSavedLog } from './commands';
 import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
-import { dayPhase } from './daycycle';
+import { dayPhase, DAY_TICKS } from './daycycle';
 import { cleanWorld, inviteLink, withWorld } from './worldname';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
@@ -52,7 +55,7 @@ import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Ve
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
-import { roleOf, actionsFor, foeFocus, shouldAutoJump, foeNear, sallyUnits } from './defence';
+import { roleOf, actionsFor, foeFocus, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd } from './net/validate';
 import { Village, type Shared } from './village';
@@ -463,42 +466,71 @@ function onTrade(r: Rival, c: Cmd) {
     else { commit({ op: 'treaty', idx: their, kind: c.kind, y: 0, to: r.key }); ui.toast(`${r.name} offers ${what}, but we do not trust them enough. Refused.`, 'info'); }
   } else if (c.op === 'treaty' && c.y === 0) {   // they turned our offer down: it is void on our side too
     w.treaty_end(their, c.kind ?? 0); commit({ op: 'treaty', idx: their, kind: c.kind, y: 0 }); ui.toast(`${r.name} refused your offer.`, 'info'); afterLocalChange();
+  } else if (c.op === 'arrive') {   // their errand reached us: an offer is answered, the rest is only news
+    const kind = c.kind ?? 0;
+    if (kind <= 2) answerOffer(r, kind, c.x ?? 10); else ui.toast(arrivedText(kind, r.name, 'you', false), kind === JK.WAR ? 'bad' : 'good');
   } else if (c.op === 'war') {
     ui.toast(`${r.name} has declared war on you!`, 'bad');
   }
 }
 
-/** What the trade form in the peers pane asks for. */
+/** How far the way to a village is: the length of the invisible path chained to its city (or the straight line while there is none). */
+function roadTo(r: Rival): number {
+  const p = lv.world.link_points(r.village.ox, r.village.oz); let d = 0;
+  for (let k = 2; k < p.length; k += 2) d += Math.hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]);
+  return Math.min(2900, d > 1 ? d : Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz));
+}
+/** A neighbour answers an offer that has reached it: it agrees when it trusts us enough (and tells us with its own signed copy), otherwise the offer is void. */
+function answerOffer(r: Rival, kind: number, days: number) {
+  const w = lv.world, their = tagOf(r.key), what = kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact';
+  if (w.treaty_acceptable(their, kind) && w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days }); ui.toast(`${r.name} offers ${what} for ${days} days. Agreed.`, 'good'); }
+  else { commit({ op: 'treaty', idx: their, kind, y: 0, to: r.key }); ui.toast(`${r.name} offers ${what}, but we do not trust them enough. Refused.`, 'info'); }
+}
+
+/** What the trade form in the peers pane asks for. Nothing happens at once: a caravan, an offer, an envoy, a wedding party or a herald sets out along the path to the other city and does its work on arrival. */
 function doTrade(key: string, action: string, res: number, amount: number, escort: number) {
-  const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
-  const w = lv.world, their = tagOf(key);
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (action === 'caravan' && !r.online) { ui.toast('That village is not online right now: caravans need somebody to take the goods.', 'bad'); return; }
+  const w = lv.world, their = tagOf(key), dist = roadTo(r);
   if (action === 'caravan') {
-    const dist = Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz), code = w.caravan_send(res, amount, their, dist, escort);
+    const code = w.caravan_send(res, amount, their, dist, escort);
     if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : 'Cannot send that.', 'bad'); return; }
-    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud();
-  } else {
-    if (action === 'envoy') { const code = w.envoy(their); if (code === 0) { commit({ op: 'envoy', idx: their }); ui.toast(`An envoy with gifts rides to ${r.name}.`, 'good'); updateHud(); } else ui.toast(code === -20 ? 'An envoy went recently: wait a few days.' : 'An envoy costs 20 gold.', 'bad'); return; }
-    if (action === 'marriage') { const code = w.marriage(their); if (code === 0) { commit({ op: 'marriage', idx: their }); ui.toast(`A royal marriage binds your house to ${r.name}'s.`, 'good'); updateHud(); } else ui.toast(code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -1 ? 'You are already married into that house.' : 'A wedding costs 150 gold.', 'bad'); return; }
-    if (action === 'war') { w.declare_war(their); commit({ op: 'war', idx: their, to: key }); ui.toast(`You declared war on ${r.name}.`, 'bad'); return; }
-    const kind = action === 'alliance' ? 2 : action === 'peace' ? 1 : 0, days = 30;
-    if (!w.treaty_acceptable(their, kind)) { ui.toast(kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.', 'bad'); return; }
-    if (w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days, to: key }); ui.toast(`You offer ${r.name} ${kind === 2 ? 'an alliance' : kind ? 'peace' : 'a trade pact'} for ${days} days.`, 'info'); }
+    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud(); return;
   }
+  const kind = action === 'alliance' ? JK.ALLIANCE : action === 'peace' ? JK.PEACE : action === 'envoy' ? JK.ENVOY : action === 'marriage' ? JK.MARRIAGE : action === 'war' ? JK.WAR : JK.TRADE, days = kind <= 2 ? 30 : 0;
+  const code = w.journey_start(kind, their, days, dist);
+  if (code !== 0) {
+    ui.toast(code === -7 ? 'One of those is already on its way.' : code === -20 ? 'An envoy went recently: wait a few days.' : code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -6 ? (kind === JK.ENVOY ? 'An envoy costs 20 gold.' : 'A wedding costs 150 gold.') : code === -1 && kind === JK.MARRIAGE ? 'You are already married into that house.' : code === -22 ? (kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.') : 'Cannot send that now.', 'bad'); return;
+  }
+  commit({ op: 'journey', kind, idx: their, x: days, y: dist }); sound.click(); updateHud();
+  ui.toast(kind === JK.ENVOY ? `An envoy with gifts sets out for ${r.name}.` : kind === JK.MARRIAGE ? `A wedding party sets out for ${r.name}.` : kind === JK.WAR ? `A herald with your declaration of war rides for ${r.name}.` : `Envoys set out for ${r.name} to offer ${kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact'} for ${days} days.`, kind === JK.WAR ? 'bad' : 'info');
 }
 
 /** Caravans that arrived: tell the village they were sent to, so it can take them and pay. */
 function pollTrade() {
   const d = lv.world.take_delivered();
   for (let i = 0; i + 2 < d.length; i += 3) { for (const [key] of rivals) if (tagOf(key) === d[i + 2]) { commit({ op: 'goods', kind: d[i], x: d[i + 1], to: key }); break; } }
+  // errands of ours that reached their village: the core did the deed on this very tick; now the village hears of it and answers
+  const a = lv.world.take_arrivals(), now = Number(lv.world.tick());
+  for (let i = 0; i + 3 < a.length; i += 4) {
+    const kind = a[i], tag = a[i + 1], days = a[i + 2];
+    if (now - a[i + 3] > 40) continue;   // (an old arrival from a history that was just replayed)
+    const r = [...rivals.values()].find(x => tagOf(x.key) === tag); if (!r) continue;
+    ui.toast(arrivedText(kind, 'you', r.name, true), kind === JK.WAR ? 'bad' : 'good'); updateHud();
+    if (r.online) commit({ op: 'arrive', kind, x: days, to: r.key });
+    else if (kind <= 2 && !r.village.world.treaty_acceptable(myTag(), kind)) { lv.world.treaty_end(tag, kind); commit({ op: 'treaty', idx: tag, kind, y: 0 }); ui.toast(`${r.name} turned the offer down.`, 'info'); }
+  }
 }
 
 /** An army that has stopped beside an abbey, a ruin or a bandit camp goes in. */
 function visitPlace(id: number) {
   const code = lv.world.visit_neutral(id);
-  if (code === -2) { ui.toast('There is no place here to enter. March the army right up to an abbey, a ruin or a camp.', 'info'); return; }
+  if (code === -2) { ui.toast('There is no place here to enter. March the army right up to an abbey, a ruin, a camp or a lair.', 'info'); return; }
   if (code === -3) { ui.toast('This place has already been used.', 'info'); return; }
+  if (code === -4) { ui.toast('A fight is already on: finish it first.', 'info'); return; }
   if (code < 0) return;
   commit({ op: 'visit', idx: id }); afterLocalChange(); updateDets();
+  if (code === 3) return;   // a lair: the fight is on and the banner tells the story (the report says how it ended)
   ui.toast(code === 0 ? 'The monks heal your sick.' : code === 1 ? 'The ruin gives up its hoard.' : code === 2 ? 'The bandit camp is cleared and its coin is yours.' : 'The camp was too strong: half your army fell. Try again with more men.', code >= 100 ? 'bad' : 'good');
 }
 
@@ -672,6 +704,8 @@ function onRivalReport(key: string, rep: number[]) {
 function onLocalReport(rep: number[]) {
   if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, , dead, lost] = rep;
+  const br = reportBoss(rep);
+  if (br) { const line = reportLine(bosses, br, !!won), good = br.fell || (won && !br.lair); ui.log(line, good ? 'good' : 'bad', Number(lv.world.tick())); ui.toast(line, good ? 'good' : 'bad'); if (br.lair) { updateHud(); return; } }
   const who = tag === 0 ? 'The bandits' : 'The invaders';
   ui.log(won ? `${who} were driven off. ${dead} defenders fell.` : `${who} plundered the village. ${lost} buildings were lost.`, won ? 'good' : 'bad', Number(lv.world.tick()));
   if (tag !== 0 && !won) ui.toast('Your village was sacked!', 'bad');
@@ -801,6 +835,7 @@ async function startGame(name: string, username: string) {
   ui.progress(50, 'Waking the animals…'); await nextFrame();
   wildlife = new Wildlife(seedBig, terrain, forest.all, Array.from(village_sites(seedBig))); scene.add(wildlife.group);
   crowd = new Crowd(); scene.add(crowd.group);
+  travellers = new Travellers(terrain); scene.add(travellers.group);
   fx = new Effects2(terrain); scene.add(fx.group);
   effects = new Effects(); scene.add(effects.smoke.points);
   selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
@@ -835,6 +870,7 @@ async function startGame(name: string, username: string) {
   }
   lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf;
   lv.onReport = onLocalReport;
+  Village.onBossFx = (k, x, z) => { if (Math.hypot(x - rig.target.x, z - rig.target.z) < 200) { if (k === 3) sound.warhorn(); else sound.slam(); } };   // a horn or a slam near the camera is heard
   deposits = new Deposits(w.deposits_flat(), terrain); scene.add(deposits.group); deposits.refit();
   buildDepositLabels();
   refreshTerrain(w); lv.syncFull(); lv.markCaughtUp();
@@ -992,34 +1028,64 @@ function battleBanner() {
   for (const { v, mine, key } of list) {   // (every village is watched for the start of a fight, not only the one the banner shows)
     const on = v.world.battle_active(), was = fightSeen.get(key) ?? false; fightSeen.set(key, on);
     if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
+    if (on && !was) announceBoss(v, mine, key);
   }
   for (const { v, who, mine, key } of list) {
     const w = v.world;
     if (!w.battle_active()) continue;
     const u = w.battle_units_flat(); let d = 0, a = 0;
-    for (let i = 0; i < u.length; i += 10) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
+    for (let i = 0; i < u.length; i += BATTLE_STRIDE) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
     const ang = w.battle_angle(), tag = w.battle_tag(), dir = compassWord(Math.cos(ang), Math.sin(ang));
+    const boss = parseBoss(w.battle_boss()), lair = w.battle_lair().length > 0;
+    const strip = boss ? `<span class="bossstrip" title="${esc(bosses[boss.kind - 1]?.desc ?? '')}">${icon(lair ? 'lair' : boss.kind === 1 ? 'horn' : 'boss', 16, { mono: true })} ${esc(bossLine(bosses, boss))}<i><b class="${boss.phase > 0 ? 'rage' : ''}" style="width:${Math.round(hpFraction(boss) * 100)}%"></b></i></span>` : '';
     const role = roleOf(mine, tag, myTag());
     const attacker = tag === 0 ? 'Bandits' : (tag === myTag() ? 'Your army' : rivalName(tag));
-    const text = role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
+    const text = lair ? `Your army fights in the lair. March it away to break off.`
+      : role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
       : role === 'attack' ? `Your army attacks from the ${dir}. You are the attacker.` : `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
     const armies = fieldArmiesFree(), standing = w.battle_standing().reduce((x: number, y: number) => x + y, 0);
     const acts: { label: string; title: string; run: () => void; icon?: string }[] = [];
     for (const act of actionsFor(role, { armies, standing, reserve: 0 })) {
+      if (lair) continue;
       if (act === 'send-armies') acts.push({ icon: 'army', label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { for (const id of freeArmyIds()) orderDefend(id); } });
       else if (act === 'sally') acts.push({ icon: 'attack', label: `Sally out (${standing})`, title: 'The soldiers at their posts leave them and march out to meet the raiders as a field army', run: () => doSally() });
       else if (act === 'retreat') acts.push({ icon: 'halt', label: 'Retreat', title: 'Call off the attack: your soldiers break off and run for home', run: () => doRetreat(key) });
     }
-    ui.battle(`${icon('attack', 18, { mono: true })} Battle at ${who}<small>${text}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers${role === 'defend' ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
+    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${Math.round(w.battle_time())}s · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
       () => lookAtAttackers(v), acts);
     return;
   }
   ui.battle(null);
 }
 
+/** A fight has just begun in this village: if a boss leads it, say so (who, from where) and, for a lair, take the camera there. */
+function announceBoss(v: Village, mine: boolean, key: string) {
+  const w = v.world, boss = parseBoss(w.battle_boss()); if (!boss) return;
+  if (w.battle_lair().length) { const t = lairAnnouncement(bosses, boss); ui.toast(t, 'info'); ui.log(t, 'info', Number(w.tick())); if (mine) lookAtAttackers(v); return; }
+  const dir = compassWord(Math.cos(w.battle_angle()), Math.sin(w.battle_angle())), who = mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village";
+  const t = raidAnnouncement(bosses, boss, dir, mine, who); ui.toast(t, 'bad'); ui.log(t, 'bad', Number(w.tick())); if (mine) sound.warhorn();
+}
+
+/** The health bar that floats over the boss while he stands: follows him on the screen (a thin bar and his name). */
+let bossBarEl: HTMLDivElement | null = null;
+function updateBossBar() {
+  let b: ReturnType<Village['army']['bossAt']> = null;
+  for (const v of allVillages()) { if (v.world.battle_active()) { b = v.army.bossAt(); if (b) break; } }
+  if (!b) { if (bossBarEl) bossBarEl.hidden = true; return; }
+  if (!bossBarEl) { bossBarEl = document.createElement('div'); bossBarEl.id = 'bossbar'; bossBarEl.innerHTML = '<span></span><i><b></b></i>'; document.body.appendChild(bossBarEl); }
+  vtmp.set(b.x, b.y, b.z).project(rig.cam);
+  const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.1 && Math.abs(vtmp.y) < 1.1;
+  bossBarEl.hidden = !on; if (!on) return;
+  bossBarEl.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; bossBarEl.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
+  (bossBarEl.firstElementChild as HTMLElement).textContent = bossTitle(bosses, b.boss, b.name);
+  const fill = bossBarEl.querySelector('b') as HTMLElement; fill.style.width = Math.round(Math.max(0, Math.min(1, b.hp / b.max)) * 100) + '%'; fill.classList.toggle('rage', b.phase > 0);
+}
+
 /** Move the camera to where the attackers stand. */
 function lookAtAttackers(v: Village) {
-  const w = v.world, f = foeFocus(w.battle_angle(), v.ox, v.oz, w.build_radius());
+  const w = v.world, lair = w.battle_lair();
+  if (lair.length) { rig.focus(lair[0], lair[1], 55); return; }   // a lair fight is out in the country
+  const f = foeFocus(w.battle_angle(), v.ox, v.oz, w.build_radius());
   rig.focus(f.x, f.z, 70);
 }
 
@@ -1068,6 +1134,7 @@ function stepAwayFights() {
   }
 }
 
+let lentBridges: Set<number> = new Set();   // the drawbridges that are down for an army right now (announced when they go down)
 function stepLocal() {
   const w = lv.world;
   w.step();
@@ -1077,6 +1144,7 @@ function stepLocal() {
   for (let i = 0; i < ev.length; i += 4) { const e = EVENT_TEXT(ev[i], ev[i + 1], ev[i + 2]); ui.toast(e.text, e.tone); ui.log(e.text, e.tone, ev[i + 3]); if (e.tone === 'bad') sound.alert(); else if (e.tone === 'good') sound.coin(); }
   const t = Number(w.tick());
   if (t % 4 === 0) updateGoals();
+  { const l = newlyLent(w.buildings_flat(), lentBridges); lentBridges = l.now; if (l.fresh.length) ui.toast('Lowering the drawbridge for the army', 'info', 'drawbridge'); }
   pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
   if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools });
   if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
@@ -1251,6 +1319,7 @@ function updateSelection() {
       <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="gar+" ${cur >= cap || avail < 1 ? 'disabled' : ''}>+ Archer</button><button class="pbtn" data-act="gar-" ${cur < 1 ? 'disabled' : ''}>− Archer</button><button class="pbtn" data-act="garfill" ${cur >= cap || avail < 1 ? 'disabled' : ''}>Fill</button><button class="pbtn" data-act="garempty" ${cur < 1 ? 'disabled' : ''}>Empty</button></div>
       <p class="muted">${cur === 0 ? 'The tower is empty — it only defends once you station archers in it. Train archers at a barracks.' : 'Archers fire from the walkway at the top. They come from the barracks and go back when you empty the tower.'}</p></div>`;
   }
+  if (kind === 28) { const mg = w.market_goods(); if (mg.length) html += ui.marketHtml(mg, stocks, Number(w.tick()), DAY_TICKS, w.storage_limit()); }
   if (kind === 38) { const sp = w.bridge_spans_flat(); for (let i = 0; i + 9 < sp.length; i += 10) if (sp[i] === selectedIdx) html += `<p class="muted">${sp[i + 4].toFixed(0)} units long. A footbridge spans up to 14 units of water, a timber bridge 22, a stone bridge 34 and a great bridge 50. Supports stand in the middle wherever the water is wide.</p>`; }
   if (kind === 23) {
     const up = f[o + 6] === 5;
@@ -1328,6 +1397,12 @@ function onAct(a: string) {
   if (a === 'repair') {
     const code = lv.world.repair(selectedIdx);
     if (code === 0) { commit({ op: 'repair', idx: selectedIdx }); sound.upgrade(); ui.toast('Repaired.', 'good'); afterLocalChange(); } else ui.toast(PLACE_ERRORS[code] ?? 'Cannot repair that.', 'bad');
+    return;
+  }
+  if (a.startsWith('buy:')) {
+    const [, rs, ns] = a.split(':'), res = Number(rs), n = Number(ns), code = lv.world.buy(res, n);
+    if (code === 0) { commit({ op: 'buy', kind: res, idx: n }); sound.click(); ui.toast(`Bought ${n} ${RES[res].name.toLowerCase()}.`, 'good'); afterLocalChange(); updateHud(); }
+    else ui.toast(code === -2 ? 'The stalls have not that much left.' : code === -6 ? 'You cannot pay for that.' : code === -7 ? 'The stores have no room for that.' : 'That is not for sale.', 'bad');
     return;
   }
   if (a.startsWith('field:')) {
@@ -1418,6 +1493,7 @@ function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.client
 /** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
  *  the pointer is on (anywhere round it), turned so its door faces away from the deposit. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
 function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
+  if (kind === 29) { const s = lv.world.waterwheel_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a waterwheel stands on the bank with its wheel out over the water (the core checks it again)
   if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
   const d = defs[kind]; if (d.req !== 1) return null;
   const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
@@ -1456,14 +1532,14 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
   let code = w.can_place(selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
-  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } }   // a mine or quarry snaps onto its deposit
+  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (selectedKind === 29) code = -16; }   // a mine or quarry snaps onto its deposit; a waterwheel with no bank to snap to cannot be built
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
     if (t) { gx = Math.round(t.x - lv.ox); gy = Math.round(t.z - lv.oz); grot = t.rot; const st = Array.from(w.stocks()); code = defs[22].cost.every(([r, n]) => st[r] >= n) ? 0 : -6; } else code = -3;
   }
   const x = lv.ox + gx, z = lv.oz + gy, d = defs[selectedKind];
   // the core levels the ground to the average of five samples: show the same levelling under the ghost so it never clips the terrain
-  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5;
+  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29) h = Math.min(h, w.wheel_pad_cap(x, z, grot & 7));   // (a waterwheel house stands low on the bank, WHEEL_PAD_MAX above the water under its wheel: a moat's own level, as the core)
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = terrain.heightAt(x, z);
@@ -1677,8 +1753,32 @@ function updateHallLabels(all: Village[]) {
   }
 }
 
+/** Every village in view as the procession renderer wants it. */
+function travellerVillages(): TVillage[] {
+  const mk = (v: Village, key: string, tag: number, name: string, mine: boolean): TVillage => ({ key, tag, name, mine, x: v.ox, z: v.oz, radius: v.radius, color: v.army.friend, world: v.world });
+  return [mk(lv, 'me', myTag(), myName, true), ...[...rivals.values()].map(r => mk(r.village, r.key, tagOf(r.key), r.name, false))];
+}
+
+/** A small caption floating over each procession on the road: what it is and between whom. */
+const journeyLabels = new Map<string, HTMLElement>();
+function updateJourneyLabels() {
+  const live = new Set<string>();
+  for (const l of travellers.labels()) {
+    let el = journeyLabels.get(l.id);
+    if (!el) { el = document.createElement('div'); el.className = 'lbl jr'; ui.labels.appendChild(el); journeyLabels.set(l.id, el); }
+    live.add(l.id);
+    vtmp.set(l.x, l.y, l.z).project(rig.cam);
+    const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist < 220;
+    el.hidden = !on; if (!on) continue;
+    el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
+    if (el.textContent !== l.text) { el.textContent = l.text; el.dataset.kind = String(l.kind); }
+  }
+  for (const [id, el] of [...journeyLabels]) if (!live.has(id)) { el.remove(); journeyLabels.delete(id); }
+}
+
 // ---------- main loop ----------
 let worldShips: WorldShips | null = null;
+let travellers!: Travellers;
 let tideLevel = 0;   // the water rises and falls a little, slowly
 let noteT = 0, sCount = 0, sT = 0, fireBuf = new Float32Array(256);
 let lastPhase = -1;   // the day phase the light was last set for
@@ -1763,7 +1863,7 @@ function frame(now: number) {
   const view = Math.max(90, rig.dist * 1.7 + 50);        // simulate and draw crowds and animals only around the camera
   wildlife.update(dt, scares, rig.target.x, rig.target.z, view);
   perf.stop('animals');
-  perf.start('crowd upload'); crowd.begin(); all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view)); worldShips?.draw(crowd, rig.target.x, rig.target.z, view); crowd.end(); perf.stop('crowd upload');
+  perf.start('crowd upload'); crowd.begin(); all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view)); worldShips?.draw(crowd, rig.target.x, rig.target.z, view); travellers.update(dt, now / 1000, travellerVillages()); travellers.draw(crowd, rig.target.x, rig.target.z, view); crowd.end(); perf.stop('crowd upload');
   perf.start('fire + particles');
   let nf = 0; for (const v of all) nf += v.fireData.length;
   if (fireBuf.length < nf) fireBuf = new Float32Array(Math.max(nf, fireBuf.length * 2));   // one buffer reused every frame
@@ -1774,8 +1874,8 @@ function frame(now: number) {
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   perf.start('labels + minimap');
-  updateHallLabels(all);
-  updateLabels();
+  updateHallLabels(all); updateJourneyLabels();
+  updateLabels(); updateBossBar();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {
     miniT = now;

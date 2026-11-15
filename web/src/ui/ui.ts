@@ -235,7 +235,7 @@ export class UI {
     <p class="muted">For testing only. These actions are signed and sent to other players like any other command. They appear because you are running locally (or added <b>?cheats=1</b> to the address).</p>
     <div id="cheat-res" class="cheatgrid"></div>
     <div class="btnrow" style="flex-wrap:wrap">
-      <button class="pbtn" data-ch="3,0,0">Fill every store</button><button class="pbtn" data-ch="1,10,0">+10 villagers</button><button class="pbtn" data-ch="6,0,0">Cure plague</button>
+      <button class="pbtn" data-ch="3,0,0">Fill every store</button><button class="pbtn" data-ch="1,10,0">+10 villagers</button><button class="pbtn" data-ch="6,0,0">Cure plague</button><button class="pbtn" data-ch="9,0,0">Start plague</button>
     </div>
     <h3>Soldiers</h3><div class="btnrow" style="flex-wrap:wrap" id="cheat-army"></div>
     <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">${bi('house')} Build a model village</button><button class="pbtn" data-ch="103,0,0" title="Every building at every tier, plus the design options">${bi('townhall')} Test hall: all buildings</button></div>
@@ -324,7 +324,7 @@ export class UI {
   }
 
   // ---- loading screen ----
-  private tips = ['Hunters keep the larder full if a forest is near.', 'Stone buildings shrug off fire; thatch does not.', 'Wells and chapels keep the plague away.', 'Paths appear on their own between your buildings.', 'Press V to reveal ore and stone deposits.', 'Your village keeps growing while you are away.', 'Walls link up by themselves when placed close together.'];
+  private tips = ['Hunters keep the larder full if a forest is near.', 'Stone buildings shrug off fire; thatch does not.', 'Wells and chapels keep the plague away. When it comes it lasts 10 to 20 days: it spreads, peaks and fades, and a hospital, a chapel, a graveyard and a quarantine save lives.', 'Paths appear on their own between your buildings.', 'Press V to reveal ore and stone deposits.', 'Your village keeps growing while you are away.', 'Walls link up by themselves when placed close together.'];
   beginLoading() { $('intro').hidden = true; $('loader').hidden = false; $('ltip').textContent = this.tips[Math.floor(Math.random() * this.tips.length)]; this.progress(1, 'Preparing the world…'); }
   progress(p: number, text: string) { ($('lbar-i') as HTMLElement).style.width = p + '%'; $('ltext').textContent = text; }
   private finishLoading() { ($('lbar-i') as HTMLElement).style.width = '100%'; const l = $('loader'); l.style.transition = 'opacity .5s'; l.style.opacity = '0'; setTimeout(() => { l.hidden = true; l.style.opacity = ''; l.style.transition = ''; }, 520); }
@@ -612,11 +612,11 @@ export class UI {
         ? `<select id="atk-target">${rows.map(r => `<option value="${esc(r.key)}">${esc(r.name)}${r.where ? ' · ' + esc(r.where) : ''} · ${r.buildings} buildings</option>`).join('')}</select>
            <button class="pbtn danger" id="atk-sel" hidden></button>
            <p class="muted" id="atk-hint"></p>
-           <h4>Trade</h4>
+           <h4>Trade</h4><p class="muted">Everything travels the road between the two cities and works when it arrives.</p>
            <div class="trade-row"><select id="trd-res" aria-label="Goods">${RES.map((r, i) => `<option value="${i}">${r.name}</option>`).join('')}</select><label class="tfield" title="Amount"><span>#</span><input type="number" min="1" max="500" value="50" id="trd-amt"></label><label class="tfield" title="Spearmen as escort"><span>${bi('shield', 14)}</span><input type="number" min="0" value="0" id="trd-esc"></label></div>
            <div class="btnrow"><button class="pbtn" id="trd-send">${bi('caravan')} Send caravan</button><button class="pbtn" id="trd-pact">${bi('pact')} Trade pact</button><button class="pbtn" id="trd-peace">${bi('peace')} Peace</button></div>
            <h4>Diplomacy</h4><p class="muted" id="dip-rel"></p>
-           <div class="btnrow"><button class="pbtn" id="dip-envoy" title="Send an envoy with gifts (20 gold, once every 3 days)">${bi('envoy')} Envoy</button><button class="pbtn" id="dip-ally" title="An alliance needs a trade pact and warm relations">${bi('alliance')} Alliance</button><button class="pbtn" id="dip-marry" title="Marry into their house: 150 gold, needs good relations">${bi('marriage')} Marriage</button><button class="pbtn danger" id="dip-war" title="Declare war: treaties end and relations collapse">${bi('war')} Declare war</button></div>`
+           <div class="btnrow"><button class="pbtn" id="dip-envoy" title="Send an envoy with gifts (20 gold, once every 3 days): relations improve when he arrives">${bi('envoy')} Envoy</button><button class="pbtn" id="dip-ally" title="An alliance needs a trade pact and warm relations">${bi('alliance')} Alliance</button><button class="pbtn" id="dip-marry" title="Marry into their house: 150 gold, needs good relations. The wedding party takes the road and the marriage binds on arrival">${bi('marriage')} Marriage</button><button class="pbtn danger" id="dip-war" title="A herald rides to them; when he arrives treaties end and relations collapse">${bi('war')} Declare war</button></div>`
         : '<p class="muted">No other villages to attack yet — invite someone, or wait for neighbours to arrive.</p>';
       const trade = (action: string) => { const key = ($('atk-target') as HTMLSelectElement).value; this.h.trade(key, action, Number(($('trd-res') as HTMLSelectElement).value), Number(($('trd-amt') as HTMLInputElement).value) || 0, Number(($('trd-esc') as HTMLInputElement).value) || 0); };
       for (const [id, a] of [['trd-send', 'caravan'], ['trd-pact', 'pact'], ['trd-peace', 'peace'], ['dip-envoy', 'envoy'], ['dip-ally', 'alliance'], ['dip-marry', 'marriage'], ['dip-war', 'war']] as const) { const b = document.getElementById(id); if (b) b.onclick = () => trade(a); }
@@ -674,8 +674,8 @@ export class UI {
     li.innerHTML = `<small>Day ${Math.floor(tick / 240) + 1}</small> ${text}`;
     const ul = $('log'); ul.prepend(li); if (++this.logCount > 40) ul.lastElementChild?.remove();
   }
-  toast(text: string, tone = 'info') {
-    const t = document.createElement('div'); t.className = 'toast ' + tone; t.textContent = text; $('toasts').appendChild(t);
+  toast(text: string, tone = 'info', iconName?: string) {
+    const t = document.createElement('div'); t.className = 'toast ' + tone; if (iconName) t.innerHTML = `${icon(iconName, 16, { mono: true })} ${esc(text)}`; else t.textContent = text; $('toasts').appendChild(t);
     setTimeout(() => { t.style.transition = 'opacity .5s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 6000);
   }
   hint(text: string | null, bad = false) { const h = $('hint'); h.hidden = !text; if (text) { h.innerHTML = esc(text).replace(/&lt;kbd&gt;(.*?)&lt;\/kbd&gt;/g, '<kbd>$1</kbd>'); h.classList.toggle('bad', bad); } }   // key names come as <kbd> tags: keep those, escape the rest
@@ -687,6 +687,20 @@ export class UI {
   setResourcesToggle(on: boolean) { $('btn-res').setAttribute('aria-pressed', String(on)); $('btn-res').classList.toggle('on', on); }
   netStatus(s: string) { $('net-status').textContent = s; }
   get labels() { return $('labels'); }
+  /** The market's stall list: `goods` is `World.market_goods()` (resource, left, cap, refill a day, unit price x100, days until full each); `tick` the clock and `day` the ticks in a day. */
+  marketHtml(goods: ArrayLike<number>, stocks: number[], tick: number, day: number, room: number) {
+    const toDawn = day - (tick % day), rows: string[] = [];
+    for (let i = 0; i + 5 < goods.length; i += 6) {
+      const [r, left, cap, refill, p100, days] = [goods[i], goods[i + 1], goods[i + 2], goods[i + 3], goods[i + 4], goods[i + 5]];
+      const unit = (n: number) => Math.ceil(p100 * n / 100), canNow = (n: number) => left >= n && stocks[8] >= unit(n) && stocks[r] + n <= room;
+      const most = Math.max(0, Math.min(left, room - stocks[r], Math.floor(stocks[8] * 100 / Math.max(1, p100))));
+      const when = left >= cap ? 'full' : `full in ${days} day${days === 1 ? '' : 's'}`;
+      rows.push(`<div class="mkt-row"><span class="mkt-good">${resIcon(r)} <b>${RES[r].name}</b></span><span class="mkt-left" title="Refills ${refill} a day">${left} / ${cap} left<small> · ${when}</small></span>
+        <span class="mkt-price">${icon('gold', 14)} ${(p100 / 100).toFixed(p100 % 100 ? 2 : 0)} each</span>
+        <span class="btnrow"><button class="pbtn" data-act="buy:${r}:10" ${canNow(10) ? '' : 'disabled'}>+10</button><button class="pbtn" data-act="buy:${r}:50" ${canNow(50) ? '' : 'disabled'}>+50</button><button class="pbtn" data-act="buy:${r}:${most}" ${most < 1 ? 'disabled' : ''} title="As many as the stall has, you can pay for and the stores hold">All${most > 0 ? ` (${most}, ${unit(most)})` : ''}</button></span></div>`);
+    }
+    return `<div><h3>Market</h3><div class="mkt">${rows.join('')}</div><p class="muted">Buy with gold at a markup. The stalls restock at the turn of every day (next in ${Math.ceil(toDawn / day * 24)} hours); a grander market, or a second one, stocks more.</p></div>`;
+  }
   costHtml(c: [number, number][], stocks: number[]) { return c.map(([r, n]) => `<span class="${stocks[r] < n ? 'short' : ''}">${resIcon(r)} ${n}</span>`).join(' '); }
   fmt = fmtCost;
 }

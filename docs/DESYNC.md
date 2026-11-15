@@ -16,8 +16,7 @@ a copy that disagrees used to show "out of sync ⚠" and stay that way. This not
 
 * **Hash containers.** The only `HashMap`/`HashSet` in the core (`road_cache`, `used` in `rebuild_roads`, `at_cell` in `march.rs`) are looked up or inserted into (the one `retain` does not depend on order). No wall-clock time or
   randomness reaches the simulation (`Math.random`/`Date.now`/`performance.now` in `main.ts` only drive visuals, ids and the "while you were away" catch-up, which steps the world deterministically).
-* **Caches.** `net_cache`/`ov_cache` stamps cover buildings, levels, craters, links, felled trees, bridges and the road count; the replay test above (with a replica whose caches are empty, or filled at other moments)
-  gives equal hashes and equal paths. `route_stamp` (the per-route `road_cache`) does **not** include `felled`, `bridges` or `links`; no divergence could be provoked, so it is recorded here as a latent risk.
+* **Caches.** `net_base` (the path network without roads), `net_cache` (the same with the roads marked on it) and `ov_cache` have stamps that cover buildings, levels, craters, links, the state of gates and drawbridges, the terrain version, and (`net_cache`, `ov_cache`) `road_sig`, a fingerprint of the roads. The roads are derived state: `rebuild_roads` routes them over `net_base` (never over the marked network, so they do not depend on their own earlier value), and `link_village` rebuilds them because the links are part of the network. `route_stamp` (the per-route `road_cache`) is the network's own stamp plus the two buildings: the route depends on nothing else (felled trees and soldiers' bridges are not part of the network). A replica whose caches are empty or filled at other moments gets the same roads: `replay_sync` compares `road_paths_flat` after every habit. The only `HashMap`s used for roads (`road_cache`, the `memo` of `RoadCtx`) are looked up and inserted into, never iterated.
   It was not widened: felled trees change all the time and the cache is what keeps building big villages cheap.
 * **f32.** Every client runs the same wasm build; there is no native/wasm mix.
 * **Step cadence.** One tick is one `step()`; how many are run per frame (`acc`, the hidden-tab worker clock) changes nothing in the world, only when commands are issued, and that is the tick the world has.
@@ -51,7 +50,7 @@ The owner sends `{ tick, hash, c, p, tools }`: the tick, the state hash, how man
 * Equal count and tick → compare. Equal → *match*. Different → *mismatch* with a `Diagnosis`: the tick, the sections that differ, the last tick and command count that matched, and the ops of the commands applied since
   (the first divergence is among them).
 
-Sections (`state_hash_part_names()`): `core` (clock, random stream, people), `stock`, `buildings`, `deposits`, `links`, `army`, `soldiers`, `diplomacy`, `land` (felled trees, bridges, levels, craters), `battle`.
+Sections (`state_hash_part_names()`): `core` (clock, random stream, people), `stock` (the twelve stocks and the market's sold counts: how much of each market good has been bought since it was last full, see `market.rs`), `buildings`, `deposits`, `links`, `army`, `soldiers`, `diplomacy` (relations, treaties, caravans and the journeys on the road with their departure and arrival ticks), `land` (felled trees, bridges, levels, craters), `battle` (every soldier's position, hit points, army, sogginess; and for bosses their maximum hit points, kind, name, phase and the horn and slam clocks; the boss of the fight and the lair it is in).
 `World::state_hash()` is the fold of these; it now also covers the random stream and the full felled/bridge/level lists.
 
 ## What the game does
@@ -64,12 +63,40 @@ Sections (`state_hash_part_names()`): `core` (clock, random stream, people), `st
 * Counters per player (desyncs, re-syncs, last diagnosis with tick, sections and commands) in the performance panel (F3, "Multiplayer sync") and in the console: `flandersSync()` and a `console.warn`
   at every new desync.
 
+## Armies and water: lent drawbridges and soldiers who do not wade
+
+A new rule set, all of it a pure function of the world's state, run once per tick by every copy in the same place (`World::step`: after `march_step` and `defence_step`; the fight's own movement in `battle_substep`).
+No new command exists: the player's `bridge` command (`drawbridge_set`) is the only input, and it is already in `PEER_OPS` and checked in `validate.ts`.
+
+* **Lent drawbridges** (`crates/game-core/src/lend.rs`). A drawbridge's `status` is part of the hash (buildings section; it was not before): 4 lowered, 5 drawn up by hand, 6 lowered for an army (was up),
+  7 lowered for an army during a battle (was lowered; every drawbridge counts as drawn up in a battle). `progress` of a drawbridge (otherwise unused, and hashed) is its timer: for a lent one the seconds nobody
+  has needed it, for one drawn up by hand the seconds (`VETO_SECS` = 120) in which no army may lower it.
+* **Who needs a drawbridge:** a travelling army or group whose route ahead runs over the deck within 20 units, or that is on or within 5 units of the deck; soldiers in the fight who stand on a deck or have
+  chosen it as their crossing (`World::db_want`, filled by the battle's substeps and consumed in `drawbridge_step` of the next tick; it is empty between ticks, so it is not part of the hash).
+* **Raised again** 4 s after the last need (1 s in a battle, so raiders get no time). A manual raise (`drawbridge_set(.., true)`) wins: status 5 with a 120 s hold, and armies whose route ran over the deck are
+  re-planned at once (`replan_over_deck`, deterministic: ascending army order). A manual lowering sets status 4 and no timer. Raiders never get dry feet from a lent deck: `bridge_points` and `Battle::fixed` do
+  not include drawbridges, so the raiders' wading rule is unchanged.
+* **Routes:** for armies (not villagers) the deck of a drawn-up, not vetoed drawbridge is dry ground (`Ov::deck_up`, part of the overlay cache key together with the battle flag and the veto state); otherwise
+  water is bridged (`S_BRIDGE`) or ferried as before. The same planning serves marches, sallies, defence marches and reinforcements.
+* **In the fight** own soldiers (`Battle::own_walk`) never step into water: a straight way is taken only if it is dry, otherwise they walk to the nearest bridge, soldier-built bridge or drawbridge (asking for
+  it), cross, and go on; with no way over they wait at the water's edge. Raiders wade as before.
+* Gates: left as they are. A shut stone gate (status 5, or any in a battle) is not opened for armies.
+* Tests: `lend_tests.rs` (bridge lowered, crossing on the deck, raised again, manual raise wins, planks for a narrow moat, ferry for a wide one, nobody of ours in water, raiders get no bridge) and
+  `replay_sync.rs::a_moat_a_lent_drawbridge_and_a_defending_army_replay_identically` (owner and replicas agree tick by tick, silent / drawn every tick / drawn now and then).
+* Rules and hashes differ from older builds (a drawbridge's status is hashed now, and defenders across a moat play out differently), so builds with and without this show "different game version" to each other, as designed.
+
 ## Versions
 
 `hello` carries `v` (`SYNC_PROTOCOL`, bumped when the hash message or hello changes) and `rules`: `rules_fingerprint(seed)`, the hash of a small scripted game (buildings, soldiers marching through woods, a raid)
 played by this build's core. Any change that makes a log play out differently changes it, with nobody having to remember to bump a number. Players whose `v` or `rules` differ are shown "different game version",
 are not judged, and get one calm toast. Saved villages record both; a village saved by another build logs a warning when loaded (the history is replayed with the rules of the build that loads it).
 Both fields are checked in `validate.ts` (`sanitizeBuild`, `sanitizeHash`); the room id did not change, so builds still meet (and say so).
+
+## Waterwheel placement
+
+No new state. The waterwheel's snap to the bank (`waterwheel_snap`) is computed on the clicking client only and the *result* travels in the `place` command (x, y, rot), like the drawbridge's; `place` itself refuses
+a wheel that does not hang over water for that turn (`wheel_in_water`, -16) and levels the pad no higher than `WHEEL_PAD_MAX`, so every copy replaying the log checks and builds the same thing. Changing
+`WHEEL_REACH` or the pad cap changes the rules fingerprint, as it should.
 
 ## Left as it is
 

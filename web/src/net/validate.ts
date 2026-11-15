@@ -3,7 +3,7 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'defend', 'retreat', 'reinforce'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {

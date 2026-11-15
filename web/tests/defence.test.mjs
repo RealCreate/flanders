@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { roleOf, actionsFor, foeFocus, shouldAutoJump, foeNear, sallyUnits } from '../src/defence.ts';
+import { roleOf, actionsFor, foeFocus, shouldAutoJump, foeNear, sallyUnits, newlyLent, drawnUp } from '../src/defence.ts';
 
 test('you defend your own village, attack with your own tag, and otherwise watch', () => {
   assert.equal(roleOf(true, 0, 5), 'defend'); assert.equal(roleOf(true, 9, 5), 'defend');
@@ -26,11 +26,22 @@ test('the jump to the raiders happens once, at the start of a raid on your own v
   assert.equal(shouldAutoJump(true, false, true, 'defend'), false);
 });
 test('the nearest living attacker is found, and nothing beyond reach', () => {
-  // side, kind, x, y, hp, maxhp, alive, anim, face, elev
-  const flat = [0, 0, 0, 0, 10, 10, 1, 0, 0, 0,   1, 0, 20, 0, 10, 10, 1, 0, 0, 0,   1, 0, 8, 0, 0, 10, 0, 0, 0, 0,   1, 0, 12, 0, 10, 10, 1, 0, 0, 0];
+  // side, kind, x, y, hp, maxhp, alive, anim, face, elev, boss, phase, name, aura
+  const T = [0, 0, 0, 0];
+  const flat = [0, 0, 0, 0, 10, 10, 1, 0, 0, 0, ...T,   1, 0, 20, 0, 10, 10, 1, 0, 0, 0, ...T,   1, 0, 8, 0, 0, 10, 0, 0, 0, 0, ...T,   1, 0, 12, 0, 10, 10, 1, 0, 0, 0, ...T];
   const n = foeNear(flat, 0, 0, 30); assert.equal(n.x, 12);
   assert.equal(foeNear(flat, 0, 0, 5), null);
 });
 test('a sally takes everybody who is standing', () => {
   assert.deepEqual(sallyUnits([4, 2, 0, 1]), [4, 2, 0, 1, 0]);
+});
+
+test('a drawbridge lent to an army is down even in a fight, and is announced once', () => {
+  assert.equal(drawnUp(5, false), true); assert.equal(drawnUp(4, false), false); assert.equal(drawnUp(4, true), true);
+  assert.equal(drawnUp(6, true), false); assert.equal(drawnUp(7, true), false); assert.equal(drawnUp(6, false), false);
+  const row = (kind, status) => [kind, 0, 0, 0, 0, 0, status, 0, 0, 0];
+  const flat = [...row(0, 4), ...row(23, 6), ...row(23, 5)];
+  let r = newlyLent(flat, new Set()); assert.deepEqual(r.fresh, [1]);
+  r = newlyLent(flat, r.now); assert.deepEqual(r.fresh, [], 'not announced again while it stays down');
+  r = newlyLent([...row(0, 4), ...row(23, 5), ...row(23, 7)], r.now); assert.deepEqual(r.fresh, [2]);
 });

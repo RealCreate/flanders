@@ -120,7 +120,7 @@ impl NavStatic {
 fn cell_xy(i: usize) -> (f32, f32) { ((i as i32 % NC) as f32 * CELL + ORG + CELL / 2.0, (i as i32 / NC) as f32 * CELL + ORG + CELL / 2.0) }
 
 /// Per-request overlays: buildings, felled trees and bridges rasterised onto the grid.
-pub(crate) struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool>, road: Vec<bool> }
+pub(crate) struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool>, road: Vec<bool>, deck_up: Vec<bool> }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cl { Block, Free(f32), Water }
@@ -144,7 +144,9 @@ impl World {
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
         for f in &self.felled { for v in f { mix(v.to_bits() as u64); } }
         for b in &self.bridges { for v in b { mix(v.to_bits() as u64); } }
-        mix(self.roads.len() as u64);
+        mix(self.road_sig);
+        mix(self.roads.len() as u64); mix(self.battle.is_some() as u64);
+        for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) { mix((b.status as u64) << 1 | (b.progress > 0) as u64); }
         if let Some((st, o)) = &*self.ov_cache.borrow() { if *st == h { return o.clone(); } }
         let o = std::rc::Rc::new(self.overlays());
         *self.ov_cache.borrow_mut() = Some((h, o.clone()));
@@ -153,7 +155,7 @@ impl World {
 
     fn overlays(&self) -> Ov {
         let n = (NC * NC) as usize;
-        let mut ov = Ov { blocked: vec![false; n], soft: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n], road: vec![false; n] };
+        let mut ov = Ov { blocked: vec![false; n], soft: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n], road: vec![false; n], deck_up: vec![false; n] };
         for b in &self.buildings {
             match b.kind {
                 GATE if self.gate_shut(b) => stamp(&mut ov.blocked, b.x, b.y, 3.4),   // a barred gate: no way through
@@ -169,7 +171,9 @@ impl World {
                     } } }
                 }
                 RAISE | LOWER => {}
-                DRAWBRIDGE if b.status == 5 || self.battle.is_some() => {}   // drawn up: no way across
+                DRAWBRIDGE if self.drawn_up(b) => {                           // drawn up: no way across, unless an army lowers it for itself
+                    if self.db_lendable(b) { let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos()); for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.deck_up, b.x + sx * t, b.y + sy * t, 1.6); } }
+                }
                 DRAWBRIDGE => {                                               // a way across for your own armies
                     let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
                     for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.bridge, b.x + sx * t, b.y + sy * t, 1.6); }
@@ -269,11 +273,13 @@ impl World {
                 if !matches!(last, Err(-2)) { break 'search; }
             }
         }
-        last.map(|p| self.through_doors(p))
+        last.map(|p| self.through_doors(p, !no_water))
     }
 
     fn route_in_window(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, margin: f32, no_water: bool, siege: u8) -> Result<Vec<Wp>, i32> {
         let ns = nav_static(self.seed); let ov = self.ov(); let net = self.net();
+        // how a cell can be crossed; for an army (which does not wade) the deck of a drawbridge that is drawn up counts as dry ground, because the army lowers it for itself (see `drawbridge_step`)
+        let cl = |k: usize| -> Cl { match self.classify(&ns, &ov, k, siege) { Cl::Water if !no_water && ov.deck_up[k] => Cl::Free(1.5), c => c } };
         let workers = units[0] + units[2];
         let (Some(s), Some(g)) = (self.near_free(&ns, &ov, sx, sy, siege), self.near_free(&ns, &ov, tx, ty, siege)) else { return Err(-2) };
         let ((scx, scy), (gcx, gcy)) = (cell_xy(s), cell_xy(g));
@@ -302,9 +308,9 @@ impl World {
                 for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                     let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { continue; }
                     let k = (b * NC + a) as usize; let Some(kl) = local(k) else { continue };
-                    let step = match self.classify(&ns, &ov, k, siege) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 16.0 } };
+                    let step = match cl(k) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 16.0 } };
                     if di != 0 && dj != 0 {   // no cutting corners through blocked cells
-                        if self.classify(&ns, &ov, (cj * NC + a) as usize, siege) == Cl::Block || self.classify(&ns, &ov, (b * NC + ci) as usize, siege) == Cl::Block { continue; }
+                        if cl((cj * NC + a) as usize) == Cl::Block || cl((b * NC + ci) as usize) == Cl::Block { continue; }
                     }
                     next.push((kl, step * if di != 0 && dj != 0 { 1.414 } else { 1.0 }));
                 }
@@ -318,7 +324,7 @@ impl World {
         }
         if !found { return Err(-2); }
         let mut chain = vec![gl]; let mut c = gl; while from[c] != u32::MAX { c = from[c] as usize; chain.push(c); } chain.reverse();
-        let mode_of = |gi: usize| -> u8 { match self.classify(&ns, &ov, gi, siege) { Cl::Water => 2, Cl::Free(c) if c >= 8.0 => 1, _ => 0 } };
+        let mode_of = |gi: usize| -> u8 { match cl(gi) { Cl::Water => 2, Cl::Free(c) if c >= 8.0 => 1, _ => 0 } };
         // the lines the route runs along: grid cells (merged where a straight line stays on them) and the village network's own nodes (kept exactly)
         struct It { x: f32, y: f32, mode: u8, fixed: bool, cell: usize }
         let items: Vec<It> = chain.iter().map(|&l| if l < ncell { let gi = global(l); let p = cell_xy(gi); It { x: p.0, y: p.1, mode: mode_of(gi), fixed: false, cell: gi } } else { let p = net.nodes[l - ncell]; It { x: p.0, y: p.1, mode: 0, fixed: true, cell: usize::MAX } }).collect();
@@ -330,7 +336,7 @@ impl World {
             let run: Vec<(f32, f32)> = items[start..=end].iter().map(|it| (it.x, it.y)).collect();
             let los = |a: (f32, f32), b: (f32, f32), between: &[(f32, f32)]| -> bool {
                 let l = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt(); let st = (l / (CELL * 0.5)).ceil().max(1.0) as i32;
-                if !(0..=st).all(|q| { let t = q as f32 / st as f32; ns.idx(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t).map_or(false, |k| mode_of(k) == m && self.classify(&ns, &ov, k, siege) != Cl::Block) }) { return false; }
+                if !(0..=st).all(|q| { let t = q as f32 / st as f32; ns.idx(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t).map_or(false, |k| mode_of(k) == m && cl(k) != Cl::Block) }) { return false; }
                 // and it stays on the lines it replaces (never a long cut across open ground)
                 let (dx, dy) = (b.0 - a.0, b.1 - a.1); let l2 = (dx * dx + dy * dy).max(1e-6);
                 between.iter().all(|p| { let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0); (p.0 - (a.0 + dx * t)).hypot(p.1 - (a.1 + dy * t)) <= 1.3 })
@@ -357,14 +363,14 @@ impl World {
 
     /// Wherever a route passes through an open gate or over a lowered drawbridge it is made to run along the middle of the doorway, straight in and straight out (the open-ground
     /// search only knows grid cells, which would have it hug one side).
-    fn through_doors(&self, wps: Vec<Wp>) -> Vec<Wp> {
+    fn through_doors(&self, wps: Vec<Wp>, own: bool) -> Vec<Wp> {
         let (_, doors) = self.wall_lines();
         // (centre, direction one walks through it, half-width across, nodes along it)
         let mut lanes: Vec<(f32, f32, f32, f32, f32, &'static [f32])> = vec![];
         const GATE_T: &[f32] = &[-7.5, -3.8, 0.0, 3.8, 7.5];
         const DECK_T: &[f32] = &[-9.0, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0];
         for d in &doors { if !self.gate_shut(&self.buildings[d.b]) { lanes.push((d.x, d.y, -d.uy, d.ux, crate::wallnet::GATE_HALF + 1.5, GATE_T)); } }
-        for b in &self.buildings { if b.kind == DRAWBRIDGE && b.status != 5 && self.battle.is_none() { let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; lanes.push((b.x, b.y, a.sin(), a.cos(), 3.0, DECK_T)); } }
+        for b in &self.buildings { if b.kind == DRAWBRIDGE && (!self.drawn_up(b) || (own && self.db_lendable(b))) { let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; lanes.push((b.x, b.y, a.sin(), a.cos(), 3.0, DECK_T)); } }
         if lanes.is_empty() { return wps; }
         let mut out = wps;
         for &(cx, cy, nx, ny, half, ts) in &lanes {
@@ -650,7 +656,7 @@ impl World {
                 GATE | MOAT | RIVER | RAISE | LOWER | ROAD => {}
                 BRIDGE => { let (ux, uy, l) = Self::bridge_dir(q); let st = (l / 0.8) as i32; for t in 0..=st { let t = t as f32 * 0.8 - l / 2.0; mark(&mut deck, q.x + ux * t, q.y + uy * t, 1.7); } }
                 DRAWBRIDGE => {
-                    if q.status == 5 || self.battle.is_some() { continue; }
+                    if self.drawn_up(q) { continue; }
                     let an = q.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
                     for t in -9..=9 { let t = t as f32 * 0.8; mark(&mut deck, q.x + sx * t, q.y + sy * t, 1.7); }
                 }

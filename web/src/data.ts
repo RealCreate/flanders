@@ -1,5 +1,6 @@
 import { icon, KIND_ICON_NAMES, UNIT_ICON_NAMES, CAT_ICON_NAMES } from './ui/icons';
-import init, { catalog, units as unitsJson } from './wasm/game_core.js';
+import init, { catalog, units as unitsJson, bosses as bossesJson } from './wasm/game_core.js';
+import { bossTitle, type BossDef } from './bosses';
 
 await init(); // the building catalog comes from the Rust core, so wasm must be ready before this module evaluates
 
@@ -71,7 +72,7 @@ export const DEPOSIT = [
 
 /** The decisions put to the player (see World.choose): a title, a line of story and the options. */
 export const CHOICES: { title: string; story: string; options: string[] }[] = [
-  { title: 'Plague in the village', story: 'The sick lie in every street. Your reeve asks what to do.', options: ['Quarantine the sick (they stop working for 5 days; fewer die)', 'Carry on as usual'] },
+  { title: 'Plague in the village', story: 'The sick lie in every street, and it will be days before the worst is over. Your reeve asks what to do.', options: ['Quarantine the sick (they stop working for 7 days; a lower peak, fewer die)', 'Carry on as usual'] },
   { title: 'A travelling preacher', story: 'A preacher with a worn cloak asks leave to speak in the square.', options: ['Welcome him (20 coins; spirits rise for 10 days)', 'Turn him away'] },
   { title: 'A noble visits', story: 'A knight with a small train asks for hospitality.', options: ['Hold a feast (100 grain, 30 coins; he leaves 90 coins)', 'Decline politely'] },
   { title: 'A hard winter', story: 'The first snow has fallen and the woodpiles are low.', options: ['Buy firewood (60 coins for 80 wood)', 'Share what there is (firewood lasts twice as long, people grumble)', 'Do nothing'] },
@@ -104,6 +105,8 @@ export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; ton
     case 17: return { text: `Robbers waylaid a caravan: ${a} ${RES[b]?.name.toLowerCase() ?? 'goods'} lost.`, tone: 'bad' };
     case 15: return a >= 0 ? { text: `Merchants at your port bought ${RES[b]?.name.toLowerCase() ?? 'goods'} for ${a} gold.`, tone: 'good' } : { text: `Merchants sold you grain for ${-a} gold.`, tone: 'info' };
     case 10: return { text: `A new ${UNIT_NAMES[a] ?? 'soldier'} finished training.`, tone: 'good' };
+    case 25: return { text: `${bossTitle(bosses, a >> 4, a & 15)}, has fallen!`, tone: 'good' };
+    case 26: return { text: 'Your army goes into a lair.', tone: 'info' };
     default: return { text: 'Something happened.', tone: 'info' };
   }
 };
@@ -117,5 +120,7 @@ export const fmtCost = (c: [number, number][]) => c.map(([r, n]) => `${resIcon(r
 
 export interface UnitDef { id: number; name: string; hp: number; dmg: number; range: number; speed: number; armor: number; cost: [number, number][]; tier: number; time: number; desc: string }
 export const units: UnitDef[] = JSON.parse(unitsJson());
+/** The bosses (Warlord, Ogre of the Marches): ids start at 1, as in the battle data. */
+export const bosses: BossDef[] = JSON.parse(bossesJson());
 export const UNIT_ICON = UNIT_ICON_NAMES;
 export const UNIT_NAMES = units.map(u => u.name);

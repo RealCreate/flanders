@@ -57,9 +57,10 @@ const TOOLS: (() => THREE.BufferGeometry)[] = [
   () => merge([cyl(0.025, 0.025, 1.7, WOOD, 0, 0.5), T(tint(new THREE.SphereGeometry(0.07, 6, 5), 0xc8b070), 0, 1.38, 0)]),                                // 8 staff
   () => merge([cyl(0.025, 0.025, 1.0, WOOD, 0, 0.3), T(tint(new THREE.SphereGeometry(0.09, 6, 5), 0xff9a2a), 0, 0.85, 0)]),                              // 9 torch (glowing head)
   () => merge([cyl(0.15, 0.11, 0.26, 0x6a4a2e, 0, -0.16, 0.12, 10), cyl(0.155, 0.155, 0.03, IRON, 0, -0.05, 0.12, 10), cyl(0.13, 0.13, 0.02, 0x4a8ac8, 0, -0.03, 0.12, 10), box(0.3, 0.025, 0.025, IRON, 0, 0.0, 0.12)]), // 10 water bucket
+  () => merge([cyl(0.05, 0.05, 0.5, WOOD, 0, 0.1, 0, 7), cyl(0.2, 0.07, 0.62, 0x5a3b22, 0, 0.62, 0, 8), cone(0.04, 0.12, IRON, 0.18, 0.7, 0, 4), cone(0.04, 0.12, IRON, -0.18, 0.6, 0, 4), cone(0.04, 0.12, IRON, 0, 0.8, 0.17, 4)]),   // 11 ogre's club
 ];
-export const TOOL = { AXE: 1, PICK: 2, HAMMER: 3, FORK: 4, SPEAR: 5, BOW: 6, SWORD: 7, STAFF: 8, TORCH: 9, BUCKET: 10 };
-const TOOL_ROT = [0, -0.2, -0.2, -0.3, -0.1, -0.15, 0.0, -0.9, -0.1, -0.2, 0];
+export const TOOL = { AXE: 1, PICK: 2, HAMMER: 3, FORK: 4, SPEAR: 5, BOW: 6, SWORD: 7, STAFF: 8, TORCH: 9, BUCKET: 10, CLUB: 11 };
+const TOOL_ROT = [0, -0.2, -0.2, -0.3, -0.1, -0.15, 0.0, -0.9, -0.1, -0.2, 0, -0.3];
 
 // ---- shields ----
 const SHIELDS: (() => THREE.BufferGeometry)[] = [
@@ -132,6 +133,23 @@ export class Crowd {
     this.t4.compose(this.v, this.q, this.s); out.multiplyMatrices(parent, this.t4); return out;
   }
   private put(mesh: THREE.InstancedMesh, i: number, m: THREE.Matrix4, hex?: number) { mesh.setMatrixAt(i, m); if (hex !== undefined) mesh.setColorAt(i, this.col.setHex(hex)); }
+
+  /** A horse with nobody on it (pulling a cart, carrying a pack): standing at (x, y, z) facing `yaw`. `phase` is the gait angle and `speed` the ground speed, as for a person. */
+  addHorse(x: number, y: number, z: number, yaw: number, phase: number, speed: number, hex: number, scale = 1) {
+    if (this.n.horse >= MAX - 1 || this.n.hleg > MAX * 4 - 5) return;
+    const walk = speed > 0.35, gallop = speed > 5, trot = speed > 2.2;
+    const hbob = walk ? Math.abs(Math.sin(phase * (gallop ? 1 : 2))) * (gallop ? 0.14 : trot ? 0.06 : 0.03) : 0;
+    this.v.set(x, y, z); this.s.setScalar(scale); this.e.set(0, yaw, 0, 'YXZ'); this.q.setFromEuler(this.e); this.B.compose(this.v, this.q, this.s);
+    this.frame(this.Hm, this.B, 0, hbob, 0, walk ? Math.sin(phase) * (gallop ? 0.07 : 0.03) : 0);
+    this.Hm.scale(this.s.set(1.05, 1.05, 1.05));
+    this.put(this.horse, this.n.horse++, this.Hm, hex);
+    const off = gallop ? [0, 0.25, 2.3, 2.55] : trot ? [0, Math.PI, Math.PI, 0] : [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
+    const amp = walk ? (gallop ? 0.95 : trot ? 0.6 : 0.42) : 0;
+    [[0.16, 0.45], [-0.16, 0.45], [0.16, -0.45], [-0.16, -0.45]].forEach(([lx, lz], k) => {
+      this.frame(this.l1, this.Hm, lx, 0.92, lz, -(amp * Math.sin(phase + off[k])));
+      this.put(this.horseLeg, this.n.hleg++, this.l1);
+    });
+  }
 
   add(d: Draw) {
     if (this.n.torso >= MAX - 1) return;
@@ -210,7 +228,7 @@ export class Crowd {
     this.frame(this.a1, this.Tm, 0.29, armY, 0, -uR); this.put(this.uArmR, this.n.arm, this.a1, d.body);
     this.frame(this.a2, this.a1, 0, -0.29, 0, eR); this.put(this.foreR, this.n.arm, this.a2, d.body);
     if (t > 0) {
-      this.frame(this.m, this.a2, 0, -0.3, 0.04, TOOL_ROT[t] + (t === TOOL.SWORD || t === TOOL.AXE ? -0.6 : t === TOOL.SPEAR || t === TOOL.FORK ? -0.9 : t === TOOL.BOW ? -1.2 : 0));
+      this.frame(this.m, this.a2, 0, -0.3, 0.04, TOOL_ROT[t] + (t === TOOL.SWORD || t === TOOL.AXE || t === TOOL.CLUB ? -0.6 : t === TOOL.SPEAR || t === TOOL.FORK ? -0.9 : t === TOOL.BOW ? -1.2 : 0));
       this.tools[t - 1].setMatrixAt(this.n.tools[t - 1]++, this.m);
     }
     this.frame(this.a1, this.Tm, -0.29, armY, 0, -uL); this.put(this.uArmL, this.n.arm, this.a1, d.body);
@@ -224,6 +242,21 @@ export class Crowd {
 
 // ---------- catapult ----------
 /** A battering ram: a roofed timber shed on wheels with an iron-shod log hanging inside (`userData.log` swings when it strikes). */
+/** The warlord's standard: a tall pole with a red banner and a gilt finial, carried behind him. `userData.cloth` is the banner (swayed by the caller). */
+export function buildStandard(): THREE.Group {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: 0x5a3b22, roughness: 0.9 }), gold = new THREE.MeshStandardMaterial({ color: 0xd9a93a, roughness: 0.5, metalness: 0.4 });
+  const red = new THREE.MeshStandardMaterial({ color: 0x9b2c22, roughness: 0.85, side: THREE.DoubleSide }), dark = new THREE.MeshStandardMaterial({ color: 0x2a1a14, roughness: 0.9, side: THREE.DoubleSide });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 4.6, 6), wood); pole.position.y = 2.3; pole.castShadow = true; g.add(pole);
+  const top = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.4, 6), gold); top.position.y = 4.8; g.add(top);
+  const cloth = new THREE.Group(); cloth.position.set(0, 4.35, 0); g.add(cloth);
+  const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.0), red); flag.position.set(0.78, -0.5, 0); flag.castShadow = true; cloth.add(flag);
+  const skull = new THREE.Mesh(new THREE.CircleGeometry(0.2, 10), dark); skull.position.set(0.78, -0.45, 0.01); cloth.add(skull);   // a dark disc on the banner: the warlord's mark
+  const horn = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.05, 5, 10, Math.PI * 1.2), gold); horn.position.set(0.15, 1.7, 0.1); horn.rotation.set(0, 0.4, 0.4); g.add(horn);   // the war horn hanging from the pole
+  g.userData.cloth = cloth;
+  return g;
+}
+
 export function buildRam(): THREE.Group {
   const g = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 }), iron = new THREE.MeshStandardMaterial({ color: 0x55585c, roughness: 0.6, metalness: 0.4 }), hide = new THREE.MeshStandardMaterial({ color: 0x8a7550, roughness: 1 });
