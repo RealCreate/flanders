@@ -278,6 +278,7 @@ fn fishing_smoking_and_eating_fish_replay_identically() {
     for (what, r) in [("silent", replay(1337, 0, 0, &log, &hashes, &mut |_, _| {})), ("drawn every tick", replay(1337, 0, 0, &log, &hashes, &mut |w, _| { look(w); })), ("drawn now and then", replay(1337, 0, 0, &log, &hashes, &mut |w, t| if t % 7 == 3 { look(w); }))] {
         if let Some((t, c)) = r { panic!("fish replay ({what}) diverged at tick {t} after {c} of {} commands", log.len()); }
     }
+}
 
 /// Market stock is simulated state: a copy replaying a log of buys (some refused, some across day boundaries) matches the owner at every tick, and the stock section moves with each buy.
 #[test]
