@@ -1,4 +1,5 @@
 import { NetView } from './render/netview';
+import { drawnUp } from './defence';
 import { settings } from './settings';
 import { deck, type Deck } from './render/terrain';
 import { MoatWater } from './render/moatwater';
@@ -94,7 +95,7 @@ export class Village {
   private updateDecks(w: World, f: Float32Array) {
     const list: Deck[] = [];
     for (let i = 0; i + 9 < f.length; i += 10) {
-      if (f[i] !== 23 || f[i + 6] === 5) continue;   // a drawbridge that is drawn up has no deck to cross
+      if (f[i] !== 23 || drawnUp(f[i + 6], this.view.raised)) continue;   // a drawbridge that is drawn up has no deck to cross (one lent to an army is down, in a fight too)
       const a = (f[i + 4] & 7) * Math.PI / 4, sx = Math.sin(a), sz = Math.cos(a), x = f[i + 2], z = f[i + 3], y = f[i + 5] + 0.02;   // (the top of the deck planks lies flush with the pad: see the model)
       list.push(deck(x - sx * 6.4, z - sz * 6.4, x + sx * 6.4, z + sz * 6.4, 1.5, y, y));
     }
@@ -117,7 +118,7 @@ export class Village {
     this.clear = this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
     for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 24) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 6.4 * (1 + 0.13 * (f[i + 4] & 7)) }); else if (k === 32 || k === 33 || k === 34) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 5.6 }); }   // no trees on the banks of a moat or river or on earthworks
     this.obstacles = []; for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 22 || k === 24 || k === 23 || k === 32 || k === 33 || k === 34 || k === 37 || k === 38) continue; this.obstacles.push({ x: f[i + 2], z: f[i + 3], r: k === 2 ? 3 : k === 21 ? 1.6 : solid_radius_of(k, f[i + 1]) + 0.3 }); }   // only the solid part of a building is an obstacle
-    this.paths.update(f, roads, this.sh.radii, w.birth_flat(), ring_radius_of);
+    this.paths.update(f, roads, this.sh.radii, w.birth_flat(), ring_radius_of, w.road_clear_flat());
     this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat());
     this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.moats.update(w.moat_water_flat());
     this.props.update(f, roads, this.sh.radii);

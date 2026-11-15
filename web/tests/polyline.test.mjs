@@ -19,3 +19,15 @@ test('short legs are cut by less (at most 45% of each)', () => {
   const r = rounded([0, 0, 2, 0, 2, 2], 3);
   for (let k = 0; k + 1 < r.length; k += 2) assert.ok(r[k] >= -1e-6 && r[k] <= 2 + 1e-6 && r[k + 1] >= -1e-6 && r[k + 1] <= 2 + 1e-6);
 });
+
+test('a corner with little free room round it is cut only as far as the room allows', () => {
+  const dev = (r) => { let m = 0; for (let k = 0; k + 1 < r.length; k += 2) m = Math.max(m, Math.hypot(r[k] - 10, r[k + 1] - 0)); return m; };
+  const free = rounded([0, 0, 10, 0, 10, 10], 3.2, [Infinity, Infinity, Infinity]);
+  const tight = rounded([0, 0, 10, 0, 10, 10], 3.2, [Infinity, 0.3, Infinity]);
+  // (the curve's nearest approach to the corner is what moves the line off the corner; the legs themselves stay on the original line)
+  const nearest = (r) => { let m = Infinity; for (let k = 0; k + 1 < r.length; k += 2) m = Math.min(m, Math.hypot(r[k] - 10, r[k + 1])); return m; };
+  assert.ok(nearest(free) > 0.9, 'a free corner is cut');
+  assert.ok(nearest(tight) <= 0.3 + 1e-6, 'a cramped corner stays within its room: ' + nearest(tight));
+  assert.ok(dev(tight) >= 0);
+  assert.deepEqual(rounded([0, 0, 10, 0, 10, 10], 3.2, [Infinity, 0, Infinity]).slice(2, 4), [10, 0], 'no room: the corner stays sharp');
+});

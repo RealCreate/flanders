@@ -338,6 +338,8 @@ impl World {
         // walls, fences and gates stop attackers; moats and rivers too unless bridged
         let bars: Vec<(usize, f32, f32, f32, u8)> = self.buildings.iter().enumerate().filter(|(_, x)| x.hp > 0.0 && matches!(x.kind, WALL | FENCE | GATE)).map(|(k, x)| (k, x.x, x.y, if x.kind == FENCE { 1.9 } else { 2.6 }, x.kind)).collect();
         let wet: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|x| matches!(x.kind, MOAT | RIVER)).map(|x| (x.x, x.y, if x.kind == MOAT { MOAT_FLOOR * moat_scale(x) + 0.5 } else { RIVER_FLOOR + 0.5 })).collect();
+        let cr = self.crossings(); let mut want: Vec<u32> = vec![];   // the ways over water for our own soldiers, and the drawbridges they are waiting for
+        for u in b.units.iter().filter(|u| u.side == 0 && u.alive) { for c in cr.iter().filter(|c| c.db >= 0 && c.on(u.x, u.y)) { want.push(c.db as u32); } }   // (a drawbridge with one of ours on it stays down, however busy he is)
         for si in 0..b.spots.len() { let busy = b.units.iter().any(|q| q.alive && q.climb > 0.0 && q.spot == si as i32); b.spots[si][3] = if busy { 1.0 } else { 0.0 }; }
         for i in 0..n {
             if !b.units[i].alive { continue; }
@@ -348,7 +350,7 @@ impl World {
                 b.rout[i] -= dt;
                 let (mut best, mut bd) = (usize::MAX, f32::MAX);
                 for j in 0..n { if b.units[j].alive && b.units[j].side != u.side { let d = (b.units[j].x - u.x).powi(2) + (b.units[j].y - u.y).powi(2); if d < bd { bd = d; best = j; } } }
-                if best != usize::MAX { let d = bd.sqrt().max(0.1); b.units[i].x += (u.x - b.units[best].x) / d * ud.speed * 1.3 * dt; b.units[i].y += (u.y - b.units[best].y) / d * ud.speed * 1.3 * dt; b.units[i].face = (u.y - b.units[best].y).atan2(u.x - b.units[best].x); }
+                if best != usize::MAX { let d = bd.sqrt().max(0.1); let (nx, ny) = (u.x + (u.x - b.units[best].x) / d * ud.speed * 1.3 * dt, u.y + (u.y - b.units[best].y) / d * ud.speed * 1.3 * dt); if u.side == 1 || !Self::own_wet(&b, &wet, &cr, nx, ny) { b.units[i].x = nx; b.units[i].y = ny; } b.units[i].face = (u.y - b.units[best].y).atan2(u.x - b.units[best].x); }
                 if b.rout[i] <= 0.0 { b.units[i].alive = false; b.units[i].escaped = true; b.fled[u.side as usize] += 1; if u.side == 1 && (u.kind as usize) < NK { b.fled_kinds[u.kind as usize] += 1; } }
                 continue;
             }
@@ -422,7 +424,7 @@ impl World {
                     let (mx, my) = ((tx - u.x) / d_enemy.max(0.1), (ty - u.y) / d_enemy.max(0.1));
                     if u.side == 1 {
                         if let Some(blk) = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet) { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
-                    } else { b.units[i].x += mx * ud.speed * dt; b.units[i].y += my * ud.speed * dt; b.units[i].face = my.atan2(mx); }
+                    } else { let _ = (mx, my); Self::own_walk(&mut b, i, tx, ty, ud.speed * dt, &wet, &cr, &mut want); }
                 }
                 acted = true;
             }
@@ -463,7 +465,7 @@ impl World {
             } else {
                 // defenders drift back to their post
                 let (dx, dy) = (u.hx - u.x, u.hy - u.y); let d = (dx * dx + dy * dy).sqrt();
-                if d > 1.5 { let sp = ud.speed * dt * if u.held && d > 5.0 { 1.5 } else { 1.0 }; b.units[i].x += dx / d * sp; b.units[i].y += dy / d * sp; b.units[i].face = dy.atan2(dx); }
+                if d > 1.5 { let sp = ud.speed * dt * if u.held && d > 5.0 { 1.5 } else { 1.0 }; Self::own_walk(&mut b, i, u.hx, u.hy, sp, &wet, &cr, &mut want); }
             }
         }
         // soft separation so units do not stack
@@ -473,7 +475,12 @@ impl World {
                 if !b.units[j].alive { continue; }
                 let (dx, dy) = (b.units[j].x - b.units[i].x, b.units[j].y - b.units[i].y);
                 let d2 = dx * dx + dy * dy;
-                if d2 < 0.8 && d2 > 0.0001 { let d = d2.sqrt(); let push = (0.9 - d) * 0.5; b.units[i].x -= dx / d * push; b.units[i].y -= dy / d * push; b.units[j].x += dx / d * push; b.units[j].y += dy / d * push; }
+                if d2 < 0.8 && d2 > 0.0001 {
+                    let d = d2.sqrt(); let push = (0.9 - d) * 0.5;
+                    let (ni, nj) = ((b.units[i].x - dx / d * push, b.units[i].y - dy / d * push), (b.units[j].x + dx / d * push, b.units[j].y + dy / d * push));
+                    if b.units[i].side == 1 || !Self::own_wet(&b, &wet, &cr, ni.0, ni.1) { b.units[i].x = ni.0; b.units[i].y = ni.1; }   // (our own soldiers are not shoved into the water)
+                    if b.units[j].side == 1 || !Self::own_wet(&b, &wet, &cr, nj.0, nj.1) { b.units[j].x = nj.0; b.units[j].y = nj.1; }
+                }
             }
         }
         for (k, d) in dmg_b { if k < self.buildings.len() { self.buildings[k].hp -= d; } }
@@ -485,6 +492,7 @@ impl World {
             if terrain::forest_near(self.seed, x, y, 4.0) > 0.2 { self.start_wildfire(x, y); }
         }
         self.shots.extend(shots);
+        self.db_want.extend(want);
         self.battle = Some(b);
         self.collect_destroyed();
         self.check_battle_end();
@@ -526,6 +534,55 @@ impl World {
         wet.iter().any(|&(wx, wy, wr)| (x - wx).powi(2) + (y - wy).powi(2) < (wr + grow) * (wr + grow))
             && !b.bridges.iter().any(|g| (g[0] - x).powi(2) + (g[1] - y).powi(2) < 3.4 * 3.4)
             && !b.fixed.iter().any(|g| (g[0] - x).powi(2) + (g[1] - y).powi(2) < 3.4 * 3.4)
+    }
+
+    /// Is this spot water for one of our own soldiers: a moat or river with no dry way over it (a bridge, or a deck that is down)?
+    pub(crate) fn own_wet(b: &Battle, wet: &[(f32, f32, f32)], cr: &[crate::lend::Cross], x: f32, y: f32) -> bool {
+        Self::in_water(b, wet, x, y, CHANNEL_BANK - 0.5) && !cr.iter().any(|c| c.down && c.on(x, y))   // (the whole of the channel, steep bank included: the raiders' wading rule looks only at the floor)
+    }
+
+    /// Is the straight line from (ax, ay) to (bx, by) dry for our own soldiers (the last `tail` units before the end are not looked at: a foe may stand in the water)?
+    fn own_line_dry(b: &Battle, wet: &[(f32, f32, f32)], cr: &[crate::lend::Cross], a: (f32, f32), t: (f32, f32), tail: f32) -> bool {
+        let l = (t.0 - a.0).hypot(t.1 - a.1); let n = ((l - tail).max(0.0) / 1.0).ceil() as i32;
+        (1..=n).all(|q| { let f = (q as f32 / (l / 1.0).ceil().max(1.0)).min(1.0); !Self::own_wet(b, wet, cr, a.0 + (t.0 - a.0) * f, a.1 + (t.1 - a.1) * f) })
+    }
+
+    /// One step of one of our own soldiers towards (tx, ty). They do not wade: a straight way is taken only if it is dry; otherwise they walk to the nearest way over the water (a bridge, a bridge
+    /// the soldiers built, or a drawbridge, which they ask to have lowered through `want`), cross it and go on; with no way over they stop at the water's edge.
+    pub(crate) fn own_walk(b: &mut Battle, i: usize, tx: f32, ty: f32, step: f32, wet: &[(f32, f32, f32)], cr: &[crate::lend::Cross], want: &mut Vec<u32>) {
+        let (x, y) = (b.units[i].x, b.units[i].y);
+        let go = |b: &mut Battle, gx: f32, gy: f32| {
+            let (dx, dy) = (gx - x, gy - y); let d = dx.hypot(dy);
+            if d < 1e-4 { return; }
+            let s = step.min(d); let (nx, ny) = (x + dx / d * s, y + dy / d * s);
+            b.units[i].face = dy.atan2(dx);
+            if !Self::own_wet(b, wet, cr, nx, ny) || Self::own_wet(b, wet, cr, x, y) { b.units[i].x = nx; b.units[i].y = ny; }   // (never a step into the water)
+        };
+        if let Some(c) = cr.iter().find(|c| c.db >= 0 && c.on(x, y)) { want.push(c.db as u32); }   // (somebody is on the deck: it stays down)
+        let d_t = (tx - x).hypot(ty - y);
+        if d_t < 1e-3 { return; }
+        if Self::own_line_dry(b, wet, cr, (x, y), (tx, ty), 3.0) { go(b, tx, ty); return; }
+        // on a deck: carry on to the end that is nearer the goal
+        if let Some(c) = cr.iter().find(|c| c.down && c.on(x, y)) {
+            let (da, db) = ((c.ax - tx).hypot(c.ay - ty), (c.bx - tx).hypot(c.by - ty));
+            let e = if da < db { (c.ax, c.ay) } else { (c.bx, c.by) };
+            go(b, e.0, e.1); return;
+        }
+        // the best way over: shortest walk there, over and on, with a dry way to the near end and from the far end
+        let mut best: Option<(f32, (f32, f32), usize)> = None;
+        for (k, c) in cr.iter().enumerate() {
+            if !c.down && !c.lendable { continue; }
+            for (n, f) in [((c.ax, c.ay), (c.bx, c.by)), ((c.bx, c.by), (c.ax, c.ay))] {
+                let cost = (n.0 - x).hypot(n.1 - y) + (f.0 - n.0).hypot(f.1 - n.1) + (tx - f.0).hypot(ty - f.1);
+                if best.map_or(true, |q| cost < q.0) && Self::own_line_dry(b, wet, cr, (x, y), n, 0.0) && Self::own_line_dry(b, wet, cr, f, (tx, ty), 3.0) { best = Some((cost, n, k)); }
+            }
+        }
+        let Some((_, near, k)) = best else { b.units[i].face = (ty - y).atan2(tx - x); return };   // no way over: it waits at the water's edge
+        let c = cr[k]; let dn = (near.0 - x).hypot(near.1 - y);
+        if c.db >= 0 && dn < 18.0 { want.push(c.db as u32); }
+        if dn > 0.8 { go(b, near.0, near.1); }
+        else if c.down { let far = if (c.ax - near.0).abs() + (c.ay - near.1).abs() < 0.01 { (c.bx, c.by) } else { (c.ax, c.ay) }; go(b, far.0, far.1); }
+        else { b.units[i].face = (ty - y).atan2(tx - x); }   // the deck is still being lowered: wait for it
     }
 
     /// Move an attacker one step. Walls, fences and gates stop it (it may only move away from them). A moat or river does not: raiders wade or float across on rafts and ladders laid
@@ -609,6 +666,8 @@ impl World {
 
     /// The army's soldiers enter the battle where the army stands, on the defenders' side, free to charge (they have no post).
     fn det_join(&mut self, di: usize) {
+        let wet: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|x| matches!(x.kind, MOAT | RIVER)).map(|x| (x.x, x.y, if x.kind == MOAT { MOAT_FLOOR * moat_scale(x) + 0.5 } else { RIVER_FLOOR + 0.5 })).collect();
+        let cr = self.crossings();
         let Some(b) = self.battle.as_mut() else { return };
         let d = &mut self.dets[di];
         let foe = b.units.iter().filter(|u| u.side == 1 && u.alive).min_by(|p, q| ((p.x - d.x).powi(2) + (p.y - d.y).powi(2)).total_cmp(&((q.x - d.x).powi(2) + (q.y - d.y).powi(2))));
@@ -617,7 +676,9 @@ impl World {
         for kind in 0..NK {
             for _ in 0..d.units[kind] {
                 let a = j as f32 * 2.4; let r = 1.0 + (j / 8) as f32 * 1.4;
-                let mut u = Unit::new(0, kind as u8, d.x + a.cos() * r, d.y + a.sin() * r, face); u.det = d.id; u.cd = 0.3;
+                let (mut px, mut py) = (d.x + a.cos() * r, d.y + a.sin() * r);
+                if Self::own_wet(b, &wet, &cr, px, py) { px = d.x; py = d.y; }   // (never into the water)
+                let mut u = Unit::new(0, kind as u8, px, py, face); u.det = d.id; u.cd = 0.3;
                 b.units.push(u); b.start_side[0] += 1; j += 1;
             }
         }

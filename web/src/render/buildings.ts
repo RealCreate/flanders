@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { packFlag, type Flag } from '../flag';
 import { flagTexture } from './flagtex';
+import { drawnUp } from '../defence';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // ---------- procedural textures & materials ----------
@@ -1440,7 +1441,7 @@ export class Effects {
       const sp: THREE.Object3D[] = g.userData.spin;
       for (const o of sp) {
         if (o.parent === g || o.parent?.parent === g || o.parent?.parent?.parent === g) {
-          if (o.userData.deck) { o.rotation.x += (((view.raised || g.userData.status === 5) ? -1.3 : 0) - o.rotation.x) * (1 - Math.exp(-dt * 2)); continue; }
+          if (o.userData.deck) { o.rotation.x += ((drawnUp(g.userData.status, view.raised) ? -1.3 : 0) - o.rotation.x) * (1 - Math.exp(-dt * 2)); continue; }
           if ((o as THREE.Mesh).geometry && (o as THREE.Mesh).geometry.type === 'PlaneGeometry') o.rotation.y = Math.sin(t * 3 + g.position.x) * 0.25;
           else o.rotation.z += dt * 0.5 * (g.userData.status === 0 || g.userData.kind === 1 ? 1 : 0.15);
         }
