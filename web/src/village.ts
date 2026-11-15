@@ -2,6 +2,7 @@ import { NetView } from './render/netview';
 import { settings } from './settings';
 import { deck, type Deck } from './render/terrain';
 import { MoatWater } from './render/moatwater';
+import { soldierSpansFlat } from './render/soldierspans';
 import { WIDTH, deckHeight } from './render/spanplan';
 import * as THREE from 'three';
 import { solid_radius_of, ring_radius_of, type World } from './wasm/game_core.js';
@@ -81,6 +82,12 @@ export class Village {
   /** Swap in a fresh world (after moving to another site, or a rebuilt replica). */
   setWorld(w: World) { this.world = w; this.count = -1; this.version = -1; this.reportSeq = 0; }
 
+  /** The bridges the soldiers have built (or are building), as spans of the same kind the player's bridges are: bank to bank, at deck height, drawn by `spans` with the same deck and rails. */
+  private soldierFlat: Float32Array = new Float32Array(0);
+  private allSpans(w: World): Float32Array {
+    const mine = w.bridge_spans_flat(), all: Float32Array = new Float32Array(mine.length + this.soldierFlat.length); all.set(mine); all.set(this.soldierFlat, mine.length); return all;
+  }
+
   /** Register what can be walked on above the ground: lowered drawbridges and the footbridges, at the height of their decks, so walkers cross them instead of sinking into the water under. */
   private updateDecks(w: World, f: Float32Array) {
     const list: Deck[] = [];
@@ -89,7 +96,7 @@ export class Village {
       const a = (f[i + 4] & 7) * Math.PI / 4, sx = Math.sin(a), sz = Math.cos(a), x = f[i + 2], z = f[i + 3], y = f[i + 5] + 0.02;   // (the top of the deck planks lies flush with the pad: see the model)
       list.push(deck(x - sx * 6.4, z - sz * 6.4, x + sx * 6.4, z + sz * 6.4, 1.5, y, y));
     }
-    const sp = w.bridge_spans_flat();
+    const sp = this.allSpans(w);
     for (let o = 0; o + 9 < sp.length; o += 10) {
       const cx = sp[o + 1], cz = sp[o + 2], ang = sp[o + 3], L = sp[o + 4], tier = sp[o + 5], ux = Math.cos(ang), uz = Math.sin(ang), n = 6;
       const input = { length: L, tier, hA: sp[o + 7], hB: sp[o + 8], bed: () => 0, options: 0 };
@@ -110,7 +117,7 @@ export class Village {
     this.obstacles = []; for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 22 || k === 24 || k === 23 || k === 32 || k === 33 || k === 34 || k === 37 || k === 38) continue; this.obstacles.push({ x: f[i + 2], z: f[i + 3], r: k === 2 ? 3 : k === 21 ? 1.6 : solid_radius_of(k, f[i + 1]) + 0.3 }); }   // only the solid part of a building is an obstacle
     this.paths.update(f, roads, this.sh.radii, w.birth_flat(), ring_radius_of);
     this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat());
-    this.spans.update(w.bridge_spans_flat()); this.updateDecks(w, f); this.moats.update(w.moat_water_flat());
+    this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.moats.update(w.moat_water_flat());
     this.props.update(f, roads, this.sh.radii);
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
     this.people.setRoads(roads); this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
@@ -148,7 +155,7 @@ export class Village {
       const f = w.buildings_flat();
       this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
       this.people.sync(f, w.road_paths_flat(), this.sh.radii, w.population());
-      this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat()); this.spans.update(w.bridge_spans_flat()); this.updateDecks(w, f); this.army.syncWalls(this.walls.walks);
+      this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat()); this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.army.syncWalls(this.walls.walks);
       this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     }
     { const t = Number(w.tick()); if (!settings().showPaths) this.nets.update(null); else if (t - this.lastNet >= 8 || t < this.lastNet) { this.lastNet = t; this.nets.update(w.net_flat()); } }
@@ -203,7 +210,10 @@ export class Village {
     this.field.setBridges(Float32Array.from(br));
     const partial: number[][] = [];
     for (let o = 0; o < flat.length; o += 17) if (flat[o + 8] === 3) { const p = w.det_path(flat[o]); if (p.length >= 6) partial.push([p[0], p[1], p[3], p[4], flat[o + 11]]); }
-    this.bridges.update(Array.from(w.bridges_flat()), partial);
+    // soldiers' bridges are laid like the player's: same design, bank to bank at deck height (not as planks on the bed of the moat)
+    const sf = soldierSpansFlat(Array.from(w.bridges_flat()), partial, (x, z) => this.sh.terrain.heightAt(x, z));
+    if (sf.length !== this.soldierFlat.length || sf.some((q, i) => Math.abs(q - this.soldierFlat[i]) > 0.01)) { this.soldierFlat = sf; this.spans.update(this.allSpans(w)); this.updateDecks(w, bf); }
+    this.bridges.update([], []);
   }
 
   private clock = 0;
