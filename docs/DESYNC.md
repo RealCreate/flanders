@@ -103,3 +103,10 @@ a wheel that does not hang over water for that turn (`wheel_in_water`, -16) and 
 * The `return` ledger correction (a deliberate difference when an attacker's claim does not match the battle the copies saw).
 * Villages that used testing tools stay un-replayable for others by design.
 * `route_stamp` (latent, see above).
+
+## Fishing huts, smokehouses and smoked fish
+
+New state is only two more entries in `stock` (raw fish, smoked fish: `N_RES` is 14), which the *stock* section of `state_hash_parts` already folds in, plus the two buildings in the *buildings* section. The fishing hut
+uses the waterwheel's bank snap (`shore_snap`, a pure function of the world that runs on the clicking client; the result travels in the `place` command) and `place` checks the jetty is over water (`wheel_in_water`, -16)
+and levels the pad to the moat's own visible level (`wheel_pad_cap`) exactly as for the wheel. Eating (`World::step`) takes smoked fish first (`SMOKED_MEAL_PER_FISH`) then grain, with integer arithmetic only; raw fish is never
+eaten. The constants are in `lib.rs` and `catalog.rs`, and so in the rules fingerprint. Test: `fishing_smoking_and_eating_fish_replay_identically` in `tests/replay_sync.rs`.

@@ -162,6 +162,8 @@ const BACKUP_EVERY: u64 = 6;
 const BACKUP_AMOUNT: i32 = 1;
 const BACKUP_PER_TIER: i32 = 1;
 const BACKUP_BELOW: i32 = 60;
+/// What the village eats: smoked fish first (`SMOKED_MEAL_PER_FISH` meals a fish, in grain's units: 1), then grain. Raw fish is not food until it is smoked.
+const SMOKED_MEAL_PER_FISH: i32 = 1;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
@@ -170,7 +172,7 @@ pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
-const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6];
+const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
 #[derive(Clone)]
@@ -533,6 +535,9 @@ impl World {
         self.moat_water.iter().filter(|p| (p[0] - x).hypot(p[1] - y) < p[2] + 1.0).map(|p| p[3]).fold(0.0, f32::max)
     }
 
+    /// Food in the larder, in meals: smoked fish and grain.
+    pub(crate) fn food(&self) -> i32 { self.stock[SF as usize] * SMOKED_MEAL_PER_FISH + self.stock[GR as usize] }
+
     /// Workforce efficiency, and how villagers are spread over workplaces and homes.
     fn staffing(&mut self) {
         self.jobs = self.buildings.iter().map(|b| DEFS[b.kind as usize].jobs * (b.tier as u32 + 1)).sum();
@@ -765,7 +770,7 @@ impl World {
         if kind == BRIDGE { return self.place_bridge(dx, dy); }
         let code = self.can_place(kind, dx, dy);
         if code != 0 { return code; }
-        if kind == WATERWHEEL && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
+        if matches!(kind, WATERWHEEL | FISHING_HUT) && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
         let d = &DEFS[kind as usize];
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
@@ -776,7 +781,7 @@ impl World {
             let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
             pad_h = hi.max(0.3);
         }
-        if kind == WATERWHEEL { pad_h = pad_h.min(self.wheel_pad_cap(x, y, rot & 7)); }   // the house stands low on the bank so its wheel dips into the water (the visible surface: a moat's own level, not the sea's)
+        if matches!(kind, WATERWHEEL | FISHING_HUT) { pad_h = pad_h.min(self.wheel_pad_cap(x, y, rot & 7)); }   // the house stands low on the bank so its wheel dips into the water (the visible surface: a moat's own level, not the sea's)
         if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
             let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
             let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
@@ -822,7 +827,10 @@ impl World {
     /// Where a waterwheel clicked at (dx, dy) goes: pulled onto the bank beside the nearest water and turned so its wheel hangs out over it.
     /// [dx, dy, turn] relative to the origin (what `place` takes), or nothing when there is no water within reach or no bank there where the house can stand. Pure function of the world, so
     /// the client only ever sends the answer: `place` checks it again.
-    pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+    pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> { self.shore_snap(WATERWHEEL, dx, dy) }
+    /// Where a fishing hut clicked at (dx, dy) goes: the same bank snap as the waterwheel (its jetty plays the wheel's part), at a river, lake, sea or moat edge.
+    pub fn fishing_hut_snap(&self, dx: i32, dy: i32) -> Vec<f32> { self.shore_snap(FISHING_HUT, dx, dy) }
+    fn shore_snap(&self, kind: u8, dx: i32, dy: i32) -> Vec<f32> {
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         let wet = |px: f32, py: f32| self.height_at(px, py) < 0.1;
         let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
@@ -840,7 +848,7 @@ impl World {
                 let back = t + 3.4 + extra - (WHEEL_REACH - 3.4);
                 let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
                 let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
-                let code = self.can_place(WATERWHEEL, cx as i32, cy as i32);
+                let code = self.can_place(kind, cx as i32, cy as i32);
                 if (code == 0 || code == -6) && self.wheel_in_water(sx, sy, r) { return vec![cx, cy, r as f32]; }
             }
         }
@@ -1142,13 +1150,14 @@ impl World {
         // food, growth, starvation
         let soldiers: u32 = self.army.iter().sum::<u32>() + self.away.iter().sum::<u32>() + self.dets.iter().map(|d| d.units.iter().sum::<u32>()).sum::<u32>();
         let eat = ((self.population + soldiers) as i32 + 5) / 10;
-        if self.stock[GR as usize] >= eat {
-            self.stock[GR as usize] -= eat;
+        if self.food() >= eat {
+            let from_fish = eat.min(self.stock[SF as usize] * SMOKED_MEAL_PER_FISH);   // smoked fish is eaten first, grain makes up the rest
+            self.stock[SF as usize] -= (from_fish + SMOKED_MEAL_PER_FISH - 1) / SMOKED_MEAL_PER_FISH; self.stock[GR as usize] -= eat - from_fish;
             let cap_pop = self.capacity();
             let hap = self.happiness();
             if self.population < cap_pop && self.rng.range(if hap >= 70 { 4 } else if hap < 30 { 8 } else { 5 }) == 0 { self.arrive(1); }
         } else {
-            self.stock[GR as usize] = 0;
+            self.stock[GR as usize] = 0; self.stock[SF as usize] = 0;
             if self.population > 2 && self.rng.range(3) == 0 {
                 self.kill(1, DIED_HUNGER, 0);
                 self.push_event(EV_STARVE, 1, 0);
@@ -1392,7 +1401,7 @@ impl World {
         let adults = self.adults(); let aged = take(&mut self.rng, adults, 90); self.elders += aged;
         let died = take(&mut self.rng, self.elders, 25).min(self.population.saturating_sub(2));
         self.kill(died, DIED_OLD, 1);
-        if self.stock[GR as usize] >= 10 && self.happiness() >= 40 && self.population < self.capacity() {
+        if self.food() >= 10 && self.happiness() >= 40 && self.population < self.capacity() {
             let couples = self.adults() / 2; let room = self.capacity() - self.population;
             let born = take(&mut self.rng, couples, 14).min(room);
             self.born_n(born);
@@ -1464,7 +1473,7 @@ impl World {
             self.buildings[pi].progress -= 3000;
             let mult = (4 + 5 * tier) / 4;
             // buy grain if hungry
-            if self.stock[GR as usize] < 40 {
+            if self.food() < 40 {
                 let n = 20 * mult; let cost = n * 3 / 2;
                 if self.stock[GD as usize] >= cost && self.stock[GR as usize] + n <= cap { self.stock[GD as usize] -= cost; self.stock[GR as usize] += n; self.push_event(EV_TRADE, -cost, GR as i32); continue; }
             }
@@ -1982,7 +1991,7 @@ impl World {
         let count = |k: u8| self.buildings.iter().filter(|b| b.kind == k).count() as i32;
         let tiers = |k: u8| self.buildings.iter().filter(|b| b.kind == k).map(|b| b.tier as i32 + 1).sum::<i32>();
         let mut h = 40 + (4 * count(PARK)).min(16) + (2 * count(GARDEN)).min(8) + (5 * tiers(CHAPEL)).min(20) + (4 * count(MARKET)).min(8) + (4 * count(COURTHOUSE)).min(8) + (2 * count(WELL)).min(6);
-        if self.stock[GR as usize] < 10 { h -= 15; }
+        if self.food() < 10 { h -= 15; }
         if self.population > 0 { h -= (self.sick as i32 * 40) / self.population as i32; }
         if self.eff < 60 { h -= (60 - self.eff as i32) / 3; }
         if self.population > self.capacity() { h -= 10; }
@@ -2083,6 +2092,9 @@ fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
 
 #[cfg(test)]
 mod lend_tests;
+
+#[cfg(test)]
+mod fish_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2567,7 +2579,7 @@ mod tests {
         let h0 = w.happiness();
         put(&mut w, PARK, 30.0, 30.0, 0); put(&mut w, GARDEN, -30.0, 30.0, 0); put(&mut w, CHAPEL, 30.0, -30.0, 0);
         assert!(w.happiness() >= h0 + 10, "{} -> {}", h0, w.happiness());
-        w.stock[GR as usize] = 0; assert!(w.happiness() < h0 + 10, "hunger makes people unhappy");
+        w.stock[GR as usize] = 0; w.stock[SF as usize] = 0; assert!(w.happiness() < h0 + 10, "hunger makes people unhappy");
         // a wide moat piece digs a broader ditch than a thin one
         let (x, y) = (w.buildings[0].x + 40.0, w.buildings[0].y);
         put(&mut w, MOAT, x, y, 0); let thin = (0..30).filter(|k| w.height_at(x + *k as f32 * 0.25, y) < 0.0).count();

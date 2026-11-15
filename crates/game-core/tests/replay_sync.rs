@@ -252,3 +252,28 @@ fn a_plague_replays_to_the_same_state_through_every_wave() {
         if let Some((t, c)) = r { panic!("plague replay ({what}) diverged at tick {t} after {c} of {} commands", log.len()); }
     }
 }
+
+/// Fishing huts at a moat and a smokehouse: the hut's snap is computed by the clicking client and travels as a plain place command; a copy must reach the same stock of fish,
+/// smoked fish and grain, tick by tick, while the village eats the smoked fish first.
+#[test]
+fn fishing_smoking_and_eating_fish_replay_identically() {
+    game_core::warm_navigation(1337);
+    let mut w = World::new(1337, 0, 0); let (mut log, mut hashes): (Vec<(u64, C)>, Vec<u64>) = (vec![], vec![]);
+    let issue = |w: &mut World, log: &mut Vec<(u64, C)>, c: C| { apply(w, &c); log.push((w.tick(), c)); };
+    issue(&mut w, &mut log, C::Cheat(3, 0, 0));
+    for i in 0..52 { let a = i as f32 / 52.0 * std::f32::consts::TAU; issue(&mut w, &mut log, C::Place(24, (a.cos() * 24.0).round() as i32, (a.sin() * 24.0).round() as i32, 0)); }
+    for (k, x, y) in [(0u8, 12, 4), (0, -12, 6), (0, 6, -10), (0, -8, -14)] { issue(&mut w, &mut log, C::Place(k, x, y, 0)); }
+    for (cx, cy) in [(0, 33), (30, 0), (-30, 0), (0, -33)] { let s = w.fishing_hut_snap(cx, cy); if !s.is_empty() { issue(&mut w, &mut log, C::Place(41, s[0] as i32, s[1] as i32, s[2] as u8)); } }
+    issue(&mut w, &mut log, C::Place(42, 4, 6, 0)); issue(&mut w, &mut log, C::Place(42, -4, 8, 0));
+    issue(&mut w, &mut log, C::Cheat(1, 30, 0));
+    let mut smoked = 0;
+    for t in 0..600u64 {
+        if t == 3 { issue(&mut w, &mut log, C::Cheat(0, 10, -400)); }   // run the grain down so the fish matters
+        if t % 50 == 0 { issue(&mut w, &mut log, C::Cheat(0, 0, 100)); }
+        w.step(); hashes.push(w.state_hash()); smoked = smoked.max(w.stocks()[13]);
+    }
+    assert!(smoked > 0, "the scenario really smokes fish");
+    for (what, r) in [("silent", replay(1337, 0, 0, &log, &hashes, &mut |_, _| {})), ("drawn every tick", replay(1337, 0, 0, &log, &hashes, &mut |w, _| { look(w); })), ("drawn now and then", replay(1337, 0, 0, &log, &hashes, &mut |w, t| if t % 7 == 3 { look(w); }))] {
+        if let Some((t, c)) = r { panic!("fish replay ({what}) diverged at tick {t} after {c} of {} commands", log.len()); }
+    }
+}

@@ -53,6 +53,8 @@ export const ICONS: Record<string, S> = {
   charcoal: P('M2 20 L4 13 L9 11 L12 16 L10 20Z', BK) + P('M10 20 L12 12 L18 10 L22 15 L20 20Z', '#4a4038') + P('M7 12 L9 6 L14 5 L16 10 L12 12Z', BK) + C(14, 15, 1, FL, 'stroke="none"') + C(7, 17, 0.8, FL, 'stroke="none"'),
   grain: L('M12 22 V8', GD2, 1.4) + [[9, 10, -35], [15, 10, 35], [9, 14, -35], [15, 14, 35], [9, 18, -35], [15, 18, 35]].map(([x, y, a]) => E(x, y, 1.7, 3.2, GD, `transform="rotate(${a} ${x} ${y})"`)).join('') + E(12, 5, 1.7, 3.4, GD),
   tools: hammer() + L('M6 5 L9 8 M3.5 7 L6.5 10', IR, 1.6),
+  fish: P('M2 12 Q8 4 16 8 Q20 10 22 12 Q20 14 16 16 Q8 20 2 12Z', '#9fb4c0') + P('M16 8 L22 4 L21 12 L22 20 L16 16Z', '#7e97a6') + L('M6 13 Q10 15 14 13', ST2, 0.8) + C(7, 10.5, 1.1, K, 'stroke="none"') + L('M10 6.5 Q12 12 10 17.5', ST2, 0.8),
+  smokedfish: P('M2 15 Q8 8 15 11 Q19 12.5 21 15 Q19 17 15 18.5 Q8 21 2 15Z', '#b0782f') + P('M15 11 L21 8 L20 15 L21 22 L15 18.5Z', '#8a5a22') + C(6.5, 13.8, 1, K, 'stroke="none"') + L('M9 11 Q11 15 9 19', '#6b4a2a', 0.8) + L('M6 1 q2 2 0 4 t0 4 M12 2 q2 2 0 4 t0 3', ST2, 1.2),
 
   // ---- buildings (names for the kinds in catalog.rs, in id order) ----
   house: R(5, 11, 14, 9, PA2) + P('M3 12 L12 4 L21 12Z', RD) + R(16, 5, 2, 5, ST2) + R(10, 14, 4, 6, WD2) + R(6.5, 13, 2.5, 2.5, '#8fb7d0'),
@@ -95,6 +97,8 @@ export const ICONS: Record<string, S> = {
   road: P('M3 22 L10 3 H14 L21 22Z', '#c9a25a') + L('M12 5 V8 M12 11 V15 M12 18 V21', WD2, 1.4) + C(6, 19, 0.8, ST2) + C(18, 19, 0.8, ST2),
   bridge: R(1, 14, 22, 8, BL) + P('M2 9 H22 V19 H18 Q12 8 6 19 H2Z', ST) + L('M2 9 H22 M4 12 H20', ST2, 0.8) + L('M9 20.5 q1.5 -1 3 0 t3 0', PA, 0.8),
   infirmary: R(2, 2, 20, 20, PA, 3) + P('M9 5 H15 V9 H19 V15 H15 V19 H9 V15 H5 V9 H9Z', RD),
+  fishinghut: R(1, 17, 22, 2.4, WD) + R(3, 19, 1.6, 4, WD2) + R(10, 19, 1.6, 4, WD2) + R(19, 19, 1.6, 4, WD2) + R(3, 9, 9, 8, WD3) + P('M2 10 L7.5 4 L13 10Z', RD) + R(6, 12, 3, 5, WD2) + L('M14 6 L14 17 M14 6 L22 6', WD2, 1.4) + P('M16 7 H21 V12 H16Z', '#8c7d58') + L('M16 9 H21 M18.5 7 V12', WD2, 0.6) + P('M15.5 21 Q19 19 23 21', 'none', `stroke="${BL}" stroke-width="1.4"`),
+  smokehouse: R(4, 11, 11, 10, WD2) + P('M2.5 12 L9.5 5 L16.5 12Z', ST2) + R(8, 2, 3, 3, WD) + L('M9.5 -1 q2 1.5 0 3', ST2, 1.2) + R(6.5, 15, 3.5, 6, FL) + R(7.2, 16.5, 2, 4.5, FL2) + L('M17 8 V21 M23 8 V21 M17 11 H23 M17 16 H23', WD, 1.2) + P('M18 11 L19.5 15 L21 11Z M20.5 16 L22 20 L23 16Z', '#b0782f'),
   graveyard: P('M7 21 V9 Q7 4 12 4 Q17 4 17 9 V21Z', ST) + L('M12 7 V14 M9.5 10 H14.5', ST2, 1.4) + L('M2 21 H22 M3 21 q1 -2 2 0 M19 21 q1 -2 2 0', GN, 1.2),
 
   // ---- units (spearman, archer, swordsman, knight, catapult, militia) ----
@@ -196,7 +200,7 @@ export type IconName = keyof typeof ICONS | string;
 export const ICON_NAMES = Object.keys(ICONS);
 
 /** Building kind id (catalog.rs order) to icon name. */
-export const KIND_ICON_NAMES = ['house', 'farm', 'wall', 'watchtower', 'woodcutter', 'sawmill', 'quarry', 'claypit', 'brickworks', 'ironmine', 'goldmine', 'charcoalburner', 'smelter', 'blacksmith', 'mint', 'townhall', 'well', 'chapel', 'hunterslodge', 'barracks', 'buildersyard', 'spikedlogs', 'gate', 'drawbridge', 'moat', 'storehouse', 'keep', 'courthouse', 'market', 'waterwheel', 'garden', 'park', 'river', 'raiseground', 'lowerground', 'port', 'tollpost', 'road', 'bridge', 'infirmary', 'graveyard'];
+export const KIND_ICON_NAMES = ['house', 'farm', 'wall', 'watchtower', 'woodcutter', 'sawmill', 'quarry', 'claypit', 'brickworks', 'ironmine', 'goldmine', 'charcoalburner', 'smelter', 'blacksmith', 'mint', 'townhall', 'well', 'chapel', 'hunterslodge', 'barracks', 'buildersyard', 'spikedlogs', 'gate', 'drawbridge', 'moat', 'storehouse', 'keep', 'courthouse', 'market', 'waterwheel', 'garden', 'park', 'river', 'raiseground', 'lowerground', 'port', 'tollpost', 'road', 'bridge', 'infirmary', 'graveyard', 'fishinghut', 'smokehouse'];
 /** Unit id (military.rs order) to icon name. */
 export const UNIT_ICON_NAMES = ['spearman', 'archer', 'swordsman', 'knight', 'catapult', 'ram', 'militia'];
 /** Building category (CATS order) to icon name. */

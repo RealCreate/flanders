@@ -18,7 +18,7 @@ const MAX_TICKS = 1200;
 
 // Kept short on purpose: these words are in the agent's context for the whole game.
 const RULES = `Flanders, a medieval village builder. The game's own rules apply (costs, terrain, workers); nothing can be cheated. Coordinates are relative to your town hall: x east, y south.
-Resource arrays always run: wood, planks, stone, clay, bricks, iron ore, iron, gold ore, gold, charcoal, grain, tools (w pl st cl br io ir go gd ch gr tl).
+Resource arrays always run: wood, planks, stone, clay, bricks, iron ore, iron, gold ore, gold, charcoal, grain, tools, fish, smoked fish (w pl st cl br io ir go gd ch gr tl fi sf).
 Tools: status (state + next goals), info (building table, or info kind for one), look (buildings, land, deposits, armies, prices), act (a batch of actions), advance (run ticks; pauses at raids, fires, famine, plague, decisions).
 Actions, each an array: ["place",kind,dx,dy,rot?,search?] build (mines/quarries snap to the nearest deposit; search 0-12 tries nearby spots) | ["up",idx] | ["opt",idx,bit,on?] | ["demo",idx,true] | ["fix",idx] | ["gar",idx,archers] | ["draw",idx,up] | ["gate",idx,closed] | ["field",idx,0 sow|1 fallow|2 rotate] | ["train",kind,n] | ["hero"] | ["form",s,a,w,k,c,ram?] | ["march",id,dx,dy] | ["recall",id] | ["visit",id] | ["decide",n].
 Replies: place gives [idx,dx,dy]; other successes give 1; a refusal is a short reason string.

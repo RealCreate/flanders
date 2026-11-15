@@ -176,7 +176,8 @@ export class UI {
       ${icon('ironore', 16)} Iron ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Smelter <span class="arrow">→</span> ${icon('iron', 16)} Iron<br>
       ${icon('iron', 16)} Iron + ${icon('charcoal', 16)} <span class="arrow">→</span> Blacksmith <span class="arrow">→</span> ${icon('tools', 16)} Tools<br>
       ${icon('goldore', 16)} Gold ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Mint <span class="arrow">→</span> ${icon('gold', 16)} Gold<br>
-      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison</div>
+      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison<br>
+      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish (eaten before grain)</div>
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
   <section class="pane" id="pane-sel"></section>

@@ -12,7 +12,9 @@ pub const GD: u8 = 8; // gold coins
 pub const CH: u8 = 9; // charcoal
 pub const GR: u8 = 10; // grain
 pub const TL: u8 = 11; // tools
-pub const N_RES: usize = 12;
+pub const FI: u8 = 12; // raw fish
+pub const SF: u8 = 13; // smoked fish (food: eaten before grain)
+pub const N_RES: usize = 14;
 
 pub type Amount = (u8, i32);
 
@@ -67,6 +69,8 @@ pub const ROAD: u8 = 37;
 pub const BRIDGE: u8 = 38;
 pub const HOSPITAL: u8 = 39;
 pub const GRAVEYARD: u8 = 40;
+pub const FISHING_HUT: u8 = 41;
+pub const SMOKEHOUSE: u8 = 42;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
 pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD => 0, _ => 3 } }
@@ -74,7 +78,7 @@ pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER
 /// Pieces that reshape the ground instead of standing on it.
 pub fn is_edit(kind: u8) -> bool { matches!(kind, MOAT | RIVER | RAISE | LOWER) }
 
-pub static DEFS: [Def; 41] = [
+pub static DEFS: [Def; 43] = [
     Def { name: "House", cat: 0, r: 3.2, weight: 1, cost: &[(W, 12)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 5, max_slope: 0.35, pad: true, desc: "Homes for your villagers. Better tiers house more people." },
     Def { name: "Farm", cat: 1, r: 6.5, weight: 2, cost: &[(W, 25)], jobs: 2, inputs: &[], outputs: &[(GR, 10)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.22, pad: true, desc: "Grows grain to feed the village. Needs flat ground." },
     Def { name: "Wall", cat: 4, r: 2.4, weight: 1, cost: &[(ST, 5)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.4, pad: true, desc: "A wall segment. Rotate with R and chain them into a curtain wall." },
@@ -116,6 +120,8 @@ pub static DEFS: [Def; 41] = [
     Def { name: "Bridge", cat: 4, r: 2.0, weight: 2, cost: &[(PL, 10), (W, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Spans a moat, river or narrow water. Click near the water: it snaps to the banks, finds the shortest way over and puts supports in the middle where the span needs them. Costs more planks the longer it is. Starts as a wooden footbridge; upgrade it to timber, stone and a great stone bridge, which span wider." },
     Def { name: "Infirmary", cat: 5, r: 4.2, weight: 3, cost: &[(ST, 40), (PL, 25), (W, 20)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Monks and nurses tend the sick in a ward of beds with a herb garden. Every bed cures people during a plague and fewer die; it needs its staff. Upgrade it into a hospital, a great hospital and a royal hospital for more beds." },
     Def { name: "Graveyard", cat: 5, r: 3.6, weight: 2, cost: &[(ST, 20), (W, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.4, pad: true, desc: "Consecrated ground where the dead are laid to rest. A gravedigger buries them; when plots run out, or there is no one to bury, bodies lie unburied and sickness and misery follow. Upgrade it for more plots." },
+    Def { name: "Fishing Hut", cat: 1, r: 3.0, weight: 1, cost: &[(W, 20), (PL, 6)], jobs: 1, inputs: &[], outputs: &[(FI, 4)], cycle: 8, req: 3, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "A fisher's hut on the bank with a jetty, nets and drying racks. Stands at the edge of a river, lake, sea or moat and lands raw fish. Smoke it in a smokehouse to eat it." },
+    Def { name: "Smokehouse", cat: 3, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(FI, 3), (W, 1)], outputs: &[(SF, 3)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Smokes raw fish over a slow wood fire. Smoked fish keeps and feeds the village before any grain is eaten." },
 ];
 
 /// Resources needed to upgrade to `new_tier` (1..=3).
