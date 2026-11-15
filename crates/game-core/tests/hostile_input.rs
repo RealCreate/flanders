@@ -40,7 +40,7 @@ fn no_command_panics_on_hostile_arguments() {
         let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x1234_5678_9ABC_DEF1));
         let mut w = village();
         for round in 0..4000 {
-            let op = r.next() % 43; if std::env::var("TRACE").is_ok() { eprintln!("seed {seed} round {round} op {op}"); }
+            let op = r.next() % 44; if std::env::var("TRACE").is_ok() { eprintln!("seed {seed} round {round} op {op}"); }
             let t0 = std::time::Instant::now();
             match op {
                 0 => { w.place(r.b(), r.i(), r.i(), r.b()); }
@@ -65,6 +65,7 @@ fn no_command_panics_on_hostile_arguments() {
                 19 => { let (t, k, d) = (r.i(), r.b(), r.u()); w.treaty_set(t, k, d); }
                 20 => { let (t, k) = (r.i(), r.b()); w.treaty_end(t, k); }
                 21 => { w.envoy(r.i()); }
+                43 => { w.buy(r.b(), r.i()); w.market_goods(); }
                 22 => { w.marriage(r.i()); }
                 23 => { w.declare_war(r.i()); }
                 24 => { w.clear_deposit(r.u()); }

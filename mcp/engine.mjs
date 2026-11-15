@@ -15,8 +15,8 @@ try { core = require('./wasm/game_core.js'); } catch (e) {
 const { World, catalog, units: unitsJson, village_sites } = core;
 
 /** Resource order used by every array in the results. */
-export const RES = ['wood', 'planks', 'stone', 'clay', 'bricks', 'ironore', 'iron', 'goldore', 'gold', 'charcoal', 'grain', 'tools'];
-export const RES_SHORT = ['w', 'pl', 'st', 'cl', 'br', 'io', 'ir', 'go', 'gd', 'ch', 'gr', 'tl'];
+export const RES = ['wood', 'planks', 'stone', 'clay', 'bricks', 'ironore', 'iron', 'goldore', 'gold', 'charcoal', 'grain', 'tools', 'fish', 'smokedfish'];
+export const RES_SHORT = ['w', 'pl', 'st', 'cl', 'br', 'io', 'ir', 'go', 'gd', 'ch', 'gr', 'tl', 'fi', 'sf'];
 const SEASONS = ['spring', 'summer', 'autumn', 'winter'];
 const DAY = 240;
 const SEED_SALT = 3;
@@ -183,6 +183,10 @@ export class Game {
   // ---------------------------------------------------------------- acting
   /** Where a mine, quarry or clay pit should stand to work the deposit nearest the given spot: against the deposit, door towards the hall. Null when there is none. */
   snap(kind, dx, dy) {
+    if (kind === 29 || kind === 41) {   // a waterwheel or a fishing hut stands on the bank with its wheel or jetty over the water: the core finds the spot (and checks it again in place)
+      const s = kind === 29 ? this.world.waterwheel_snap(dx, dy) : this.world.fishing_hut_snap(dx, dy);
+      return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null;
+    }
     const d = this.defs[kind]; if (!d || d.req !== 1) return null;
     const f = this.world.deposits_flat(), px = this.origin.x + dx, pz = this.origin.z + dy;
     let best = -1, bd = 18 * 18;
@@ -198,7 +202,7 @@ export class Game {
 
   /**
    * Do one action. Forms (all coordinates relative to the hall, x east and y south):
-   *   place kind dx dy [rot] [search]   build; mines and quarries snap to the nearest matching deposit; `search` tries nearby spots (0-12 units) when the first is refused
+   *   place kind dx dy [rot] [search]   build; mines and quarries snap to the nearest matching deposit, waterwheels and fishing huts to the bank; `search` tries nearby spots (0-12 units) when the first is refused
    *   up idx | opt idx bit [on] | demo idx true | fix idx | gar idx archers | draw idx up | gate idx closed | field idx mode(0 sow,1 fallow,2 rotate)
    *   train kind n | hero | form s a w k c r? | march id dx dy | recall id | visit id | decide option
    * Returns { ok: true, ... } or { ok: false, e: why }.
