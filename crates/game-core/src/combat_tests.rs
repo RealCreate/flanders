@@ -22,7 +22,7 @@ fn stone_walls_are_immune_to_infantry_but_timber_walls_are_not() {
         let mut w = east_wall(tier);
         let full = wall_hp(&w);
         // knights and archers cannot climb, so a ladder is no help to them: all they can do to the wall is hit it
-        assert!(w.begin_battle([0, 6, 0, 8, 0], 0.0, 0));
+        assert!(w.begin_battle([0, 6, 0, 8, 0, 0], 0.0, 0));
         run(&mut w, 90);
         let lost = full - wall_hp(&w);
         eprintln!("tier {tier}: wall lost {lost:.0} of {full:.0}");
@@ -34,7 +34,7 @@ fn stone_walls_are_immune_to_infantry_but_timber_walls_are_not() {
 fn stone_walls_fall_to_catapults() {
     let mut w = east_wall(2);
     let full = wall_hp(&w);
-    assert!(w.begin_battle([0, 0, 0, 0, 3], 0.0, 0));
+    assert!(w.begin_battle([0, 0, 0, 0, 3, 0], 0.0, 0));
     run(&mut w, 120);
     assert!(full - wall_hp(&w) > 150.0 || w.buildings.iter().filter(|b| b.kind == WALL).count() < 19, "catapults batter stone: lost {}", full - wall_hp(&w));
 }
@@ -44,7 +44,7 @@ fn foot_soldiers_need_ladders_to_cross_a_stone_wall() {
     let inside = |w: &World| { let (hx, hy) = (w.buildings[0].x, w.buildings[0].y); w.battle.as_ref().map_or(0, |b| b.units.iter().filter(|u| u.side == 1 && u.alive && u.x < hx + 21.0 && (u.y - hy).abs() < 30.0).count()) };
     // no ladders: nobody gets over in two minutes
     let mut w = east_wall(2);
-    assert!(w.begin_battle([10, 0, 6, 0, 0], 0.0, 0));
+    assert!(w.begin_battle([10, 0, 6, 0, 0, 0], 0.0, 0));
     w.battle.as_mut().unwrap().ladders = 0;
     let full = wall_hp(&w);
     let mut got_in = 0; for _ in 0..120 { w.step(); w.stock[GR as usize] = 3000; got_in = got_in.max(inside(&w)); if !w.battle_active() { break; } }
@@ -52,7 +52,7 @@ fn foot_soldiers_need_ladders_to_cross_a_stone_wall() {
     assert_eq!(wall_hp(&w), full, "and the wall is untouched");
     // with their ladders (the usual one for every four) some do
     let mut w = east_wall(2);
-    assert!(w.begin_battle([10, 0, 6, 0, 0], 0.0, 0));
+    assert!(w.begin_battle([10, 0, 6, 0, 0, 0], 0.0, 0));
     assert!(w.battle.as_ref().unwrap().ladders >= 3);
     let mut got_in = 0; let mut used = 0; for _ in 0..120 { w.step(); w.stock[GR as usize] = 3000; got_in = got_in.max(inside(&w)); if let Some(b) = &w.battle { used = used.max(b.ladders_used); } if !w.battle_active() { break; } }
     eprintln!("with ladders: {got_in} got in, {used} ladders used");
@@ -63,7 +63,7 @@ fn foot_soldiers_need_ladders_to_cross_a_stone_wall() {
 fn raiders_in_water_are_slower_weaker_and_easier_to_hit_than_before() {
     assert!(battle::WADE_SPEED <= 0.15 && battle::WADE_KNIGHT < battle::WADE_SPEED && battle::WADE_DAMAGE >= 3.0 && battle::WADE_HIT > battle::HIT_CHANCE, "the handicap is raised");
     let mut w = World::new(1337, 0, 0); w.population = 20;
-    assert!(w.begin_battle([2, 0, 0, 3, 0], 0.0, 0));
+    assert!(w.begin_battle([2, 0, 0, 3, 0, 0], 0.0, 0));
     let b = w.battle.as_mut().unwrap();
     let sp = b.units.iter().position(|u| u.side == 1 && u.kind == 0).unwrap();
     let kn = b.units.iter().position(|u| u.side == 1 && u.kind == 3).unwrap();
@@ -80,7 +80,7 @@ fn raiders_in_water_are_slower_weaker_and_easier_to_hit_than_before() {
 #[test]
 fn a_raider_coming_out_of_the_water_is_sodden_for_a_while() {
     let mut w = World::new(1337, 0, 0); w.population = 20;
-    assert!(w.begin_battle([1, 0, 0, 0, 0], 0.0, 0));
+    assert!(w.begin_battle([1, 0, 0, 0, 0, 0], 0.0, 0));
     let b = w.battle.as_mut().unwrap();
     let i = b.units.iter().position(|u| u.side == 1).unwrap();
     b.units[i].wading = true;   // (no water in the way: the next step finds dry land)
@@ -140,9 +140,9 @@ fn weak_village() -> World { let mut w = World::new(1337, 0, 0); w.stock = [3000
 fn own_troops_can_march_out_and_join_a_defence() {
     let run_it = |send: bool| -> (u64, Vec<i32>, usize, bool) {
         let mut w = weak_village();
-        let id = if send { w.army = [14, 8, 6, 0, 0]; w.det_form(&[14, 8, 6, 0, 0]) } else { 0 };
+        let id = if send { w.army = [14, 8, 6, 0, 0, 0]; w.det_form(&[14, 8, 6, 0, 0, 0]) } else { 0 };
         assert_eq!(send, id > 0);
-        assert!(w.start_raid(0.0, &[14, 6, 3, 0, 0], 0));
+        assert!(w.start_raid(0.0, &[14, 6, 3, 0, 0, 0], 0));
         let mut joined = false; let mut fought = 0usize;
         if send { assert_eq!(w.det_defend(id), 0, "ordered to the fight"); }
         for _ in 0..400 {
@@ -165,9 +165,9 @@ fn own_troops_can_march_out_and_join_a_defence() {
 
 #[test]
 fn the_army_comes_out_of_the_fight_with_its_survivors_and_can_leave_early() {
-    let mut w = weak_village(); w.army = [10, 4, 4, 0, 0];
-    let id = w.det_form(&[10, 4, 4, 0, 0]);
-    assert!(w.start_raid(0.0, &[10, 4, 2, 0, 0], 0));
+    let mut w = weak_village(); w.army = [10, 4, 4, 0, 0, 0];
+    let id = w.det_form(&[10, 4, 4, 0, 0, 0]);
+    assert!(w.start_raid(0.0, &[10, 4, 2, 0, 0, 0], 0));
     assert_eq!(w.det_defend(id), 0);
     let mut seen_fight = false;
     for _ in 0..300 { w.step(); w.stock[GR as usize] = 3000; if w.det_flat().len() >= 16 && w.det_flat()[8] as u8 == march::S_FIGHT { seen_fight = true; } if !w.battle_active() { break; } }
@@ -177,9 +177,9 @@ fn the_army_comes_out_of_the_fight_with_its_survivors_and_can_leave_early() {
     let left: u32 = f[3..8].iter().map(|&v| v as u32).sum();
     assert!(left > 0 && left <= 18 && f[8] as u8 == march::S_IDLE, "survivors idle in the field: {left}");
     // an army that is told to go home in the middle of a fight leaves it
-    let mut w = weak_village(); w.army = [10, 4, 4, 0, 0];
-    let id = w.det_form(&[10, 4, 4, 0, 0]);
-    assert!(w.start_raid(0.0, &[10, 4, 2, 0, 0], 0));
+    let mut w = weak_village(); w.army = [10, 4, 4, 0, 0, 0];
+    let id = w.det_form(&[10, 4, 4, 0, 0, 0]);
+    assert!(w.start_raid(0.0, &[10, 4, 2, 0, 0, 0], 0));
     w.det_defend(id);
     for _ in 0..60 { w.step(); w.stock[GR as usize] = 3000; if w.det_flat()[8] as u8 == march::S_FIGHT { break; } }
     assert_eq!(w.det_flat()[8] as u8, march::S_FIGHT);
@@ -192,13 +192,13 @@ fn the_army_comes_out_of_the_fight_with_its_survivors_and_can_leave_early() {
 
 #[test]
 fn the_standing_army_can_be_sent_out_to_meet_the_raiders() {
-    let mut w = weak_village(); w.army = [10, 4, 0, 0, 0];
-    assert!(w.start_raid(0.0, &[6, 2, 0, 0, 0], 0));
-    assert_eq!(w.battle_standing(), vec![10, 4, 0, 0, 0]);
-    assert_eq!(w.det_form(&[11, 0, 0, 0, 0]), 0, "more than stand in the fight cannot be sent");
-    let id = w.det_form(&[10, 0, 0, 0, 0]); assert!(id > 0);
-    assert_eq!(w.battle_standing(), vec![0, 4, 0, 0, 0], "they left their posts");
-    assert_eq!(w.army, [0, 4, 0, 0, 0]);
+    let mut w = weak_village(); w.army = [10, 4, 0, 0, 0, 0];
+    assert!(w.start_raid(0.0, &[6, 2, 0, 0, 0, 0], 0));
+    assert_eq!(w.battle_standing(), vec![10, 4, 0, 0, 0, 0]);
+    assert_eq!(w.det_form(&[11, 0, 0, 0, 0, 0]), 0, "more than stand in the fight cannot be sent");
+    let id = w.det_form(&[10, 0, 0, 0, 0, 0]); assert!(id > 0);
+    assert_eq!(w.battle_standing(), vec![0, 4, 0, 0, 0, 0], "they left their posts");
+    assert_eq!(w.army, [0, 4, 0, 0, 0, 0]);
     assert_eq!(w.det_defend(id), 0);
     run(&mut w, 300);
     assert!(!w.battle_active());
@@ -209,11 +209,11 @@ fn the_standing_army_can_be_sent_out_to_meet_the_raiders() {
 #[test]
 fn the_attacker_can_retreat_and_reinforce() {
     let mut w = weak_village();
-    assert!(w.start_raid(0.0, &[10, 4, 0, 0, 0], 7));
+    assert!(w.start_raid(0.0, &[10, 4, 0, 0, 0, 0], 7));
     assert!(!w.battle_retreat(8), "only the attacker's own call counts");
-    assert!(!w.battle_reinforce(8, &[1, 0, 0, 0, 0]));
+    assert!(!w.battle_reinforce(8, &[1, 0, 0, 0, 0, 0]));
     let n0 = w.battle.as_ref().unwrap().units.len();
-    assert!(w.battle_reinforce(7, &[4, 0, 0, 0, 0]));
+    assert!(w.battle_reinforce(7, &[4, 0, 0, 0, 0, 0]));
     assert_eq!(w.battle.as_ref().unwrap().units.len(), n0 + 4);
     for _ in 0..4 { w.step(); }
     assert!(w.battle_retreat(7));
@@ -233,8 +233,8 @@ fn a_catapult_never_crosses_cliffs_water_or_buildings_on_a_long_march() {
     for (tx, ty) in [(120.0f32, 10.0f32), (-110.0, 40.0), (20.0, 130.0), (30.0, -120.0), (260.0, -60.0), (-250.0, 120.0), (150.0, 220.0), (-180.0, -230.0)] {
         let mut w = World::new(seed, 0, 0); w.stock = [3000; N_RES]; w.population = 30;
         for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 17, 4), (BARRACKS, 30, 20), (HOUSE, -12, 6)] { w.place(k, x, y, 0); }
-        w.army = [6, 0, 4, 0, 3];
-        let id = w.det_form(&[6, 0, 4, 0, 3]); assert!(id > 0);
+        w.army = [6, 0, 4, 0, 3, 0];
+        let id = w.det_form(&[6, 0, 4, 0, 3, 0]); assert!(id > 0);
         let r = w.det_march(id, tx, ty, false, 0.0, 0.0);
         if r != 0 { eprintln!("march to ({tx},{ty}): code {r}, skipped"); continue; }
         let mut arrived = false;
@@ -260,13 +260,13 @@ fn a_catapult_never_crosses_cliffs_water_or_buildings_on_a_long_march() {
 #[test]
 fn a_replica_replaying_the_commands_sees_the_same_battle_hash_for_hash() {
     // the defender's live village, and a peer's copy that only replays the signed commands at their ticks (raid, muster, defend, retreat)
-    let setup = || { let mut w = weak_village(); w.army = [14, 8, 6, 0, 0]; w };
+    let setup = || { let mut w = weak_village(); w.army = [14, 8, 6, 0, 0, 0]; w };
     let cmds: Vec<(u64, u8)> = vec![(30, 0), (31, 1), (33, 2), (120, 3)];   // raid, form, defend, attacker calls the retreat
     let drive = |w: &mut World, upto: u64, log: &mut Vec<u64>| {
         let mut det = 0u32;
         while w.tick() < upto {
             for &(t, c) in &cmds { if t == w.tick() {
-                match c { 0 => { assert!(w.start_raid(0.0, &[14, 6, 3, 0, 0], 9)); } 1 => { det = w.det_form(&[14, 8, 6, 0, 0]); assert!(det > 0); } 2 => { assert_eq!(w.det_defend(1), 0); } _ => { w.battle_retreat(9); } }
+                match c { 0 => { assert!(w.start_raid(0.0, &[14, 6, 3, 0, 0, 0], 9)); } 1 => { det = w.det_form(&[14, 8, 6, 0, 0, 0]); assert!(det > 0); } 2 => { assert_eq!(w.det_defend(1), 0); } _ => { w.battle_retreat(9); } }
             } }
             let _ = det;
             w.step(); w.stock[GR as usize] = 3000;
@@ -277,4 +277,38 @@ fn a_replica_replaying_the_commands_sees_the_same_battle_hash_for_hash() {
     drive(&mut a, 260, &mut la); drive(&mut b, 260, &mut lb);
     assert_eq!(la, lb, "every peer's copy of the village stays in step");
     assert!(la.len() >= 20 && !a.battle_active());
+}
+
+#[test]
+fn a_ram_splinters_a_gatehouse_door_that_infantry_cannot_touch() {
+    let gate_hp = |w: &World| w.buildings.iter().find(|b| b.kind == GATE).map_or(0.0, |b| b.hp);
+    let build = || { let mut w = east_wall(2); let (hx, hy) = (w.buildings[0].x, w.buildings[0].y); put_t(&mut w, GATE, 2, hx + 24.0, hy + 40.0); w };
+    // knights and archers cannot hurt a stone door
+    let mut w = build(); let full = gate_hp(&w);
+    // (the gate stands past the end of the wall: put it where the attackers come from)
+    assert!(w.begin_battle([0, 4, 0, 6, 0, 0], std::f32::consts::FRAC_PI_2 * 0.0, 0));
+    run(&mut w, 90);
+    assert_eq!(gate_hp(&w), full, "infantry leave a stone gate alone");
+    // rams go for the door
+    let mut w = build(); let full = gate_hp(&w);
+    assert!(w.begin_battle([0, 0, 0, 0, 0, 3], 0.0, 0));
+    run(&mut w, 150);
+    let left = gate_hp(&w);
+    eprintln!("gate hp {full:.0} -> {left:.0}");
+    assert!(left < full * 0.5, "three rams smash a stone gate: {left} of {full}");
+}
+
+#[test]
+fn rams_are_trained_in_a_good_barracks_and_listed_with_the_other_soldiers() {
+    let mut w = weak_village(); w.population = 50;
+    assert_eq!(w.train(5, 1), -11, "no barracks yet");
+    let spot = (-40..=40).step_by(3).flat_map(|x| (-40..=40).step_by(3).map(move |y| (x, y))).find(|&(x, y)| w.can_place(BARRACKS, x, y) == 0).unwrap();
+    w.place(BARRACKS, spot.0, spot.1, 0);
+    assert_eq!(w.train(5, 1), -12, "a ram needs a barracks of tier 2");
+    let u = units(); assert!(u.contains("\"name\":\"Ram\"") && u.contains("Militia"));
+    assert_eq!(w.army().len(), 6);
+    assert!(w.cheat(2, 5, 3) && w.army()[5] == 3);
+    let id = w.det_form(&[0, 0, 0, 0, 0, 2]); assert!(id > 0);
+    assert_eq!(w.det_flat()[3..8].iter().sum::<f32>(), 0.0);
+    assert_eq!(w.det_flat()[16], 2.0, "the ram count is the last field of an army");
 }

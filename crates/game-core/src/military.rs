@@ -1,8 +1,11 @@
 //! Unit types and battle state.
 use crate::catalog::*;
 
-pub const N_UNITS: usize = 6; // 0 spearman, 1 archer, 2 swordsman, 3 knight, 4 catapult, 5 militia (conscripts, not trainable)
-pub const MILITIA: u8 = 5;
+pub const N_UNITS: usize = 7; // 0 spearman, 1 archer, 2 swordsman, 3 knight, 4 catapult, 5 ram, 6 militia (conscripts, not trainable)
+/// Kinds a village can train and send out: everything but the militia.
+pub const NK: usize = 6;
+pub const RAM: u8 = 5;
+pub const MILITIA: u8 = 6;
 
 pub struct UnitDef {
     pub name: &'static str,
@@ -24,6 +27,7 @@ pub static UNITS: [UnitDef; N_UNITS] = [
     UnitDef { name: "Swordsman", hp: 115.0, dmg: 17.0, range: 2.4, speed: 3.0, cd: 1.0, armor: 3.0, cost: &[(IR, 2), (TL, 1), (CH, 1)], tier: 1, time: 18, desc: "Mail-clad heavy infantry." },
     UnitDef { name: "Knight", hp: 170.0, dmg: 24.0, range: 2.8, speed: 7.0, cd: 1.2, armor: 4.0, cost: &[(IR, 5), (GD, 3), (GR, 12)], tier: 2, time: 30, desc: "Mounted shock cavalry. Devastating charge." },
     UnitDef { name: "Catapult", hp: 130.0, dmg: 55.0, range: 38.0, speed: 1.6, cd: 5.0, armor: 0.0, cost: &[(PL, 20), (IR, 4), (TL, 3)], tier: 3, time: 45, desc: "Siege engine. Smashes walls, digs craters and starts fires." },
+    UnitDef { name: "Ram", hp: 160.0, dmg: 30.0, range: 3.0, speed: 2.4, cd: 2.5, armor: 2.0, cost: &[(W, 30), (IR, 3), (TL, 2)], tier: 2, time: 30, desc: "A roofed battering ram. Splinters gates and doors; weak against walls and useless against soldiers, so keep it guarded." },
     UnitDef { name: "Militia", hp: 40.0, dmg: 6.0, range: 2.2, speed: 3.0, cd: 1.4, armor: 0.0, cost: &[], tier: 0, time: 0, desc: "Villagers who grab pitchforks when the village is attacked." },
 ];
 
@@ -75,7 +79,7 @@ pub struct Battle {
     pub pillage: f32,
     pub tag: i32, // 0 = bandits, otherwise id of the attacking player
     pub angle: f32, // direction (from the village centre) the attackers came from
-    #[allow(dead_code)] pub atk_start: [u32; 5],
+    #[allow(dead_code)] pub atk_start: [u32; NK],
     pub atk_dead: u32,
     pub def_dead: u32,
     pub militia_dead: u32,
@@ -88,7 +92,7 @@ pub struct Battle {
     pub rout: Vec<f32>,         // per unit: seconds left running away (0 = holding)
     pub start_side: [u32; 2],   // soldiers each side began with
     pub fled: [u32; 2],         // soldiers who ran off the field alive
-    pub fled_kinds: [u32; 5],   // which attackers got away
+    pub fled_kinds: [u32; NK],   // which attackers got away
     pub fixed: Vec<[f32; 2]>,   // points along the player's own bridges: the water there can be crossed
 }
 
