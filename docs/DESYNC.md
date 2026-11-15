@@ -51,7 +51,7 @@ The owner sends `{ tick, hash, c, p, tools }`: the tick, the state hash, how man
 * Equal count and tick → compare. Equal → *match*. Different → *mismatch* with a `Diagnosis`: the tick, the sections that differ, the last tick and command count that matched, and the ops of the commands applied since
   (the first divergence is among them).
 
-Sections (`state_hash_part_names()`): `core` (clock, random stream, people), `stock`, `buildings`, `deposits`, `links`, `army`, `soldiers`, `diplomacy`, `land` (felled trees, bridges, levels, craters), `battle`.
+Sections (`state_hash_part_names()`): `core` (clock, random stream, people), `stock`, `buildings`, `deposits`, `links`, `army`, `soldiers`, `diplomacy`, `land` (felled trees, bridges, levels, craters), `battle` (every soldier's position, hit points, army, sogginess; and for bosses their maximum hit points, kind, name, phase and the horn and slam clocks; the boss of the fight and the lair it is in).
 `World::state_hash()` is the fold of these; it now also covers the random stream and the full felled/bridge/level lists.
 
 ## What the game does

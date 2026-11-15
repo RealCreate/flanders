@@ -152,3 +152,29 @@ fn the_rules_fingerprint_is_stable_and_depends_on_the_map() {
     assert_eq!(f, game_core::rules_fingerprint(1337), "the same build always gives the same fingerprint");
     assert_eq!(f.len(), 16);
 }
+
+/// A raid led by the Warlord: the horn, the plate, the rage and the slam clocks are all part of the hash, so an owner and a replica that watch the same fight in different ways stay equal tick by tick.
+#[test]
+fn a_boss_raid_replays_tick_by_tick() {
+    game_core::warm_navigation(1337);
+    let seed = 1337u64;
+    let script: Vec<(u64, C)> = vec![
+        (0, C::Cheat(3, 0, 0)), (1, C::Place(0, 14, 4, 0)), (1, C::Place(0, 18, 4, 0)), (2, C::Place(19, 0, 18, 0)), (2, C::Place(19, 14, -12, 0)), (3, C::Place(18, -14, 14, 0)),
+        (4, C::Cheat(2, 0, 12)), (4, C::Cheat(2, 1, 8)), (4, C::Cheat(2, 2, 5)), (10, C::Cheat(9, 150, 500)), (60, C::Cheat(3, 0, 0)), (200, C::Cheat(9, 400, 900)),
+    ];
+    let mut w = World::new(seed, 0, 0); let mut log: Vec<(u64, C)> = vec![]; let mut hashes = vec![]; let mut i = 0;
+    let (mut boss_ticks, mut max_hp_seen, mut aura_seen) = (0, 0.0f32, false);
+    for _ in 0..420u64 {
+        while i < script.len() && script[i].0 <= w.tick() { apply(&mut w, &script[i].1); log.push((w.tick(), script[i].1.clone())); i += 1; }
+        w.step();
+        let b = w.battle_boss(); if !b.is_empty() { boss_ticks += 1; max_hp_seen = max_hp_seen.max(b[3]); }
+        if w.battle_units_flat().chunks(14).any(|u| u[10] > 0.0 && u[13] > 0.0) { aura_seen = true; }
+        hashes.push(w.state_hash());
+    }
+    assert!(boss_ticks > 40 && max_hp_seen > 300.0, "the script really fights a boss ({boss_ticks} ticks, {max_hp_seen} hit points)");
+    assert!(aura_seen, "and the horn sounds");
+    let said = |what: &str, r: Option<(usize, usize)>| if let Some((t, c)) = r { panic!("boss raid, replay ({what}) diverged at tick {t} after {c} of {} commands", log.len()) };
+    said("silent", replay(seed, 0, 0, &log, &hashes, &mut |_, _| {}));
+    said("drawn every tick", replay(seed, 0, 0, &log, &hashes, &mut |w, _| { look(w); let _ = (w.battle_units_flat(), w.battle_boss(), w.take_shots()); }));
+    said("drawn now and then", replay(seed, 0, 0, &log, &hashes, &mut |w, t| if t % 5 == 2 { let _ = (w.battle_units_flat(), w.battle_boss()); }));
+}

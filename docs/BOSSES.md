@@ -1,6 +1,6 @@
 # Bosses: a design proposal
 
-Status: proposal, nothing implemented. It is written against the code on `master` (the combat overhaul with defending, the ram, ladders, and the neutral places are in).
+Status: approved. Step 1 (core), 2 (client) and 3 (lairs) are built: see the "As built" section at the end. The rest of this text is the original proposal. It is written against the code on `master` (the combat overhaul with defending, the ram, ladders, and the neutral places are in).
 
 ## Why
 
@@ -66,3 +66,14 @@ Each step is a branch with its own PR and the usual checks (cargo tests, `replay
 * **Saves.** Adding rules changes old replays. The rules fingerprint reports it, as for the other simulation changes.
 
 Decisions for the owner: how many bosses to start with (proposal: two), whether lairs replace the camp power check or sit beside it (proposal: beside it, as a rarer, harder place), and whether a boss may appear in player-versus-player attacks (proposal: no).
+
+
+## As built
+
+* `BOSSES` in `military.rs` holds every number: hit points, blow, speed, plate (`heavy`/`soft`), horn (`horn_*`), slam (`slam_*`), boulders, rage, strength scale, escort, rewards. Warlord = 1, Ogre of the Marches = 2.
+* `Unit` has `maxhp`, `boss`, `bname`, `phase`, `t1` (horn clock), `t2` (slam clock). `Battle` has `lair`, `lair_at`, `boss`, `bname`. All of it is in the `battle` section of the state hash.
+* Raids: `boss_due()` (after `BOSS_FROM_DAYS` days and `BOSS_FROM_POP` people, one raid in `BOSS_ONE_IN`, more often for each `BOSS_WEALTH_STEP` coin held) draws a Warlord raid; it only draws from the random stream when it could happen. `begin_boss_raid` scales boss and escort with `boss_scale` (village size, age, lord's level). Bosses never come to player attacks (`begin_battle_boss` ignores the boss unless the tag is 0) and the attacker's copy of an away village never invents one.
+* Plate: a hit below `heavy` damage from anything but a catapult or ram does `soft` of its damage (`damage_from`). Horn: the escort within reach recovers from each swing faster while it sounds (`boss_step`). Rage: below `rage_at` of its hit points a boss hits harder and moves faster. Slam: area damage with falloff. The ogre throws boulders at buildings, stone included, from `BOULDER_REACH`.
+* Rewards (`boss_rewards`): gold, iron, lord's experience, a lift in spirits, a captured ram for the Warlord; event `EV_BOSS` (25).
+* `battle_units_flat` stride is now **14**: side, kind, x, y, hp, maxhp, alive, swing, facing, elevation, boss, phase, name, aura. `battle_boss()` gives [boss, name, hp, maxhp, phase, alive]. `last_report` carries [boss, name, fell, lair] just before the two "fled" numbers at the end (so loot still starts at 12 and the fled numbers are still the last two).
+* Testing: `cheat(9, angle*100, strength 0..1000)` starts a Warlord raid (replicated like the other cheats).
