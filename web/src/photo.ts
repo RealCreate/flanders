@@ -1,3 +1,4 @@
+import { icon } from './ui/icons';
 // Photo mode: hides the interface so you can fly the camera and save a picture of your village. F9 (or the camera button in Display settings) toggles it.
 const STYLE_ID = 'photo-style';
 const CSS = `
@@ -20,7 +21,7 @@ export function togglePhotoMode(canvas: HTMLCanvasElement, draw: () => void, toa
   document.body.classList.add('photo-mode');
   bar = document.createElement('div'); bar.id = 'photo-bar'; bar.setAttribute('role', 'toolbar');
   const note = document.createElement('span'); note.textContent = 'Photo mode · move and turn the camera as usual';
-  const shot = document.createElement('button'); shot.textContent = '📷 Save picture'; shot.onclick = () => savePicture(canvas, draw, toast);
+  const shot = document.createElement('button'); shot.innerHTML = `${icon('camera', 16, { mono: true })} Save picture`; shot.onclick = () => savePicture(canvas, draw, toast);
   const exit = document.createElement('button'); exit.textContent = 'Back to the game (F9)'; exit.onclick = () => togglePhotoMode(canvas, draw, toast);
   bar.append(note, shot, exit); document.body.appendChild(bar);
 }

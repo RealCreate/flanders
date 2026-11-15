@@ -1,4 +1,5 @@
 import { PALETTE, PATTERNS, EMBLEMS, drawFlag, randomFlag, type Flag } from '../flag';
+import { icon } from './icons';
 
 /** Draw a flag onto a canvas element. */
 export function paintFlag(canvas: HTMLCanvasElement, f: Flag) { const g = canvas.getContext('2d'); if (g) drawFlag(g, canvas.width, canvas.height, f); }
@@ -13,7 +14,7 @@ export function mountFlagDesigner(root: HTMLElement, initial: Flag, onChange: (f
         <label>Pattern <select data-k="pattern">${PATTERNS.map((n, i) => `<option value="${i}">${n}</option>`).join('')}</select></label>
         <label>Emblem <select data-k="emblem">${EMBLEMS.map((n, i) => `<option value="${i}">${n}</option>`).join('')}</select></label>
         ${(['c1', 'c2', 'c3'] as const).map((k, n) => `<div class="swatches" data-k="${k}"><span>${['Main colour', 'Second colour', 'Emblem colour'][n]}</span>${PALETTE.map((c, i) => `<button type="button" data-i="${i}" title="${c}" style="background:${c}"></button>`).join('')}</div>`).join('')}
-        <button type="button" class="pbtn flagdice">🎲 Random flag</button>
+        <button type="button" class="pbtn flagdice">${icon('dice', 16, { mono: true })} Random flag</button>
       </div>
     </div>`;
   const canvas = root.querySelector('canvas') as HTMLCanvasElement;

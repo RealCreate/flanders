@@ -1,5 +1,6 @@
 import type { World } from './wasm/game_core.js';
 import { RES, defs, PLACE_ERRORS, STATUS, tierName, units } from './data';
+import { icon } from './ui/icons';
 
 /**
  * The agent bridge: lets an AI agent (through the MCP server in /mcp) play this village with the same rules as a human.
@@ -65,10 +66,10 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
   // ---- the badge ----
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:60;background:#1d150dd9;color:#f1e4c3;border:1px solid #c9a24a;border-radius:6px;padding:6px 10px;font:13px system-ui,sans-serif;display:flex;gap:8px;align-items:center;max-width:380px';
-  badge.innerHTML = '<span id="ag-t">🤖 Agent: waiting for the MCP server…</span><button id="ag-p" style="cursor:pointer">Pause</button><button id="ag-x" style="cursor:pointer">Disconnect</button>';
+  badge.innerHTML = `<span id="ag-t">${icon('agent', 16, { mono: true })} Agent: waiting for the MCP server…</span><button id="ag-p" style="cursor:pointer">Pause</button><button id="ag-x" style="cursor:pointer">Disconnect</button>`;
   document.body.appendChild(badge);
   const label = badge.querySelector<HTMLElement>('#ag-t')!;
-  const show = () => { label.textContent = !connected ? '🤖 Agent: waiting for the MCP server…' : paused ? '🤖 Agent: PAUSED by you' : `🤖 Agent playing · ${count} actions · ${log[log.length - 1] ?? ''}`.slice(0, 90); (badge.querySelector('#ag-p') as HTMLElement).textContent = paused ? 'Resume' : 'Pause'; };
+  const show = () => { label.textContent = !connected ? 'Agent: waiting for the MCP server…' : paused ? 'Agent: PAUSED by you' : `Agent playing · ${count} actions · ${log[log.length - 1] ?? ''}`.slice(0, 90); (badge.querySelector('#ag-p') as HTMLElement).textContent = paused ? 'Resume' : 'Pause'; };
   (badge.querySelector('#ag-p') as HTMLElement).onclick = () => { paused = !paused; show(); host.toast(paused ? 'The agent is paused.' : 'The agent may play again.', 'info'); };
   (badge.querySelector('#ag-x') as HTMLElement).onclick = () => { stopped = true; ws?.close(); badge.remove(); host.toast('The agent was disconnected.', 'info'); };
 
@@ -177,7 +178,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
     if (wait) return { ok: false, error: `slow down: the agent plays at human pace. Try again in ${Math.ceil(wait / 100) / 10}s.`, retry_after_ms: wait };
     try {
       const result = tools[tool](args);
-      if (MUTATING.has(tool)) { count++; log.push(`${tool}${(result as { ok?: boolean })?.ok === false ? ' ✗' : ''}`); if (log.length > 30) log.shift(); show(); }
+      if (MUTATING.has(tool)) { count++; log.push(`${tool}${(result as { ok?: boolean })?.ok === false ? ' (failed)' : ''}`); if (log.length > 30) log.shift(); show(); }
       return { ok: true, result };
     } catch (e) { return { ok: false, error: (e as Error).message }; }
   }
