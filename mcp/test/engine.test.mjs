@@ -112,3 +112,14 @@ test('a whole first season can be played in a handful of small calls', () => {
   assert.ok(g.tick >= 1800, 'time ran on');
   assert.ok(chars < 9000, `about ${chars} characters of traffic in ${calls} advances for the opening 7 days`);
 });
+
+test('a boss leading a raid shows in the status, and the battle data is fourteen numbers a soldier', () => {
+  const g = new Game({ world: 'test-boss' });
+  assert.equal(g.status().boss, undefined, 'no boss in peace');
+  assert.ok(g.world.cheat(10, 120, 500), 'a warlord raid (the testing tool the engine itself never offers)');
+  const s = g.status(); assert.equal(s.boss?.kind, 'warlord'); assert.ok(s.boss.hp > 300 && s.boss.alive && !s.boss.lair);
+  const flat = g.world.battle_units_flat(); assert.equal(flat.length % 14, 0); assert.ok(flat.length >= 14 * 8);
+  let bosses = 0; for (let i = 0; i < flat.length; i += 14) if (flat[i + 10] > 0) bosses++;
+  assert.equal(bosses, 1, 'exactly one boss on the field');
+  assert.ok(size(s) < 900, `status with a boss is ${size(s)} characters`);
+});

@@ -27,10 +27,10 @@ export function shouldAutoJump(wasActive: boolean, isActive: boolean, enabled: b
   return enabled && isActive && !wasActive && role === 'defend';
 }
 
-/** The nearest living attacker to (x, z) in `battle_units_flat` (stride 10: side, kind, x, y, hp, maxhp, alive, ...), if one is within `reach`. */
-export function foeNear(flat: ArrayLike<number>, x: number, z: number, reach: number): { x: number; z: number; d: number } | null {
+/** The nearest living attacker to (x, z) in `battle_units_flat` (stride 14: side, kind, x, y, hp, maxhp, alive, ..., boss, phase, name, aura), if one is within `reach`. */
+export function foeNear(flat: ArrayLike<number>, x: number, z: number, reach: number, stride = 14): { x: number; z: number; d: number } | null {
   let best: { x: number; z: number; d: number } | null = null;
-  for (let i = 0; i + 9 < flat.length; i += 10) {
+  for (let i = 0; i + 9 < flat.length; i += stride) {
     if (flat[i] !== 1 || flat[i + 6] <= 0) continue;
     const d = Math.hypot(flat[i + 2] - x, flat[i + 3] - z);
     if (d <= reach && (!best || d < best.d)) best = { x: flat[i + 2], z: flat[i + 3], d };

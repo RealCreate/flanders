@@ -53,6 +53,10 @@ export class Sound {
   coin() { this.tone(1318.5, 0.18, 'sine', 0.07); this.tone(1760, 0.3, 'sine', 0.06, 0.07); }
   alert() { this.tone(220, 0.35, 'sawtooth', 0.07, 0, 170); this.tone(220, 0.35, 'sawtooth', 0.07, 0.4, 170); }
   horn() { this.tone(120, 1.2, 'sawtooth', 0.12, 0, 150); this.tone(180, 1.2, 'sawtooth', 0.06, 0, 225); }
+  /** The warlord's horn: a long, low blast with a rising second voice. */
+  warhorn() { this.tone(98, 1.6, 'sawtooth', 0.16, 0, 130); this.tone(147, 1.6, 'sawtooth', 0.08, 0.05, 190); this.tone(196, 1.2, 'triangle', 0.05, 0.3, 240); }
+  /** The ogre's slam: a deep thump and a spray of grit. */
+  slam() { this.tone(70, 0.5, 'sine', 0.32, 0, 32); this.burst(0.35, 160, 0.7, 0.45); this.burst(0.2, 900, 1.2, 0.18, 0.05); }
   train() { this.tone(392, 0.2, 'triangle', 0.08); this.tone(587, 0.25, 'triangle', 0.08, 0.1); }
 
   // ---- ambience ----

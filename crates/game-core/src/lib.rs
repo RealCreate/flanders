@@ -129,6 +129,8 @@ const EV_HERO: i32 = 21;
 const EV_MIASMA: i32 = 22;
 const EV_SERVICE: i32 = 23;
 const EV_DIPLO: i32 = 24;
+const EV_LAIR: i32 = 26;   // the army went into a lair: a = place
+const EV_BOSS: i32 = 25;   // a boss fell: a = boss * 16 + name, b = 1
 /// Causes of death, for the village's ledger.
 pub const DIED_OLD: usize = 0;
 pub const DIED_PLAGUE: usize = 1;
@@ -275,6 +277,9 @@ pub fn catalog() -> String { catalog_json() }
 
 #[wasm_bindgen]
 pub fn units() -> String { military::units_json() }
+/// The bosses: [{id, name, names, hp, dmg, speed, armor, desc}].
+#[wasm_bindgen]
+pub fn bosses() -> String { military::bosses_json() }
 
 #[wasm_bindgen]
 pub fn terrain_grid(seed: u64, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> { terrain::grid(seed, x0, y0, nx, ny, step) }
@@ -371,19 +376,24 @@ impl World {
 
     /// The fog of war: FOG_N x FOG_N cells, 1 where your people have been or can see.
     pub fn explored_flat(&self) -> Vec<u8> { self.explored.clone() }
-    /// Neutral places you know about: [kind, x, y, done] each (kind 0 abbey, 1 ruined castle, 2 bandit camp). Unseen places are left out.
+    /// Neutral places you know about: [kind, x, y, done] each (kind 0 abbey, 1 ruined castle, 2 bandit camp, 3 lair). Unseen places are left out.
     pub fn neutrals_flat(&self) -> Vec<f32> {
         terrain::neutrals(self.seed).iter().enumerate().filter(|(_, n)| self.is_seen(n.1, n.2)).flat_map(|(i, n)| [n.0 as f32, n.1, n.2, self.neutral_done.get(i).copied().unwrap_or(false) as u8 as f32]).collect()
     }
     /// Send a field army (that has stopped near one) into a neutral place. Abbey: the sick are healed and spirits rise. Ruined castle: its hoard is carried off. Bandit camp: a fight,
-    /// won by strength, whose loser is the army (half of it falls) or the camp (cleared, its coin taken). Returns the kind (0..2) on success, -1 no such army, -2 nothing close enough, -3 already visited.
+    /// won by strength, whose loser is the army (half of it falls) or the camp (cleared, its coin taken). Lair (kind 3): a real battle starts on the spot (3 is returned at once; the fight, its report and the reward come as for a raid). Returns the kind (0..3) on success, -1 no such army, -2 nothing close enough, -3 already visited, -4 a fight is already on.
     pub fn visit_neutral(&mut self, army_id: u32) -> i32 {
+        if self.battle.is_some() && self.dets.iter().any(|d| d.id == army_id) { return -4; }   // a fight is on
         let Some(di) = self.dets.iter().position(|d| d.id == army_id) else { return -1 };
         let (ax, ay, units) = (self.dets[di].x, self.dets[di].y, self.dets[di].units);
         let list = terrain::neutrals(self.seed);
         let Some((ni, &(kind, nx, ny))) = list.iter().enumerate().filter(|(_, n)| ((n.1 - ax).powi(2) + (n.2 - ay).powi(2)).sqrt() < 14.0).next() else { return -2 };
         if self.neutral_done.get(ni).copied().unwrap_or(true) { return -3; }
         let cap = self.storage_cap(); let h = terrain::h01(self.seed ^ 0x52, ni as i32, 3);
+        if kind == 3 {   // a lair: a real fight, won or lost on the field (see begin_lair_battle); not done until the boss is dead
+            if self.dets[di].state == march::S_FIGHT { return -4; }
+            return if self.begin_lair_battle(di, ni, nx, ny, h) { 3 } else { -4 };
+        }
         match kind {
             0 => { self.end_plague(); self.mood = 12; self.mood_until = self.tick + 15 * DAY; }
             1 => { for (r, base) in [(ST, 120), (IR, 20), (GD, 80), (PL, 60)] { let n = (base as f32 * (0.6 + h)) as i32; self.stock[r as usize] = Self::add_capped(self.stock[r as usize], n, cap); } }
@@ -1153,8 +1163,8 @@ impl World {
         if self.tick > 600 && self.battle.is_none() && self.rng.range(420) == 0 {
             let angle = self.rng.range(628) as f32 * 0.01;
             let rf = self.rng.range(1000) as f32 / 1000.0;
-            let force = self.bandit_force(rf);
-            self.begin_battle(force, angle, 0);
+            if self.boss_due() { let name = self.rng.range(4) as u8; self.begin_boss_raid(RAID_BOSS, angle, rf, name); }
+            else { let force = self.bandit_force(rf); self.begin_battle(force, angle, 0); }
         }
         if self.rng.range(320) == 0 {
             let g = 20 + self.rng.range(40) as i32;
@@ -1743,10 +1753,24 @@ impl World {
     /// Direction the attackers came from, as an angle (atan2(dy, dx)) from the village centre; 0 when there is no battle.
     pub fn battle_angle(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.angle) }
     pub fn battle_time(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.t) }
-    /// Soldiers on the field: [side, kind, x, y, hp, maxhp, alive, swinging, facing] (stride 9).
+    /// The boss in the fight: [boss (1 warlord, 2 ogre), name, hp, maxhp, phase, alive] or nothing.
+    pub fn battle_boss(&self) -> Vec<f32> {
+        let Some(b) = &self.battle else { return vec![] };
+        match b.units.iter().find(|u| u.boss > 0) { Some(u) => vec![u.boss as f32, u.bname as f32, u.hp.max(0.0), u.maxhp, u.phase as f32, u.alive as u8 as f32], None => vec![] }
+    }
+    /// Where the army is fighting, if it is a lair rather than the village: [x, y] or nothing.
+    pub fn battle_lair(&self) -> Vec<f32> { match &self.battle { Some(b) if b.lair >= 0 => b.lair_at.to_vec(), _ => vec![] } }
+    /// Soldiers on the field: [side, kind, x, y, hp, maxhp, alive, swinging, facing, elevation, boss, phase, name, aura] (stride 14). `boss` 0 for a soldier, else 1 warlord / 2 ogre; `phase` 1 when enraged;
+    /// `aura` is 1 while a warlord's horn sounds (on the warlord and on the escort it spurs on).
     pub fn battle_units_flat(&self) -> Vec<f32> {
         match &self.battle {
-            Some(b) => b.units.iter().flat_map(|u| [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), UNITS[u.kind as usize].hp, u.alive as u8 as f32, u.anim, u.face, if u.wading { (self.moat_level_at(u.x, u.y) - self.height_at(u.x, u.y) + 0.12).max(0.0) } else { u.elev }]).collect(),
+            Some(b) => {
+                let horns: Vec<(f32, f32, f32)> = b.units.iter().filter(|u| u.boss > 0 && u.alive && BOSSES[(u.boss - 1) as usize].horn_every > 0.0 && u.t1 < BOSSES[(u.boss - 1) as usize].horn_secs).map(|u| (u.x, u.y, BOSSES[(u.boss - 1) as usize].horn_reach)).collect();
+                b.units.iter().flat_map(|u| {
+                    let aura = u.side == 1 && u.alive && horns.iter().any(|h| (h.0 - u.x).powi(2) + (h.1 - u.y).powi(2) < h.2 * h.2);
+                    [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), u.maxhp, u.alive as u8 as f32, u.anim, u.face, if u.wading { (self.moat_level_at(u.x, u.y) - self.height_at(u.x, u.y) + 0.12).max(0.0) } else { u.elev }, u.boss as f32, u.phase as f32, u.bname as f32, aura as u8 as f32]
+                }).collect()
+            }
             None => vec![],
         }
     }
@@ -1787,6 +1811,7 @@ impl World {
             2 => { if a >= 0 && (a as usize) < NK { self.army[a as usize] = ((self.army[a as usize] as i32).saturating_add(b).clamp(0, 100_000)) as u32; true } else { false } }
             3 => { let cap = self.storage_cap(); for r in 0..N_RES { self.stock[r] = cap; } true }
             4 => { let f = self.bandit_force(b.clamp(0, 1000) as f32 / 1000.0); self.begin_battle(f, a as f32 * 0.01, 0) }
+            10 => { let name = (a.rem_euclid(4)) as u8; self.begin_boss_raid(RAID_BOSS, a as f32 * 0.01, b.clamp(0, 1000) as f32 / 1000.0, name) }   // a raid led by a boss (testing)
             5 => { self.ignite(a.max(0) as usize); true }
             6 => { self.end_plague(); true }
             9 => { if self.plague_active() { false } else { self.start_plague(); true } }   // an outbreak now
@@ -1993,7 +2018,7 @@ impl World {
                 for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
-            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); } } }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8); mix(bt.lair as i64 as u64); } }),
         ]
     }
 
@@ -3086,7 +3111,7 @@ mod morale_tests {
     fn the_armies_meet_strike_and_fall_in_the_unit_data() {
         let mut w = village(); w.army = [10, 4, 0, 0, 0, 0]; w.population = 40; w.rng = Rng(5);
         assert!(w.start_raid(0.5, &[10, 4, 0, 0, 0, 0], 0));
-        let gap = |w: &World| { let u = w.battle_units_flat(); let mut best = f32::MAX; for i in 0..u.len() / 10 { for j in 0..u.len() / 10 { if u[i * 10] == 0.0 && u[j * 10] == 1.0 && u[i * 10 + 6] > 0.0 && u[j * 10 + 6] > 0.0 { best = best.min(((u[i * 10 + 2] - u[j * 10 + 2]).powi(2) + (u[i * 10 + 3] - u[j * 10 + 3]).powi(2)).sqrt()); } } } best };
+        let gap = |w: &World| { let u = w.battle_units_flat(); let mut best = f32::MAX; for i in 0..u.len() / 14 { for j in 0..u.len() / 14 { if u[i * 14] == 0.0 && u[j * 14] == 1.0 && u[i * 14 + 6] > 0.0 && u[j * 14 + 6] > 0.0 { best = best.min(((u[i * 14 + 2] - u[j * 14 + 2]).powi(2) + (u[i * 14 + 3] - u[j * 14 + 3]).powi(2)).sqrt()); } } } best };
         let start = gap(&w);
         let (mut closest, mut swings_melee, mut swings_shot, mut deaths, mut hp_drops) = (start, 0, 0, 0, 0);
         let mut prev: Vec<f32> = w.battle_units_flat();
@@ -3095,8 +3120,8 @@ mod morale_tests {
             w.step(); w.stock[GR as usize] = 3000; n += 1;
             if !w.battle_active() { break; }
             let u = w.battle_units_flat(); closest = closest.min(gap(&w));
-            for i in 0..u.len() / 10 {
-                let o = i * 10;
+            for i in 0..u.len() / 14 {
+                let o = i * 14;
                 if u[o + 7] > 0.3 && prev[o + 7] < 0.3 { if u[o + 1] == 1.0 { swings_shot += 1 } else { swings_melee += 1 } }
                 if u[o + 4] < prev[o + 4] { hp_drops += 1; }
                 if u[o + 6] == 0.0 && prev[o + 6] > 0.0 && u[o + 4] <= 0.0 { deaths += 1; }
@@ -3121,7 +3146,7 @@ mod neutral_tests {
     fn neutral_places_sit_on_dry_land_away_from_villages() {
         for seed in [1u64, 7, 1337, 99999] {
             let list = terrain::neutrals(seed); assert!(list.len() >= 6, "seed {seed}: {} places", list.len());
-            for &(k, x, y) in &list { assert!(k <= 2); assert!(terrain::base_height(seed, x, y) > 1.5, "dry"); for (sx, sy) in terrain::sites(seed) { assert!((x - sx).hypot(y - sy) > 100.0, "away from villages"); } }
+            for &(k, x, y) in &list { assert!(k <= 3); assert!(terrain::base_height(seed, x, y) > 1.5, "dry"); for (sx, sy) in terrain::sites(seed) { assert!((x - sx).hypot(y - sy) > 100.0, "away from villages"); } }
             assert!([0u8, 1, 2].iter().all(|&k| list.iter().any(|n| n.0 == k)), "seed {seed} has every kind");
         }
     }
@@ -4185,3 +4210,5 @@ mod pathnet_tests {
 
 #[cfg(test)]
 mod combat_tests;
+#[cfg(test)]
+mod boss_tests;

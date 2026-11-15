@@ -165,6 +165,14 @@ table.res td.r { text-align: right; }
 #battle-acts { display: flex; gap: 8px; justify-content: center; margin-top: 6px; }
 #battle-acts:empty { display: none; }
 #battle-acts .pbtn { font-size: 13px; padding: 3px 10px; letter-spacing: 0; }
+#battle .bossstrip { display: block; margin-top: 4px; font-family: var(--f-ui); font-size: 13px; letter-spacing: 0; color: #ffe2c0; }
+#battle .bossstrip .gi { vertical-align: -3px; }
+#battle .bossstrip i, #bossbar i { display: block; height: 6px; margin-top: 3px; background: #2a0e0a; border: 1px solid #000a; border-radius: 3px; overflow: hidden; }
+#battle .bossstrip b, #bossbar b { display: block; height: 100%; background: linear-gradient(#e0b13a, #b3801c); }
+#battle .bossstrip b.rage, #bossbar b.rage { background: linear-gradient(#e8542e, #a2220f); }
+#bossbar { position: fixed; z-index: 6; width: 130px; transform: translate(-50%, -100%); pointer-events: none; text-align: center; font-family: var(--f-ui); font-size: 12px; color: #ffe9c8; text-shadow: 0 1px 2px #000, 0 0 3px #000; }
+#bossbar[hidden] { display: none; }
+#bossbar i { height: 8px; }
 #battle small { display: block; font-family: var(--f-ui); font-size: 13px; letter-spacing: 0; color: #f0b8aa; margin-top: 2px; }
 @keyframes pulse { 50% { box-shadow: 0 8px 36px #d9604e88; } }
 .log li .chip { margin-left: 6px; padding: 0 8px; font-size: 13px; }

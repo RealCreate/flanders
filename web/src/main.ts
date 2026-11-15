@@ -9,7 +9,8 @@ import './ui/style.css';
 import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation, state_hash_part_names, rules_fingerprint } from './wasm/game_core.js';
 import { icon } from './ui/icons';
-import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
+import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses } from './data';
+import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
 import { buildShowroom } from './render/showroom';
@@ -524,10 +525,12 @@ function pollTrade() {
 /** An army that has stopped beside an abbey, a ruin or a bandit camp goes in. */
 function visitPlace(id: number) {
   const code = lv.world.visit_neutral(id);
-  if (code === -2) { ui.toast('There is no place here to enter. March the army right up to an abbey, a ruin or a camp.', 'info'); return; }
+  if (code === -2) { ui.toast('There is no place here to enter. March the army right up to an abbey, a ruin, a camp or a lair.', 'info'); return; }
   if (code === -3) { ui.toast('This place has already been used.', 'info'); return; }
+  if (code === -4) { ui.toast('A fight is already on: finish it first.', 'info'); return; }
   if (code < 0) return;
   commit({ op: 'visit', idx: id }); afterLocalChange(); updateDets();
+  if (code === 3) return;   // a lair: the fight is on and the banner tells the story (the report says how it ended)
   ui.toast(code === 0 ? 'The monks heal your sick.' : code === 1 ? 'The ruin gives up its hoard.' : code === 2 ? 'The bandit camp is cleared and its coin is yours.' : 'The camp was too strong: half your army fell. Try again with more men.', code >= 100 ? 'bad' : 'good');
 }
 
@@ -701,6 +704,8 @@ function onRivalReport(key: string, rep: number[]) {
 function onLocalReport(rep: number[]) {
   if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, , dead, lost] = rep;
+  const br = reportBoss(rep);
+  if (br) { const line = reportLine(bosses, br, !!won), good = br.fell || (won && !br.lair); ui.log(line, good ? 'good' : 'bad', Number(lv.world.tick())); ui.toast(line, good ? 'good' : 'bad'); if (br.lair) { updateHud(); return; } }
   const who = tag === 0 ? 'The bandits' : 'The invaders';
   ui.log(won ? `${who} were driven off. ${dead} defenders fell.` : `${who} plundered the village. ${lost} buildings were lost.`, won ? 'good' : 'bad', Number(lv.world.tick()));
   if (tag !== 0 && !won) ui.toast('Your village was sacked!', 'bad');
@@ -865,6 +870,7 @@ async function startGame(name: string, username: string) {
   }
   lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf;
   lv.onReport = onLocalReport;
+  Village.onBossFx = (k, x, z) => { if (Math.hypot(x - rig.target.x, z - rig.target.z) < 200) { if (k === 3) sound.warhorn(); else sound.slam(); } };   // a horn or a slam near the camera is heard
   deposits = new Deposits(w.deposits_flat(), terrain); scene.add(deposits.group); deposits.refit();
   buildDepositLabels();
   refreshTerrain(w); lv.syncFull(); lv.markCaughtUp();
@@ -1022,34 +1028,64 @@ function battleBanner() {
   for (const { v, mine, key } of list) {   // (every village is watched for the start of a fight, not only the one the banner shows)
     const on = v.world.battle_active(), was = fightSeen.get(key) ?? false; fightSeen.set(key, on);
     if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
+    if (on && !was) announceBoss(v, mine, key);
   }
   for (const { v, who, mine, key } of list) {
     const w = v.world;
     if (!w.battle_active()) continue;
     const u = w.battle_units_flat(); let d = 0, a = 0;
-    for (let i = 0; i < u.length; i += 10) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
+    for (let i = 0; i < u.length; i += BATTLE_STRIDE) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
     const ang = w.battle_angle(), tag = w.battle_tag(), dir = compassWord(Math.cos(ang), Math.sin(ang));
+    const boss = parseBoss(w.battle_boss()), lair = w.battle_lair().length > 0;
+    const strip = boss ? `<span class="bossstrip" title="${esc(bosses[boss.kind - 1]?.desc ?? '')}">${icon(lair ? 'lair' : boss.kind === 1 ? 'horn' : 'boss', 16, { mono: true })} ${esc(bossLine(bosses, boss))}<i><b class="${boss.phase > 0 ? 'rage' : ''}" style="width:${Math.round(hpFraction(boss) * 100)}%"></b></i></span>` : '';
     const role = roleOf(mine, tag, myTag());
     const attacker = tag === 0 ? 'Bandits' : (tag === myTag() ? 'Your army' : rivalName(tag));
-    const text = role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
+    const text = lair ? `Your army fights in the lair. March it away to break off.`
+      : role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
       : role === 'attack' ? `Your army attacks from the ${dir}. You are the attacker.` : `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
     const armies = fieldArmiesFree(), standing = w.battle_standing().reduce((x: number, y: number) => x + y, 0);
     const acts: { label: string; title: string; run: () => void; icon?: string }[] = [];
     for (const act of actionsFor(role, { armies, standing, reserve: 0 })) {
+      if (lair) continue;
       if (act === 'send-armies') acts.push({ icon: 'army', label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { for (const id of freeArmyIds()) orderDefend(id); } });
       else if (act === 'sally') acts.push({ icon: 'attack', label: `Sally out (${standing})`, title: 'The soldiers at their posts leave them and march out to meet the raiders as a field army', run: () => doSally() });
       else if (act === 'retreat') acts.push({ icon: 'halt', label: 'Retreat', title: 'Call off the attack: your soldiers break off and run for home', run: () => doRetreat(key) });
     }
-    ui.battle(`${icon('attack', 18, { mono: true })} Battle at ${who}<small>${text}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers${role === 'defend' ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
+    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${Math.round(w.battle_time())}s · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
       () => lookAtAttackers(v), acts);
     return;
   }
   ui.battle(null);
 }
 
+/** A fight has just begun in this village: if a boss leads it, say so (who, from where) and, for a lair, take the camera there. */
+function announceBoss(v: Village, mine: boolean, key: string) {
+  const w = v.world, boss = parseBoss(w.battle_boss()); if (!boss) return;
+  if (w.battle_lair().length) { const t = lairAnnouncement(bosses, boss); ui.toast(t, 'info'); ui.log(t, 'info', Number(w.tick())); if (mine) lookAtAttackers(v); return; }
+  const dir = compassWord(Math.cos(w.battle_angle()), Math.sin(w.battle_angle())), who = mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village";
+  const t = raidAnnouncement(bosses, boss, dir, mine, who); ui.toast(t, 'bad'); ui.log(t, 'bad', Number(w.tick())); if (mine) sound.warhorn();
+}
+
+/** The health bar that floats over the boss while he stands: follows him on the screen (a thin bar and his name). */
+let bossBarEl: HTMLDivElement | null = null;
+function updateBossBar() {
+  let b: ReturnType<Village['army']['bossAt']> = null;
+  for (const v of allVillages()) { if (v.world.battle_active()) { b = v.army.bossAt(); if (b) break; } }
+  if (!b) { if (bossBarEl) bossBarEl.hidden = true; return; }
+  if (!bossBarEl) { bossBarEl = document.createElement('div'); bossBarEl.id = 'bossbar'; bossBarEl.innerHTML = '<span></span><i><b></b></i>'; document.body.appendChild(bossBarEl); }
+  vtmp.set(b.x, b.y, b.z).project(rig.cam);
+  const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.1 && Math.abs(vtmp.y) < 1.1;
+  bossBarEl.hidden = !on; if (!on) return;
+  bossBarEl.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; bossBarEl.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
+  (bossBarEl.firstElementChild as HTMLElement).textContent = bossTitle(bosses, b.boss, b.name);
+  const fill = bossBarEl.querySelector('b') as HTMLElement; fill.style.width = Math.round(Math.max(0, Math.min(1, b.hp / b.max)) * 100) + '%'; fill.classList.toggle('rage', b.phase > 0);
+}
+
 /** Move the camera to where the attackers stand. */
 function lookAtAttackers(v: Village) {
-  const w = v.world, f = foeFocus(w.battle_angle(), v.ox, v.oz, w.build_radius());
+  const w = v.world, lair = w.battle_lair();
+  if (lair.length) { rig.focus(lair[0], lair[1], 55); return; }   // a lair fight is out in the country
+  const f = foeFocus(w.battle_angle(), v.ox, v.oz, w.build_radius());
   rig.focus(f.x, f.z, 70);
 }
 
@@ -1832,7 +1868,7 @@ function frame(now: number) {
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   perf.start('labels + minimap');
   updateHallLabels(all); updateJourneyLabels();
-  updateLabels();
+  updateLabels(); updateBossBar();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {
     miniT = now;

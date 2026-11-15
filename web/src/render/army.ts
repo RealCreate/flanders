@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { buildCatapult, buildRam, HAT, TOOL, type Crowd, type Draw } from './crowd';
+import { buildCatapult, buildRam, buildStandard, HAT, TOOL, type Crowd, type Draw } from './crowd';
+import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses';
 import { smoothPath } from './field';
 import { lunge, fallen, mix } from './fight';
 import { moatLevelAt, standHeight, onWater, chase } from './wading';
@@ -21,6 +22,7 @@ interface Field {
   gait: number; spd: number;   // gait angle (advances with distance walked) and smoothed ground speed
   gy: number; wade: boolean; wet: boolean;   // drawn height of the ground (or water) under its feet, chasing where that should be; wading (as the core says); out over the water on a raft
   flash: number; deadAt: number;   // seconds of hit flash left; when (army clock) the soldier fell, or -1 while standing
+  boss: number; phase: number; bname: number; aura: boolean;   // 0 for a soldier, else 1 warlord / 2 ogre; 1 when enraged; his name; the war horn is sounding on him
 }
 interface Post { kind: number; x: number; z: number; y: number; yaw: number; row: number; mode: 'drill' | 'tower' | 'patrol'; ring?: number; idx?: number; n?: number; R?: number;
   /** An archer on a tower walkway paces back and forth along an arc of the ring: centre, radius, middle angle, how far it strays, how fast, and when in the cycle it starts. */
@@ -153,7 +155,7 @@ export class ArmyView {
 
   /** Live positions from a running battle (call whenever the world ticks). */
   syncBattle(flat: Float32Array) {
-    const n = flat.length / 10;
+    const n = flat.length / SB;
     if (n === 0) {
       if (this.battle) { // battle over: the dead stay on the field for a while
         for (const f of this.field) if (!f.alive && f.hp <= 0) this.corpses.push({ f, t: f.deadAt >= 0 ? f.deadAt : this.t });
@@ -163,10 +165,10 @@ export class ArmyView {
     }
     if (!this.battle) this.quiet = 2;   // a battle just appeared (or we just loaded): whatever was mid-swing in the core is not shown as a fresh attack
     this.battle = true;
-    while (this.field.length < n) { const i = this.field.length; this.field.push({ x: flat[i * 10 + 2], z: flat[i * 10 + 3], elev: 0, telev: 0, fireT: 0, lastCore: 0, tx: 0, tz: 0, yaw: 0, side: 0, kind: 0, alive: true, anim: 0, hp: 1, max: 1, moving: false, gy: NaN, wade: false, wet: false, seed: i * 2.3, gait: i * 1.7, spd: 0, flash: 0, deadAt: -1, sx: flat[i * 10 + 2], sz: flat[i * 10 + 3], segT: 1, segD: 1, lastSync: this.t }); }
+    while (this.field.length < n) { const i = this.field.length; this.field.push({ boss: 0, phase: 0, bname: 0, aura: false, x: flat[i * SB + 2], z: flat[i * SB + 3], elev: 0, telev: 0, fireT: 0, lastCore: 0, tx: 0, tz: 0, yaw: 0, side: 0, kind: 0, alive: true, anim: 0, hp: 1, max: 1, moving: false, gy: NaN, wade: false, wet: false, seed: i * 2.3, gait: i * 1.7, spd: 0, flash: 0, deadAt: -1, sx: flat[i * SB + 2], sz: flat[i * SB + 3], segT: 1, segD: 1, lastSync: this.t }); }
     for (let i = 0; i < n; i++) {
-      const f = this.field[i], o = i * 10;
-      f.side = flat[o]; f.kind = flat[o + 1];
+      const f = this.field[i], o = i * SB;
+      f.side = flat[o]; f.kind = flat[o + 1]; f.boss = flat[o + B_BOSS]; f.phase = flat[o + B_PHASE]; f.bname = flat[o + B_NAME]; f.aura = flat[o + B_AURA] > 0;
       f.wade = f.side === 1 && flat[o + 9] > 0.02;   // (only attackers wade; the core's number for them is water depth, not a wall height: see update)
       f.telev = f.wade ? 0 : flat[o + 9];
       if (Math.hypot(flat[o + 2] - f.tx, flat[o + 3] - f.tz) > 1e-3) { f.sx = f.x; f.sz = f.z; f.segT = 0; f.segD = f.segD * 0.6 + Math.max(0.05, Math.min(3, this.t - f.lastSync)) * 0.4; f.lastSync = this.t; }
@@ -205,6 +207,50 @@ export class ArmyView {
 
   positions() { return this.field.filter(f => f.alive).map(f => ({ x: f.x, z: f.z })); }
 
+  /** Called a few times a second with the place (x, height, z) of every enraged boss, so the scene can throw embers off it. */
+  onRage: ((x: number, y: number, z: number) => void) | null = null;
+  private rageT = 0;
+  private decos: THREE.Group[] = [];
+  private marks: { horn: THREE.Mesh; rage: THREE.Mesh }[] = [];
+  private markGeo: THREE.BufferGeometry | null = null;
+  /** The boss on the field, if one is alive: where he stands and how tall he is (for the health bar over him). */
+  bossAt(): { x: number; y: number; z: number; boss: number; name: number; hp: number; max: number; phase: number } | null {
+    const f = this.battle ? this.field.find(q => q.boss > 0 && q.alive) : undefined;
+    return f ? { x: f.x, y: this.height(f) + f.elev + (f.boss === 1 ? 3.6 : 5.4), z: f.z, boss: f.boss, name: f.bname, hp: f.hp, max: f.max, phase: f.phase } : null;
+  }
+
+  private mark(i: number) {
+    if (!this.markGeo) { this.markGeo = new THREE.RingGeometry(0.93, 1, 48); this.markGeo.rotateX(-Math.PI / 2); }
+    let m = this.marks[i];
+    if (!m) {
+      const mat = (c: number) => new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide });
+      m = { horn: new THREE.Mesh(this.markGeo, mat(0xf2c94c)), rage: new THREE.Mesh(new THREE.CircleGeometry(1, 28).rotateX(-Math.PI / 2), mat(0xc0301e)) };
+      m.horn.renderOrder = m.rage.renderOrder = 4; this.group.add(m.horn, m.rage); this.marks[i] = m;
+    }
+    return m;
+  }
+
+  /** The boss as a large figure (twice a soldier's height), with a standard on his back for the warlord, a gold ring while his horn sounds and a red glow when he is enraged. */
+  private drawBoss(crowd: Crowd, f: Field, t: number, bi: number, shown: Set<THREE.Group>) {
+    const warlord = f.boss === 1, sc = warlord ? 1.5 : 2.4, lg = lunge(f.anim, 0.6, warlord ? 0.7 : 0.9), gy = this.height(f);
+    let body = warlord ? 0x7a1f1f : 0x6f7f4a;
+    if (f.phase > 0) body = mix(body, 0xff5a2a, 0.25 + 0.12 * Math.sin(t * 7));
+    if (f.flash > 0) body = mix(body, 0xff3a2a, Math.min(0.75, f.flash / 0.3 * 0.75));
+    const look: Partial<Draw> = warlord
+      ? { hat: HAT.GREAT, tool: TOOL.SWORD, shield: 1, shieldCol: 0x7a1f1f, mounted: true, armor: true, legs: 0x5a5a62 }
+      : { tool: TOOL.CLUB, legs: 0x4a3a2a };
+    crowd.add({ x: f.x + Math.sin(f.yaw) * lg, y: gy + f.elev, z: f.z + Math.cos(f.yaw) * lg, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait,
+      speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.6) : 0, skin: warlord ? 0xd9a877 : 0x8a9a62, scale: sc, body, ...look } as Draw);
+    if (warlord) {   // the standard rides behind him and its banner sways
+      let g = this.decos[bi]; if (!g) { g = buildStandard(); this.decos[bi] = g; this.group.add(g); }
+      const back = 0.9; g.position.set(f.x - Math.sin(f.yaw) * back, gy + f.elev + 1.0, f.z - Math.cos(f.yaw) * back); g.rotation.y = f.yaw + Math.PI / 2 * 0 + Math.sin(t * 2.2) * 0.12; g.scale.setScalar(1.0); g.visible = true; shown.add(g);
+      (g.userData.cloth as THREE.Object3D).rotation.y = Math.sin(t * 3.1) * 0.35;
+    }
+    const m = this.mark(bi);
+    m.horn.visible = f.aura; if (f.aura) { const k = (t * 0.9) % 1; m.horn.position.set(f.x, gy + 0.25, f.z); m.horn.scale.setScalar(3 + k * 29); (m.horn.material as THREE.MeshBasicMaterial).opacity = 0.6 * (1 - k); }
+    m.rage.visible = f.phase > 0; if (f.phase > 0) { m.rage.position.set(f.x, gy + 0.2, f.z); m.rage.scale.setScalar(sc * 1.7 + Math.sin(t * 6) * 0.3); (m.rage.material as THREE.MeshBasicMaterial).opacity = 0.28 + 0.1 * Math.sin(t * 7); }
+  }
+
   /** The pathfound route for one leg of a patrol, with its corners rounded. */
   private leg(ax: number, az: number, bx: number, bz: number): number[] {
     const key = `${Math.round(ax / 3)},${Math.round(az / 3)}>${Math.round(bx / 3)},${Math.round(bz / 3)}`, hit = this.legs.get(key); if (hit) return hit;
@@ -241,6 +287,8 @@ export class ArmyView {
       f.gait += Math.PI * moved / (0.55 + 0.13 * f.spd);                               // one step per stride length: no sliding feet
     }
     this.corpses = this.corpses.filter(c => this.t - c.t < 40);
+    this.rageT -= dt;
+    if (this.battle && this.rageT <= 0) { this.rageT = 0.12; for (const f of this.field) if (f.boss > 0 && f.alive && f.phase > 0) this.onRage?.(f.x, this.terrain.walkAt(f.x, f.z) + f.elev + 1, f.z); }
   }
 
   private height(f: Field) { return Number.isNaN(f.gy) ? this.terrain.walkAt(f.x, f.z) : f.gy; }
@@ -270,7 +318,7 @@ export class ArmyView {
   private drawFallen(crowd: Crowd, f: Field) {
     if (f.kind === 4 || f.kind === 5) return;
     const l = this.look(f.side, f.kind, f.seed, false), since = f.deadAt >= 0 ? this.t - f.deadAt : 99;
-    crowd.add({ x: f.x, y: this.height(f) + f.elev * (1 - fallen(since)), z: f.z, yaw: f.yaw, pose: 4, fall: fallen(since), phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw);
+    crowd.add({ x: f.x, y: this.height(f) + f.elev * (1 - fallen(since)), z: f.z, yaw: f.yaw, pose: 4, fall: fallen(since), phase: 0, skin: f.boss === 2 ? 0x8a9a62 : 0xd9a877, scale: f.boss === 1 ? 1.5 : f.boss === 2 ? 2.4 : undefined, ...(f.boss ? { body: f.boss === 1 ? 0x7a1f1f : 0x6f7f4a } : l), mounted: false, tool: undefined, shield: undefined } as Draw);
   }
 
   /** How high above the ground an archer shoots from at (x, z): up on the walkway if it stands in a tower. */
@@ -295,7 +343,8 @@ export class ArmyView {
       g.position.set(x, this.terrain.walkAt(x, z), z); g.rotation.y = yaw; g.visible = true; sg.add(g);
       (g.userData.log as THREE.Object3D).position.z = swing > 0 ? Math.sin((1 - swing) * Math.PI) * 0.9 : 0;   // the log swings forward as it strikes
     };
-    let si = 0, nr = 0; for (const r of this.rafts) r.visible = false;
+    let si = 0, nr = 0, nb = 0; for (const r of this.rafts) r.visible = false;
+    for (const m of this.marks) m.horn.visible = m.rage.visible = false;
     if (this.battle) {
       for (const f of this.field) {
         if (!f.alive && f.hp > 0) continue;   // ran off the field
@@ -304,6 +353,7 @@ export class ArmyView {
         if (f.wet && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, this.height(f) - 0.28 + Math.sin(t * 3.1 + f.seed) * 0.07, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.12; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.14; r.rotation.x = Math.sin(t * 1.7 + f.seed * 3) * 0.08; }   // (a raft wallows: the raiders on it are helpless, see the core's WADE_* numbers)
         if (f.kind === 5) { placeRam(f.x, f.z, f.yaw, Math.min(1, f.anim / 0.5)); continue; }
         if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++); continue; }
+        if (f.boss > 0) { this.drawBoss(crowd, f, t, nb++, sg); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
         if (f.side === 1 && f.elev > 0.3 && l.body !== undefined) l.body = mix(l.body, 0x4a6a84, 0.4);   // soaked and struggling in the water: a cold, grey-blue tint
         if (f.flash > 0 && l.body !== undefined) l.body = mix(l.body, 0xff3a2a, Math.min(0.75, f.flash / 0.3 * 0.75));

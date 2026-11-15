@@ -182,6 +182,13 @@ export const ICONS: Record<string, S> = {
   'pen-triangle': L('M12 4 L21 19 H3Z', K, 2),
   'pen-hexagon': L('M12 3 L19.8 7.5 V16.5 L12 21 L4.2 16.5 V7.5Z', K, 2),
   'pen-octagon': L('M8.5 3 H15.5 L21 8.5 V15.5 L15.5 21 H8.5 L3 15.5 V8.5Z', K, 2),
+  // ---- bosses ----
+  /** A lair: a pole with a red banner and a skull on it, over a small heap of stones. */
+  lair: L('M5 22 V2', WD2, 2) + P('M5 3 H21 V13 L13 17 L5 13Z', RD) + C(13, 8, 3.1, PA) + R(11.3, 9.8, 3.4, 2.6, PA, 0.6) + C(11.8, 7.8, 0.85, K, 'stroke="none"') + C(14.2, 7.8, 0.85, K, 'stroke="none"') + P('M13 10.6 L12.4 11.8 H13.6Z', K, 'stroke="none"') + P('M3 22 Q6 18.5 9 19.5 Q12 17.5 15 20 Q18 18.5 21 22Z', ST) + L('M7 21 H17', ST2, 0.8),
+  /** The warlord's war horn: a curved horn with gilt bands and a mouthpiece. */
+  horn: P('M2.5 18.5 Q2.5 8 12.5 6.5 Q19.5 6 21.5 9.5 Q16.5 9.5 13.5 13 Q9.5 18 2.5 18.5Z', '#e8dcc0') + L('M7.5 11.5 L10.2 15.4', GD2, 1.6) + L('M11 9 L13.4 12.4', GD2, 1.6) + R(19.6, 7.6, 3, 2.6, GD, 0.8) + L('M4 17 Q8 16 11 12.5', ST2, 0.8),
+  /** A boss badge: a horned helm over a skull-dark visor. */
+  boss: P('M5 21 V11 Q5 4 12 4 Q19 4 19 11 V21Z', IR) + P('M5 11 Q1.5 8.5 2.5 2.5 Q6 4.5 7.5 8Z', '#e8dcc0') + P('M19 11 Q22.5 8.5 21.5 2.5 Q18 4.5 16.5 8Z', '#e8dcc0') + R(7.5, 11, 9, 3.2, K) + L('M12 14.5 V21 M8 17 H16', ST2, 1) + C(9.8, 12.6, 0.7, FL2, 'stroke="none"') + C(14.2, 12.6, 0.7, FL2, 'stroke="none"'),
   unknown: R(3, 3, 18, 18, PA2, 2) + L('M9 9 Q9 6 12 6 Q15 6 15 9 Q15 11 12 12 V14', K, 1.6) + C(12, 17.5, 1, K),
 };
 

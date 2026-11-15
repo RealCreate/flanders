@@ -14,7 +14,8 @@ test('colours mix and the two sides never look alike', () => {
   assert.equal(pickFoe(0x2f5fa8, 0x4a3a2a), 0x4a3a2a);
 });
 test('the nearest living enemy is found, skipping the dead and the same side', () => {
-  // side, kind, x, y, hp, max, alive, swing, face, elev
-  const u = [0,0,0,0,10,10,1,0,0,0,  0,0,1,0,10,10,1,0,0,0,  1,0,5,0,10,10,0,0,0,0,  1,0,8,0,10,10,1,0,0,0,  1,0,3,0,10,10,1,0,0,0];
+  // side, kind, x, y, hp, max, alive, swing, face, elev, boss, phase, name, aura
+  const T = [0,0,0,0];
+  const u = [0,0,0,0,10,10,1,0,0,0,...T,  0,0,1,0,10,10,1,0,0,0,...T,  1,0,5,0,10,10,0,0,0,0,...T,  1,0,8,0,10,10,1,0,0,0,...T,  1,0,3,0,10,10,1,0,0,0,...T];
   assert.equal(nearestFoe(u, 0), 4); assert.equal(nearestFoe(u, 4), 1);
 });
