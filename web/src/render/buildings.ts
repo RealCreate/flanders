@@ -997,7 +997,26 @@ const smokehouse: Model = b => {
   if (t >= 2) { b.box(0.9, 0.8, 0.9, m.stone, W / 2 + 0.2, 0, -D / 2 - 0.2); b.chimney(W / 2 + 0.2, 0.8, -D / 2 - 0.2, 1.6, m.stone); }
   if (t >= 3) b.flag(W / 2 - 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse];
+// Bakery: a plastered cottage with a big domed brick oven built against its side (glowing mouth, tall chimney), a table of loaves and sacks of flour at the door.
+const bakery: Model = b => {
+  const t = b.t, m = M();
+  const W = 3.2 + t * 0.3, D = 2.8, h = 2.2 + t * 0.2;
+  b.box(W + 0.4, 0.4, D + 0.4, m.stone, 0, -0.1, 0); b.box(W, h, D, t >= 1 ? m.timber : m.darkwood, 0, 0.3, 0);
+  b.gable(W + 0.3, D + 0.2, 1.4 + t * 0.2, t >= 2 ? m.slate : m.thatch, 0, h + 0.3, 0, 0.35);
+  b.box(0.9, 1.6, 0.12, m.door, -W / 2 + 0.8, 0.3, D / 2 + 0.04); b.box(0.7, 0.6, 0.1, m.glow, W / 2 - 0.9, h * 0.5, D / 2 + 0.05);
+  // the oven: a brick dome on a stone base against the side wall, mouth glowing, with its own chimney
+  const ox = W / 2 + 1.1;
+  b.box(1.9, 0.7, 1.9, m.stone, ox, 0, 0); b.dome(1.0, m.brick, ox, 0.7, 0, 1.0); b.box(0.7, 0.5, 0.12, m.glow, ox, 0.8, 0.95);
+  b.chimney(ox, 1.6, -0.2, 2.2, m.brick); b.smoke.push(new THREE.Vector3(ox, 4.0, -0.2));
+  // a trestle table of loaves, sacks of flour and a peel leaning on the wall
+  b.box(1.3, 0.1, 0.6, m.wood, -0.2, 0.75, D / 2 + 0.9); for (const x of [-0.7, 0.3]) b.box(0.08, 0.75, 0.5, m.darkwood, x, 0, D / 2 + 0.9);
+  for (let i = 0; i < 4; i++) b.box(0.28, 0.16, 0.18, m.hay, -0.65 + i * 0.32, 0.85, D / 2 + 0.9);
+  for (const [x, z] of [[-W / 2 - 0.5, 0.4], [-W / 2 - 0.5, -0.5]]) b.cyl(0.32, 0.38, 0.7, m.hay, x, 0, z, 8);
+  b.box(0.06, 1.8, 0.06, m.darkwood, -W / 2 + 0.2, 0.1, D / 2 + 0.25).rotation.z = 0.12;
+  if (t >= 2) b.box(W + 0.6, 0.2, 0.5, m.timber, 0, h + 0.1, D / 2 + 0.3);   // an awning over the counter
+  if (t >= 3) b.flag(-W / 2 + 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
+};
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,

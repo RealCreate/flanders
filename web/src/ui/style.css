@@ -387,3 +387,5 @@ table.flowtab td.r { text-align: right; font-variant-numeric: tabular-nums; whit
 .mkt-row .btnrow { grid-column: 1 / -1; flex-wrap: wrap; gap: 4px; }
 .mkt-left small { opacity: .7; }
 .mkt-price { white-space: nowrap; }
+.flowsheet h2.foodh { font-size: 15px; margin: 10px 0 0; }
+.pill[hidden] { display: none; }

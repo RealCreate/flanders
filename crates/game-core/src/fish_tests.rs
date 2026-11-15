@@ -81,22 +81,35 @@ fn a_smokehouse_without_fish_waits() {
 }
 
 #[test]
-fn smoked_fish_is_eaten_before_grain_and_raw_fish_is_not_food() {
+fn every_kind_of_food_is_eaten_together_and_cooked_food_goes_further() {
+    let quarters = |w: &World| w.food_quarters();
+    // 100 heads need 10 meals = 40 quarter meals a tick; smoked fish (6) and grain (4) run down side by side, the fuller store first
     let mut w = World::new(1337, 0, 0); w.stock = [0; N_RES]; w.population = 100; w.children = 0; w.elders = 0;
-    let eat = (w.population as i32 + 5) / 10;
     w.stock[SF as usize] = 100; w.stock[GR as usize] = 100;
-    w.step();
-    assert_eq!(w.stock[SF as usize], 100 - eat, "smoked fish went first"); assert_eq!(w.stock[GR as usize], 100);
-    // fish runs short: grain makes up the rest
-    w.stock[SF as usize] = 3; w.stock[GR as usize] = 100; w.step();
-    assert_eq!(w.stock[SF as usize], 0); assert_eq!(w.stock[GR as usize], 100 - (eat - 3));
-    // raw fish does not feed anyone
-    let mut v = World::new(1337, 0, 0); v.stock = [0; N_RES]; v.population = 100; v.stock[FI as usize] = 500; v.step();
-    assert_eq!(v.stock[FI as usize], 500, "raw fish is untouched"); assert_eq!(v.food(), 0);
-    // smoked fish alone keeps people fed: no one dies of hunger
+    let q0 = quarters(&w); w.step();
+    assert_eq!(q0 - quarters(&w), 40, "a tick's meals, no more");
+    assert!(w.stock[SF as usize] < 100 && w.stock[GR as usize] <= 100, "the fish store, holding more food, goes first");
+    for _ in 0..20 { w.step(); }
+    let (f, g) = (w.stock[SF as usize] * 6, w.stock[GR as usize] * 4); assert!((f - g).abs() <= 6, "the stores level out: fish {f}, grain {g}");
+    // raw fish and raw grain fill less: the same head count eats more items of them than of bread
+    let eaten = |res: u8| { let mut v = World::new(1337, 0, 0); v.stock = [0; N_RES]; v.population = 100; v.children = 0; v.elders = 0; v.stock[res as usize] = 1000; for _ in 0..40 { v.step(); } 1000 - v.stock[res as usize] };
+    let (raw, bread) = (eaten(GR), eaten(BD));
+    assert_eq!(eaten(FI), raw, "raw fish and raw grain fill the same"); assert!(bread * 3 <= raw * 2 + 3, "bread {bread} against grain {raw}");
+    // when there is not enough food everything is eaten and people starve
+    let mut h = World::new(1337, 0, 0); h.stock = [0; N_RES]; h.population = 100; h.stock[FI as usize] = 5; h.step();
+    assert_eq!(h.stock[FI as usize], 0); assert_eq!(h.food(), 0);
+    // cooked food alone keeps people fed: no one dies of hunger
     let mut u = World::new(1337, 0, 0); u.stock = [0; N_RES]; u.population = 40; u.stock[SF as usize] = 200;
     for _ in 0..30 { u.step(); u.stock[SF as usize] = 200; }
     assert_eq!(u.died[DIED_HUNGER as usize], 0, "nobody starved"); assert!(u.food() >= 10);
+}
+
+#[test]
+fn a_bakery_turns_grain_into_bread() {
+    let d = &DEFS[BAKERY as usize]; assert_eq!(d.inputs, &[(GR, 3), (W, 1)]); assert_eq!(d.outputs, &[(BD, 4)]);
+    let mut w = World::new(1337, 0, 0); w.stock = [200; N_RES]; w.stock[BD as usize] = 0; w.population = 10; w.cheat(3, 0, 0);
+    assert!(w.place(BAKERY, 14, 4, 0) >= 0); for _ in 0..300 { w.step(); w.stock[GR as usize] = 200; }
+    assert!(w.stock[BD as usize] > 0, "bread was baked");
 }
 
 #[test]

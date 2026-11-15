@@ -164,8 +164,9 @@ const BACKUP_EVERY: u64 = 6;
 const BACKUP_AMOUNT: i32 = 1;
 const BACKUP_PER_TIER: i32 = 1;
 const BACKUP_BELOW: i32 = 60;
-/// What the village eats: smoked fish first (`SMOKED_MEAL_PER_FISH` meals a fish, in grain's units: 1), then grain. Raw fish is not food until it is smoked.
-const SMOKED_MEAL_PER_FISH: i32 = 1;
+/// What the village eats, and how far an item goes, in quarter meals (a meal is what one tenth of a head needs each tick): raw grain and raw fish fill less, bread and smoked fish more.
+/// Each tick the villagers take from whichever of these stores holds the most food in all, so the stores run down together and none is emptied first.
+pub const FOODS: [(u8, i32); 4] = [(GR, 4), (FI, 4), (BD, 6), (SF, 6)];
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
@@ -176,7 +177,7 @@ pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
-const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2];
+const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
 #[derive(Clone)]
@@ -253,6 +254,7 @@ pub struct World {
     events: Vec<i32>,
     sites: Vec<(f32, f32)>,
     flow: [i32; N_RES],
+    meal_credit: i32,             // quarter meals left over from the last item eaten (an item can fill more than was needed)
     ledger: ledger::Ledger,       // where each resource came from and went to over the last day (derived display data: never read by the rules, never hashed)
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
@@ -359,7 +361,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -599,7 +601,24 @@ impl World {
     }
 
     /// Food in the larder, in meals: smoked fish and grain.
-    pub(crate) fn food(&self) -> i32 { self.stock[SF as usize] * SMOKED_MEAL_PER_FISH + self.stock[GR as usize] }
+    /// Quarter meals in the stores (every kind of food, and what is left over from the last item eaten).
+    pub(crate) fn food_quarters(&self) -> i64 { FOODS.iter().map(|&(r, q)| self.stock[r as usize].max(0) as i64 * q as i64).sum::<i64>() + self.meal_credit as i64 }
+    /// Whole meals in the stores.
+    pub(crate) fn food(&self) -> i32 { (self.food_quarters() / 4).min(i32::MAX as i64) as i32 }
+    /// Eat `need` quarter meals, taking each item from the store that holds the most food in all (ties: the first in `FOODS`). False if there is not enough: then everything is eaten.
+    fn eat_quarters(&mut self, need: i64) -> bool {
+        if self.food_quarters() < need { for &(r, _) in &FOODS { self.stock[r as usize] = 0; } self.meal_credit = 0; return false; }
+        let mut owed = need - self.meal_credit as i64; self.meal_credit = 0;
+        if owed < 0 { self.meal_credit = -owed as i32; return true; }
+        while owed > 0 {
+            let (mut best, mut most) = (0usize, -1i64);
+            for (k, &(r, q)) in FOODS.iter().enumerate() { let v = self.stock[r as usize].max(0) as i64 * q as i64; if v > most { most = v; best = k; } }
+            let (r, q) = FOODS[best]; self.stock[r as usize] -= 1; owed -= q as i64;
+        }
+        self.meal_credit = (-owed) as i32; true
+    }
+    /// What each kind of food is worth, flat: `[resource, quarter meals]` pairs.
+    pub fn food_table() -> Vec<i32> { FOODS.iter().flat_map(|&(r, q)| [r as i32, q]).collect() }
 
     /// Workforce efficiency, and how villagers are spread over workplaces and homes.
     fn staffing(&mut self) {
@@ -1214,15 +1233,12 @@ impl World {
         // food, growth, starvation
         let soldiers: u32 = self.army.iter().sum::<u32>() + self.away.iter().sum::<u32>() + self.dets.iter().map(|d| d.units.iter().sum::<u32>()).sum::<u32>();
         let eat = ((self.population + soldiers) as i32 + 5) / 10;
-        let (gr0, sf0) = (self.stock[GR as usize], self.stock[SF as usize]);
-        if self.food() >= eat {
-            let from_fish = eat.min(self.stock[SF as usize] * SMOKED_MEAL_PER_FISH);   // smoked fish is eaten first, grain makes up the rest
-            self.stock[SF as usize] -= (from_fish + SMOKED_MEAL_PER_FISH - 1) / SMOKED_MEAL_PER_FISH; self.stock[GR as usize] -= eat - from_fish;
+        let eaten0: Vec<i32> = FOODS.iter().map(|&(r, _)| self.stock[r as usize]).collect();
+        if self.eat_quarters(eat as i64 * 4) {
             let cap_pop = self.capacity();
             let hap = self.happiness();
             if self.population < cap_pop && self.rng.range(if hap >= 70 { 4 } else if hap < 30 { 8 } else { 5 }) == 0 { self.arrive(1); }
         } else {
-            self.stock[GR as usize] = 0; self.stock[SF as usize] = 0;
             if self.population > 2 && self.rng.range(3) == 0 {
                 self.kill(1, DIED_HUNGER, 0);
                 self.push_event(EV_STARVE, 1, 0);
@@ -1231,7 +1247,8 @@ impl World {
         {   // the ledger: what was eaten (grain and smoked fish), shared between villagers and soldiers by head
             let share = if soldiers > 0 { eat as i64 * soldiers as i64 / (self.population as i64 + soldiers as i64).max(1) } else { 0 };
             let (c1, c2) = (self.ledger.extra(ledger::EX_SOLDIERS), self.ledger.extra(ledger::EX_VILLAGERS));
-            for (r, used) in [(GR, gr0 - self.stock[GR as usize]), (SF, sf0 - self.stock[SF as usize])] {
+            for (k, &(r, _)) in FOODS.iter().enumerate() {
+                let used = eaten0[k] - self.stock[r as usize];
                 let s = (used as i64 * share / eat.max(1) as i64) as i32; self.ledger.note(c1, r as usize, -s); self.ledger.note(c2, r as usize, -(used - s));
             }
         }
@@ -2108,7 +2125,7 @@ impl World {
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
                 mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
-            part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } for s in &self.market_sold { mix(*s as i64 as u64); } }),
+            part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } mix(self.meal_credit as i64 as u64); for s in &self.market_sold { mix(*s as i64 as u64); } }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
                 for b in &self.buildings {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
@@ -2668,7 +2685,7 @@ mod tests {
         let h0 = w.happiness();
         put(&mut w, PARK, 30.0, 30.0, 0); put(&mut w, GARDEN, -30.0, 30.0, 0); put(&mut w, CHAPEL, 30.0, -30.0, 0);
         assert!(w.happiness() >= h0 + 10, "{} -> {}", h0, w.happiness());
-        w.stock[GR as usize] = 0; w.stock[SF as usize] = 0; assert!(w.happiness() < h0 + 10, "hunger makes people unhappy");
+        for &(r, _) in &FOODS { w.stock[r as usize] = 0; } w.meal_credit = 0; assert!(w.happiness() < h0 + 10, "hunger makes people unhappy");
         // a wide moat piece digs a broader ditch than a thin one
         let (x, y) = (w.buildings[0].x + 40.0, w.buildings[0].y);
         put(&mut w, MOAT, x, y, 0); let thin = (0..30).filter(|k| w.height_at(x + *k as f32 * 0.25, y) < 0.0).count();
