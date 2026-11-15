@@ -168,10 +168,10 @@ export class Game {
     return out.sort((a, b) => Math.hypot(a[1], a[2]) - Math.hypot(b[1], b[2])).slice(0, limit);
   }
 
-  /** Field armies [id, spear, archer, sword, knight, catapult, dx, dy, state]; and the neutral places you have found [kind, dx, dy, done]. */
+  /** Field armies [id, spear, archer, sword, knight, catapult, dx, dy, state, ram]; and the neutral places you have found [kind, dx, dy, done]. */
   armies() {
     const d = this.world.det_flat(), out = [];
-    for (let i = 0; i < d.length; i += 16) { const [x, y] = this.rel(d[i + 1], d[i + 2]); out.push([d[i], d[i + 3], d[i + 4], d[i + 5], d[i + 6], d[i + 7], x, y, d[i + 8]]); }
+    for (let i = 0; i < d.length; i += 17) { const [x, y] = this.rel(d[i + 1], d[i + 2]); out.push([d[i], d[i + 3], d[i + 4], d[i + 5], d[i + 6], d[i + 7], x, y, d[i + 8], d[i + 16]]); }
     const p = this.world.neutrals_flat(), places = [];
     for (let i = 0; i < p.length; i += 4) { const [x, y] = this.rel(p[i + 1], p[i + 2]); places.push([p[i], x, y, p[i + 3]]); }
     return { armies: out, places };
@@ -200,7 +200,7 @@ export class Game {
    * Do one action. Forms (all coordinates relative to the hall, x east and y south):
    *   place kind dx dy [rot] [search]   build; mines and quarries snap to the nearest matching deposit; `search` tries nearby spots (0-12 units) when the first is refused
    *   up idx | opt idx bit [on] | demo idx true | fix idx | gar idx archers | draw idx up | gate idx closed | field idx mode(0 sow,1 fallow,2 rotate)
-   *   train kind n | hero | form s a w k c | march id dx dy | recall id | visit id | decide option
+   *   train kind n | hero | form s a w k c r? | march id dx dy | recall id | visit id | decide option
    * Returns { ok: true, ... } or { ok: false, e: why }.
    */
   act(a) {
@@ -232,7 +232,7 @@ export class Game {
       case 'gate': { const [, i, closed] = a; if (!isInt(i)) return fail('bad arguments'); const c = w.gate_set(i, closed === true); return c === 0 ? logged({ ok: true }, ['gate', i, closed === true]) : fail('needs a stone gatehouse'); }
       case 'field': { const [, i, mode] = a; if (!isInt(i) || !isInt(mode)) return fail('bad arguments'); const c = w.set_field_mode(i, mode); return c === 0 ? logged({ ok: true }, ['field', i, mode]) : fail(c === -1 ? 'not a farm' : 'mode is 0, 1 or 2'); }
       case 'hero': { const c = w.hero_hire(); return c === 0 ? logged({ ok: true }, ['hero']) : fail('cannot hire now (150 gold, needs barracks)'); }
-      case 'form': { const u = a.slice(1); if (u.length !== 5 || !u.every(v => isInt(v) && v >= 0 && v <= 300)) return fail('five counts: spear archer sword knight catapult'); const id = w.det_form(Uint32Array.from(u)); return id ? logged({ ok: true, id }, ['form', ...u]) : fail('not enough soldiers in the barracks'); }
+      case 'form': { const u = a.slice(1); if (u.length === 5) u.push(0); if (u.length !== 6 || !u.every(v => isInt(v) && v >= 0 && v <= 300)) return fail('six counts: spear archer sword knight catapult ram (the ram may be left out)'); const id = w.det_form(Uint32Array.from(u)); return id ? logged({ ok: true, id }, ['form', ...u]) : fail('not enough soldiers in the barracks'); }
       case 'march': { const [, id, dx, dy] = a; if (![id, dx, dy].every(isInt) || Math.abs(dx) > 1100 || Math.abs(dy) > 1100) return fail('bad arguments'); const c = w.det_march(id, this.origin.x + dx, this.origin.z + dy, false, 0, 0); return c === 0 ? logged({ ok: true }, ['march', id, dx, dy]) : fail(c === -1 ? 'no such army' : c === -2 ? 'unreachable' : c === -3 ? 'catapults need soldiers to clear forest' : 'water too wide'); }
       case 'recall': { if (!isInt(idx)) return fail('bad arguments'); const c = w.det_recall(idx); return c === 0 ? logged({ ok: true }, ['recall', idx]) : fail('no such army'); }
       case 'visit': { if (!isInt(idx)) return fail('bad arguments'); const c = w.visit_neutral(idx); return c >= 0 ? logged({ ok: true, kind: c }, ['visit', idx]) : fail(c === -1 ? 'no such army' : c === -2 ? 'not close enough to a place' : 'already visited'); }

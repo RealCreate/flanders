@@ -116,5 +116,5 @@ export const fmtCost = (c: [number, number][]) => c.map(([r, n]) => `${RES[r].ic
 
 export interface UnitDef { id: number; name: string; hp: number; dmg: number; range: number; speed: number; armor: number; cost: [number, number][]; tier: number; time: number; desc: string }
 export const units: UnitDef[] = JSON.parse(unitsJson());
-export const UNIT_ICON = ['🔱', '🏹', '⚔️', '🐴', '☄️', '🪓'];
+export const UNIT_ICON = ['🔱', '🏹', '⚔️', '🐴', '☄️', '🐏', '🪓'];
 export const UNIT_NAMES = units.map(u => u.name);
