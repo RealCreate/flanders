@@ -380,15 +380,15 @@ export class UI {
 
   // ---- field armies ----
   private buildMuster() {
-    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<div class="mrow"><span class="mi">${UNIT_ICON[u.id]}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
+    $('muster-row').innerHTML = units.slice(0, 6).map(u => `<div class="mrow"><span class="mi">${UNIT_ICON[u.id]}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
       <span class="step"><button type="button" data-step="-5" data-u="${u.id}" title="Five fewer">−5</button><button type="button" data-step="-1" data-u="${u.id}">−</button><input type="number" min="0" value="0" id="mus-${u.id}" aria-label="${u.name}"><button type="button" data-step="1" data-u="${u.id}">+</button><button type="button" data-step="5" data-u="${u.id}" title="Five more">+5</button></span></div>`).join('');
     $('muster-row').onclick = e => {
       const b = (e.target as HTMLElement).closest<HTMLElement>('[data-step]'); if (!b) return;
       const input = $(`mus-${b.dataset.u}`) as HTMLInputElement, max = Number(input.max) || 0, v = Math.max(0, Math.min(max, (Number(input.value) || 0) + Number(b.dataset.step)));
       input.value = String(v);
     };
-    $('muster-all').onclick = () => { const u = units.slice(0, 5).map(x => this.armyNow[x.id] ?? 0); if (u.some(n => n > 0)) this.h.muster(u); };
-    $('muster-go').onclick = () => { const u = units.slice(0, 5).map(x => Number(($(`mus-${x.id}`) as HTMLInputElement).value) || 0); if (u.some(n => n > 0)) { this.h.muster(u); units.slice(0, 5).forEach(x => (($(`mus-${x.id}`) as HTMLInputElement).value = '0')); } };
+    $('muster-all').onclick = () => { const u = units.slice(0, 6).map(x => this.armyNow[x.id] ?? 0); if (u.some(n => n > 0)) this.h.muster(u); };
+    $('muster-go').onclick = () => { const u = units.slice(0, 6).map(x => Number(($(`mus-${x.id}`) as HTMLInputElement).value) || 0); if (u.some(n => n > 0)) { this.h.muster(u); units.slice(0, 6).forEach(x => (($(`mus-${x.id}`) as HTMLInputElement).value = '0')); } };
     $('det-list').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-da]'); if (b) this.h.detAction(b.dataset.da!, Number(b.dataset.id)); };
   }
   private detSig = '';
@@ -434,7 +434,7 @@ export class UI {
     $('btn-cheat').hidden = !enabled; if (!enabled) return;
     $('btn-cheat').onclick = () => this.modal('cheats', true);
     $('cheat-res').innerHTML = RES.map((r, i) => `<span>${r.icon} ${r.name}</span><button class="pbtn" data-ch="0,${i},100">+100</button><button class="pbtn" data-ch="0,${i},1000">+1000</button>`).join('');
-    $('cheat-army').innerHTML = units.slice(0, 5).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${UNIT_ICON[u.id]} +10 ${u.name}</button>`).join('');
+    $('cheat-army').innerHTML = units.slice(0, 6).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${UNIT_ICON[u.id]} +10 ${u.name}</button>`).join('');
     $('cheats').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
   }
 
@@ -498,7 +498,7 @@ export class UI {
 
   private buildUnits() {
     const el = $('unit-cards');
-    units.slice(0, 5).forEach(u => {
+    units.slice(0, 6).forEach(u => {
       const c = document.createElement('div'); c.className = 'card unit'; c.dataset.u = String(u.id);
       c.innerHTML = `<div class="ico">${UNIT_ICON[u.id]}</div><div><div class="nm"><span>${u.name}</span><span class="key">tier ${u.tier + 1}</span></div>
         <div class="ds">${u.desc}</div><div class="io">❤ ${u.hp} · ⚔ ${u.dmg} · 🏹 range ${u.range} · 🛡 ${u.armor}</div>
@@ -655,7 +655,7 @@ export class UI {
     b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
   }
   private armyNow: number[] = [];
-  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 5).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
+  maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 6).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
 
   setSelectedPane(html: string | null) {
     const tab = $('tab-sel');

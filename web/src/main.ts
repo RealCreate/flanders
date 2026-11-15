@@ -490,16 +490,16 @@ function showRoute() {
 
 function updateDets() {
   const f = lv.world.det_flat(), list: { id: number; units: number[]; text: string; selected: boolean; leftWp: number }[] = [];
-  for (let o = 0; o < f.length; o += 16) {
+  for (let o = 0; o < f.length; o += 17) {
     const st = f[o + 8], state = STATE_TEXT[st] + (st === 3 || st === 2 ? ` (${Math.round(f[o + 11] * 100)}%)` : '');
-    list.push({ id: f[o], units: [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7]], text: state, selected: multiDets.includes(f[o]), leftWp: f[o + 10] });
+    list.push({ id: f[o], units: [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]], text: state, selected: multiDets.includes(f[o]), leftWp: f[o + 10] });
   }
   ui.setDets(list);
   if (multiDets.some(id => !list.some(d => d.id === id))) { multiDets = multiDets.filter(id => list.some(d => d.id === id)); selectedDet = multiDets[0] ?? null; lv.field.select(multiDets); if (selectedDet === null) pathLine?.set(null); }
 }
 
 function detUnits(id: number): number[] | null {
-  const f = lv.world.det_flat(); for (let o = 0; o < f.length; o += 16) if (f[o] === id) return [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7]]; return null;
+  const f = lv.world.det_flat(); for (let o = 0; o < f.length; o += 17) if (f[o] === id) return [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]]; return null;
 }
 
 function orderMarch(id: number, tx: number, tz: number) {
@@ -530,7 +530,7 @@ function detAction(a: string, id: number) {
 /** Marching armies that have reached an enemy village go in. */
 function checkArrivals() {
   const f = lv.world.det_flat();
-  for (let o = 0; o < f.length; o += 16) {
+  for (let o = 0; o < f.length; o += 17) {
     if (f[o + 8] !== 5) continue;
     const id = f[o], key = attackTargets.get(id), r = key ? rivals.get(key) : null;
     if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
@@ -563,11 +563,11 @@ function defendAgainst(att: Rival, c: Cmd) {
 
 /** A battle finished in a rival's village. If we were the attacker, our survivors come home with the loot. */
 function onRivalReport(key: string, rep: number[]) {
-  if (rep[2]) ledger.record(rep[2], rep.slice(6, 11), rep.slice(11, 11 + RES.length));
+  if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, left, , , , ] = rep;
   void won; void left;
   if (tag !== myTag()) return;
-  const surv = rep.slice(6, 11), loot = rep.slice(11, 11 + RES.length), r = rivals.get(key);
+  const surv = rep.slice(6, 12), loot = rep.slice(12, 12 + RES.length), r = rivals.get(key);
   lv.world.return_army(Uint32Array.from(surv), Int32Array.from(loot));
   commit({ op: 'return', units: surv, loot });
   const gold = loot[8];
@@ -576,7 +576,7 @@ function onRivalReport(key: string, rep: number[]) {
 }
 
 function onLocalReport(rep: number[]) {
-  if (rep[2]) ledger.record(rep[2], rep.slice(6, 11), rep.slice(11, 11 + RES.length));
+  if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, , dead, lost] = rep;
   const who = tag === 0 ? 'The bandits' : 'The invaders';
   ui.log(won ? `${who} were driven off. ${dead} defenders fell.` : `${who} plundered the village. ${lost} buildings were lost.`, won ? 'good' : 'bad', Number(lv.world.tick()));
@@ -926,7 +926,7 @@ function lookAtAttackers(v: Village) {
 /** Field armies that are free to be sent to the fight (not already in it). */
 function freeArmyIds(): number[] {
   const f = lv.world.det_flat(), out: number[] = [];
-  for (let o = 0; o < f.length; o += 16) if (f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] > 0) out.push(f[o]);
+  for (let o = 0; o < f.length; o += 17) if (f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] + f[o + 16] > 0) out.push(f[o]);
   return out;
 }
 const fieldArmiesFree = () => freeArmyIds().length;
@@ -1296,7 +1296,7 @@ function openContext(e: PointerEvent) {
       items.push({ label: 'Look here', run: () => rig.focus(hit.x, hit.z) }, { label: 'Build here…', run: () => ui.setTab('build') });
       for (const id of lv.field.ids()) items.push({ label: `March Army ${id} here`, run: () => { selectDet(id); orderMarch(id, hit.x, hit.z); } });
     }
-    const soldiers = Array.from(lv.world.army()).slice(0, 5);
+    const soldiers = Array.from(lv.world.army()).slice(0, 6);
     if (soldiers.some(n => n > 0)) items.push('-', { label: 'Muster every soldier', sub: 'F', run: () => doMuster(soldiers) });
   }
   // the world may change while the menu is open (a fire, a raid): then the building indices have moved, so do nothing rather than act on the wrong one
@@ -1503,7 +1503,7 @@ function bindInput() {
       case 'fullMap': ui.toggleMap(); break;
       case 'fullscreen': e.preventDefault(); toggleFullscreen(); break;
       case 'photo': e.preventDefault(); togglePhotoMode(renderer.domElement, () => perf.render(renderer, scene, rig.cam), t => ui.toast(t, 'info')); break;
-      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 5); if (a.some(n => n > 0)) doMuster(a); else ui.toast('There are no soldiers in the barracks.', 'info'); break; }
+      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 6); if (a.some(n => n > 0)) doMuster(a); else ui.toast('There are no soldiers in the barracks.', 'info'); break; }
       case 'toggleMinimap': ui.toggleMinimap(); break;
       default: break;
     }

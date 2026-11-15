@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { HAT, TOOL, buildCatapult, type Crowd, type Draw } from './crowd';
+import { HAT, TOOL, buildCatapult, buildRam, type Crowd, type Draw } from './crowd';
 
 export interface Obstacle { x: number; z: number; r: number }
 export interface TreeQuery { countTrees(x: number, z: number, r: number): number; nearTrees(x: number, z: number, r: number, out: { x: number; z: number }[]): void }
@@ -20,7 +20,7 @@ interface Member { kind: number; x: number; z: number; px: number; pz: number; y
   dy?: number }
 interface Det {
   route: number[] | null; id: number; x: number; z: number; tx: number; tz: number; sx: number; sz: number; segT: number; segD: number; lastSync: number; heading: number; yaw: number; units: number[]; state: number; mode: number; prog: number; speed: number;
-  members: Member[]; sig: string; width: number; siege: THREE.Group[]; banner: THREE.Group; total: number; boats: THREE.Group | null;
+  members: Member[]; sig: string; width: number; siege: THREE.Group[]; rams: THREE.Group[]; banner: THREE.Group; total: number; boats: THREE.Group | null;
   /** Where the army's centre has been (x, z pairs, oldest first): soldiers on the march follow it in single file. */
   trail: number[];
   /** 0 = drawn up in ranks (standing), 1 = strung out in a column (marching): eased, never switched. */
@@ -72,10 +72,10 @@ export class FieldView {
   /** Read det_flat() (stride 16). `path(id)` gives the army's remaining route [x, z, mode, ...], which is rounded off and then followed exactly. */
   sync(flat: Float32Array, path?: (id: number) => ArrayLike<number>) {
     const seen = new Set<number>();
-    for (let o = 0; o < flat.length; o += 16) {
+    for (let o = 0; o < flat.length; o += 17) {
       const id = flat[o]; seen.add(id);
       let d = this.dets.get(id);
-      const units = [flat[o + 3], flat[o + 4], flat[o + 5], flat[o + 6], flat[o + 7]], sig = units.join(',');
+      const units = [flat[o + 3], flat[o + 4], flat[o + 5], flat[o + 6], flat[o + 7], flat[o + 16]], sig = units.join(',');
       if (!d) {
         const banner = new THREE.Group();
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.2, 6), new THREE.MeshStandardMaterial({ color: 0x4a3420 })); pole.position.y = 2.1; pole.castShadow = true;
@@ -83,7 +83,7 @@ export class FieldView {
         banner.add(pole, cloth); banner.userData.detId = id; pole.userData.detId = id; cloth.userData.detId = id;
         const hit = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 4.4, 8), new THREE.MeshBasicMaterial({ visible: false })); hit.position.y = 2.2; hit.userData.detId = id; banner.add(hit);
         this.group.add(banner);
-        d = { trail: [], col: 0, cspd: 0, marching: false, walked: 0, lx: NaN, lz: NaN, dest: null, wps: [], snaps: [{ t: this.t, x: flat[o + 1], z: flat[o + 2] }], dots: null, flag: null, route: null, id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], sx: flat[o + 1], sz: flat[o + 2], segT: 1, segD: 1, lastSync: this.t, heading: 0, yaw: 0, units, state: 0, mode: 0, prog: 0, speed: 0, members: [], sig: '', width: 5, siege: [], banner, total: 0, boats: null };
+        d = { trail: [], col: 0, cspd: 0, marching: false, walked: 0, lx: NaN, lz: NaN, dest: null, wps: [], snaps: [{ t: this.t, x: flat[o + 1], z: flat[o + 2] }], dots: null, flag: null, route: null, id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], sx: flat[o + 1], sz: flat[o + 2], segT: 1, segD: 1, lastSync: this.t, heading: 0, yaw: 0, units, state: 0, mode: 0, prog: 0, speed: 0, members: [], sig: '', width: 5, siege: [], rams: [], banner, total: 0, boats: null };
         this.dets.set(id, d);
       }
       const nx = flat[o + 1], nz = flat[o + 2];
@@ -101,7 +101,7 @@ export class FieldView {
       if (d.state === 1 || d.state === 2 || d.state === 7) d.heading = flat[o + 14];
       if (sig !== d.sig) this.rebuild(d, units, sig);
     }
-    for (const [id, d] of [...this.dets]) if (!seen.has(id)) { this.dropMarks(d); this.group.remove(d.banner); d.banner.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); }); d.siege.forEach(s => this.group.remove(s)); if (d.boats) this.group.remove(d.boats); this.dets.delete(id); }
+    for (const [id, d] of [...this.dets]) if (!seen.has(id)) { this.dropMarks(d); this.group.remove(d.banner); d.banner.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); (m.material as THREE.Material | undefined)?.dispose?.(); }); d.siege.forEach(s => this.group.remove(s)); d.rams.forEach(s => this.group.remove(s)); if (d.boats) this.group.remove(d.boats); this.dets.delete(id); }
   }
 
   private dotGeo = new THREE.CircleGeometry(0.22, 8).rotateX(-Math.PI / 2);
@@ -157,6 +157,8 @@ export class FieldView {
     d.members = members;
     while (d.siege.length < units[4]) { const g = buildCatapult(); g.position.set(d.x, 0, d.z); this.group.add(g); d.siege.push(g); }
     while (d.siege.length > units[4]) this.group.remove(d.siege.pop()!);
+    while (d.rams.length < (units[5] ?? 0)) { const g = buildRam(); g.position.set(d.x, 0, d.z); this.group.add(g); d.rams.push(g); }
+    while (d.rams.length > (units[5] ?? 0)) this.group.remove(d.rams.pop()!);
   }
 
   /** Steepness of the ground at a point: the largest height change per unit over two paces round it. */
@@ -279,7 +281,10 @@ export class FieldView {
       // siege engines travel as a compact group: two abreast in a short column just behind the head of the army, on the very path the head took (the core routes them over wide, gentle ground),
       // and drawn up in a tight block behind the ranks when it stops. They are never placed by a straight line behind the army, so they cannot cut a corner across a cliff, water or a building.
       const rows = Math.ceil(d.members.length / W);
-      d.siege.forEach((g, i) => {
+      const engines = [...d.siege, ...d.rams];
+      for (const g of d.siege) g.visible = d.state !== 8;
+      for (const g of d.rams) g.visible = d.state !== 8;
+      engines.forEach((g, i) => {
         const pair = Math.floor(i / 2), side = i % 2 ? 1 : -1;
         let tx: number, tz: number;
         {
@@ -307,7 +312,7 @@ export class FieldView {
         g.position.y = Math.max(g.userData.sy as number, d.state === 4 ? 0.3 : Math.min(yF, yB, yC));   // (never below the lowest ground under it)
         g.rotation.y += (() => { let da = face - g.rotation.y; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; return da; })() * Math.min(1, dt * 3);
         g.rotation.x = d.state === 4 ? 0 : -Math.atan2(yF - yB, SIEGE_LEN) * 0.8;
-        (g.userData.arm as THREE.Object3D).rotation.x = -0.9;
+        if (g.userData.arm) (g.userData.arm as THREE.Object3D).rotation.x = -0.9;
       });
       // boats while crossing wide water
       if (d.state === 4) {

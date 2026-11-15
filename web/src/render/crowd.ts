@@ -223,6 +223,23 @@ export class Crowd {
 }
 
 // ---------- catapult ----------
+/** A battering ram: a roofed timber shed on wheels with an iron-shod log hanging inside (`userData.log` swings when it strikes). */
+export function buildRam(): THREE.Group {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 }), iron = new THREE.MeshStandardMaterial({ color: 0x55585c, roughness: 0.6, metalness: 0.4 }), hide = new THREE.MeshStandardMaterial({ color: 0x8a7550, roughness: 1 });
+  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
+  add(new THREE.BoxGeometry(1.5, 0.2, 3.2), wood, 0, 0.55, 0);
+  for (const sx of [-0.8, 0.8]) for (const sz of [-1.0, 1.0]) { const w = add(new THREE.CylinderGeometry(0.42, 0.42, 0.16, 12), dark, sx, 0.42, sz); w.rotation.z = Math.PI / 2; }
+  for (const sx of [-0.65, 0.65]) for (const sz of [-1.3, 1.3]) add(new THREE.BoxGeometry(0.14, 1.3, 0.14), wood, sx, 1.25, sz);
+  const roof = add(new THREE.BoxGeometry(1.7, 0.1, 3.5), hide, 0, 1.95, 0); roof.rotation.z = 0;
+  for (const sx of [-1, 1]) { const r = add(new THREE.BoxGeometry(0.1, 0.1, 3.5), dark, sx * 0.82, 1.92, 0); r.rotation.z = 0; }
+  const log = new THREE.Group(); log.position.set(0, 1.2, 0); g.add(log);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 3.6, 8), wood); beam.rotation.x = Math.PI / 2; beam.castShadow = true; log.add(beam);
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.5, 8), iron); head.rotation.x = Math.PI / 2; head.position.z = 2.0; log.add(head);
+  g.userData.log = log;
+  return g;
+}
+
 export function buildCatapult(): THREE.Group {
   const g = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 });
