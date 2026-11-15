@@ -154,6 +154,14 @@ pub const CH_WINTER: u8 = 3;
 const CHOICE_DAYS: u64 = 2;
 /// Ticks in a day, days in a season (the interface uses the same numbers).
 pub const DAY: u64 = 240;
+/// Bandit raids: after the first three days, about one a week on average (a roll every tick).
+const RAID_FROM_TICK: u64 = 3 * DAY;
+const RAID_ONE_IN: u32 = 7 * DAY as u32;
+/// The town hall's backup: every `BACKUP_EVERY` ticks it adds `BACKUP_AMOUNT` + `BACKUP_PER_TIER` per tier of wood and of grain, but only while that store holds less than `BACKUP_BELOW`.
+const BACKUP_EVERY: u64 = 6;
+const BACKUP_AMOUNT: i32 = 1;
+const BACKUP_PER_TIER: i32 = 1;
+const BACKUP_BELOW: i32 = 60;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
@@ -1156,6 +1164,14 @@ impl World {
         // seasons, warmth and the generations
         self.household_step();
 
+        // the town hall's own storehouse and kitchen garden: a little wood and grain now and then, only while the stores are low, so a village that has run dry can always start over
+        if self.tick % BACKUP_EVERY == 0 {
+            if let Some(th) = self.buildings.iter().find(|b| b.kind == TOWN_HALL) {
+                let n = BACKUP_AMOUNT + BACKUP_PER_TIER * th.tier as i32;
+                for r in [W, GR] { if self.stock[r as usize] < BACKUP_BELOW { self.stock[r as usize] = Self::add_capped(self.stock[r as usize], n, cap); } }
+            }
+        }
+
         // disease (an outbreak runs for many days: see plague.rs)
         self.plague_step();
 
@@ -1166,7 +1182,7 @@ impl World {
             self.push_event(EV_HARVEST, n, 0);
         }
         // bandits: a real fight on the village grounds
-        if self.tick > 600 && self.battle.is_none() && self.rng.range(420) == 0 {
+        if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(RAID_ONE_IN) == 0 {
             let angle = self.rng.range(628) as f32 * 0.01;
             let rf = self.rng.range(1000) as f32 / 1000.0;
             if self.boss_due() { let name = self.rng.range(4) as u8; self.begin_boss_raid(RAID_BOSS, angle, rf, name); }
@@ -2884,6 +2900,31 @@ mod family_tests {
         let make = |tick: u64| { let mut w = farm_world(); let i = [(-20, 14), (20, 14), (30, -20), (-30, -20)].into_iter().map(|(x, y)| w.place(FARM, x, y, 0)).find(|&i| i >= 0).expect("a farm site"); w.tick = tick; w.stock[GR as usize] = 0; w.population = 40; w.staffing(); for _ in 0..40 { w.step(); w.stock[W as usize] = 3000; w.stock[GR as usize] = w.stock[GR as usize].min(500); } let _ = i; w.stock[GR as usize] };
         let (autumn, winter) = (make(DAY * SEASON_DAYS * 2), make(DAY * SEASON_DAYS * 3));
         assert!(autumn > winter, "autumn {autumn} vs winter {winter}");
+    }
+
+    #[test]
+    fn the_town_hall_backs_up_wood_and_grain_but_only_while_they_are_low() {
+        let mut w = farm_world(); w.population = 10;
+        w.stock[W as usize] = 0; w.stock[GR as usize] = 0;
+        for _ in 0..(DAY as usize) { w.step(); w.stock[GR as usize] = w.stock[GR as usize].min(5); }
+        assert!(w.stock[W as usize] > 0, "a village with no wood is given a little: {}", w.stock[W as usize]);
+        assert!(w.stock[W as usize] < 120, "only a little: {}", w.stock[W as usize]);
+        let mut r = farm_world(); r.population = 10; r.stock[W as usize] = 500;
+        let before = r.stock[W as usize];
+        for _ in 0..30 { r.step(); }
+        assert!(r.stock[W as usize] <= before, "no backup while the store is full: {} -> {}", before, r.stock[W as usize]);
+    }
+
+    #[test]
+    fn raids_come_about_once_a_week_not_every_other_day() {
+        let (mut raids, days) = (0, 60u64);
+        for k in 0..6u64 {
+            let mut w = farm_world(); w.rng = Rng(k * 977 + 13); w.population = 12;
+            for _ in 0..(days * DAY) { let was = w.battle.is_some(); w.step(); if w.battle.is_some() && !was { raids += 1; } w.battle = None; }
+        }
+        let per_week = raids as f64 / (6.0 * days as f64 / 7.0);
+        assert!(per_week < 2.0, "{per_week} raids a week");
+        assert!(per_week > 0.2, "{per_week} raids a week");
     }
 
     #[test]
