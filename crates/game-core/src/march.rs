@@ -630,6 +630,7 @@ impl World {
 
     /// A walkable route between two buildings for the village's paths, found like an army route (same blocking rules) but only over a small window round them.
     /// Buildings and walls block, gates are open, lowered drawbridges carry you over water, open water stops you. None if there is no way.
+    #[cfg(test)]   // the old small route finder: kept as the yardstick the road tests compare the network against
     pub(crate) fn route_local(&self, ia: usize, ib: usize) -> Option<Vec<(f32, f32)>> {
         let (a, b) = (&self.buildings[ia], &self.buildings[ib]);
         let m = 16.0;

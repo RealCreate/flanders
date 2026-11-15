@@ -53,7 +53,9 @@ pub const BOSS_WEALTH_MAX: u32 = 5;
 /// The boss that leads raids, and the one that guards a lair.
 pub const RAID_BOSS: u8 = 1;
 pub const LAIR_BOSS: u8 = 2;
+#[allow(dead_code)]   // boss numbers: named for the tests; the table is indexed by number
 pub const WARLORD: u8 = 1;
+#[allow(dead_code)]
 pub const OGRE: u8 = 2;
 
 pub struct BossDef {
