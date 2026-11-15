@@ -380,3 +380,10 @@ table.flowtab td { padding: 3px 4px; border-bottom: 1px solid var(--paper-edge);
 table.flowtab td:first-child { width: 24px; }
 table.flowtab td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pill .d { min-width: 5.6ch; }
+
+/* the market's stall list */
+.mkt { display: flex; flex-direction: column; gap: 8px; }
+.mkt-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+.mkt-row .btnrow { grid-column: 1 / -1; flex-wrap: wrap; gap: 4px; }
+.mkt-left small { opacity: .7; }
+.mkt-price { white-space: nowrap; }

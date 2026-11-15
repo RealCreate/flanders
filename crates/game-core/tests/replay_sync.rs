@@ -7,7 +7,7 @@ use game_core::World;
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
-    Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
+    Buy(u8, i32), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -29,6 +29,7 @@ fn apply(w: &mut World, c: &C) {
         C::Split(id, u) => { w.det_split(*id, u); }
         C::Defend(id) => { w.det_defend(*id); }
         C::Choose(o) => { w.choose(*o); }
+        C::Buy(r, n) => { w.buy(*r, *n); }
         C::Rel(t, d) => { w.rel_add(*t, *d); }
         C::Journey(k, t, a, d) => { w.journey_start(*k, *t, *a, *d); }
         C::Caravan(r, a, t, d, e) => { w.caravan_send(*r, *a, *t, *d, *e); }
@@ -61,7 +62,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if t % 6 == 0 {
             let n = w.building_count().max(1) as u64;
             let c = match rng.below(30) {
-                0..=5 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(10, 70) as f32; C::Place([0u8, 1, 4, 0, 19, 18, 1, 25, 2, 3][rng.below(10) as usize], (ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.below(8) as u8) }
+                0..=5 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(10, 70) as f32; C::Place([0u8, 1, 4, 28, 19, 18, 1, 25, 2, 3][rng.below(10) as usize], (ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.below(8) as u8) }
                 6 => C::Upgrade(rng.below(n) as u32),
                 7 => C::Demolish(rng.below(n) as u32 + 1),
                 8 => C::Train(rng.below(4) as u8, rng.range(1, 6) as u32),
@@ -75,6 +76,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
                 20 => { let items: Vec<i32> = (0..rng.range(2, 8)).flat_map(|i| { let a = i as f32 * 0.9; [2, (a.cos() * 26.0) as i32, (a.sin() * 26.0) as i32, 0] }).collect(); C::Batch(items) }
                 21 => C::Split(rng.range(1, 4) as u32, [rng.range(0, 2) as u32, 0, 0, 0, 0]),
                 22 => C::Cheat(2, rng.range(0, 2), 12),
+                23 => C::Buy([0u8, 2, 3, 10, 1][rng.below(5) as usize], rng.range(1, 120)),
                 24 | 25 => C::Rel(rng.range(5, 8), rng.range(10, 40)),
                 26 | 27 => C::Journey(rng.below(6) as u8, rng.range(5, 8), 20, rng.range(20, 400) as f32),
                 28 => C::Caravan(rng.range(0, 3) as u8, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
@@ -251,4 +253,25 @@ fn a_plague_replays_to_the_same_state_through_every_wave() {
     for (what, r) in [("silent", replay(1337, 0, 0, &log, &hashes, &mut |_, _| {})), ("drawn every tick", replay(1337, 0, 0, &log, &hashes, &mut |w, _| { look(w); })), ("drawn now and then", replay(1337, 0, 0, &log, &hashes, &mut |w, t| if t % 7 == 3 { look(w); }))] {
         if let Some((t, c)) = r { panic!("plague replay ({what}) diverged at tick {t} after {c} of {} commands", log.len()); }
     }
+}
+
+/// Market stock is simulated state: a copy replaying a log of buys (some refused, some across day boundaries) matches the owner at every tick, and the stock section moves with each buy.
+#[test]
+fn market_buys_replay_identically() {
+    game_core::warm_navigation(1337);
+    let mut log: Vec<(u64, C)> = vec![(0, C::Cheat(3, 0, 0)), (0, C::Place(28, 0, 14, 0))];
+    for d in 0..6u64 { for (i, (r, n)) in [(0u8, 120), (2, 90), (10, 200), (1, 70), (0, 150), (5, 3)].into_iter().enumerate() { log.push((d * 240 + 30 + i as u64 * 20, C::Buy(r, n))); if i == 2 { log.push((d * 240 + 31, C::Cheat(3, 0, 0))); } } }
+    log.sort_by_key(|e| e.0);
+    let run = |habit: bool| {
+        let mut w = World::new(1337, 0, 0); let (mut i, mut hs, mut stock_parts) = (0, vec![], std::collections::HashSet::new());
+        for _ in 0..1500u64 {
+            while i < log.len() && log[i].0 <= w.tick() { apply(&mut w, &log[i].1); i += 1; }
+            w.step(); if habit { look(&mut w); }
+            hs.push(w.state_hash()); stock_parts.insert(w.state_hash_parts()[1]);
+        }
+        (hs, stock_parts.len())
+    };
+    let (a, changes) = run(false); let (b, _) = run(true);
+    assert_eq!(a, b, "a copy that looks around every tick must still match");
+    assert!(changes > 10, "the buys and the daily refills changed the stock section ({changes} different values)");
 }
