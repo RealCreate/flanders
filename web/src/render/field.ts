@@ -38,11 +38,13 @@ interface Det {
   dots: THREE.InstancedMesh | null; flag: THREE.Group | null;
 }
 
-export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home'];
+export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle'];
 
 import { GAP, trailAt, dotsAlong, nearestOnTrail } from './trail';
 const TREE_R = 0.9;                     // soldiers keep this far from a trunk
 const MAX_SHOWN = 70;
+/** Siege engines on the march: the gap between pairs in the column, how far each sits to either side of the path, how far behind the head the first pair rides, and the length of one engine. */
+export const SIEGE_GAP = 5.2, SIEGE_SIDE = 2.4, SIEGE_LEAD = 4, SIEGE_LEN = 3.2;
 
 /** Field armies on the map. The core plans the route for the army as a whole; here every soldier finds its own way along it:
  *  files up in dense forest and spreads out in the open, steps round trees and buildings, never walks into water. */
@@ -157,6 +159,12 @@ export class FieldView {
     while (d.siege.length > units[4]) this.group.remove(d.siege.pop()!);
   }
 
+  /** Steepness of the ground at a point: the largest height change per unit over two paces round it. */
+  private slopeAt(x: number, z: number) {
+    const h = this.terrain.walkAt(x, z);
+    return Math.max(Math.abs(this.terrain.walkAt(x + 2, z) - h), Math.abs(this.terrain.walkAt(x - 2, z) - h), Math.abs(this.terrain.walkAt(x, z + 2) - h), Math.abs(this.terrain.walkAt(x, z - 2) - h)) / 2;
+  }
+
   private onBridge(x: number, z: number) {
     const b = this.bridgeSeg;
     for (let i = 0; i < b.length; i += 4) {
@@ -268,17 +276,37 @@ export class FieldView {
         else { let dd = d.yaw - m.yaw; while (dd > Math.PI) dd -= 2 * Math.PI; while (dd < -Math.PI) dd += 2 * Math.PI; m.yaw += dd * Math.min(1, dt * 3); }
       });
       this.drawMarks(d);
-      // siege engines follow in single file at the back
+      // siege engines travel as a compact group: two abreast in a short column just behind the head of the army, on the very path the head took (the core routes them over wide, gentle ground),
+      // and drawn up in a tight block behind the ranks when it stops. They are never placed by a straight line behind the army, so they cannot cut a corner across a cliff, water or a building.
       const rows = Math.ceil(d.members.length / W);
       d.siege.forEach((g, i) => {
-        const back = rows * 1.5 + 2.5 + i * 3.8, colBack = (d.members.length + 1) * GAP + 2.5 + i * 3.8;
-        let tx = d.x - fx * back, tz = d.z - fz * back; const k = 1 - Math.exp(-dt * 2.2);
-        if (d.col > 0.002) { const [cx2, cz2] = trailAt(d.trail, d.x, d.z, colBack, fx, fz); tx += (cx2 - tx) * d.col; tz += (cz2 - tz) * d.col; }
-        g.position.x += (tx - g.position.x) * k; g.position.z += (tz - g.position.z) * k;
+        const pair = Math.floor(i / 2), side = i % 2 ? 1 : -1;
+        let tx: number, tz: number;
+        {
+          const back = rows * 1.5 + SIEGE_GAP * 0.7 + pair * SIEGE_GAP, bx = d.x - fx * back + rx * side * SIEGE_SIDE, bz = d.z - fz * back + rz * side * SIEGE_SIDE;   // at rest: a block behind the ranks
+          if (d.col > 0.002) {
+            const s0 = SIEGE_LEAD + pair * SIEGE_GAP, [cx2, cz2] = trailAt(d.trail, d.x, d.z, s0, fx, fz), [ax, az] = trailAt(d.trail, d.x, d.z, s0 + 1.5, fx, fz);
+            const tl = Math.hypot(cx2 - ax, cz2 - az) || 1, nx = -(cz2 - az) / tl, nz = (cx2 - ax) / tl;   // sideways to the path at that point
+            const mx = cx2 + nx * side * SIEGE_SIDE, mz = cz2 + nz * side * SIEGE_SIDE;
+            tx = bx + (mx - bx) * d.col; tz = bz + (mz - bz) * d.col;
+          } else { tx = bx; tz = bz; }
+          // never aim into water or a steep face: fall back to the middle of the path
+          if (this.terrain.wetAt(tx, tz) || this.slopeAt(tx, tz) > 0.95) { [tx, tz] = trailAt(d.trail, d.x, d.z, SIEGE_LEAD + pair * SIEGE_GAP, fx, fz); }
+        }
+        const px = g.position.x, pz = g.position.z, k = 1 - Math.exp(-dt * 2.6);
+        g.position.x += (tx - px) * k; g.position.z += (tz - pz) * k;
         this.tmp.length = 0; this.trees.nearTrees(g.position.x, g.position.z, 2.2, this.tmp);
         for (const t of this.tmp) { const ox = g.position.x - t.x, oz = g.position.z - t.z, od = Math.hypot(ox, oz) || 0.01; if (od < 1.6) { g.position.x += ox / od * (1.6 - od); g.position.z += oz / od * (1.6 - od); } }
-        g.position.y = d.state === 4 ? 0.3 : this.terrain.walkAt(g.position.x, g.position.z);
-        const ddx = d.x - g.position.x, ddz = d.z - g.position.z; g.rotation.y += (Math.atan2(ddx, ddz) - g.rotation.y) * Math.min(1, dt * 3);
+        for (const o of obs) { const ox = g.position.x - o.x, oz = g.position.z - o.z, od = Math.hypot(ox, oz) || 0.01, rr = o.r + 1.6; if (od < rr) { g.position.x += ox / od * (rr - od); g.position.z += oz / od * (rr - od); } }
+        if (d.state !== 4 && this.terrain.wetAt(g.position.x, g.position.z) && !this.terrain.wetAt(px, pz)) { g.position.x = px; g.position.z = pz; }   // a step into water is undone
+        // it rests on the ground under both ends of its frame (the higher of the two, so the wheels never sink into a rise), changing height no faster than it could roll, and tilts with the slope
+        const ddx = d.x - g.position.x, ddz = d.z - g.position.z, face = Math.atan2(ddx, ddz), hx = Math.sin(g.rotation.y), hz = Math.cos(g.rotation.y), half = SIEGE_LEN / 2;
+        const yF = this.terrain.walkAt(g.position.x + hx * half, g.position.z + hz * half), yB = this.terrain.walkAt(g.position.x - hx * half, g.position.z - hz * half), yC = this.terrain.walkAt(g.position.x, g.position.z);
+        const want = d.state === 4 ? 0.3 : Math.max(yC, (yF + yB) / 2, Math.min(yF, yB) + 0.0);
+        const cy = g.userData.sy as number | undefined; g.userData.sy = cy === undefined || !Number.isFinite(cy) ? want : cy + Math.max(-6 * dt, Math.min(6 * dt, want - cy));
+        g.position.y = Math.max(g.userData.sy as number, d.state === 4 ? 0.3 : Math.min(yF, yB, yC));   // (never below the lowest ground under it)
+        g.rotation.y += (() => { let da = face - g.rotation.y; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; return da; })() * Math.min(1, dt * 3);
+        g.rotation.x = d.state === 4 ? 0 : -Math.atan2(yF - yB, SIEGE_LEN) * 0.8;
         (g.userData.arm as THREE.Object3D).rotation.x = -0.9;
       });
       // boats while crossing wide water
@@ -328,6 +356,7 @@ export class FieldView {
     const r2 = radius * radius;
     for (const d of this.dets.values()) {
       const front = d.state === 2;
+      if (d.state === 8) continue;   // its soldiers are in the battle: the battle view draws them
       for (const m of d.members) {
         if ((m.x - cx) ** 2 + (m.z - cz) ** 2 > r2) continue;
         const y = m.dy ?? (d.state === 4 ? 0.35 : this.terrain.walkAt(m.x, m.z));   // (on a bridge or drawbridge: the height of its deck, reached smoothly)

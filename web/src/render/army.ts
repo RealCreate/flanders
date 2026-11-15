@@ -278,9 +278,10 @@ export class ArmyView {
         if (!f.alive && f.hp > 0) continue;   // ran off the field
         if (!near(f.x, f.z)) continue;
         if (!f.alive) { if (f.kind !== 4) this.drawFallen(crowd, f); continue; }
-        if (f.side === 1 && f.elev > 1.0 && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, f.elev + this.terrain.walkAt(f.x, f.z) - 0.1, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.05; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.04; }
+        if (f.side === 1 && f.elev > 1.0 && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, f.elev + this.terrain.walkAt(f.x, f.z) - 0.28 + Math.sin(t * 3.1 + f.seed) * 0.07, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.12; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.14; r.rotation.x = Math.sin(t * 1.7 + f.seed * 3) * 0.08; }   // (a raft wallows: the raiders on it are helpless, see the core's WADE_* numbers)
         if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
+        if (f.side === 1 && f.elev > 0.3 && l.body !== undefined) l.body = mix(l.body, 0x4a6a84, 0.4);   // soaked and struggling in the water: a cold, grey-blue tint
         if (f.flash > 0 && l.body !== undefined) l.body = mix(l.body, 0xff3a2a, Math.min(0.75, f.flash / 0.3 * 0.75));
         if (f.side === 0 && f.kind === 1) {   // archers stationed in a tower shoot from its walkway
           const tw = this.towers.find(q => (q.x - f.x) ** 2 + (q.z - f.z) ** 2 < 2.6 * 2.6);
