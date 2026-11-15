@@ -43,7 +43,7 @@ export class Spans {
   pickHit(ray: THREE.Raycaster): { idx: number; d: number } | null {
     if (!this.ranges.length) return null;
     const hit = ray.intersectObject(this.mesh, false)[0]; if (!hit || hit.faceIndex == null) return null;
-    for (const r of this.ranges) if (hit.faceIndex >= r.start && hit.faceIndex < r.end) return { idx: r.idx, d: hit.distance };
+    for (const r of this.ranges) if (hit.faceIndex >= r.start && hit.faceIndex < r.end) return r.idx >= 0 ? { idx: r.idx, d: hit.distance } : null;   // (a bridge the soldiers built is not a building: it cannot be selected)
     return null;
   }
 

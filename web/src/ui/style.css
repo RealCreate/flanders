@@ -357,6 +357,9 @@ kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5
 .trade-row .tfield input { border: 0; background: transparent; padding: 0 4px; text-align: center; min-width: 0; height: 34px; -moz-appearance: textfield; }
 .trade-row .tfield input::-webkit-outer-spin-button, .trade-row .tfield input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 #attack-form select { height: 36px; box-sizing: border-box; }
+/* a caption over a procession on the road between two villages */
+.lbl.jr { left: 0; top: 0; will-change: transform; white-space: nowrap; font: 600 11px var(--f-ui); color: #fff; background: #000b; padding: 2px 8px; border-radius: 9px; text-shadow: 0 1px 2px #000; }
+.lbl.jr[data-kind="99"] { background: #7a1010e0; }
 
 /* ---------- drawn icons (see ui/icons.ts) ---------- */
 svg.gi { display: inline-block; vertical-align: -0.28em; flex: none; overflow: visible; }

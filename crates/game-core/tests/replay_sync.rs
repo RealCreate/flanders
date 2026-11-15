@@ -7,6 +7,7 @@ use game_core::World;
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]),
+    Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -26,6 +27,9 @@ fn apply(w: &mut World, c: &C) {
         C::Raid(a, u, t) => { w.start_raid(*a, u, *t); }
         C::Batch(v) => { w.place_batch(v); }
         C::Split(id, u) => { w.det_split(*id, u); }
+        C::Rel(t, d) => { w.rel_add(*t, *d); }
+        C::Journey(k, t, a, d) => { w.journey_start(*k, *t, *a, *d); }
+        C::Caravan(r, a, t, d, e) => { w.caravan_send(*r, *a, *t, *d, *e); }
     }
 }
 
@@ -37,8 +41,9 @@ impl Rng {
 }
 
 /// Everything a client's renderer asks the core every tick. These calls fill the core's caches (paths, overlays) at moments of the host's choosing.
-fn look(w: &World) -> usize {
+fn look(w: &mut World) -> usize {
     let mut n = w.det_flat().len() + w.buildings_flat().len() + w.roads_flat().len() + w.road_paths_flat().len() + w.felled_flat().len() + w.bridges_flat().len();
+    n += w.journeys_flat().len() + w.link_points(400.0, 0.0).len() + w.take_arrivals().len() + w.take_delivered().len();
     let f = w.det_flat(); for o in (0..f.len()).step_by(16) { n += w.det_path(f[o] as u32).len(); }
     n + w.net_route(-30.0, -30.0, 60.0, 40.0).len() + w.walk_route(10.0, 10.0, -50.0, 80.0).len()
 }
@@ -53,7 +58,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if t % 25 == 0 { issue(&mut w, &mut log, C::Cheat(3, 0, 0)); }   // keep the store full: the test is about replay, not about the economy
         if t % 6 == 0 {
             let n = w.building_count().max(1) as u64;
-            let c = match rng.below(24) {
+            let c = match rng.below(30) {
                 0..=5 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(10, 70) as f32; C::Place([0u8, 1, 4, 0, 19, 18, 1, 25, 2, 3][rng.below(10) as usize], (ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.below(8) as u8) }
                 6 => C::Upgrade(rng.below(n) as u32),
                 7 => C::Demolish(rng.below(n) as u32 + 1),
@@ -68,12 +73,15 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
                 20 => { let items: Vec<i32> = (0..rng.range(2, 8)).flat_map(|i| { let a = i as f32 * 0.9; [2, (a.cos() * 26.0) as i32, (a.sin() * 26.0) as i32, 0] }).collect(); C::Batch(items) }
                 21 => C::Split(rng.range(1, 4) as u32, [rng.range(0, 2) as u32, 0, 0, 0, 0]),
                 22 => C::Cheat(2, rng.range(0, 2), 12),
+                24 | 25 => C::Rel(rng.range(5, 8), rng.range(10, 40)),
+                26 | 27 => C::Journey(rng.below(6) as u8, rng.range(5, 8), 20, rng.range(20, 400) as f32),
+                28 => C::Caravan(rng.range(0, 3) as u8, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
                 _ => C::Raid(rng.below(628) as f32 / 100.0, [3, 2, 1, 0, 0], 7),
             };
             issue(&mut w, &mut log, c);
         }
         w.step();
-        if watch { let _ = look(&w); }
+        if watch { let _ = look(&mut w); }
         hashes.push(w.state_hash());
     }
     if std::env::var("STATS").is_ok() { eprintln!("seed {seed}: {} commands, {} buildings, {} felled, {} armies, {} road paths, pop {}", log.len(), w.building_count(), w.felled_flat().len() / 3, w.det_flat().len() / 16, w.road_paths_flat().len(), w.population()); }

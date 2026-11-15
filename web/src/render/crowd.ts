@@ -134,6 +134,23 @@ export class Crowd {
   }
   private put(mesh: THREE.InstancedMesh, i: number, m: THREE.Matrix4, hex?: number) { mesh.setMatrixAt(i, m); if (hex !== undefined) mesh.setColorAt(i, this.col.setHex(hex)); }
 
+  /** A horse with nobody on it (pulling a cart, carrying a pack): standing at (x, y, z) facing `yaw`. `phase` is the gait angle and `speed` the ground speed, as for a person. */
+  addHorse(x: number, y: number, z: number, yaw: number, phase: number, speed: number, hex: number, scale = 1) {
+    if (this.n.horse >= MAX - 1 || this.n.hleg > MAX * 4 - 5) return;
+    const walk = speed > 0.35, gallop = speed > 5, trot = speed > 2.2;
+    const hbob = walk ? Math.abs(Math.sin(phase * (gallop ? 1 : 2))) * (gallop ? 0.14 : trot ? 0.06 : 0.03) : 0;
+    this.v.set(x, y, z); this.s.setScalar(scale); this.e.set(0, yaw, 0, 'YXZ'); this.q.setFromEuler(this.e); this.B.compose(this.v, this.q, this.s);
+    this.frame(this.Hm, this.B, 0, hbob, 0, walk ? Math.sin(phase) * (gallop ? 0.07 : 0.03) : 0);
+    this.Hm.scale(this.s.set(1.05, 1.05, 1.05));
+    this.put(this.horse, this.n.horse++, this.Hm, hex);
+    const off = gallop ? [0, 0.25, 2.3, 2.55] : trot ? [0, Math.PI, Math.PI, 0] : [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
+    const amp = walk ? (gallop ? 0.95 : trot ? 0.6 : 0.42) : 0;
+    [[0.16, 0.45], [-0.16, 0.45], [0.16, -0.45], [-0.16, -0.45]].forEach(([lx, lz], k) => {
+      this.frame(this.l1, this.Hm, lx, 0.92, lz, -(amp * Math.sin(phase + off[k])));
+      this.put(this.horseLeg, this.n.hleg++, this.l1);
+    });
+  }
+
   add(d: Draw) {
     if (this.n.torso >= MAX - 1) return;
     const sc = d.scale ?? 1, ph = d.phase, sp = d.speed ?? 0, dead = d.pose === 4, walk = d.pose === 1 && !dead;

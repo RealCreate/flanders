@@ -143,6 +143,9 @@ const CHOICE_DAYS: u64 = 2;
 pub const DAY: u64 = 240;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
+/// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
+pub const WHEEL_REACH: f32 = 4.4;
+pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
@@ -150,7 +153,18 @@ const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
 #[derive(Clone)]
-pub struct Caravan { res: u8, amount: i32, to: i32, eta: u64, escort: u32 }
+pub struct Caravan { res: u8, amount: i32, to: i32, start: u64, eta: u64, escort: u32 }
+/// A diplomatic errand on the road to another village (`tag`): `kind` is a treaty kind (0 trade pact, 1 peace, 2 alliance) or one of JK_ENVOY, JK_MARRIAGE, JK_WAR; `arg` is the treaty's length in days.
+/// It sets out at `start` and its effect happens when it arrives at `arrive`. Everyone's copy of the village holds the same list, so the procession can be shown on all of them.
+#[derive(Clone)]
+pub struct Journey { kind: u8, tag: i32, arg: i32, start: u64, arrive: u64 }
+pub const JK_ENVOY: u8 = 3;
+pub const JK_MARRIAGE: u8 = 4;
+pub const JK_WAR: u8 = 5;
+/// The kind a caravan has in `journeys_flat`.
+pub const JK_CARAVAN: u8 = 6;
+/// Ticks per unit of road for each journey kind (a rider is quicker than a procession).
+const JOURNEY_SPEED: [f32; 6] = [2.2, 1.6, 1.5, 1.8, 1.0, 3.0];
 /// An agreement with another village: `kind` 0 trade pact (better prices), 1 non-aggression (neither side may start a battle against the other), 2 alliance (the same, and the best prices), until tick `until`.
 #[derive(Clone)]
 pub struct Treaty { tag: i32, kind: u8, until: u64 }
@@ -197,6 +211,8 @@ pub struct World {
     share_until: u64,            // winter: everyone huddles together, firewood lasts twice as long
     quarantine_until: u64,       // while quarantined, plague kills fewer and heals faster but the sick do no work
     caravans: Vec<Caravan>,   // goods on the road to another village
+    journeys: Vec<Journey>,   // envoys, treaty offers, brides and war heralds on the road to another village (part of the state)
+    arrivals: Vec<[i32; 4]>,  // [kind, tag, arg, tick] of journeys that arrived since the last call to take_arrivals (a notice for the player's own client, not part of the state)
     awaiting: Vec<[i32; 3]>,  // [resource, amount, to] delivered caravans whose payment has not been settled yet (part of the state)
     delivered: Vec<[i32; 3]>, // the same, but only as a notice for the player's own client to pass on (drained by take_delivered, not part of the state)
     treaties: Vec<Treaty>,    // agreements with other villages
@@ -305,7 +321,7 @@ impl World {
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
         };
@@ -708,6 +724,7 @@ impl World {
         if kind == BRIDGE { return self.place_bridge(dx, dy); }
         let code = self.can_place(kind, dx, dy);
         if code != 0 { return code; }
+        if kind == WATERWHEEL && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
         let d = &DEFS[kind as usize];
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
@@ -718,6 +735,7 @@ impl World {
             let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
             pad_h = hi.max(0.3);
         }
+        if kind == WATERWHEEL { pad_h = pad_h.min(WHEEL_PAD_MAX); }   // the house stands low on the bank so its wheel dips into the water
         if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
             let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
             let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
@@ -745,6 +763,41 @@ impl World {
         self.defer_roads = false;
         self.after_change();
         out
+    }
+
+    /// Which way the waterwheel's wheel looks for a turn `rot`: the model's +x axis turned by r * 45 degrees (the renderer rotates about the vertical, which sends +x to (cos, -sin)).
+    fn wheel_dir(rot: u8) -> (f32, f32) { let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; (a.cos(), -a.sin()) }
+    /// Does a waterwheel house at (x, y) turned `rot` have its wheel out over open water?
+    fn wheel_in_water(&self, x: f32, y: f32, rot: u8) -> bool {
+        let (ux, uy) = Self::wheel_dir(rot);
+        self.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2 && self.height_at(x + ux * (WHEEL_REACH + 1.2), y + uy * (WHEEL_REACH + 1.2)) < 0.2
+    }
+    /// Where a waterwheel clicked at (dx, dy) goes: pulled onto the bank beside the nearest water and turned so its wheel hangs out over it.
+    /// [dx, dy, turn] relative to the origin (what `place` takes), or nothing when there is no water within reach or no bank there where the house can stand. Pure function of the world, so
+    /// the client only ever sends the answer: `place` checks it again.
+    pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        let wet = |px: f32, py: f32| self.height_at(px, py) < 0.1;
+        let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
+        'find: for r in 1..=16 { for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; let (px, py) = (x + a.cos() * r as f32, y + a.sin() * r as f32); if wet(px, py) { p = Some((px, py)); break 'find; } } }
+        let Some((px, py)) = p else { return vec![] };
+        // the turns, best first: the one whose wheel points most nearly from the click towards the water (all eight when the click is in the water itself)
+        let (vx, vy) = (px - x, py - y); let vl = vx.hypot(vy);
+        let mut turns: Vec<(f32, u8)> = (0..8u8).map(|r| { let (ux, uy) = Self::wheel_dir(r); (if vl < 0.5 { 0.0 } else { -(ux * vx + uy * vy) / vl }, r) }).collect();
+        turns.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+        for &(_, r) in &turns {
+            let (ux, uy) = Self::wheel_dir(r);
+            // walk back from the water along the opposite of the wheel's way to the first dry bank
+            let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
+            for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
+                let back = t + 3.4 + extra - (WHEEL_REACH - 3.4);
+                let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
+                let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
+                let code = self.can_place(WATERWHEEL, cx as i32, cy as i32);
+                if (code == 0 || code == -6) && self.wheel_in_water(sx, sy, r) { return vec![cx, cy, r as f32]; }
+            }
+        }
+        vec![]
     }
 
     /// Where a drawbridge clicked at (dx, dy) goes: snapped onto the nearest piece of moat or river (its middle line) and turned square across it, so the deck spans the water from bank to bank.
@@ -1110,6 +1163,7 @@ impl World {
         self.toll_step();
         self.hospital_step();
         self.caravan_step();
+        self.journey_step();
         for _ in 0..4 { self.fire_substep(); self.battle_substep(); }
         for i in 0..N_RES { self.flow[i] = self.stock[i] - before[i]; }
         self.staffing();
@@ -1349,6 +1403,23 @@ impl World {
         self.caravans = rest;
     }
 
+    /// Errands that reach the other village do what they came for: the treaty is signed, the envoy's gifts warm the feelings, the bride is wed, the war declared.
+    fn journey_step(&mut self) {
+        if self.journeys.is_empty() { return; }
+        let now = self.tick; let mut rest = vec![]; let mut done = vec![];
+        for j in std::mem::take(&mut self.journeys) { if j.arrive <= now { done.push(j); } else { rest.push(j); } }
+        self.journeys = rest;
+        for j in done {
+            match j.kind {
+                TREATY_TRADE | TREATY_PEACE | TREATY_ALLIANCE => { self.treaty_set(j.tag, j.kind, j.arg.max(1) as u32); }
+                JK_ENVOY => { self.rel_add(j.tag, 8); self.push_event(EV_DIPLO, 0, 0); }
+                JK_MARRIAGE => { if !self.married.contains(&j.tag) { self.married.push(j.tag); self.rel_add(j.tag, 30); self.push_event(EV_DIPLO, 2, 0); } }
+                _ => { self.declare_war(j.tag); }
+            }
+            if self.arrivals.len() < 64 { self.arrivals.push([j.kind as i32, j.tag, j.arg, now as i32]); }
+        }
+    }
+
     /// Ports sell the most plentiful stock for gold every half minute, and buy grain when the village runs short.
     pub(crate) fn trade_step(&mut self) {
         let cap = self.storage_cap();
@@ -1579,8 +1650,44 @@ impl World {
         if self.stock[res as usize] < amount { return -2; }
         if escort > self.army[0] { return -3; }
         self.stock[res as usize] -= amount; self.army[0] -= escort;
-        self.caravans.push(Caravan { res, amount, to, eta: self.tick + 60 + (distance / CARAVAN_SPEED) as u64, escort });
+        self.caravans.push(Caravan { res, amount, to, start: self.tick, eta: self.tick + 60 + (distance / CARAVAN_SPEED) as u64, escort });
         0
+    }
+    /// Send an errand to another village (tag) over `distance` units of road: kind 0..2 a treaty offer (arg = days), 3 an envoy with gifts (20 coins), 4 a royal marriage (150 coins), 5 a declaration of war.
+    /// It costs what the instant version cost, now; the effect comes when the party arrives. 0 ok, -1 nonsense, -6 poor, -7 one of that kind is already on the road, -20 too soon, -21 not liked enough, -22 will not agree.
+    pub fn journey_start(&mut self, kind: u8, tag: i32, arg: i32, distance: f32) -> i32 {
+        if kind > JK_WAR || tag == 0 || self.journeys.len() >= 16 || !(0.0..=3000.0).contains(&distance) { return -1; }
+        if self.journeys.iter().any(|j| j.tag == tag && j.kind == kind) { return -7; }
+        match kind {
+            TREATY_TRADE | TREATY_PEACE | TREATY_ALLIANCE => { if arg < 1 || arg > 120 { return -1; } if !self.treaty_acceptable(tag, kind) { return -22; } }
+            JK_ENVOY => {
+                if self.last_envoy.iter().any(|e| e.0 == tag && self.tick < e.1 + 3 * DAY) { return -20; }
+                if self.stock[GD as usize] < 20 { return -6; }
+                self.stock[GD as usize] -= 20; self.last_envoy.retain(|e| e.0 != tag); self.last_envoy.push((tag, self.tick));
+            }
+            JK_MARRIAGE => {
+                if self.married.contains(&tag) { return -1; }
+                if self.relation(tag) < 30 { return -21; }
+                if self.stock[GD as usize] < 150 { return -6; }
+                self.stock[GD as usize] -= 150;
+            }
+            _ => {}
+        }
+        let dur = 30 + (distance / JOURNEY_SPEED[kind as usize]) as u64;
+        self.journeys.push(Journey { kind, tag, arg, start: self.tick, arrive: self.tick + dur });
+        0
+    }
+    /// Everything on the road to another village: [kind, to (tag), a, b, escort, start tick, arrival tick] each, stride 7. Kinds 0..5 as in `journey_start` (a = days), 6 a caravan (a = resource, b = amount).
+    pub fn journeys_flat(&self) -> Vec<i32> {
+        let mut v: Vec<i32> = self.journeys.iter().flat_map(|j| [j.kind as i32, j.tag, j.arg, 0, 0, j.start as i32, j.arrive as i32]).collect();
+        for c in &self.caravans { v.extend([JK_CARAVAN as i32, c.to, c.res as i32, c.amount, c.escort as i32, c.start as i32, c.eta as i32]); }
+        v
+    }
+    /// Errands that arrived since the last call: [kind, to (tag), arg, tick] each. Only a notice for the player's own client (the effect was already applied in `step`).
+    pub fn take_arrivals(&mut self) -> Vec<i32> { std::mem::take(&mut self.arrivals).into_iter().flatten().collect() }
+    /// The invisible path from our city to the village whose hall is at (tx, ty), as [x, y, x, y, ...] from our hall to theirs, or empty when none was chained.
+    pub fn link_points(&self, tx: f32, ty: f32) -> Vec<f32> {
+        self.links.iter().find(|pl| pl.last().map_or(false, |e| (e.0 - tx).hypot(e.1 - ty) < 12.0)).map_or(vec![], |pl| pl.iter().flat_map(|p| [p.0, p.1]).collect())
     }
     /// Goods on the road: [resource, amount, to, ticks left, escort] each.
     pub fn caravans_flat(&self) -> Vec<i32> { self.caravans.iter().flat_map(|c| [c.res as i32, c.amount, c.to, (c.eta.saturating_sub(self.tick)) as i32, c.escort as i32]).collect() }
@@ -1871,7 +1978,7 @@ impl World {
             part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); } } }),
             part(&|mix| {   // trade and diplomacy
                 for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }
-                for c in &self.caravans { mix(c.eta); mix(c.amount as u64); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }
+                for c in &self.caravans { mix(c.start); mix(c.eta); mix(c.amount as u64); mix(c.res as u64); mix(c.to as i64 as u64); mix(c.escort as u64); } for j in &self.journeys { mix(j.kind as u64); mix(j.tag as i64 as u64); mix(j.arg as i64 as u64); mix(j.start); mix(j.arrive); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }
             }),
             part(&|mix| {   // the land the soldiers and the builders changed
                 for f in &self.felled { for v in f { mix(v.to_bits() as u64); } } mix(self.groves.len() as u64);
@@ -2776,6 +2883,38 @@ mod family_tests {
 mod trade_tests {
     use super::*;
     fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [300; N_RES]; w }
+
+    #[test]
+    fn errands_travel_and_do_their_work_only_when_they_arrive() {
+        let mut w = rich(); w.rel_add(7, 60);
+        // an offer costs nothing but sets out; nothing is signed until it arrives
+        assert_eq!(w.journey_start(TREATY_PEACE, 7, 30, 200.0), 0);
+        assert_eq!(w.journey_start(TREATY_PEACE, 7, 30, 200.0), -7, "one of a kind at a time");
+        assert_eq!(w.journey_start(TREATY_ALLIANCE, 7, 30, 200.0), -22, "no alliance without a pact");
+        assert_eq!(w.journey_start(JK_ENVOY, 7, 0, 100.0), 0); assert_eq!(w.stock[GD as usize], 280);
+        assert_eq!(w.journey_start(JK_MARRIAGE, 7, 0, 300.0), 0); assert_eq!(w.stock[GD as usize], 130);
+        assert!(!w.has_treaty(7, TREATY_PEACE) && !w.married_to(7));
+        let f = w.journeys_flat(); assert_eq!(f.len(), 21);
+        let arrive: Vec<i32> = f.chunks(7).map(|c| c[6]).collect();
+        assert_eq!(arrive[0], 30 + (200.0f32 / 1.6) as i32);
+        let before = w.relation(7);
+        let mut seen = vec![];
+        for _ in 0..400 { w.step(); let now = w.tick() as i32; for c in w.journeys_flat().chunks(7) { assert!(c[5] <= now && now < c[6]); } for a in w.take_arrivals().chunks(4) { assert_eq!(a[3], now); seen.push((a[0], now)); } }
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        for (k, at) in &seen { let idx = [1, 3, 4].iter().position(|x| x == k).unwrap(); assert_eq!(*at, arrive[idx], "kind {k} arrives on its tick"); }
+        assert!(w.has_treaty(7, TREATY_PEACE) && w.married_to(7) && w.relation(7) > before);
+        assert!(w.journeys_flat().is_empty());
+        // a war herald ends treaties when it gets there
+        assert_eq!(w.journey_start(JK_WAR, 7, 0, 50.0), 0); assert!(w.married_to(7));
+        for _ in 0..200 { w.step(); }
+        assert!(!w.married_to(7) && !w.has_treaty(7, TREATY_PEACE));
+    }
+
+    #[test]
+    fn link_points_follow_the_chained_path() {
+        let mut w = World::new(1337, 0, 0); assert!(w.link_points(300.0, 0.0).is_empty());
+        if w.link_village(300.0, 0.0) == 0 { let p = w.link_points(300.0, 0.0); assert!(p.len() >= 4 && p.len() % 2 == 0); assert!((p[p.len() - 2] - 300.0).hypot(p[p.len() - 1]) < 12.0); }
+    }
 
     #[test]
     fn scarce_goods_cost_more_and_plenty_costs_less() {
@@ -3871,6 +4010,32 @@ mod pathnet_tests {
         for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 30, 4)] { w.place(k, x, y, 0); }
         let p = w.find_path(&[5, 0, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
         assert!(p.len() >= 2 && p.last().map_or(false, |q| (q.x - 30.0).abs() < 3.0));
+    }
+
+    #[test]
+    fn a_waterwheel_snaps_to_the_bank_with_its_wheel_over_the_water() {
+        let mut w = village(); w.stock = [500; N_RES];
+        for i in 0..6 { assert!(w.place(RIVER, 20 + i * 4, -30, 2) >= 0); }
+        let mut seen = 0;
+        for (cx, cy) in [(24, -22), (30, -24), (28, -40), (36, -30), (34, -36), (22, -23)] {
+            let s = w.waterwheel_snap(cx, cy);
+            if s.is_empty() { continue; }
+            seen += 1;
+            let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
+            let (x, y) = ((w.ox + dx) as f32, (w.oy + dy) as f32);
+            let (ux, uy) = World::wheel_dir(rot);
+            assert!(w.height_at(x, y) >= 0.4, "the house is on dry land: {s:?}");
+            assert!(w.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2, "the wheel hangs over water: {s:?}");
+            assert_eq!(w.waterwheel_snap(cx, cy), s, "snapping is a pure function");
+            // turned the other way the wheel would be in the air over dry ground
+            assert_eq!(w.place(WATERWHEEL, dx, dy, (rot + 4) & 7), -16, "wheel facing the land is refused");
+            if seen == 1 {
+                assert!(w.place(WATERWHEEL, dx, dy, rot) >= 0, "the snapped spot can be built on: {s:?}");
+                assert!(w.buildings.last().unwrap().pad_h <= WHEEL_PAD_MAX + 1e-4);
+            }
+        }
+        assert!(seen >= 3, "the snap finds the bank from most clicks ({seen})");
+        assert!(w.waterwheel_snap(-60, 60).is_empty(), "no water, no snap");
     }
 
     #[test]
