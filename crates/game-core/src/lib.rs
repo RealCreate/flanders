@@ -3847,6 +3847,30 @@ mod pathnet_tests {
     }
 
     #[test]
+    fn the_paths_never_cross_a_garden_park_or_markets_beds() {
+        for kind in [GARDEN, PARK, MARKET] {
+            for (tiers, rots) in [(0u32, [0u8, 3, 5]), (2, [1, 4, 7]), (3, [2, 6, 0])] {
+                let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+                let mut bs = vec![];
+                for ((x, y), rot) in [(16, 6), (-20, 8), (4, -24)].into_iter().zip(rots) { let i = w.place(kind, x, y, rot); if i >= 0 { bs.push(i as usize); } }
+                assert!(bs.len() >= 2, "kind {kind}: placed {}", bs.len());
+                for &f in &bs { for _ in 0..tiers { let _ = w.upgrade(f as u32); } }
+                let net = w.net_flat(); let (n, e) = (net[0] as usize, net[1] as usize);
+                let bad = |x: f32, y: f32| bs.iter().any(|&f| pathnet::in_fields(&w.buildings[f], x, y, 0.0));
+                for i in 0..n { assert!(!bad(net[2 + 2 * i], net[3 + 2 * i]), "kind {kind} tier {tiers}: a node in a bed at {:.1},{:.1}", net[2 + 2 * i], net[3 + 2 * i]); }
+                for k in 0..e { let o = 2 + 2 * n + 3 * k; let (a, b) = (net[o] as usize, net[o + 1] as usize); for t in 1..8 { let f = t as f32 / 8.0; let (x, y) = (net[2 + 2 * a] + (net[2 + 2 * b] - net[2 + 2 * a]) * f, net[3 + 2 * a] + (net[3 + 2 * b] - net[3 + 2 * a]) * f); assert!(!bad(x, y), "kind {kind} tier {tiers}: an edge across a bed at {x:.1},{y:.1}"); } }
+                // no bed lies beyond the ring, so the path round it is outside them all
+                for &f in &bs { let b = &w.buildings[f]; let rr = pathnet::ring_radius(kind, b.tier); for r in pathnet::field_rects(kind, b.tier) { assert!((r.0.abs() + r.2).hypot(r.1.abs() + r.3) < rr, "kind {kind}: a rectangle pokes out of the ring"); } }
+                // and a walker going past does not cross them either
+                for (x0, y0, x1, y1) in [(30.0f32, 6.0f32, 2.0f32, 6.0f32), (-34.0, 8.0, -6.0, 8.0), (4.0, -38.0, 4.0, -10.0)] {
+                    let r = w.walk_route(x0, y0, x1, y1);
+                    if !r.is_empty() { let mut pts = vec![(x0, y0)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1]))); for q in pts.windows(2) { for t in 0..=30 { let f = t as f32 / 30.0; let (x, y) = (q[0].0 + (q[1].0 - q[0].0) * f, q[0].1 + (q[1].1 - q[0].1) * f); assert!(!bad(x, y), "kind {kind}: walked across a bed at {x:.1},{y:.1}"); } } }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn soldiers_walk_faster_on_a_road() {
         let w = village();
         let v = w.roads_flat(); assert!(!v.is_empty());
