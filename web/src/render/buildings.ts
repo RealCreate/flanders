@@ -372,7 +372,7 @@ const mine = (gold: boolean): Model => b => {
   const t = b.t, m = M();
   // The mine is the entrance only: it is placed against the deposit (see depositSnap in main.ts), whose rocks stand just behind the door.
   const post = t >= 2 ? m.stone : m.darkwood;
-  b.box(3.6, 0.5, 2.6, m.rock, 0, -0.2, -1.2);   // a shelf of spoil in front of the face, so the door is not left floating on a slope
+  b.box(3.6, 0.6, 2.6, m.rock, 0, -0.2, -1.2);   // a shelf of spoil in front of the face, so the door is not left floating on a slope (its top, 0.4, stays clear of the stone footing option's top at 0.3: the same height z-fought)
   b.box(0.45, 2.4, 0.45, post, -1.1, 0, -1.9); b.box(0.45, 2.4, 0.45, post, 1.1, 0, -1.9); b.box(3, 0.5, 0.6, post, 0, 2.2, -1.9);
   b.box(1.8, 1.9, 0.2, new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 1 }), 0, 0, -2.0);
   for (let i = 0; i < 3; i++) b.box(0.18, 0.18, 1.2, m.iron, -0.3 + i * 0.3, 0.02, 2.5 + i * 0.5).visible = false;

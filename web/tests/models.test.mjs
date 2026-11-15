@@ -25,6 +25,24 @@ test('the placement ghost can be made from the iron mine and the gold mine', () 
   }
 });
 
+test('the mine\'s spoil shelf does not share a top face with the stone footing option (it z-fought the door pad)', () => {
+  for (const kind of [9, 10]) for (const tier of [0, 1, 2, 3]) {
+    const g = B.buildModel(kind, tier, 0x2f5fa8, 0, 8);
+    g.updateMatrixWorld(true);
+    const boxes = [];
+    g.traverse(o => { if (o.isMesh && o.visible) { o.geometry.computeBoundingBox(); const w = o.geometry.boundingBox.clone().applyMatrix4(o.matrixWorld); boxes.push(w); } });
+    const flat = boxes.filter(x => Math.abs(x.max.y - x.min.y - 0.3) < 1e-3 && Math.abs(x.min.y) < 1e-3);
+    assert.ok(flat.length >= 1, `kind ${kind} tier ${tier}: the footing is there`);
+    const foot = flat.reduce((a, c) => (c.max.x - c.min.x > a.max.x - a.min.x ? c : a));
+    for (const x of boxes) {
+      if (x === foot) continue;
+      const overlapXZ = x.min.x < foot.max.x && x.max.x > foot.min.x && x.min.z < foot.max.z && x.max.z > foot.min.z;
+      if (!overlapXZ) continue;
+      for (const y of [x.min.y, x.max.y]) assert.ok(Math.abs(y - foot.max.y) > 1e-3, `kind ${kind} tier ${tier}: a face at the footing's top height ${foot.max.y}`);
+    }
+  }
+});
+
 // The watermill: its stone footing stops at the bank (the core's WHEEL_FOOT, 3.2 from the house's middle) and the wheel hangs out over the water on an axle WHEEL_REACH (5.2) out, clear of the footing.
 test('the watermill footing ends before the wheel starts, at every tier', async () => {
   const THREE = await import('three');
