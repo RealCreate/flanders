@@ -71,6 +71,12 @@ played by this build's core. Any change that makes a log play out differently ch
 are not judged, and get one calm toast. Saved villages record both; a village saved by another build logs a warning when loaded (the history is replayed with the rules of the build that loads it).
 Both fields are checked in `validate.ts` (`sanitizeBuild`, `sanitizeHash`); the room id did not change, so builds still meet (and say so).
 
+## Waterwheel placement
+
+No new state. The waterwheel's snap to the bank (`waterwheel_snap`) is computed on the clicking client only and the *result* travels in the `place` command (x, y, rot), like the drawbridge's; `place` itself refuses
+a wheel that does not hang over water for that turn (`wheel_in_water`, -16) and levels the pad no higher than `WHEEL_PAD_MAX`, so every copy replaying the log checks and builds the same thing. Changing
+`WHEEL_REACH` or the pad cap changes the rules fingerprint, as it should.
+
 ## Left as it is
 
 * The `return` ledger correction (a deliberate difference when an attacker's claim does not match the battle the copies saw).

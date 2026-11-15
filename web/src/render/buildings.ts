@@ -787,7 +787,8 @@ const waterwheel: Model = b => {
   const t = b.t, m = M(), W = 4.2 + t * 0.5, D = 3.6, h = 2.5 + t * 0.4, wm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
   b.box(W + 0.4, 0.4, D + 0.4, m.stone, 0, -0.1, 0); b.box(W, h, D, wm, 0, 0.3, 0); b.gable(W, D, 1.6 + t * 0.3, t >= 1 ? m.tile : m.thatch, 0, h + 0.3, 0, 0.5);
   b.box(0.9, 1.6, 0.14, m.door, 0, 0.3, D / 2 + 0.03); b.window(W * 0.28, 1.6, D / 2 + 0.02); b.chimney(-W * 0.3, h + 1.2, -0.4, 1.2);
-  const R = 1.7 + t * 0.15, pivot = new THREE.Group(); pivot.position.set(W / 2 + 0.55, R + 0.2, 0); pivot.rotation.y = Math.PI / 2; b.g.add(pivot);
+  // the wheel hangs out over the water on a long axle (the core snaps the house to the bank so the point WHEEL_REACH out from its middle is over the water) and dips below the pad
+  const R = 1.7 + t * 0.15, AX = 4.4, DIP = 0.9, pivot = new THREE.Group(); pivot.position.set(AX, R - DIP, 0); pivot.rotation.y = Math.PI / 2; b.g.add(pivot);
   const wheel = new THREE.Group(); pivot.add(wheel);
   const part = (geo: THREE.BufferGeometry, mat: THREE.Material) => { const q = new THREE.Mesh(geo, mat); q.castShadow = true; return q; };
   for (const s of [-0.5, 0.5]) { const rim = part(new THREE.TorusGeometry(R, 0.1, 6, 20), m.darkwood); rim.position.z = s; wheel.add(rim); }
@@ -797,8 +798,9 @@ const waterwheel: Model = b => {
   }
   wheel.add(part(new THREE.CylinderGeometry(0.22, 0.22, 1.3, 8).rotateX(Math.PI / 2), m.iron));
   b.spin.push(wheel);
-  b.box(0.8, 0.5, 2.6, new THREE.MeshStandardMaterial({ color: 0x4a7fa0, roughness: 0.2 }), W / 2 + 0.6, R * 2 + 0.3, 0);   // the flume that feeds the wheel
-  b.box(0.1, R * 2 + 0.3, 0.1, m.darkwood, W / 2 + 0.6, 0, 1.4); b.box(0.1, R * 2 + 0.3, 0.1, m.darkwood, W / 2 + 0.6, 0, -1.4);
+  b.box(AX - W / 2 + 0.2, 0.22, 0.22, m.iron, (AX + W / 2) / 2 - 0.1, R - DIP - 0.11, 0);   // the axle running back into the mill house
+  b.box(0.8, 0.5, 2.6, new THREE.MeshStandardMaterial({ color: 0x4a7fa0, roughness: 0.2 }), AX - 0.3, R * 2 - DIP + 0.4, 0);   // the flume that feeds the wheel
+  for (const z of [-1.4, 1.4]) { b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, AX, -DIP, z); b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, W / 2 + 0.3, -DIP, z); b.box(AX - W / 2 - 0.1, 0.12, 0.14, m.darkwood, (AX + W / 2) / 2 + 0.1, R * 2 - DIP + 0.1, z); }
   b.box(0.6, 0.6, 0.6, m.wood, -W / 2 - 0.7, 0, 0.8); b.box(0.5, 0.5, 0.5, m.wood, -W / 2 - 0.6, 0, -0.4);
   if (t === 3) b.flag(-W / 2 + 0.4, h + 1.7, 0, 2.0);
 };
