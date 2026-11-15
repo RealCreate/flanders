@@ -53,6 +53,7 @@ import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Ve
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
+import { roleOf, actionsFor, foeFocus, shouldAutoJump, foeNear, sallyUnits } from './defence';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd } from './net/validate';
 import { Village, type Shared } from './village';
@@ -366,6 +367,7 @@ function connect() {
         lv.world.return_army(Uint32Array.from(c.units ?? []), new Int32Array(RES.length));
         commit({ op: 'return', units: c.units, loot: new Array(RES.length).fill(0) }); ui.toast('Your army was turned back — the village was already under attack.', 'info');
       }
+      if (c.op === 'retreat' && c.to === identity.pub && lv.world.battle_retreat(tagOf(r.key))) { commit({ op: 'retreat', from: r.key, tag: tagOf(r.key) }); ui.toast(`${r.name} calls off the attack: the raiders are running.`, 'good'); lv.afterTick(); }
       if (c.op === 'raid') ui.toast(`${r.name}'s village is under attack!`, 'info');
       if (c.to === identity.pub) onTrade(r, c);
     },
@@ -610,16 +612,16 @@ function showRoute() {
 
 function updateDets() {
   const f = lv.world.det_flat(), list: { id: number; units: number[]; text: string; selected: boolean; leftWp: number }[] = [];
-  for (let o = 0; o < f.length; o += 16) {
+  for (let o = 0; o < f.length; o += 17) {
     const st = f[o + 8], state = STATE_TEXT[st] + (st === 3 || st === 2 ? ` (${Math.round(f[o + 11] * 100)}%)` : '');
-    list.push({ id: f[o], units: [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7]], text: state, selected: multiDets.includes(f[o]), leftWp: f[o + 10] });
+    list.push({ id: f[o], units: [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]], text: state, selected: multiDets.includes(f[o]), leftWp: f[o + 10] });
   }
   ui.setDets(list);
   if (multiDets.some(id => !list.some(d => d.id === id))) { multiDets = multiDets.filter(id => list.some(d => d.id === id)); selectedDet = multiDets[0] ?? null; lv.field.select(multiDets); if (selectedDet === null) pathLine?.set(null); }
 }
 
 function detUnits(id: number): number[] | null {
-  const f = lv.world.det_flat(); for (let o = 0; o < f.length; o += 16) if (f[o] === id) return [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7]]; return null;
+  const f = lv.world.det_flat(); for (let o = 0; o < f.length; o += 17) if (f[o] === id) return [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]]; return null;
 }
 
 function orderMarch(id: number, tx: number, tz: number) {
@@ -650,7 +652,7 @@ function detAction(a: string, id: number) {
 /** Marching armies that have reached an enemy village go in. */
 function checkArrivals() {
   const f = lv.world.det_flat();
-  for (let o = 0; o < f.length; o += 16) {
+  for (let o = 0; o < f.length; o += 17) {
     if (f[o + 8] !== 5) continue;
     const id = f[o], key = attackTargets.get(id), r = key ? rivals.get(key) : null;
     if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
@@ -669,6 +671,7 @@ const awayFights = new Set<string>();
 function attackAway(r: Rival, u: number[]) {
   const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
   if (r.village.world.start_raid(angle, Uint32Array.from(u), myTag())) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
+  else if (r.village.world.battle_active() && r.village.world.battle_tag() === myTag() && r.village.world.battle_reinforce(myTag(), Uint32Array.from(u))) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`More of your soldiers join the fight at ${r.name}'s village.`, 'good'); }
   else { lv.world.return_army(Uint32Array.from(u), new Int32Array(RES.length)); commit({ op: 'return', units: u, loot: new Array(RES.length).fill(0) }); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'bad'); updateHud(); }
 }
 
@@ -676,16 +679,17 @@ function attackAway(r: Rival, u: number[]) {
 function defendAgainst(att: Rival, c: Cmd) {
   const u = c.units ?? [], angle = Math.atan2(att.village.oz - lv.oz, att.village.ox - lv.ox), tag = tagOf(att.key);
   if (lv.world.start_raid(angle, Uint32Array.from(u), tag)) { commit({ op: 'raid', from: att.key, units: u, angle, tag }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); }
+  else if (lv.world.battle_active() && lv.world.battle_tag() === tag && lv.world.battle_reinforce(tag, Uint32Array.from(u))) { commit({ op: 'reinforce', from: att.key, units: u, tag }); ui.toast(`${att.name} sends more soldiers into the fight!`, 'bad'); lv.afterTick(); }
   else commit({ op: 'refuse', to: att.key, units: u });
 }
 
 /** A battle finished in a rival's village. If we were the attacker, our survivors come home with the loot. */
 function onRivalReport(key: string, rep: number[]) {
-  if (rep[2]) ledger.record(rep[2], rep.slice(6, 11), rep.slice(11, 11 + RES.length));
+  if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, left, , , , ] = rep;
   void won; void left;
   if (tag !== myTag()) return;
-  const surv = rep.slice(6, 11), loot = rep.slice(11, 11 + RES.length), r = rivals.get(key);
+  const surv = rep.slice(6, 12), loot = rep.slice(12, 12 + RES.length), r = rivals.get(key);
   lv.world.return_army(Uint32Array.from(surv), Int32Array.from(loot));
   commit({ op: 'return', units: surv, loot });
   const gold = loot[8];
@@ -694,7 +698,7 @@ function onRivalReport(key: string, rep: number[]) {
 }
 
 function onLocalReport(rep: number[]) {
-  if (rep[2]) ledger.record(rep[2], rep.slice(6, 11), rep.slice(11, 11 + RES.length));
+  if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, , dead, lost] = rep;
   const who = tag === 0 ? 'The bandits' : 'The invaders';
   ui.log(won ? `${who} were driven off. ${dead} defenders fell.` : `${who} plundered the village. ${lost} buildings were lost.`, won ? 'good' : 'bad', Number(lv.world.tick()));
@@ -1007,25 +1011,77 @@ function updateHud() {
   }
 }
 
+/** Was a fight going on in each village at the last look (to notice the start of one). */
+const fightSeen = new Map<string, boolean>();
+
+/** The red banner while a fight is on, for the first village with one: who attacks from where, which side you are on, a click to look at the attackers, and what you can do about it. The same
+ *  options exist for both sides (see defence.ts). A raid on your own village also takes the camera there at once when "Jump to raiders" is on. */
 function battleBanner() {
-  const list: { v: Village; who: string; mine: boolean }[] = [{ v: lv, who: 'your village', mine: true }, ...[...rivals.values()].map(r => ({ v: r.village, who: r.name + "'s village", mine: false }))];
-  for (const { v, who, mine } of list) {
+  const list: { v: Village; who: string; mine: boolean; key: string }[] = [{ v: lv, who: 'your village', mine: true, key: 'me' }, ...[...rivals.values()].map(r => ({ v: r.village, who: r.name + "'s village", mine: false, key: r.key }))];
+  for (const { v, mine, key } of list) {   // (every village is watched for the start of a fight, not only the one the banner shows)
+    const on = v.world.battle_active(), was = fightSeen.get(key) ?? false; fightSeen.set(key, on);
+    if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
+  }
+  for (const { v, who, mine, key } of list) {
     const w = v.world;
     if (!w.battle_active()) continue;
     const u = w.battle_units_flat(); let d = 0, a = 0;
     for (let i = 0; i < u.length; i += 10) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
-    const ang = w.battle_angle(), tag = w.battle_tag(), dx = Math.cos(ang), dz = Math.sin(ang), dir = compassWord(dx, dz);
-    const rr = w.build_radius() + 22, tx = v.ox + dx * rr, tz = v.oz + dz * rr;
+    const ang = w.battle_angle(), tag = w.battle_tag(), dir = compassWord(Math.cos(ang), Math.sin(ang));
+    const role = roleOf(mine, tag, myTag());
     const attacker = tag === 0 ? 'Bandits' : (tag === myTag() ? 'Your army' : rivalName(tag));
-    let role: string;
-    if (mine) role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`;
-    else if (tag === myTag()) role = `Your army attacks from the ${dir}. You are the attacker.`;
-    else role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
-    ui.battle(`⚔ Battle at ${who}<small>${role}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers</small>`,
-      () => rig.focus(tx, tz, 70));
+    const text = role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
+      : role === 'attack' ? `Your army attacks from the ${dir}. You are the attacker.` : `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
+    const armies = fieldArmiesFree(), standing = w.battle_standing().reduce((x: number, y: number) => x + y, 0);
+    const acts: { label: string; title: string; run: () => void }[] = [];
+    for (const act of actionsFor(role, { armies, standing, reserve: 0 })) {
+      if (act === 'send-armies') acts.push({ label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { for (const id of freeArmyIds()) orderDefend(id); } });
+      else if (act === 'sally') acts.push({ label: `Sally out (${standing})`, title: 'The soldiers at their posts leave them and march out to meet the raiders as a field army', run: () => doSally() });
+      else if (act === 'retreat') acts.push({ label: 'Retreat', title: 'Call off the attack: your soldiers break off and run for home', run: () => doRetreat(key) });
+    }
+    ui.battle(`⚔ Battle at ${who}<small>${text}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers${role === 'defend' ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
+      () => lookAtAttackers(v), acts);
     return;
   }
   ui.battle(null);
+}
+
+/** Move the camera to where the attackers stand. */
+function lookAtAttackers(v: Village) {
+  const w = v.world, f = foeFocus(w.battle_angle(), v.ox, v.oz, w.build_radius());
+  rig.focus(f.x, f.z, 70);
+}
+
+/** Field armies that are free to be sent to the fight (not already in it). */
+function freeArmyIds(): number[] {
+  const f = lv.world.det_flat(), out: number[] = [];
+  for (let o = 0; o < f.length; o += 17) if (f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] + f[o + 16] > 0) out.push(f[o]);
+  return out;
+}
+const fieldArmiesFree = () => freeArmyIds().length;
+
+/** Send a field army to the fight at home: it marches to the raiders and joins the defenders. */
+function orderDefend(id: number) {
+  const r = lv.world.det_defend(id);
+  if (r !== 0) { ui.toast(r === -10 ? 'There is no fight to send them to.' : (MARCH_ERRORS[r] ?? 'No way through to the raiders.'), 'bad'); sound.error(); return; }
+  attackTargets.delete(id); commit({ op: 'defend', idx: id }); sound.click(); lv.afterTick(); showRoute(); updateDets();
+  ui.toast('The army marches out to meet the raiders.', 'good');
+}
+
+/** The standing army leaves its posts and marches out as a field army. */
+function doSally() {
+  const u = sallyUnits(lv.world.battle_standing());
+  if (u.every(n => n === 0)) { ui.toast('Nobody is standing at their post.', 'info'); return; }
+  const id = lv.world.det_form(Uint32Array.from(u));
+  if (!id) { ui.toast('The soldiers cannot leave their posts just now.', 'bad'); return; }
+  commit({ op: 'form', units: u }); lv.afterTick(); selectDet(id); orderDefend(id); updateHud();
+}
+
+/** The attacker calls off the attack. In a village whose owner is here the owner's own copy carries it out (and tells everybody); in an away village the fight is local. */
+function doRetreat(key: string) {
+  const r = rivals.get(key); if (!r) return;
+  if (r.online) { commit({ op: 'retreat', to: key }); ui.toast('You sound the retreat. Your soldiers fall back.', 'info'); }
+  else if (r.village.world.battle_retreat(myTag())) { r.village.afterTick(); ui.toast('You sound the retreat. Your soldiers fall back.', 'info'); }
 }
 
 /** Attackers wear their own village's colour (bandits are brown). */
@@ -1369,7 +1425,7 @@ function openContext(e: PointerEvent) {
       items.push({ label: 'Look here', run: () => rig.focus(hit.x, hit.z) }, { label: 'Build here…', run: () => ui.setTab('build') });
       for (const id of lv.field.ids()) items.push({ label: `March Army ${id} here`, run: () => { selectDet(id); orderMarch(id, hit.x, hit.z); } });
     }
-    const soldiers = Array.from(lv.world.army()).slice(0, 5);
+    const soldiers = Array.from(lv.world.army()).slice(0, 6);
     if (soldiers.some(n => n > 0)) items.push('-', { label: 'Muster every soldier', sub: 'F', run: () => doMuster(soldiers) });
   }
   // the world may change while the menu is open (a fire, a raid): then the building indices have moved, so do nothing rather than act on the wrong one
@@ -1548,7 +1604,8 @@ function bindInput() {
     if (selectedKind !== null) { selectKind(null); return; }                // right-click puts the building down again
     if (multiDets.length) {                                                 // armies selected: send them there, spread out a little
       const hit = terrain.pick(pointerRay(e).ray);
-      if (hit) multiDets.slice().forEach((id, k) => { const a = k * 2.4, r = k ? 3 + 2 * Math.sqrt(k) : 0; orderMarch(id, hit.x + Math.cos(a) * r, hit.z + Math.sin(a) * r); });
+      if (hit && lv.world.battle_active() && foeNear(lv.world.battle_units_flat(), hit.x, hit.z, 18)) multiDets.slice().forEach(id => orderDefend(id));   // right-click on the raiders: the army goes to meet them
+      else if (hit) multiDets.slice().forEach((id, k) => { const a = k * 2.4, r = k ? 3 + 2 * Math.sqrt(k) : 0; orderMarch(id, hit.x + Math.cos(a) * r, hit.z + Math.sin(a) * r); });
       return;
     }
     openContext(e);
@@ -1575,7 +1632,7 @@ function bindInput() {
       case 'fullMap': ui.toggleMap(); break;
       case 'fullscreen': e.preventDefault(); toggleFullscreen(); break;
       case 'photo': e.preventDefault(); togglePhotoMode(renderer.domElement, () => perf.render(renderer, scene, rig.cam), t => ui.toast(t, 'info')); break;
-      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 5); if (a.some(n => n > 0)) doMuster(a); else ui.toast('There are no soldiers in the barracks.', 'info'); break; }
+      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 6); if (a.some(n => n > 0)) doMuster(a); else ui.toast('There are no soldiers in the barracks.', 'info'); break; }
       case 'toggleMinimap': ui.toggleMinimap(); break;
       default: break;
     }
