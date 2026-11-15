@@ -543,7 +543,7 @@ impl World {
                 b.units.push(u); b.start_side[0] += 1; j += 1;
             }
         }
-        d.state = march::S_FIGHT; d.path.clear(); d.wi = 0; d.phase = 0; d.defend = false; d.atk = None;
+        d.state = march::S_FIGHT; d.path.clear(); d.grp.clear(); d.wi = 0; d.phase = 0; d.defend = false; d.atk = None;
     }
 
     /// One tick: armies sent to defend join the fight when they get close to an attacker; the armies in it follow their soldiers; with no battle, none is left in one.
@@ -592,7 +592,7 @@ impl World {
             while k > 0 { k -= 1; if b.units[k].det == id { if b.units[k].side == 0 && b.units[k].alive { b.start_side[0] = b.start_side[0].saturating_sub(1); } b.units.remove(k); if k < b.rout.len() { b.rout.remove(k); } } }
             self.dets[i].units = n;
         }
-        let d = &mut self.dets[i]; d.state = march::S_IDLE; d.defend = false; d.path.clear();
+        let d = &mut self.dets[i]; d.state = march::S_IDLE; d.defend = false; d.path.clear(); d.grp.clear();
         if d.units.iter().sum::<u32>() == 0 { self.dets.remove(i); }
     }
 

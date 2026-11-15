@@ -355,7 +355,7 @@ impl World {
                 let power: f32 = (0..NK).map(|k| units[k] as f32 * UNITS[k].hp * UNITS[k].dmg / UNITS[k].cd.max(0.5)).sum();
                 let camp = 9000.0 + 14000.0 * h;
                 if power >= camp { self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], 120, cap); self.stock[IR as usize] = Self::add_capped(self.stock[IR as usize], 15, cap); }
-                else { for k in 0..NK { self.dets[di].units[k] /= 2; } if self.dets[di].units.iter().all(|&u| u == 0) { self.dets.remove(di); } return kind as i32 + 100; }   // beaten: not marked done, it can be tried again
+                else { self.dets[di].grp.clear(); for k in 0..NK { self.dets[di].units[k] /= 2; } if self.dets[di].units.iter().all(|&u| u == 0) { self.dets.remove(di); } return kind as i32 + 100; }   // beaten: not marked done, it can be tried again
             }
         }
         self.neutral_done[ni] = true; self.reveal(nx, ny, 80.0); self.push_event(EV_VISIT, kind as i32, 0);
@@ -1678,7 +1678,7 @@ impl World {
     pub fn det_recall(&mut self, id: u32) -> i32 { let (hx, hy) = (self.buildings[0].x, self.buildings[0].y + 9.0); self.det_march_inner(id, hx, hy, None, true) }
     pub fn det_split(&mut self, id: u32, take: &[u32]) -> u32 { let Some(t) = kinds(take) else { return 0 }; self.det_split_inner(id, t) }
     pub fn det_merge(&mut self, a: u32, b: u32) -> bool { self.det_merge_inner(a, b) }
-    pub fn det_halt(&mut self, id: u32) { if let Some(i) = self.dets.iter().position(|d| d.id == id) { let d = &mut self.dets[i]; if d.state == march::S_FIGHT { return; } d.defend = false; d.path.clear(); d.state = march::S_IDLE; d.phase = 0; d.atk = None; } }
+    pub fn det_halt(&mut self, id: u32) { if let Some(i) = self.dets.iter().position(|d| d.id == id) { let d = &mut self.dets[i]; if d.state == march::S_FIGHT { return; } d.defend = false; d.path.clear(); d.state = march::S_IDLE; d.phase = 0; d.atk = None; for g in d.grp.iter_mut() { g.path.clear(); g.speed = 0.0; } } }
     /// An army that has arrived at an enemy village joins the attack; returns its soldiers (empty on failure).
     /// Send a field army to the fight in this village: it marches to the nearest attacker and joins the defenders once it is within reach (`battle::JOIN_REACH`). 0 ok, -10 there is no battle, other codes as `det_march`.
     pub fn det_defend(&mut self, id: u32) -> i32 { self.det_defend_inner(id) }
@@ -1697,6 +1697,10 @@ impl World {
             let (ax, ay) = d.atk.unwrap_or((0.0, 0.0));
             [d.id as f32, d.x, d.y, d.units[0] as f32, d.units[1] as f32, d.units[2] as f32, d.units[3] as f32, d.units[4] as f32, d.state as f32, mode, (d.path.len().saturating_sub(d.wi)) as f32, prog, ax, ay, d.heading, d.speed, d.units[5] as f32]
         }).collect()
+    }
+    /// Riders and engines marching apart from their army: [army id, kind (3 knights, 4 catapults), count, x, y, heading, speed, tied] (stride 8).
+    pub fn det_groups_flat(&self) -> Vec<f32> {
+        self.dets.iter().flat_map(|d| d.grp.iter().flat_map(move |g| { let k = if g.units[3] > 0 { 3 } else { 4 }; [d.id as f32, k as f32, (if k == 3 { g.units[3] } else { g.units[4] + g.units[5] }) as f32, g.x, g.y, g.heading, g.speed, g.tied as u8 as f32] })).collect()
     }
     /// Remaining route of an army: [x, y, mode, ...] starting at its current position.
     pub fn det_path(&self, id: u32) -> Vec<f32> {
@@ -1839,7 +1843,7 @@ impl World {
             part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
             part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } }),
-            part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } } }),
+            part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); } } }),
             part(&|mix| {   // trade and diplomacy
                 for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }
                 for c in &self.caravans { mix(c.eta); mix(c.amount as u64); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }
@@ -3133,6 +3137,44 @@ mod toll_tests {
         let i = w.place(TOLL, spot.0, spot.1, 0) as u32; w.stock[GR as usize] = 3000;
         let t0 = earned(&mut w); w.upgrade(i); w.stock[GR as usize] = 3000; let t1 = earned(&mut w);
         assert!(t1 > t0, "{t1} > {t0}");
+    }
+}
+
+#[cfg(test)]
+mod own_pace_tests {
+    use super::*;
+    /// Foot soldiers, knights and catapults sent together each go at their own pace along their own route; the army has arrived when the slowest has.
+    #[test]
+    fn riders_and_engines_march_apart_at_their_own_pace() {
+        let units = [12u32, 0, 0, 4, 2, 1]; let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.army = units;
+        let id = w.det_form(&units); assert!(id > 0);
+        assert_eq!(w.det_march(id, 160.0, 0.0, true, 160.0, 0.0), 0);
+        let g = w.det_groups_flat(); assert_eq!(g.len(), 16, "knights and catapults march as their own groups");
+        let (mut foot_t, mut cav_t, mut eng_t, mut done_t) = (0, 0, 0, 0);
+        let mut max_gap = 0.0f32;
+        for t in 1..=400 {
+            w.step(); w.stock = [3000; N_RES];
+            let f = w.det_flat(); let g = w.det_groups_flat();
+            let (hx, hy) = (f[1], f[2]);
+            let at = |x: f32, y: f32| (x - 160.0).hypot(y) < 3.0;
+            if foot_t == 0 && at(hx, hy) { foot_t = t; }
+            for c in g.chunks(8) { max_gap = max_gap.max((c[3] - hx).hypot(c[4] - hy)); if c[1] == 3.0 && cav_t == 0 && at(c[3], c[4]) { cav_t = t; } if c[1] == 4.0 && eng_t == 0 && at(c[3], c[4]) { eng_t = t; } }
+            if f[8] as u8 == march::S_ARRIVED { done_t = t; break; }
+        }
+        eprintln!("arrived: knights {cav_t}s, foot {foot_t}s, catapults {eng_t}s, army {done_t}s, widest gap {max_gap:.0}");
+        assert!(cav_t > 0 && foot_t > 0 && eng_t > 0 && done_t > 0, "all three groups arrive");
+        assert!((cav_t as f32) < foot_t as f32 * 0.7, "knights ride much faster than the foot: {cav_t} vs {foot_t}");
+        assert!((foot_t as f32) < eng_t as f32 * 0.8, "catapults are slower than the foot: {foot_t} vs {eng_t}");
+        assert!(done_t >= eng_t, "the army has arrived only when the slowest group has");
+        assert!(max_gap > 30.0, "they really spread out on the way");
+        assert_eq!(w.det_flat()[3] as u32 + w.det_flat()[6] as u32 + w.det_flat()[7] as u32 + w.det_flat()[16] as u32, 12 + 4 + 2 + 1, "nobody is lost");
+        assert!(w.det_groups_flat().is_empty(), "once there the groups are one army again");
+    }
+    #[test]
+    fn an_army_of_riders_alone_is_one_body() {
+        let units = [0u32, 0, 0, 5, 0, 0]; let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.army = units;
+        let id = w.det_form(&units); assert_eq!(w.det_march(id, 60.0, 0.0, false, 0.0, 0.0), 0);
+        assert!(w.det_groups_flat().is_empty());
     }
 }
 
