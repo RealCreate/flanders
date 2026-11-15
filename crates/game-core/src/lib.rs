@@ -156,6 +156,9 @@ pub const CH_WINTER: u8 = 3;
 const CHOICE_DAYS: u64 = 2;
 /// Ticks in a day, days in a season (the interface uses the same numbers).
 pub const DAY: u64 = 240;
+/// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
+fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
+     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE) }
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
@@ -249,6 +252,8 @@ pub struct World {
     treaties: Vec<Treaty>,    // agreements with other villages
     warm: bool,    // false while winter fires are out for lack of wood
     eff: u32,
+    /// How fully the food and wood workplaces are staffed, and everything else (derived in `staffing`: the hands go to food and wood first).
+    eff_first: u32, eff_rest: u32,
     jobs: u32,
     events: Vec<i32>,
     sites: Vec<(f32, f32)>,
@@ -360,7 +365,7 @@ impl World {
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
@@ -616,12 +621,18 @@ impl World {
         self.children = self.children.min(self.population); self.elders = self.elders.min(self.population - self.children);
         let workers = (self.adults().saturating_sub(self.sick)) * 7 / 10 * if self.tick < self.quarantine_until { 7 } else { 10 } / 10;
         self.eff = if self.jobs == 0 { 100 } else { (workers * 100 / self.jobs).min(100) };
+        // the hands go to food and wood first: those workplaces are staffed before anything else, and the rest share what is left
+        let first_jobs: u32 = self.buildings.iter().filter(|b| staffed_first(b.kind)).map(|b| DEFS[b.kind as usize].jobs * (b.tier as u32 + 1)).sum();
+        self.eff_first = if first_jobs == 0 { 100 } else { (workers * 100 / first_jobs).min(100) };
+        let left_hands = workers.saturating_sub(first_jobs * self.eff_first / 100); let rest_jobs = self.jobs - first_jobs;
+        self.eff_rest = if rest_jobs == 0 { 100 } else { (left_hands * 100 / rest_jobs).min(100) };
         let cap = self.capacity();
         let housed = self.population.min(cap);
         let mut left = housed;
-        let eff = self.eff;
+        let (eff_first, eff_rest) = (self.eff_first, self.eff_rest);
         for b in self.buildings.iter_mut() {
             let d = &DEFS[b.kind as usize];
+            let eff = if staffed_first(b.kind) { eff_first } else { eff_rest };
             b.staff = (d.jobs * (b.tier as u32 + 1) * eff + 50) / 100;
             let c = d.housing * (b.tier as u32 + 1);
             let r = if cap == 0 { 0 } else { (c * housed / cap).min(left) };
@@ -1178,7 +1189,7 @@ impl World {
             let ob = self.buildings[i].opts;
             let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } }
                 else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
-            let mut p = self.buildings[i].progress + self.eff * boost as u32 / 100;
+            let mut p = self.buildings[i].progress + (if staffed_first(kind) { self.eff_first } else { self.eff_rest }) * boost as u32 / 100;
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
@@ -1556,7 +1567,7 @@ impl World {
         let ports: Vec<usize> = (0..self.buildings.len()).filter(|&i| self.buildings[i].kind == PORT && self.buildings[i].staff > 0).collect();
         for pi in ports {
             let tier = self.buildings[pi].tier as i32;
-            self.buildings[pi].progress += self.eff;
+            self.buildings[pi].progress += self.eff_rest;
             if self.buildings[pi].progress < 3000 { continue; }
             self.buildings[pi].progress -= 3000;
             let mult = (4 + 5 * tier) / 4;
@@ -2193,6 +2204,7 @@ fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
 mod lend_tests;
 #[cfg(test)]
 mod ledger_tests;
+#[cfg(test)]
 mod market_tests;
 
 #[cfg(test)]
@@ -3057,6 +3069,20 @@ mod family_tests {
         let per_week = raids as f64 / (6.0 * days as f64 / 7.0);
         assert!(per_week < 2.0, "{per_week} raids a week");
         assert!(per_week > 0.2, "{per_week} raids a week");
+    }
+
+    #[test]
+    fn with_too_few_hands_food_and_wood_are_staffed_first() {
+        let mut w = farm_world(); w.population = 12;
+        let f = w.place(FARM, -20, 14, 0); let c = w.place(4, 20, 14, 0);
+        let mut extra = 0; for (k, x) in [(HOUSE, 8), (HOUSE, 14), (BARRACKS, -30), (TOWER, 30)] { for y in [-26, -34, 26, 34] { if w.place(k, x, y, 0) >= 0 { extra += 1; break; } } }
+        assert!(extra >= 1, "some more workplaces");
+        w.population = 8; w.staffing();
+        assert!(w.eff < 100, "not enough hands for every job: {}", w.eff);
+        let (f, c) = (f.max(0) as usize, c.max(0) as usize);
+        let full = |i: usize| w.buildings[i].staff >= DEFS[w.buildings[i].kind as usize].jobs;
+        assert!(full(f) && full(c), "the farm and the woodcutter are fully staffed first (eff first {}, rest {})", w.eff_first, w.eff_rest);
+        assert!(w.eff_first >= w.eff_rest, "{} vs {}", w.eff_first, w.eff_rest);
     }
 
     #[test]
