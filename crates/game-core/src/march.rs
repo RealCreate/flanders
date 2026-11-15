@@ -144,6 +144,7 @@ impl World {
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
         for f in &self.felled { for v in f { mix(v.to_bits() as u64); } }
         for b in &self.bridges { for v in b { mix(v.to_bits() as u64); } }
+        mix(self.road_sig);
         mix(self.roads.len() as u64); mix(self.battle.is_some() as u64);
         for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) { mix((b.status as u64) << 1 | (b.progress > 0) as u64); }
         if let Some((st, o)) = &*self.ov_cache.borrow() { if *st == h { return o.clone(); } }

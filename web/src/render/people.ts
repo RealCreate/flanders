@@ -119,8 +119,8 @@ export class People {
     this.doorAngle.clear();
     for (const [c, pts] of this.link) {
       const p = this.parent[c], B = this.bld[c], P = this.bld[p];
-      if (B && pts.length >= 2 && !this.doorAngle.has(c)) this.doorAngle.set(c, Math.atan2(pts[1][1] - B.z, pts[1][0] - B.x));
-      if (P && pts.length >= 2) { const q = pts[pts.length - 2]; if (!this.doorAngle.has(p)) this.doorAngle.set(p, Math.atan2(q[1] - P.z, q[0] - P.x)); }
+      if (B && pts.length >= 2 && !this.doorAngle.has(c)) { const q = Math.hypot(pts[0][0] - B.x, pts[0][1] - B.z) > 1 ? pts[0] : pts[1]; this.doorAngle.set(c, Math.atan2(q[1] - B.z, q[0] - B.x)); }   // (a path starts at the doorstep ring, or at the middle of a piece of road)
+      if (P && pts.length >= 2) { const e = pts[pts.length - 1], q = Math.hypot(e[0] - P.x, e[1] - P.z) > 1 ? e : pts[pts.length - 2]; if (!this.doorAngle.has(p)) this.doorAngle.set(p, Math.atan2(q[1] - P.z, q[0] - P.x)); }
     }
 
     const homes: number[] = [], works: number[] = [];
@@ -215,8 +215,11 @@ export class People {
       const A = this.bld[nodes[i]], B = this.bld[nodes[i + 1]], dx = B.x - A.x, dz = B.z - A.z;
       // the walkable route between the two linked buildings (it goes through gates and over drawbridges, never across water)
       const fwd = this.parent[nodes[i]] === nodes[i + 1], raw = (fwd ? this.link.get(nodes[i]) : this.link.get(nodes[i + 1])) ?? [[A.x, A.z], [B.x, B.z]];
-      const pts = fwd ? raw : [...raw].reverse(), mid = pts.slice(1, -1);
-      const exit = door(nodes[i], (pts[1]?.[0] ?? B.x) - A.x, (pts[1]?.[1] ?? B.z) - A.z), enter = door(nodes[i + 1], (pts[pts.length - 2]?.[0] ?? A.x) - B.x, (pts[pts.length - 2]?.[1] ?? A.z) - B.z);
+      const pts = fwd ? raw : [...raw].reverse();
+      // a path runs from doorstep ring to doorstep ring (a piece of road: from its middle): the ring points are part of the walk, a point at the building's middle is not
+      const atA = Math.hypot(pts[0][0] - A.x, pts[0][1] - A.z) < 1, atB = Math.hypot(pts[pts.length - 1][0] - B.x, pts[pts.length - 1][1] - B.z) < 1, mid = pts.slice(atA ? 1 : 0, atB ? -1 : undefined);
+      const p0 = atA ? pts[1] : pts[0], p1 = atB ? pts[pts.length - 2] : pts[pts.length - 1];
+      const exit = door(nodes[i], (p0?.[0] ?? B.x) - A.x, (p0?.[1] ?? B.z) - A.z), enter = door(nodes[i + 1], (p1?.[0] ?? A.x) - B.x, (p1?.[1] ?? A.z) - B.z);
       if (i > 0) {
         const prev = out[out.length - 1], c = new THREE.Vector2(A.x, A.z), a1 = Math.atan2(prev.y - c.y, prev.x - c.x), a2 = Math.atan2(exit.y - c.y, exit.x - c.x);
         let d = a2 - a1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
