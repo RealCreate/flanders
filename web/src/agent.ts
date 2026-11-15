@@ -1,5 +1,6 @@
 import type { World } from './wasm/game_core.js';
 import { RES, defs, PLACE_ERRORS, STATUS, tierName, units } from './data';
+import { icon } from './ui/icons';
 
 /**
  * The agent bridge: lets an AI agent (through the MCP server in /mcp) play this village with the same rules as a human.
@@ -65,10 +66,10 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
   // ---- the badge ----
   const badge = document.createElement('div');
   badge.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:60;background:#1d150dd9;color:#f1e4c3;border:1px solid #c9a24a;border-radius:6px;padding:6px 10px;font:13px system-ui,sans-serif;display:flex;gap:8px;align-items:center;max-width:380px';
-  badge.innerHTML = '<span id="ag-t">🤖 Agent: waiting for the MCP server…</span><button id="ag-p" style="cursor:pointer">Pause</button><button id="ag-x" style="cursor:pointer">Disconnect</button>';
+  badge.innerHTML = `<span id="ag-t">${icon('agent', 16, { mono: true })} Agent: waiting for the MCP server…</span><button id="ag-p" style="cursor:pointer">Pause</button><button id="ag-x" style="cursor:pointer">Disconnect</button>`;
   document.body.appendChild(badge);
   const label = badge.querySelector<HTMLElement>('#ag-t')!;
-  const show = () => { label.textContent = !connected ? '🤖 Agent: waiting for the MCP server…' : paused ? '🤖 Agent: PAUSED by you' : `🤖 Agent playing · ${count} actions · ${log[log.length - 1] ?? ''}`.slice(0, 90); (badge.querySelector('#ag-p') as HTMLElement).textContent = paused ? 'Resume' : 'Pause'; };
+  const show = () => { label.textContent = !connected ? 'Agent: waiting for the MCP server…' : paused ? 'Agent: PAUSED by you' : `Agent playing · ${count} actions · ${log[log.length - 1] ?? ''}`.slice(0, 90); (badge.querySelector('#ag-p') as HTMLElement).textContent = paused ? 'Resume' : 'Pause'; };
   (badge.querySelector('#ag-p') as HTMLElement).onclick = () => { paused = !paused; show(); host.toast(paused ? 'The agent is paused.' : 'The agent may play again.', 'info'); };
   (badge.querySelector('#ag-x') as HTMLElement).onclick = () => { stopped = true; ws?.close(); badge.remove(); host.toast('The agent was disconnected.', 'info'); };
 
@@ -82,7 +83,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
       const world = w(), st = Array.from(world.stocks()), fl = Array.from(world.flows()), cap = world.storage();
       const stock: Record<string, { amount: number; per_second: number }> = {}; RES.forEach((r, i) => { stock[r.key] = { amount: st[i], per_second: fl[i] }; });
       const a = Array.from(world.army()), q = Array.from(world.queued()), away = Array.from(world.away());
-      const names = units.slice(0, 5).map(u => u.name);
+      const names = units.slice(0, 6).map(u => u.name);
       const unitMap = (v: number[]) => Object.fromEntries(names.map((n, i) => [n, v[i]]));
       return {
         tick: Number(world.tick()), day: Math.floor(Number(world.tick()) / 240) + 1, storage_cap_per_resource: cap, stock,
@@ -95,7 +96,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
       return {
         resources: RES.map((r, i) => ({ id: i, key: r.key, name: r.name })),
         buildings: defs.map(d => ({ id: d.id, name: d.name, category: d.cat, radius: d.r, cost: d.cost.map(([r, n]) => ({ resource: RES[r].key, amount: n })), inputs: d.inputs.map(([r, n]) => ({ resource: RES[r].key, amount: n })), outputs: d.outputs.map(([r, n]) => ({ resource: RES[r].key, amount: n })), cycle_seconds: d.cycle, jobs: d.jobs, housing: d.housing, max_tier: d.maxTier, options: (d.opts ?? []).map((o, i) => ({ bit: i, name: o.n, adds: o.d, needs_tier: o.t })), description: d.desc })),
-        units: units.slice(0, 5).map((u, i) => ({ id: i, name: u.name })),
+        units: units.slice(0, 6).map((u, i) => ({ id: i, name: u.name })),
         notes: ['Coordinates are relative to your town hall: x east, y south.', 'Tier 0..3 is the upgrade level.', 'Optional design options are set per building with the `option` tool.'],
       };
     },
@@ -149,7 +150,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
     garrison(a) { const idx = int(a.idx, 0, 100000, 'idx'), n = int(a.archers, 0, 20, 'archers'), code = w().garrison_set(idx, n); if (code === 0) { host.commit({ op: 'garrison', idx, kind: n }); host.afterChange(); } return { ok: code === 0, code }; },
     drawbridge(a) { const idx = int(a.idx, 0, 100000, 'idx'), up = a.up === true, code = w().drawbridge_set(idx, up); if (code === 0) { host.commit({ op: 'bridge', idx, kind: up ? 1 : 0 }); host.afterChange(); } return { ok: code === 0 }; },
     form_army(a) {
-      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length !== 5) throw new Error('units must be 5 numbers: spearmen, archers, swordsmen, knights, catapults');
+      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length === 5) u.push(0); if (u.length !== 6) throw new Error('units must be 6 numbers: spearmen, archers, swordsmen, knights, catapults, rams');
       const id = w().det_form(Uint32Array.from(u)); if (!id) return { ok: false, reason: 'not enough soldiers in the barracks' }; host.commit({ op: 'form', units: u }); host.afterChange(); return { ok: true, army_id: id };
     },
     march_army(a) {
@@ -164,7 +165,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
     attack(a) {
       if (!allowAttack) throw new Error('attacking other players is switched off. The human must open the game with allow_attack=1 to allow it.');
       if (a.confirm_attack !== true) throw new Error('attack needs confirm_attack: true. This starts a real battle against another person\'s village.');
-      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length !== 5) throw new Error('units must be 5 numbers');
+      const u = (Array.isArray(a.units) ? a.units : []).map((v, i) => int(v, 0, 300, `units[${i}]`)); if (u.length === 5) u.push(0); if (u.length !== 6) throw new Error('units must be 6 numbers');
       return { ok: host.attack(String(a.key), u) };
     },
   };
@@ -177,7 +178,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
     if (wait) return { ok: false, error: `slow down: the agent plays at human pace. Try again in ${Math.ceil(wait / 100) / 10}s.`, retry_after_ms: wait };
     try {
       const result = tools[tool](args);
-      if (MUTATING.has(tool)) { count++; log.push(`${tool}${(result as { ok?: boolean })?.ok === false ? ' ✗' : ''}`); if (log.length > 30) log.shift(); show(); }
+      if (MUTATING.has(tool)) { count++; log.push(`${tool}${(result as { ok?: boolean })?.ok === false ? ' (failed)' : ''}`); if (log.length > 30) log.shift(); show(); }
       return { ok: true, result };
     } catch (e) { return { ok: false, error: (e as Error).message }; }
   }

@@ -13,7 +13,7 @@ export class Ledger {
   /** A battle result seen in some village: `tag` is the attacker, `units` the survivors, `loot` what they took. */
   record(tag: number, units: number[], loot: number[]) {
     if (!tag) return;   // bandits (tag 0) have no village to pay
-    const l = this.byTag.get(tag) ?? []; l.push({ units: units.slice(0, 5), loot: loot.slice() });
+    const l = this.byTag.get(tag) ?? []; l.push({ units: units.slice(0, 6), loot: loot.slice() });
     if (l.length > 32) l.shift();
     this.byTag.set(tag, l);
   }

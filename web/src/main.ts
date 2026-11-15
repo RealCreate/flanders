@@ -8,7 +8,8 @@ import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation, state_hash_part_names, rules_fingerprint } from './wasm/game_core.js';
-import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
+import { icon } from './ui/icons';
+import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
 import { buildShowroom } from './render/showroom';
@@ -23,6 +24,8 @@ import { Forest } from './render/trees';
 import { buildModel, Effects } from './render/buildings';
 import { Deposits } from './render/deposits';
 import { Crowd } from './render/crowd';
+import { Travellers, type TVillage } from './render/travellers';
+import { JK, arrivedText } from './render/journey';
 import { Effects2 } from './render/fx';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
@@ -51,6 +54,7 @@ import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Ve
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
+import { roleOf, actionsFor, foeFocus, shouldAutoJump, foeNear, sallyUnits } from './defence';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd } from './net/validate';
 import { Village, type Shared } from './village';
@@ -212,7 +216,7 @@ function moveToSite(i: number) {
  *  (it is rebuilt from their next history) instead of letting a bad message break the whole game. */
 function quarantine(r: Rival, e: unknown) {
   console.warn('A rival village could not be replayed; ignoring it until it sends a fresh history.', e);
-  r.broken = true; r.sync = 'broken ⚠';
+  r.broken = true; r.sync = 'broken';
   try { r.village.setWorld(new World(seedBig, siteOrigin(r.site).x, siteOrigin(r.site).z)); r.village.syncFull(); } catch { /* keep the old copy */ }
   startResync(r, 'the copy could not be replayed'); updatePeers();
 }
@@ -275,7 +279,7 @@ function startResync(r: Rival, why: string) {
 }
 
 function failSync(r: Rival, why: string) {
-  r.state = 'failed'; r.confirming = false; r.failedAt = performance.now(); r.sync = 'could not sync ⚠';
+  r.state = 'failed'; r.confirming = false; r.failedAt = performance.now(); r.sync = 'could not sync';
   ui.toast(`Could not sync with ${r.name}: ${why}. Their village may look a little different here.`, 'info');
   console.warn(`Could not sync with ${r.name}: ${why}. ${r.lastDiag}`); updatePeers();
 }
@@ -350,7 +354,7 @@ function connect() {
         if (c.op === 'return') {   // check the attacker's claim against the battle as the defender's copy played it
           for (const o of rivals.values()) if (o !== r) o.village.advanceTo(c.tick);   // (your own village is live: it is already as far as it will get)
           const v = ledger.claim(tagOf(r.key), c.units, c.loot); c = { ...c, units: v.units, loot: v.loot };
-          if (v.lied) { r.liar = true; r.sync = 'claimed false loot ⚠'; console.warn(`${r.name} reported loot or survivors that the battle did not give; the real result was used.`); }
+          if (v.lied) { r.liar = true; r.sync = 'claimed false loot'; console.warn(`${r.name} reported loot or survivors that the battle did not give; the real result was used.`); }
         }
         if (!r.village.advanceTo(c.tick)) { startResync(r, 'a command far ahead of the copy'); return; }   // (never apply a command at the wrong tick)
         applyCmd(r.village.world, c); r.track.applied(c.op);
@@ -364,6 +368,7 @@ function connect() {
         lv.world.return_army(Uint32Array.from(c.units ?? []), new Int32Array(RES.length));
         commit({ op: 'return', units: c.units, loot: new Array(RES.length).fill(0) }); ui.toast('Your army was turned back — the village was already under attack.', 'info');
       }
+      if (c.op === 'retreat' && c.to === identity.pub && lv.world.battle_retreat(tagOf(r.key))) { commit({ op: 'retreat', from: r.key, tag: tagOf(r.key) }); ui.toast(`${r.name} calls off the attack: the raiders are running.`, 'good'); lv.afterTick(); }
       if (c.op === 'raid') ui.toast(`${r.name}'s village is under attack!`, 'info');
       if (c.to === identity.pub) onTrade(r, c);
     },
@@ -460,33 +465,60 @@ function onTrade(r: Rival, c: Cmd) {
     else { commit({ op: 'treaty', idx: their, kind: c.kind, y: 0, to: r.key }); ui.toast(`${r.name} offers ${what}, but we do not trust them enough. Refused.`, 'info'); }
   } else if (c.op === 'treaty' && c.y === 0) {   // they turned our offer down: it is void on our side too
     w.treaty_end(their, c.kind ?? 0); commit({ op: 'treaty', idx: their, kind: c.kind, y: 0 }); ui.toast(`${r.name} refused your offer.`, 'info'); afterLocalChange();
+  } else if (c.op === 'arrive') {   // their errand reached us: an offer is answered, the rest is only news
+    const kind = c.kind ?? 0;
+    if (kind <= 2) answerOffer(r, kind, c.x ?? 10); else ui.toast(arrivedText(kind, r.name, 'you', false), kind === JK.WAR ? 'bad' : 'good');
   } else if (c.op === 'war') {
     ui.toast(`${r.name} has declared war on you!`, 'bad');
   }
 }
 
-/** What the trade form in the peers pane asks for. */
+/** How far the way to a village is: the length of the invisible path chained to its city (or the straight line while there is none). */
+function roadTo(r: Rival): number {
+  const p = lv.world.link_points(r.village.ox, r.village.oz); let d = 0;
+  for (let k = 2; k < p.length; k += 2) d += Math.hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]);
+  return Math.min(2900, d > 1 ? d : Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz));
+}
+/** A neighbour answers an offer that has reached it: it agrees when it trusts us enough (and tells us with its own signed copy), otherwise the offer is void. */
+function answerOffer(r: Rival, kind: number, days: number) {
+  const w = lv.world, their = tagOf(r.key), what = kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact';
+  if (w.treaty_acceptable(their, kind) && w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days }); ui.toast(`${r.name} offers ${what} for ${days} days. Agreed.`, 'good'); }
+  else { commit({ op: 'treaty', idx: their, kind, y: 0, to: r.key }); ui.toast(`${r.name} offers ${what}, but we do not trust them enough. Refused.`, 'info'); }
+}
+
+/** What the trade form in the peers pane asks for. Nothing happens at once: a caravan, an offer, an envoy, a wedding party or a herald sets out along the path to the other city and does its work on arrival. */
 function doTrade(key: string, action: string, res: number, amount: number, escort: number) {
-  const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
-  const w = lv.world, their = tagOf(key);
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (action === 'caravan' && !r.online) { ui.toast('That village is not online right now: caravans need somebody to take the goods.', 'bad'); return; }
+  const w = lv.world, their = tagOf(key), dist = roadTo(r);
   if (action === 'caravan') {
-    const dist = Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz), code = w.caravan_send(res, amount, their, dist, escort);
+    const code = w.caravan_send(res, amount, their, dist, escort);
     if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : 'Cannot send that.', 'bad'); return; }
-    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud();
-  } else {
-    if (action === 'envoy') { const code = w.envoy(their); if (code === 0) { commit({ op: 'envoy', idx: their }); ui.toast(`An envoy with gifts rides to ${r.name}.`, 'good'); updateHud(); } else ui.toast(code === -20 ? 'An envoy went recently: wait a few days.' : 'An envoy costs 20 gold.', 'bad'); return; }
-    if (action === 'marriage') { const code = w.marriage(their); if (code === 0) { commit({ op: 'marriage', idx: their }); ui.toast(`A royal marriage binds your house to ${r.name}'s.`, 'good'); updateHud(); } else ui.toast(code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -1 ? 'You are already married into that house.' : 'A wedding costs 150 gold.', 'bad'); return; }
-    if (action === 'war') { w.declare_war(their); commit({ op: 'war', idx: their, to: key }); ui.toast(`You declared war on ${r.name}.`, 'bad'); return; }
-    const kind = action === 'alliance' ? 2 : action === 'peace' ? 1 : 0, days = 30;
-    if (!w.treaty_acceptable(their, kind)) { ui.toast(kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.', 'bad'); return; }
-    if (w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days, to: key }); ui.toast(`You offer ${r.name} ${kind === 2 ? 'an alliance' : kind ? 'peace' : 'a trade pact'} for ${days} days.`, 'info'); }
+    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud(); return;
   }
+  const kind = action === 'alliance' ? JK.ALLIANCE : action === 'peace' ? JK.PEACE : action === 'envoy' ? JK.ENVOY : action === 'marriage' ? JK.MARRIAGE : action === 'war' ? JK.WAR : JK.TRADE, days = kind <= 2 ? 30 : 0;
+  const code = w.journey_start(kind, their, days, dist);
+  if (code !== 0) {
+    ui.toast(code === -7 ? 'One of those is already on its way.' : code === -20 ? 'An envoy went recently: wait a few days.' : code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -6 ? (kind === JK.ENVOY ? 'An envoy costs 20 gold.' : 'A wedding costs 150 gold.') : code === -1 && kind === JK.MARRIAGE ? 'You are already married into that house.' : code === -22 ? (kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.') : 'Cannot send that now.', 'bad'); return;
+  }
+  commit({ op: 'journey', kind, idx: their, x: days, y: dist }); sound.click(); updateHud();
+  ui.toast(kind === JK.ENVOY ? `An envoy with gifts sets out for ${r.name}.` : kind === JK.MARRIAGE ? `A wedding party sets out for ${r.name}.` : kind === JK.WAR ? `A herald with your declaration of war rides for ${r.name}.` : `Envoys set out for ${r.name} to offer ${kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact'} for ${days} days.`, kind === JK.WAR ? 'bad' : 'info');
 }
 
 /** Caravans that arrived: tell the village they were sent to, so it can take them and pay. */
 function pollTrade() {
   const d = lv.world.take_delivered();
   for (let i = 0; i + 2 < d.length; i += 3) { for (const [key] of rivals) if (tagOf(key) === d[i + 2]) { commit({ op: 'goods', kind: d[i], x: d[i + 1], to: key }); break; } }
+  // errands of ours that reached their village: the core did the deed on this very tick; now the village hears of it and answers
+  const a = lv.world.take_arrivals(), now = Number(lv.world.tick());
+  for (let i = 0; i + 3 < a.length; i += 4) {
+    const kind = a[i], tag = a[i + 1], days = a[i + 2];
+    if (now - a[i + 3] > 40) continue;   // (an old arrival from a history that was just replayed)
+    const r = [...rivals.values()].find(x => tagOf(x.key) === tag); if (!r) continue;
+    ui.toast(arrivedText(kind, 'you', r.name, true), kind === JK.WAR ? 'bad' : 'good'); updateHud();
+    if (r.online) commit({ op: 'arrive', kind, x: days, to: r.key });
+    else if (kind <= 2 && !r.village.world.treaty_acceptable(myTag(), kind)) { lv.world.treaty_end(tag, kind); commit({ op: 'treaty', idx: tag, kind, y: 0 }); ui.toast(`${r.name} turned the offer down.`, 'info'); }
+  }
 }
 
 /** An army that has stopped beside an abbey, a ruin or a bandit camp goes in. */
@@ -581,16 +613,16 @@ function showRoute() {
 
 function updateDets() {
   const f = lv.world.det_flat(), list: { id: number; units: number[]; text: string; selected: boolean; leftWp: number }[] = [];
-  for (let o = 0; o < f.length; o += 16) {
+  for (let o = 0; o < f.length; o += 17) {
     const st = f[o + 8], state = STATE_TEXT[st] + (st === 3 || st === 2 ? ` (${Math.round(f[o + 11] * 100)}%)` : '');
-    list.push({ id: f[o], units: [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7]], text: state, selected: multiDets.includes(f[o]), leftWp: f[o + 10] });
+    list.push({ id: f[o], units: [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]], text: state, selected: multiDets.includes(f[o]), leftWp: f[o + 10] });
   }
   ui.setDets(list);
   if (multiDets.some(id => !list.some(d => d.id === id))) { multiDets = multiDets.filter(id => list.some(d => d.id === id)); selectedDet = multiDets[0] ?? null; lv.field.select(multiDets); if (selectedDet === null) pathLine?.set(null); }
 }
 
 function detUnits(id: number): number[] | null {
-  const f = lv.world.det_flat(); for (let o = 0; o < f.length; o += 16) if (f[o] === id) return [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7]]; return null;
+  const f = lv.world.det_flat(); for (let o = 0; o < f.length; o += 17) if (f[o] === id) return [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]]; return null;
 }
 
 function orderMarch(id: number, tx: number, tz: number) {
@@ -621,7 +653,7 @@ function detAction(a: string, id: number) {
 /** Marching armies that have reached an enemy village go in. */
 function checkArrivals() {
   const f = lv.world.det_flat();
-  for (let o = 0; o < f.length; o += 16) {
+  for (let o = 0; o < f.length; o += 17) {
     if (f[o + 8] !== 5) continue;
     const id = f[o], key = attackTargets.get(id), r = key ? rivals.get(key) : null;
     if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
@@ -640,6 +672,7 @@ const awayFights = new Set<string>();
 function attackAway(r: Rival, u: number[]) {
   const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
   if (r.village.world.start_raid(angle, Uint32Array.from(u), myTag())) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
+  else if (r.village.world.battle_active() && r.village.world.battle_tag() === myTag() && r.village.world.battle_reinforce(myTag(), Uint32Array.from(u))) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`More of your soldiers join the fight at ${r.name}'s village.`, 'good'); }
   else { lv.world.return_army(Uint32Array.from(u), new Int32Array(RES.length)); commit({ op: 'return', units: u, loot: new Array(RES.length).fill(0) }); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'bad'); updateHud(); }
 }
 
@@ -647,16 +680,17 @@ function attackAway(r: Rival, u: number[]) {
 function defendAgainst(att: Rival, c: Cmd) {
   const u = c.units ?? [], angle = Math.atan2(att.village.oz - lv.oz, att.village.ox - lv.ox), tag = tagOf(att.key);
   if (lv.world.start_raid(angle, Uint32Array.from(u), tag)) { commit({ op: 'raid', from: att.key, units: u, angle, tag }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); }
+  else if (lv.world.battle_active() && lv.world.battle_tag() === tag && lv.world.battle_reinforce(tag, Uint32Array.from(u))) { commit({ op: 'reinforce', from: att.key, units: u, tag }); ui.toast(`${att.name} sends more soldiers into the fight!`, 'bad'); lv.afterTick(); }
   else commit({ op: 'refuse', to: att.key, units: u });
 }
 
 /** A battle finished in a rival's village. If we were the attacker, our survivors come home with the loot. */
 function onRivalReport(key: string, rep: number[]) {
-  if (rep[2]) ledger.record(rep[2], rep.slice(6, 11), rep.slice(11, 11 + RES.length));
+  if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, left, , , , ] = rep;
   void won; void left;
   if (tag !== myTag()) return;
-  const surv = rep.slice(6, 11), loot = rep.slice(11, 11 + RES.length), r = rivals.get(key);
+  const surv = rep.slice(6, 12), loot = rep.slice(12, 12 + RES.length), r = rivals.get(key);
   lv.world.return_army(Uint32Array.from(surv), Int32Array.from(loot));
   commit({ op: 'return', units: surv, loot });
   const gold = loot[8];
@@ -665,7 +699,7 @@ function onRivalReport(key: string, rep: number[]) {
 }
 
 function onLocalReport(rep: number[]) {
-  if (rep[2]) ledger.record(rep[2], rep.slice(6, 11), rep.slice(11, 11 + RES.length));
+  if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
   const [, won, tag, , dead, lost] = rep;
   const who = tag === 0 ? 'The bandits' : 'The invaders';
   ui.log(won ? `${who} were driven off. ${dead} defenders fell.` : `${who} plundered the village. ${lost} buildings were lost.`, won ? 'good' : 'bad', Number(lv.world.tick()));
@@ -732,7 +766,7 @@ function startReplay(key: string) {
   rp.onWorld = w => showWorld(target, w, true);
   const label = own ? 'Your village' : r!.name;
   const sess: ReplaySession = { r: rp, target, key, playing: true, rate: 120, goal: 0, label, bar: null as unknown as ReplayBar };
-  sess.bar = showReplayBar(`▶ ${label}`, rp.end, {
+  sess.bar = showReplayBar(label, rp.end, {
     toggle: () => { if (sess.goal >= rp.end) sess.goal = 0; sess.playing = !sess.playing; },
     seek: t => { sess.goal = t; sess.playing = false; },
     rate: v => { sess.rate = v; },
@@ -796,6 +830,7 @@ async function startGame(name: string, username: string) {
   ui.progress(50, 'Waking the animals…'); await nextFrame();
   wildlife = new Wildlife(seedBig, terrain, forest.all, Array.from(village_sites(seedBig))); scene.add(wildlife.group);
   crowd = new Crowd(); scene.add(crowd.group);
+  travellers = new Travellers(terrain); scene.add(travellers.group);
   fx = new Effects2(terrain); scene.add(fx.group);
   effects = new Effects(); scene.add(effects.smoke.points);
   selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
@@ -977,25 +1012,77 @@ function updateHud() {
   }
 }
 
+/** Was a fight going on in each village at the last look (to notice the start of one). */
+const fightSeen = new Map<string, boolean>();
+
+/** The red banner while a fight is on, for the first village with one: who attacks from where, which side you are on, a click to look at the attackers, and what you can do about it. The same
+ *  options exist for both sides (see defence.ts). A raid on your own village also takes the camera there at once when "Jump to raiders" is on. */
 function battleBanner() {
-  const list: { v: Village; who: string; mine: boolean }[] = [{ v: lv, who: 'your village', mine: true }, ...[...rivals.values()].map(r => ({ v: r.village, who: r.name + "'s village", mine: false }))];
-  for (const { v, who, mine } of list) {
+  const list: { v: Village; who: string; mine: boolean; key: string }[] = [{ v: lv, who: 'your village', mine: true, key: 'me' }, ...[...rivals.values()].map(r => ({ v: r.village, who: r.name + "'s village", mine: false, key: r.key }))];
+  for (const { v, mine, key } of list) {   // (every village is watched for the start of a fight, not only the one the banner shows)
+    const on = v.world.battle_active(), was = fightSeen.get(key) ?? false; fightSeen.set(key, on);
+    if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
+  }
+  for (const { v, who, mine, key } of list) {
     const w = v.world;
     if (!w.battle_active()) continue;
     const u = w.battle_units_flat(); let d = 0, a = 0;
     for (let i = 0; i < u.length; i += 10) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
-    const ang = w.battle_angle(), tag = w.battle_tag(), dx = Math.cos(ang), dz = Math.sin(ang), dir = compassWord(dx, dz);
-    const rr = w.build_radius() + 22, tx = v.ox + dx * rr, tz = v.oz + dz * rr;
+    const ang = w.battle_angle(), tag = w.battle_tag(), dir = compassWord(Math.cos(ang), Math.sin(ang));
+    const role = roleOf(mine, tag, myTag());
     const attacker = tag === 0 ? 'Bandits' : (tag === myTag() ? 'Your army' : rivalName(tag));
-    let role: string;
-    if (mine) role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`;
-    else if (tag === myTag()) role = `Your army attacks from the ${dir}. You are the attacker.`;
-    else role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
-    ui.battle(`⚔ Battle at ${who}<small>${role}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers</small>`,
-      () => rig.focus(tx, tz, 70));
+    const text = role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
+      : role === 'attack' ? `Your army attacks from the ${dir}. You are the attacker.` : `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
+    const armies = fieldArmiesFree(), standing = w.battle_standing().reduce((x: number, y: number) => x + y, 0);
+    const acts: { label: string; title: string; run: () => void; icon?: string }[] = [];
+    for (const act of actionsFor(role, { armies, standing, reserve: 0 })) {
+      if (act === 'send-armies') acts.push({ icon: 'army', label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { for (const id of freeArmyIds()) orderDefend(id); } });
+      else if (act === 'sally') acts.push({ icon: 'attack', label: `Sally out (${standing})`, title: 'The soldiers at their posts leave them and march out to meet the raiders as a field army', run: () => doSally() });
+      else if (act === 'retreat') acts.push({ icon: 'halt', label: 'Retreat', title: 'Call off the attack: your soldiers break off and run for home', run: () => doRetreat(key) });
+    }
+    ui.battle(`${icon('attack', 18, { mono: true })} Battle at ${who}<small>${text}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers${role === 'defend' ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
+      () => lookAtAttackers(v), acts);
     return;
   }
   ui.battle(null);
+}
+
+/** Move the camera to where the attackers stand. */
+function lookAtAttackers(v: Village) {
+  const w = v.world, f = foeFocus(w.battle_angle(), v.ox, v.oz, w.build_radius());
+  rig.focus(f.x, f.z, 70);
+}
+
+/** Field armies that are free to be sent to the fight (not already in it). */
+function freeArmyIds(): number[] {
+  const f = lv.world.det_flat(), out: number[] = [];
+  for (let o = 0; o < f.length; o += 17) if (f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] + f[o + 16] > 0) out.push(f[o]);
+  return out;
+}
+const fieldArmiesFree = () => freeArmyIds().length;
+
+/** Send a field army to the fight at home: it marches to the raiders and joins the defenders. */
+function orderDefend(id: number) {
+  const r = lv.world.det_defend(id);
+  if (r !== 0) { ui.toast(r === -10 ? 'There is no fight to send them to.' : (MARCH_ERRORS[r] ?? 'No way through to the raiders.'), 'bad'); sound.error(); return; }
+  attackTargets.delete(id); commit({ op: 'defend', idx: id }); sound.click(); lv.afterTick(); showRoute(); updateDets();
+  ui.toast('The army marches out to meet the raiders.', 'good');
+}
+
+/** The standing army leaves its posts and marches out as a field army. */
+function doSally() {
+  const u = sallyUnits(lv.world.battle_standing());
+  if (u.every(n => n === 0)) { ui.toast('Nobody is standing at their post.', 'info'); return; }
+  const id = lv.world.det_form(Uint32Array.from(u));
+  if (!id) { ui.toast('The soldiers cannot leave their posts just now.', 'bad'); return; }
+  commit({ op: 'form', units: u }); lv.afterTick(); selectDet(id); orderDefend(id); updateHud();
+}
+
+/** The attacker calls off the attack. In a village whose owner is here the owner's own copy carries it out (and tells everybody); in an away village the fight is local. */
+function doRetreat(key: string) {
+  const r = rivals.get(key); if (!r) return;
+  if (r.online) { commit({ op: 'retreat', to: key }); ui.toast('You sound the retreat. Your soldiers fall back.', 'info'); }
+  else if (r.village.world.battle_retreat(myTag())) { r.village.afterTick(); ui.toast('You sound the retreat. Your soldiers fall back.', 'info'); }
 }
 
 /** Attackers wear their own village's colour (bandits are brown). */
@@ -1136,7 +1223,7 @@ function drawPenBar() {
     bar.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-shape]'); if (b) setPenShape(b.dataset.shape as Shape); };
     document.body.appendChild(bar);
   }
-  bar.innerHTML = SHAPES.map(sh => `<button data-shape="${sh.id}" title="${sh.label}: ${sh.hint}" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${sh.id === penShape ? '#ffe08a' : '#6d5a38'};background:${sh.id === penShape ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;font-size:20px;line-height:1">${sh.icon}</span><span style="font-size:10px">${sh.label}</span></button>`).join('');
+  bar.innerHTML = SHAPES.map(sh => `<button data-shape="${sh.id}" title="${sh.label}: ${sh.hint}" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${sh.id === penShape ? '#ffe08a' : '#6d5a38'};background:${sh.id === penShape ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon(sh.icon, 24, { mono: true })}</span><span style="font-size:10px">${sh.label}</span></button>`).join('');
 }
 
 /** While the pointer is on the Upgrade button: an outline of the bigger building (green when there is room, red with the neighbours in the way marked red too). */
@@ -1179,10 +1266,10 @@ function updateSelection() {
   const d = defs[kind];
   selRing.visible = true; selRing.set(x, z, footprint(kind, tier) + 1.1);
   const stocks = Array.from(w.stocks());
-  const io = (a: [number, number][]) => a.map(([r, n]) => `${RES[r].icon} ${n} ${RES[r].name}`).join(', ');
+  const io = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)} ${n} ${RES[r].name}`).join(', ');
   const health = hp[selectedIdx * 3] / hp[selectedIdx * 3 + 1], burning = hp[selectedIdx * 3 + 2] > 0;
   let html = `<div><div class="eyebrow">${CATS[d.cat].name} · Tier ${tier + 1} of 4</div><h2>${tierName(kind, tier)}</h2><p class="muted">${d.name}</p></div><p>${d.desc}</p>`;
-  html += `<div><div class="eyebrow">${burning ? '🔥 On fire!' : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
+  html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
   if (health < 0.995 && !burning) {   // damaged: offer repairs
     const rc = w.repair_cost(selectedIdx), rcost: [number, number][] = []; for (let i = 0; i < rc.length; i += 2) rcost.push([rc[i], rc[i + 1]]);
     const rok = rcost.every(([r, n]) => stocks[r] >= n);
@@ -1220,10 +1307,10 @@ function updateSelection() {
   }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.cycle) {
-    html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>👷 ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
+    html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>${icon('worker', 20)} ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
       <div><div class="eyebrow">Production cycle</div><div class="bar"><i style="width:${pct}%"></i></div></div>
       <p class="muted">${d.inputs.length ? `Uses ${io(scaled(d.inputs, tier))}<br>` : ''}Makes ${io(scaled(d.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(d.outputs, tier + 1))}.` : ''}</p>`;
-  } else if (d.housing) html += `<div class="stats"><div class="stat"><b>🏠 ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
+  } else if (d.housing) html += `<div class="stats"><div class="stat"><b>${icon('house', 20)} ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
   if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p>`;
   if (kind === 19) {   // the lord who leads the defence
     const h = w.hero_flat();
@@ -1242,7 +1329,7 @@ function updateSelection() {
     const afford = ocost.every(([r, n]) => stocks[r] >= n);
     html += `<div><h3>Design options</h3><div class="optlist">` + opts.map((op, i) => {
       const on = (have & (1 << i)) !== 0, locked = tier < op.t;
-      return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${on ? '☑' : '☐'} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
+      return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
     }).join('') + `</div></div>`;
   }
   html += `<div class="btnrow">${kind !== 15 ? '<button class="pbtn danger" data-act="demolish">Demolish (50% refund)</button>' : ''}<button class="pbtn" data-act="deselect">Close</button></div>`;
@@ -1339,7 +1426,7 @@ function openContext(e: PointerEvent) {
       items.push({ label: 'Look here', run: () => rig.focus(hit.x, hit.z) }, { label: 'Build here…', run: () => ui.setTab('build') });
       for (const id of lv.field.ids()) items.push({ label: `March Army ${id} here`, run: () => { selectDet(id); orderMarch(id, hit.x, hit.z); } });
     }
-    const soldiers = Array.from(lv.world.army()).slice(0, 5);
+    const soldiers = Array.from(lv.world.army()).slice(0, 6);
     if (soldiers.some(n => n > 0)) items.push('-', { label: 'Muster every soldier', sub: 'F', run: () => doMuster(soldiers) });
   }
   // the world may change while the menu is open (a fire, a raid): then the building indices have moved, so do nothing rather than act on the wrong one
@@ -1361,6 +1448,7 @@ function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.client
 /** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
  *  the pointer is on (anywhere round it), turned so its door faces away from the deposit. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
 function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
+  if (kind === 29) { const s = lv.world.waterwheel_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a waterwheel stands on the bank with its wheel out over the water (the core checks it again)
   if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
   const d = defs[kind]; if (d.req !== 1) return null;
   const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
@@ -1399,14 +1487,14 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
   let code = w.can_place(selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
-  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } }   // a mine or quarry snaps onto its deposit
+  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (selectedKind === 29) code = -16; }   // a mine or quarry snaps onto its deposit; a waterwheel with no bank to snap to cannot be built
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
     if (t) { gx = Math.round(t.x - lv.ox); gy = Math.round(t.z - lv.oz); grot = t.rot; const st = Array.from(w.stocks()); code = defs[22].cost.every(([r, n]) => st[r] >= n) ? 0 : -6; } else code = -3;
   }
   const x = lv.ox + gx, z = lv.oz + gy, d = defs[selectedKind];
   // the core levels the ground to the average of five samples: show the same levelling under the ghost so it never clips the terrain
-  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5;
+  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29) h = Math.min(h, 0.7);   // (a waterwheel house stands low on the bank: WHEEL_PAD_MAX in the core)
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = terrain.heightAt(x, z);
@@ -1518,7 +1606,8 @@ function bindInput() {
     if (selectedKind !== null) { selectKind(null); return; }                // right-click puts the building down again
     if (multiDets.length) {                                                 // armies selected: send them there, spread out a little
       const hit = terrain.pick(pointerRay(e).ray);
-      if (hit) multiDets.slice().forEach((id, k) => { const a = k * 2.4, r = k ? 3 + 2 * Math.sqrt(k) : 0; orderMarch(id, hit.x + Math.cos(a) * r, hit.z + Math.sin(a) * r); });
+      if (hit && lv.world.battle_active() && foeNear(lv.world.battle_units_flat(), hit.x, hit.z, 18)) multiDets.slice().forEach(id => orderDefend(id));   // right-click on the raiders: the army goes to meet them
+      else if (hit) multiDets.slice().forEach((id, k) => { const a = k * 2.4, r = k ? 3 + 2 * Math.sqrt(k) : 0; orderMarch(id, hit.x + Math.cos(a) * r, hit.z + Math.sin(a) * r); });
       return;
     }
     openContext(e);
@@ -1545,7 +1634,7 @@ function bindInput() {
       case 'fullMap': ui.toggleMap(); break;
       case 'fullscreen': e.preventDefault(); toggleFullscreen(); break;
       case 'photo': e.preventDefault(); togglePhotoMode(renderer.domElement, () => perf.render(renderer, scene, rig.cam), t => ui.toast(t, 'info')); break;
-      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 5); if (a.some(n => n > 0)) doMuster(a); else ui.toast('There are no soldiers in the barracks.', 'info'); break; }
+      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 6); if (a.some(n => n > 0)) doMuster(a); else ui.toast('There are no soldiers in the barracks.', 'info'); break; }
       case 'toggleMinimap': ui.toggleMinimap(); break;
       default: break;
     }
@@ -1557,7 +1646,7 @@ function buildDepositLabels() {
   const raw = deposits.raw;
   for (let i = 0; i < raw.length; i += 5) {
     const el = document.createElement('div'); el.className = 'lbl'; el.hidden = true;
-    el.innerHTML = `${DEPOSIT[raw[i]].icon}<span>${DEPOSIT[raw[i]].name}</span>`; ui.labels.appendChild(el); depLabels.push(el);
+    el.innerHTML = `${icon(DEPOSIT[raw[i]].icon, 18)}<span>${DEPOSIT[raw[i]].name}</span>`; ui.labels.appendChild(el); depLabels.push(el);
     el.style.pointerEvents = 'auto'; el.style.cursor = 'pointer'; el.title = 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
     const idx = i / 5; let armed = 0;
     el.onclick = e => {   // the first click asks, the second (within 4 seconds) clears it
@@ -1614,13 +1703,37 @@ function updateHallLabels(all: Village[]) {
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist > 28;
     el.hidden = !on; if (!on) continue;
     el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
-    const html = `${v.mine ? '🏰' : '⚔️'}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`;
+    const html = `${icon(v.mine ? 'castle' : 'attack', 18)}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`;
     if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
   }
 }
 
+/** Every village in view as the procession renderer wants it. */
+function travellerVillages(): TVillage[] {
+  const mk = (v: Village, key: string, tag: number, name: string, mine: boolean): TVillage => ({ key, tag, name, mine, x: v.ox, z: v.oz, radius: v.radius, color: v.army.friend, world: v.world });
+  return [mk(lv, 'me', myTag(), myName, true), ...[...rivals.values()].map(r => mk(r.village, r.key, tagOf(r.key), r.name, false))];
+}
+
+/** A small caption floating over each procession on the road: what it is and between whom. */
+const journeyLabels = new Map<string, HTMLElement>();
+function updateJourneyLabels() {
+  const live = new Set<string>();
+  for (const l of travellers.labels()) {
+    let el = journeyLabels.get(l.id);
+    if (!el) { el = document.createElement('div'); el.className = 'lbl jr'; ui.labels.appendChild(el); journeyLabels.set(l.id, el); }
+    live.add(l.id);
+    vtmp.set(l.x, l.y, l.z).project(rig.cam);
+    const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist < 220;
+    el.hidden = !on; if (!on) continue;
+    el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
+    if (el.textContent !== l.text) { el.textContent = l.text; el.dataset.kind = String(l.kind); }
+  }
+  for (const [id, el] of [...journeyLabels]) if (!live.has(id)) { el.remove(); journeyLabels.delete(id); }
+}
+
 // ---------- main loop ----------
 let worldShips: WorldShips | null = null;
+let travellers!: Travellers;
 let tideLevel = 0;   // the water rises and falls a little, slowly
 let noteT = 0, sCount = 0, sT = 0, fireBuf = new Float32Array(256);
 let lastPhase = -1;   // the day phase the light was last set for
@@ -1705,7 +1818,7 @@ function frame(now: number) {
   const view = Math.max(90, rig.dist * 1.7 + 50);        // simulate and draw crowds and animals only around the camera
   wildlife.update(dt, scares, rig.target.x, rig.target.z, view);
   perf.stop('animals');
-  perf.start('crowd upload'); crowd.begin(); all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view)); worldShips?.draw(crowd, rig.target.x, rig.target.z, view); crowd.end(); perf.stop('crowd upload');
+  perf.start('crowd upload'); crowd.begin(); all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view)); worldShips?.draw(crowd, rig.target.x, rig.target.z, view); travellers.update(dt, now / 1000, travellerVillages()); travellers.draw(crowd, rig.target.x, rig.target.z, view); crowd.end(); perf.stop('crowd upload');
   perf.start('fire + particles');
   let nf = 0; for (const v of all) nf += v.fireData.length;
   if (fireBuf.length < nf) fireBuf = new Float32Array(Math.max(nf, fireBuf.length * 2));   // one buffer reused every frame
@@ -1716,7 +1829,7 @@ function frame(now: number) {
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   perf.start('labels + minimap');
-  updateHallLabels(all);
+  updateHallLabels(all); updateJourneyLabels();
   updateLabels();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {

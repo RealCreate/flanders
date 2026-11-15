@@ -1,5 +1,6 @@
 import { settings, setSettings, resetSettings, onSettings, PRESETS, type Settings } from '../settings';
 import { downloadBackup, restoreBackup } from '../backup';
+import { icon } from './icons';
 
 interface Row { key: keyof Settings; label: string; hint: string; kind: 'select' | 'toggle' | 'range'; options?: [string, string][]; min?: number; max?: number; step?: number }
 const ROWS: { title: string; rows: Row[] }[] = [
@@ -7,6 +8,7 @@ const ROWS: { title: string; rows: Row[] }[] = [
     { key: 'quality', label: 'Quality preset', hint: 'Sets most of the options below at once. Change any of them and it becomes Custom.', kind: 'select', options: [['low', 'Low: smooth on weak computers'], ['medium', 'Medium'], ['high', 'High (default)'], ['ultra', 'Ultra: for strong graphics cards'], ['custom', 'Custom']] },
     { key: 'fpsCap', label: 'Frame rate limit', hint: 'Lower limits save battery and keep a laptop cool.', kind: 'select', options: [['0', 'Unlimited (screen speed)'], ['60', '60 per second'], ['30', '30 per second']] },
     { key: 'showPaths', label: 'Show walking paths', hint: 'Draws the invisible path network as red lines (bright on roads): where soldiers and villagers may walk. For checking how they get about.', kind: 'toggle' },
+    { key: 'jumpToRaiders', label: 'Jump to raiders', hint: 'When raiders attack your village, the camera moves to them by itself at the start of the fight (the red banner also takes you there when you click it).', kind: 'toggle' },
     { key: 'showFps', label: 'Show frame rate', hint: 'The small counter in the corner (also F3 for details).', kind: 'toggle' },
   ] },
   { title: 'Image', rows: [
@@ -37,7 +39,7 @@ export function mountSettings(root: HTMLElement, askReload: () => void, watchOwn
     <label class="setrow"><span><b>TURN server</b><small>For example turn:turn.example.com:3478</small></span><input type="text" id="turn-urls" placeholder="turn:host:3478"></label>
     <label class="setrow"><span><b>User name</b></span><input type="text" id="turn-user" autocomplete="off"></label>
     <label class="setrow"><span><b>Password</b></span><input type="password" id="turn-cred" autocomplete="off"></label>` + `<h3>Your data</h3><p class="muted">Your village and your signing key live only in this browser: clearing site data or switching computers loses them. Save a backup file now and then. <b>The file holds your private key: keep it to yourself.</b></p>
-    <div class="btnrow"><button class="pbtn" id="data-export">Save a backup file</button><button class="pbtn" id="data-import">Restore from a backup file…</button><button class="pbtn" id="data-replay" hidden title="Play your village's whole history back, from the first day">▶ Watch my history</button><input type="file" id="data-file" accept="application/json,.json" hidden></div><p class="muted" id="data-msg" role="status"></p>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div>';
+    <div class="btnrow"><button class="pbtn" id="data-export">Save a backup file</button><button class="pbtn" id="data-import">Restore from a backup file…</button><button class="pbtn" id="data-replay" hidden title="Play your village's whole history back, from the first day">${icon('play', 14, { mono: true })} Watch my history</button><input type="file" id="data-file" accept="application/json,.json" hidden></div><p class="muted" id="data-msg" role="status"></p>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div>';
   const el = <T extends HTMLElement>(k: string) => root.querySelector<T>(`#set-${k}`)!;
   const sync = () => {
     const s = settings() as unknown as Record<string, unknown>;

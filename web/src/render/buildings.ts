@@ -376,12 +376,81 @@ const mine = (gold: boolean): Model => b => {
   if (t >= 1) b.gable(3.4, 2.2, 1.0, t >= 2 ? m.slate : m.tile, 0, 2.6, -1.9, 0.3);
 };
 
+let _charTurf: THREE.MeshStandardMaterial | null = null, _charCoal: THREE.MeshStandardMaterial | null = null, _charHole: THREE.MeshStandardMaterial | null = null;
 const charcoal: Model = b => {
-  const m = M();
-  b.dome(2.6, m.mound, -0.6, 0, -0.4, 0.85); b.smoke.push(new THREE.Vector3(-0.6, 2.3, -0.4));
-  for (let i = 0; i < 12; i++) { const a = i / 12 * 6.28; b.box(0.12, 0.12, 1.4, m.darkwood, -0.6 + Math.cos(a) * 1.9, 0.9 + (i % 3) * 0.2, -0.4 + Math.sin(a) * 1.9, -a).visible = false; }
-  b.box(2.2, 1.6, 1.8, m.wood, 2.6, 0, 1.8); b.gable(2.2, 1.8, 1, b.t >= 1 ? m.tile : m.thatch, 2.6, 1.6, 1.8, 0.3);
-  for (let i = 0; i < 3; i++) { b.logH(1.8, 0.25, m.log, -2.6, 0.25 + (i % 2) * 0.45, 2.3 + i * 0.35, 'x'); }
+  const t = b.t, m = M();
+  const turf = (_charTurf ??= new THREE.MeshStandardMaterial({ color: 0x5f6e32, roughness: 1, vertexColors: true }));
+  const coal = (_charCoal ??= new THREE.MeshStandardMaterial({ color: 0x2a2a2d, roughness: 0.95, vertexColors: true }));
+  const hole = (_charHole ??= new THREE.MeshStandardMaterial({ color: 0x0a0806, roughness: 1, vertexColors: true }));
+  let seed = 1234567;   // fixed seed: every client draws the same site
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  /** A charcoal clamp: upright billets stacked tight and leaning in, under stepped, faceted layers of turf and earth with a smoke vent on top. */
+  const clamp = (cx: number, cz: number, R: number, base: number) => {
+    const s = R / 1.9;
+    if (base > 0) b.cyl(R + 0.3, R + 0.4, base, t >= 3 ? m.darkstone : m.stone, cx, 0, cz, 12);
+    const n = Math.round(10 + R * 3);
+    for (let i = 0; i < n; i++) {
+      const a = i / n * Math.PI * 2 + rnd() * 0.12, rr = R - 0.12, h = (1.1 + rnd() * 0.4) * s, rad = (0.17 + rnd() * 0.05) * Math.max(s, 0.7);
+      const bl = b.cyl(rad, rad, h, i % 3 ? m.log : m.darkwood, cx + Math.cos(a) * rr, base, cz + Math.sin(a) * rr, 5);
+      bl.rotation.z = 0.28 * Math.cos(a); bl.rotation.x = -0.28 * Math.sin(a);
+    }
+    b.cyl(R * 0.7, R - 0.4, 0.95 * s, turf, cx, base + 0.2 * s, cz, 9);
+    b.cyl(R * 0.5, R * 0.72, 0.75 * s, m.earth, cx, base + 1.1 * s, cz, 8);
+    b.cyl(R * 0.3, R * 0.52, 0.6 * s, m.mound, cx, base + 1.8 * s, cz, 7);
+    b.cyl(0.24 * s + 0.05, 0.34 * s + 0.05, 0.55 * s, m.iron, cx, base + 2.35 * s, cz, 7);
+    b.smoke.push(new THREE.Vector3(cx, base + 3.1 * s, cz));
+    for (let i = 0; i < 8; i++) {   // patches of earth on the turf and turf on the earth
+      const a = rnd() * Math.PI * 2, low = i < 4, r = low ? R * 0.74 : R * 0.52;
+      b.box(0.5 * s, 0.14, 0.38 * s, low ? m.earth : turf, cx + Math.cos(a) * r, base + (low ? 0.75 : 1.5) * s, cz + Math.sin(a) * r, -a);
+    }
+    for (let i = 0; i < 8; i++) { const a = (i + 0.5) / 8 * Math.PI * 2; b.box(0.2, 0.14, 0.2, hole, cx + Math.cos(a) * (R + 0.15), base, cz + Math.sin(a) * (R + 0.15), -a); }   // air holes round the foot
+  };
+  clamp(-0.6, -0.2, 1.9, t >= 2 ? 0.25 : 0);
+  if (t >= 1) clamp(1.7, -2.4, 1.15, 0);
+  if (t >= 2) clamp(-2.7, -2.1, 0.8, 0);
+
+  // the burner's shelter: a lean-to at first, then a hut with a gabled roof
+  if (t === 0) {
+    for (const [x, z, h] of [[1.4, 0.9, 1.4], [3.1, 0.9, 1.4], [1.4, 2.5, 2.0], [3.1, 2.5, 2.0]]) b.box(0.18, h, 0.18, m.darkwood, x, 0, z);
+    b.box(1.8, 1.9, 0.12, m.wood, 2.25, 0, 2.55);
+    const roof = b.box(2.3, 0.18, 2.1, m.thatch, 2.25, 1.55, 1.7); roof.rotation.x = 0.3;
+    b.box(0.9, 0.2, 0.5, m.wood, 2.2, 0.15, 2.1);   // a cot of boards
+  } else {
+    const w = t >= 2 ? 2.4 : 2.0, d = t >= 2 ? 2.0 : 1.8, hh = t >= 2 ? 1.9 : 1.6;
+    b.box(w, hh, d, t >= 2 ? m.timber : m.wood, 2.3, 0, 1.6);
+    b.gable(w, d, 1.0 + t * 0.15, t >= 2 ? m.tile : m.thatch, 2.3, hh, 1.6, 0.3);
+    b.box(0.7, 1.3, 0.12, m.door, 2.0, 0, 1.6 - d / 2 - 0.04 + 0.0);
+    if (t >= 2) b.chimney(3.2, hh, 1.0, 1.0);
+    if (t >= 3) b.flag(1.2, hh, 2.2, 2.0);
+  }
+  // cut logs and split billets
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3 - i; j++) b.logH(1.7, 0.2, m.log, -2.9, 0.2 + i * 0.36, 0.9 + j * 0.42 + i * 0.21, 'x');
+  for (const [x, z] of [[-3.2, 2.5], [-2.8, 2.6], [-3.0, 2.95], [-2.55, 2.95]]) b.cyl(0.16, 0.16, 0.7 + rnd() * 0.3, m.darkwood, x, 0, z, 6);
+  for (let i = 0; i < 4; i++) b.box(0.55, 0.14, 0.14, m.wood, -2.1 + (i % 2) * 0.1, 0.07 + Math.floor(i / 2) * 0.14, 3.1);
+  // finished charcoal: a heap and sacks
+  b.cone(0.8, 0.65, coal, 3.4, 0, -0.7, 7);
+  for (const [x, y, z, ry] of [[3.7, 0, 0.1, 0.3], [3.2, 0, 0.0, -0.2], [3.45, 0.55, 0.05, 0.1]] as const) b.box(0.55, 0.55, 0.4, m.hay, x, y, z, ry);
+  b.box(0.3, 0.3, 0.3, coal, 3.0, 0, -0.35, 0.4);
+  // wheelbarrow
+  b.box(0.9, 0.3, 0.55, m.wood, -2.0, 0.35, 3.3); b.box(0.5, 0.2, 0.4, coal, -2.0, 0.65, 3.3);
+  b.cyl(0.28, 0.28, 0.08, m.darkwood, -2.55, 0.0, 3.3, 10).rotation.z = Math.PI / 2;
+  for (const dz of [-0.2, 0.2]) { b.box(0.08, 0.35, 0.08, m.darkwood, -1.5, 0, 3.3 + dz); b.box(1.2, 0.07, 0.07, m.darkwood, -2.3, 0.3, 3.3 + dz); }
+  // axe in a stump
+  b.cyl(0.38, 0.45, 0.5, m.log, 1.5, 0, 3.4, 9);
+  const haft = b.box(0.07, 0.8, 0.07, m.darkwood, 1.5, 0.45, 3.4); haft.rotation.z = 0.35;
+  b.box(0.3, 0.22, 0.05, m.iron, 1.22, 1.0, 3.4);
+  // wattle windbreak
+  for (let i = 0; i < 5; i++) {
+    const z = -1.1 + i * 0.38;
+    b.box(0.08, 1.0, 0.08, m.darkwood, -3.5, 0, z);
+    for (let k = 0; k < 4; k++) b.box(0.07, 0.1, 0.46, k % 2 ? m.hay : m.wood, -3.5 + (k + i) % 2 * 0.09, 0.15 + k * 0.22, z + 0.19);
+  }
+  // a covered store for charcoal
+  if (t >= 2) {
+    for (const [x, z] of [[-1.0, 2.5], [0.6, 2.5], [-1.0, 3.6], [0.6, 3.6]]) b.box(0.15, 1.5, 0.15, m.darkwood, x, 0, z);
+    b.gable(1.6, 1.1, 0.6, m.tile, -0.2, 1.5, 3.05, 0.3);
+    for (const [x, y, z] of [[-0.6, 0, 3.0], [0.0, 0, 3.1], [-0.3, 0.55, 3.05]] as const) b.box(0.55, 0.55, 0.4, coal, x, y, z, x);
+  }
 };
 
 const smelter: Model = b => {
@@ -718,7 +787,8 @@ const waterwheel: Model = b => {
   const t = b.t, m = M(), W = 4.2 + t * 0.5, D = 3.6, h = 2.5 + t * 0.4, wm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
   b.box(W + 0.4, 0.4, D + 0.4, m.stone, 0, -0.1, 0); b.box(W, h, D, wm, 0, 0.3, 0); b.gable(W, D, 1.6 + t * 0.3, t >= 1 ? m.tile : m.thatch, 0, h + 0.3, 0, 0.5);
   b.box(0.9, 1.6, 0.14, m.door, 0, 0.3, D / 2 + 0.03); b.window(W * 0.28, 1.6, D / 2 + 0.02); b.chimney(-W * 0.3, h + 1.2, -0.4, 1.2);
-  const R = 1.7 + t * 0.15, pivot = new THREE.Group(); pivot.position.set(W / 2 + 0.55, R + 0.2, 0); pivot.rotation.y = Math.PI / 2; b.g.add(pivot);
+  // the wheel hangs out over the water on a long axle (the core snaps the house to the bank so the point WHEEL_REACH out from its middle is over the water) and dips below the pad
+  const R = 1.7 + t * 0.15, AX = 4.4, DIP = 0.9, pivot = new THREE.Group(); pivot.position.set(AX, R - DIP, 0); pivot.rotation.y = Math.PI / 2; b.g.add(pivot);
   const wheel = new THREE.Group(); pivot.add(wheel);
   const part = (geo: THREE.BufferGeometry, mat: THREE.Material) => { const q = new THREE.Mesh(geo, mat); q.castShadow = true; return q; };
   for (const s of [-0.5, 0.5]) { const rim = part(new THREE.TorusGeometry(R, 0.1, 6, 20), m.darkwood); rim.position.z = s; wheel.add(rim); }
@@ -728,8 +798,9 @@ const waterwheel: Model = b => {
   }
   wheel.add(part(new THREE.CylinderGeometry(0.22, 0.22, 1.3, 8).rotateX(Math.PI / 2), m.iron));
   b.spin.push(wheel);
-  b.box(0.8, 0.5, 2.6, new THREE.MeshStandardMaterial({ color: 0x4a7fa0, roughness: 0.2 }), W / 2 + 0.6, R * 2 + 0.3, 0);   // the flume that feeds the wheel
-  b.box(0.1, R * 2 + 0.3, 0.1, m.darkwood, W / 2 + 0.6, 0, 1.4); b.box(0.1, R * 2 + 0.3, 0.1, m.darkwood, W / 2 + 0.6, 0, -1.4);
+  b.box(AX - W / 2 + 0.2, 0.22, 0.22, m.iron, (AX + W / 2) / 2 - 0.1, R - DIP - 0.11, 0);   // the axle running back into the mill house
+  b.box(0.8, 0.5, 2.6, new THREE.MeshStandardMaterial({ color: 0x4a7fa0, roughness: 0.2 }), AX - 0.3, R * 2 - DIP + 0.4, 0);   // the flume that feeds the wheel
+  for (const z of [-1.4, 1.4]) { b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, AX, -DIP, z); b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, W / 2 + 0.3, -DIP, z); b.box(AX - W / 2 - 0.1, 0.12, 0.14, m.darkwood, (AX + W / 2) / 2 + 0.1, R * 2 - DIP + 0.1, z); }
   b.box(0.6, 0.6, 0.6, m.wood, -W / 2 - 0.7, 0, 0.8); b.box(0.5, 0.5, 0.5, m.wood, -W / 2 - 0.6, 0, -0.4);
   if (t === 3) b.flag(-W / 2 + 0.4, h + 1.7, 0, 2.0);
 };

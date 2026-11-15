@@ -1,3 +1,4 @@
+import { icon, KIND_ICON_NAMES, UNIT_ICON_NAMES, CAT_ICON_NAMES } from './ui/icons';
 import init, { catalog, units as unitsJson } from './wasm/game_core.js';
 
 await init(); // the building catalog comes from the Rust core, so wasm must be ready before this module evaluates
@@ -9,26 +10,24 @@ export interface BuildingDef {
 }
 
 export const RES = [
-  { key: 'wood', name: 'Wood', icon: '🪵', hint: 'Felled by woodcutters. Burned for charcoal, sawn into planks.' },
-  { key: 'planks', name: 'Planks', icon: '📏', hint: 'Sawn timber for better buildings.' },
-  { key: 'stone', name: 'Stone', icon: '🪨', hint: 'Quarried from stone outcrops.' },
-  { key: 'clay', name: 'Clay', icon: '🟤', hint: 'Dirt dug from clay banks. Fired into bricks.' },
-  { key: 'bricks', name: 'Bricks', icon: '🧱', hint: 'Fired clay. Needed for grand upgrades.' },
-  { key: 'ironore', name: 'Iron ore', icon: '🟠', hint: 'Mined from iron veins. Smelt it with charcoal.' },
-  { key: 'iron', name: 'Iron', icon: '⛓️', hint: 'Smelted ingots, forged into tools.' },
-  { key: 'goldore', name: 'Gold ore', icon: '🟡', hint: 'Mined from rare gold veins.' },
-  { key: 'gold', name: 'Gold', icon: '🪙', hint: 'Coin. Taxes, caravans and the mint bring it in.' },
-  { key: 'charcoal', name: 'Charcoal', icon: '⚫', hint: 'Fuel for every furnace and kiln.' },
-  { key: 'grain', name: 'Grain', icon: '🌾', hint: 'Feeds your villagers.' },
-  { key: 'tools', name: 'Tools', icon: '🔨', hint: 'Forged by the blacksmith. Needed for mines.' },
+  { key: 'wood', name: 'Wood', icon: 'wood', hint: 'Felled by woodcutters. Burned for charcoal, sawn into planks.' },
+  { key: 'planks', name: 'Planks', icon: 'planks', hint: 'Sawn timber for better buildings.' },
+  { key: 'stone', name: 'Stone', icon: 'stone', hint: 'Quarried from stone outcrops.' },
+  { key: 'clay', name: 'Clay', icon: 'clay', hint: 'Dirt dug from clay banks. Fired into bricks.' },
+  { key: 'bricks', name: 'Bricks', icon: 'bricks', hint: 'Fired clay. Needed for grand upgrades.' },
+  { key: 'ironore', name: 'Iron ore', icon: 'ironore', hint: 'Mined from iron veins. Smelt it with charcoal.' },
+  { key: 'iron', name: 'Iron', icon: 'iron', hint: 'Smelted ingots, forged into tools.' },
+  { key: 'goldore', name: 'Gold ore', icon: 'goldore', hint: 'Mined from rare gold veins.' },
+  { key: 'gold', name: 'Gold', icon: 'gold', hint: 'Coin. Taxes, caravans and the mint bring it in.' },
+  { key: 'charcoal', name: 'Charcoal', icon: 'charcoal', hint: 'Fuel for every furnace and kiln.' },
+  { key: 'grain', name: 'Grain', icon: 'grain', hint: 'Feeds your villagers.' },
+  { key: 'tools', name: 'Tools', icon: 'tools', hint: 'Forged by the blacksmith. Needed for mines.' },
 ] as const;
 
-export const CATS = [
-  { name: 'Housing', icon: '🏠' }, { name: 'Food', icon: '🌾' }, { name: 'Gathering', icon: '⛏️' },
-  { name: 'Industry', icon: '⚒️' }, { name: 'Defence', icon: '🛡️' }, { name: 'Civic', icon: '⛪' }, { name: 'Land', icon: '⛰️' },
-];
+export const CATS = [{ name: 'Housing', icon: CAT_ICON_NAMES[0] }, { name: 'Food', icon: CAT_ICON_NAMES[1] }, { name: 'Gathering', icon: CAT_ICON_NAMES[2] }, { name: 'Industry', icon: CAT_ICON_NAMES[3] }, { name: 'Defence', icon: CAT_ICON_NAMES[4] }, { name: 'Civic', icon: CAT_ICON_NAMES[5] }, { name: 'Land', icon: CAT_ICON_NAMES[6] }];
 
-export const KIND_ICON = ['🏠', '🌾', '🧱', '🗼', '🪓', '🪚', '🪨', '🟤', '🏺', '⛏️', '💰', '♨️', '🔥', '⚒️', '🪙', '🏰', '🕳️', '⛪', '🏹', '⚔️', '🛠️', '🪵', '🚪', '🌉', '🌊', '📦', '🏯', '⚖️', '🏪', '☸️', '🥕', '🌳', '🏞️', '⛰️', '🕳️', '⚓', '🚧', '🛤️', '🪵', '🏥', '🪦'];
+/** Icon names (see ui/icons.ts) by building kind. */
+export const KIND_ICON = KIND_ICON_NAMES;
 
 /** Kinds without a levelled pad under them (walls, fences, gates, drawbridges, moats). */
 export const NOPAD = new Set([2, 21, 22, 23, 24, 32, 33, 34, 37, 38]);
@@ -64,10 +63,10 @@ export const PLACE_ERRORS: Record<number, string> = {
 };
 
 export const DEPOSIT = [
-  { name: 'Stone outcrop', icon: '🪨', color: '#9aa0a6' },
-  { name: 'Clay bank', icon: '🟤', color: '#b5693a' },
-  { name: 'Iron vein', icon: '🟠', color: '#b5482a' },
-  { name: 'Gold vein', icon: '🟡', color: '#e6b800' },
+  { name: 'Stone outcrop', icon: 'stone', color: '#9aa0a6' },
+  { name: 'Clay bank', icon: 'clay', color: '#b5693a' },
+  { name: 'Iron vein', icon: 'ironore', color: '#b5482a' },
+  { name: 'Gold vein', icon: 'goldore', color: '#e6b800' },
 ];
 
 /** The decisions put to the player (see World.choose): a title, a line of story and the options. */
@@ -111,10 +110,12 @@ export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; ton
 
 export const defs: BuildingDef[] = JSON.parse(catalog());
 
-export const fmtCost = (c: [number, number][]) => c.map(([r, n]) => `${RES[r].icon}${n}`).join(' ');
+/** The picture of a resource, `size` px, as SVG markup. */
+export const resIcon = (r: number, size = 16) => icon(RES[r].key, size);
+export const fmtCost = (c: [number, number][]) => c.map(([r, n]) => `${resIcon(r)}${n}`).join(' ');
 
 
 export interface UnitDef { id: number; name: string; hp: number; dmg: number; range: number; speed: number; armor: number; cost: [number, number][]; tier: number; time: number; desc: string }
 export const units: UnitDef[] = JSON.parse(unitsJson());
-export const UNIT_ICON = ['🔱', '🏹', '⚔️', '🐴', '☄️', '🪓'];
+export const UNIT_ICON = UNIT_ICON_NAMES;
 export const UNIT_NAMES = units.map(u => u.name);
