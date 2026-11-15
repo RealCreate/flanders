@@ -2,10 +2,12 @@ import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
 import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, type BuildingDef } from '../data';
-import { breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
+import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
 
 /** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
+const FOOD_KEYS = ['grain', 'fish', 'smokedfish', 'bread'];
+const FOOD_ID = -2, CLOSED = -1;   // (the breakdown panel shows resource `i`, or all the foods at once)
 const bi = (name: string, size = 16) => icon(name, size, { mono: true });
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
 import { mountFlagDesigner, paintFlag } from './flagdesigner';
@@ -52,7 +54,7 @@ export interface Handlers {
 }
 
 export interface Hud {
-  tick: number; stocks: number[]; rates: number[]; flow?: FlowData; kinds?: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
+  tick: number; stocks: number[]; rates: number[]; flow?: FlowData; kinds?: number[]; food?: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
   radius: number; buildings: number; storage: number;
   vitals?: number[]; beds?: number; devotion?: number;
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
@@ -178,7 +180,8 @@ export class UI {
       ${icon('iron', 16)} Iron + ${icon('charcoal', 16)} <span class="arrow">→</span> Blacksmith <span class="arrow">→</span> ${icon('tools', 16)} Tools<br>
       ${icon('goldore', 16)} Gold ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Mint <span class="arrow">→</span> ${icon('gold', 16)} Gold<br>
       ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison<br>
-      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish (eaten before grain)</div>
+      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish<br>
+      Farm <span class="arrow">→</span> ${icon('grain', 16)} Grain + ${icon('wood', 16)} <span class="arrow">→</span> Bakery <span class="arrow">→</span> ${icon('bread', 16)} Bread. Cooked food fills more than raw: the village eats from all its stores together.</div>
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
   <section class="pane" id="pane-sel"></section>
@@ -547,24 +550,44 @@ export class UI {
       p.onclick = () => this.openFlow(i); p.title = '';
       p.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
       t.appendChild(p); this.pills.push(p);
+      if (FOOD_KEYS.includes(r.key)) p.hidden = true;   // the foods are one pill: Food
     });
+    const fp = document.createElement('span'); fp.className = 'pill'; fp.dataset.i = String(RES.length);
+    fp.innerHTML = `<span class="ic">${icon('food', 18)}</span><b>0</b><span class="d"></span>`;
+    fp.onmouseenter = () => { this.hoverPill = RES.length; this.tipFor(RES.length); }; fp.onclick = () => this.openFlow(FOOD_ID);
+    fp.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
+    t.insertBefore(fp, this.pills[RES.findIndex(r => r.key === 'grain')]); this.pills.push(fp);
   }
-  private flowOpen = -1; private lastHud: Hud | null = null;
+  private flowOpen = CLOSED; private lastHud: Hud | null = null;
   /** The breakdown of one resource: what makes it and what uses it, per day (from the core's ledger of the last day). */
   openFlow(i: number) { this.flowOpen = i; this.modal('flow', true); if (this.lastHud) this.renderFlow(this.lastHud); }
-  private renderFlow(h: Hud) {
-    const i = this.flowOpen; if (i < 0 || !h.flow) return;
+  private flowTables(h: Hud, i: number) {
     const rows = (list: Row[], sign: string) => list.length ? list.map(r => {
-      const x = r.key.startsWith('b') && /^b\d+$/.test(r.key) ? { label: defs[Number(r.key.slice(1))]?.name ?? '?', ic: KIND_ICON[Number(r.key.slice(1))], hint: defs[Number(r.key.slice(1))]?.desc ?? '' } : { label: EXTRA_INFO[r.key]?.label ?? r.key, ic: EXTRA_INFO[r.key]?.icon ?? 'unknown', hint: EXTRA_INFO[r.key]?.hint ?? '' };
+      const k = /^b\d+$/.test(r.key) ? Number(r.key.slice(1)) : -1;
+      const x = k >= 0 ? { label: defs[k]?.name ?? '?', ic: KIND_ICON[k], hint: defs[k]?.desc ?? '' } : { label: EXTRA_INFO[r.key]?.label ?? r.key, ic: EXTRA_INFO[r.key]?.icon ?? 'unknown', hint: EXTRA_INFO[r.key]?.hint ?? '' };
       return `<tr title="${esc(x.hint)}"><td>${icon(x.ic as IconName, 18)}</td><td>${esc(x.label)}${r.count > 1 ? ` <span class="muted">× ${r.count}</span>` : ''}</td><td class="r">${sign}${Math.round(r.perDay)}/day</td></tr>`;
     }).join('') : `<tr><td></td><td class="muted">Nothing</td><td></td></tr>`;
-    const b = breakdown(h.flow, i, c => (c < h.flow!.nk ? h.kinds?.[c] ?? 0 : 0));
-    const v = h.stocks[i], left = daysLeft(v, b.steady);
+    const b = breakdown(h.flow!, i, c => (c < h.flow!.nk ? h.kinds?.[c] ?? 0 : 0));
+    return { b, html: `<h3>Comes in</h3><table class="flowtab">${rows(b.sources, '+')}</table><h3>Goes out</h3><table class="flowtab">${rows(b.sinks, '\u2212')}</table>` };
+  }
+  private renderFlow(h: Hud) {
+    const i = this.flowOpen; if (i === CLOSED || !h.flow) return;
+    const foot = (covered: number, net: number, steady: number) => `<p class="muted">All figures are per day (${DAY_TICKS} ticks), taken over the last ${Math.round(covered / 24) / 10} days of play. The steady rate leaves out your own orders and one-off events, so a raid or a new building does not make it jump.${net !== steady ? ` Counting everything the stock changed by ${fmtRate(net)}.` : ''}</p>`;
+    if (i === FOOD_ID) {   // all the foods together, then each one's own breakdown
+      const table = h.food ?? [], t = foodTotals(h.stocks, h.rates, table), left = daysLeft(t.meals, t.rate);
+      $('flow-title').innerHTML = `${icon('food', 26)} Food`;
+      let body = `<p class="muted">${Math.floor(t.meals)} meals in store · steady rate <b class="${t.rate < 0 ? 'neg' : t.rate > 0 ? 'pos' : ''}">${fmtRate(t.rate)}</b> (in meals)${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)}</b>` : ''}</p><p class="muted">The village eats from all its stores together, taking from whichever holds the most food. Raw grain and raw fish fill less than bread and smoked fish, so cooked food feeds more mouths.</p>`;
+      let covered = 0;
+      for (let k = 0; k + 1 < table.length; k += 2) {
+        const r = table[k], q = table[k + 1], { b, html } = this.flowTables(h, r); covered = b.covered;
+        body += `<h2 class="foodh">${resIcon(r, 20)} ${RES[r].name} <span class="muted">${h.stocks[r]} stored · fills ${q / 4}× a meal · ${fmtRate(b.steady)}</span></h2>${html}`;
+      }
+      $('flow-body').innerHTML = body + foot(covered, t.rate, t.rate);
+      return;
+    }
+    const { b, html } = this.flowTables(h, i), v = h.stocks[i], left = daysLeft(v, b.steady);
     $('flow-title').innerHTML = `${resIcon(i, 26)} ${RES[i].name}`;
-    $('flow-body').innerHTML = `<p class="muted">${v} / ${h.storage} stored · steady rate <b class="${b.steady < 0 ? 'neg' : b.steady > 0 ? 'pos' : ''}">${fmtRate(b.steady)}</b>${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)}</b>` : ''}</p>
-      <h3>Comes in</h3><table class="flowtab">${rows(b.sources, '+')}</table>
-      <h3>Goes out</h3><table class="flowtab">${rows(b.sinks, '−')}</table>
-      <p class="muted">All figures are per day (${DAY_TICKS} ticks), taken over the last ${Math.round(b.covered / 24) / 10} days of play. The steady rate leaves out your own orders and one-off events, so a raid or a new building does not make it jump.${b.net !== b.steady ? ` Counting everything the stock changed by ${fmtRate(b.net)}.` : ''}</p>`;
+    $('flow-body').innerHTML = `<p class="muted">${v} / ${h.storage} stored · steady rate <b class="${b.steady < 0 ? 'neg' : b.steady > 0 ? 'pos' : ''}">${fmtRate(b.steady)}</b>${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)}</b>` : ''}</p>${html}${foot(b.covered, b.net, b.steady)}`;
   }
   private lastTip = '';
   private pillText: string[] = [];
@@ -585,11 +608,19 @@ export class UI {
     const ph = dayPhase(h.tick);
     $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season} · ${clockText(ph)} `; $('sub').insertAdjacentHTML('beforeend', icon(nightFactor(ph) > 0.5 ? 'moon' : 'sun', 14));
     this.lastHud = h; if (this.flowOpen >= 0 && !$('flow').hidden) this.renderFlow(h);
+    if (h.food) {
+      const t = foodTotals(h.stocks, h.rates, h.food), p = this.pills[RES.length], left = daysLeft(t.meals, t.rate);
+      p.querySelector('b')!.textContent = String(Math.floor(t.meals));
+      const d = p.querySelector('.d') as HTMLElement; d.textContent = Math.abs(t.rate) >= 1 ? fmtRate(t.rate) : ''; d.classList.toggle('neg', t.rate < 0);
+      p.classList.toggle('low', t.meals < 25);
+      this.pillText[RES.length] = `<b>${icon('food', 18)} Food</b><small>${Math.floor(t.meals)} meals in store</small><small>${fmtRate(t.rate)} meals (steady, over the last day)</small>${left !== null ? `<small class="warn">Runs out in ${fmtDaysLeft(left)}</small>` : ''}<small>Grain, fish, bread and smoked fish, eaten together.</small><small class="muted">Click for what makes it and what uses it</small>`;
+      if (this.hoverPill === RES.length) this.tipFor(RES.length);
+    }
     h.stocks.forEach((v, i) => {
       const p = this.pills[i], rate = h.rates[i], left = daysLeft(v, rate);
       p.querySelector('b')!.textContent = String(v);
       const d = p.querySelector('.d') as HTMLElement; d.textContent = Math.abs(rate) >= 1 ? fmtRate(rate) : ''; d.classList.toggle('neg', rate < 0);
-      p.classList.toggle('low', i === 10 && v < 25);
+      
       p.classList.toggle('full', v >= h.storage);
       this.pillText[i] = `<b>${resIcon(i)} ${RES[i].name}</b><small>${v} / ${h.storage} stored</small><small>${fmtRate(rate)} (steady, over the last day)</small>${left !== null ? `<small class="warn">Runs out in ${fmtDaysLeft(left)}</small>` : ''}<small>${RES[i].hint}</small><small class="muted">Click for what makes it and what uses it</small>`;
       if (this.hoverPill === i) this.tipFor(i);

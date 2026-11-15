@@ -76,3 +76,10 @@ export const EXTRA_INFO: Record<string, { label: string; icon: string; hint: str
   orders: { label: 'Your orders', icon: 'worker', hint: 'Building, upgrading, demolishing, hiring soldiers and sending caravans. Not counted in the steady rate.' },
   other: { label: 'Raids, events and other', icon: 'raid', hint: 'Loot taken or won, and anything else that happens once. Not counted in the steady rate.' },
 };
+
+/** All the foods as one: meals in store and the steady rate in meals a day. `table` is the core's `food_table()`: `[resource, quarter meals]` pairs (a meal is four quarters). */
+export function foodTotals(stocks: ArrayLike<number>, rates: ArrayLike<number>, table: ArrayLike<number>): { meals: number; rate: number } {
+  let meals = 0, rate = 0;
+  for (let k = 0; k + 1 < table.length; k += 2) { const r = table[k], q = table[k + 1]; meals += (stocks[r] ?? 0) * q / 4; rate += (rates[r] ?? 0) * q / 4; }
+  return { meals, rate };
+}

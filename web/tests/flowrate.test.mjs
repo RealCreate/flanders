@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseLedger, steadyRate, fmtRate, daysLeft, fmtDaysLeft, breakdown, perDay, categoryKey, MIN_TICKS, EXTRA_INFO } from '../src/flowrate.ts';
+import { parseLedger, steadyRate, fmtRate, daysLeft, fmtDaysLeft, breakdown, foodTotals, perDay, categoryKey, MIN_TICKS, EXTRA_INFO } from '../src/flowrate.ts';
 import { ICON_NAMES } from '../src/ui/icons.ts';
 
 const EXTRAS = ['villagers', 'soldiers', 'winter', 'backup', 'doves', 'tax', 'tithe', 'toll', 'port', 'harvest', 'merchants', 'orders', 'other'];
@@ -51,4 +51,13 @@ test('an empty ledger is harmless', () => {
 
 test('every extra category has a label and a drawn icon', () => {
   for (const k of EXTRAS) { assert.ok(EXTRA_INFO[k], k); assert.ok(ICON_NAMES.includes(EXTRA_INFO[k].icon), `${k}: ${EXTRA_INFO[k].icon}`); }
+});
+
+test('the foods are one: cooked food counts for more meals', () => {
+  const table = [10, 4, 12, 4, 14, 6, 13, 6];   // grain, fish, bread, smoked fish
+  const stocks = new Array(15).fill(0); stocks[10] = 100; stocks[14] = 40; stocks[13] = 8;
+  const rates = new Array(15).fill(0); rates[10] = -40; rates[14] = 20;
+  const t = foodTotals(stocks, rates, table);
+  assert.equal(t.meals, 100 + 60 + 12); assert.equal(t.rate, -40 + 30);
+  assert.deepEqual(foodTotals([], [], []), { meals: 0, rate: 0 });
 });

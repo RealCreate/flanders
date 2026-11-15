@@ -23,8 +23,9 @@ export const RES = [
   { key: 'charcoal', name: 'Charcoal', icon: 'charcoal', hint: 'Fuel for every furnace and kiln.' },
   { key: 'grain', name: 'Grain', icon: 'grain', hint: 'Feeds your villagers.' },
   { key: 'tools', name: 'Tools', icon: 'tools', hint: 'Forged by the blacksmith. Needed for mines.' },
-  { key: 'fish', name: 'Fish', icon: 'fish', hint: 'Landed by fishing huts. Not food until it is smoked.' },
-  { key: 'smokedfish', name: 'Smoked fish', icon: 'smokedfish', hint: 'Smoked in a smokehouse. Eaten before any grain.' },
+  { key: 'fish', name: 'Fish', icon: 'fish', hint: 'Landed by fishing huts. Eaten raw it fills little: smoke it for more.' },
+  { key: 'smokedfish', name: 'Smoked fish', icon: 'smokedfish', hint: 'Smoked in a smokehouse. Cooked food fills half as much again as raw.' },
+  { key: 'bread', name: 'Bread', icon: 'bread', hint: 'Baked from grain in a bakery. Cooked food fills half as much again as raw.' },
 ] as const;
 
 export const CATS = [{ name: 'Housing', icon: CAT_ICON_NAMES[0] }, { name: 'Food', icon: CAT_ICON_NAMES[1] }, { name: 'Gathering', icon: CAT_ICON_NAMES[2] }, { name: 'Industry', icon: CAT_ICON_NAMES[3] }, { name: 'Defence', icon: CAT_ICON_NAMES[4] }, { name: 'Civic', icon: CAT_ICON_NAMES[5] }, { name: 'Land', icon: CAT_ICON_NAMES[6] }];
@@ -50,7 +51,7 @@ export const TIER_NAMES: Record<number, string[]> = {
   25: ['Storehouse', 'Warehouse', 'Stone Warehouse', 'Great Warehouse'], 26: ['Motte Tower', 'Stone Keep', 'Great Keep', 'Citadel'], 27: ['Moot Hall', 'Courthouse', 'Assize Hall', 'Royal Court'], 28: ['Market Stalls', 'Market Square', 'Market Hall', 'Grand Market'], 29: ['Mill Wheel', 'Watermill', 'Stone Mill', 'Great Mill'], 30: ['Kitchen Garden', 'Herb Garden', 'Walled Garden', 'Pleasure Garden'], 31: ['Green', 'Park', 'Gardens', 'Royal Park'], 32: ['River'], 33: ['Raised Ground'], 34: ['Lowered Ground'],
   35: ['Landing Stage', 'Harbour', 'Port', 'Great Port'], 36: ['Toll Post', 'Toll House', 'Toll Gate', 'Customs House'], 37: ['Dirt Road'], 38: ['Footbridge', 'Timber Bridge', 'Stone Bridge', 'Great Bridge'],
   39: ['Infirmary', 'Hospice', 'Hospital', 'Great Hospital'], 40: ['Burial Ground', 'Graveyard', 'Cemetery', 'Great Necropolis'],
-  41: ['Fishing Hut', "Fisher's Cottage", 'Fishing Wharf', 'Fishery'], 42: ['Smokehouse', 'Smokery', 'Great Smokery', 'Fish Hall'],
+  41: ['Fishing Hut', "Fisher's Cottage", 'Fishing Wharf', 'Fishery'], 42: ['Smokehouse', 'Smokery', 'Great Smokery', 'Fish Hall'], 43: ['Bakery', 'Bakehouse', 'Great Bakehouse', 'Royal Bakery'],
   21: ['Spiked Logs'], 22: ['Wooden Gate', 'Timber Gate', 'Stone Gatehouse', 'Fortified Gatehouse'], 23: ['Drawbridge'], 24: ['Moat'],
 };
 export const tierName = (kind: number, tier: number) => (TIER_NAMES[kind] ?? GENERIC_TIERS)[tier];
