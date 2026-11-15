@@ -156,6 +156,9 @@ pub const CH_WINTER: u8 = 3;
 const CHOICE_DAYS: u64 = 2;
 /// Ticks in a day, days in a season (the interface uses the same numbers).
 pub const DAY: u64 = 240;
+/// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
+fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
+     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE) }
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
@@ -250,6 +253,8 @@ pub struct World {
     treaties: Vec<Treaty>,    // agreements with other villages
     warm: bool,    // false while winter fires are out for lack of wood
     eff: u32,
+    /// How fully the food and wood workplaces are staffed, and everything else (derived in `staffing`: the hands go to food and wood first).
+    eff_first: u32, eff_rest: u32,
     jobs: u32,
     events: Vec<i32>,
     sites: Vec<(f32, f32)>,
@@ -362,7 +367,7 @@ impl World {
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
@@ -635,12 +640,18 @@ impl World {
         self.children = self.children.min(self.population); self.elders = self.elders.min(self.population - self.children);
         let workers = (self.adults().saturating_sub(self.sick)) * 7 / 10 * if self.tick < self.quarantine_until { 7 } else { 10 } / 10;
         self.eff = if self.jobs == 0 { 100 } else { (workers * 100 / self.jobs).min(100) };
+        // the hands go to food and wood first: those workplaces are staffed before anything else, and the rest share what is left
+        let first_jobs: u32 = self.buildings.iter().filter(|b| staffed_first(b.kind)).map(|b| DEFS[b.kind as usize].jobs * (b.tier as u32 + 1)).sum();
+        self.eff_first = if first_jobs == 0 { 100 } else { (workers * 100 / first_jobs).min(100) };
+        let left_hands = workers.saturating_sub(first_jobs * self.eff_first / 100); let rest_jobs = self.jobs - first_jobs;
+        self.eff_rest = if rest_jobs == 0 { 100 } else { (left_hands * 100 / rest_jobs).min(100) };
         let cap = self.capacity();
         let housed = self.population.min(cap);
         let mut left = housed;
-        let eff = self.eff;
+        let (eff_first, eff_rest) = (self.eff_first, self.eff_rest);
         for b in self.buildings.iter_mut() {
             let d = &DEFS[b.kind as usize];
+            let eff = if staffed_first(b.kind) { eff_first } else { eff_rest };
             b.staff = (d.jobs * (b.tier as u32 + 1) * eff + 50) / 100;
             let c = d.housing * (b.tier as u32 + 1);
             let r = if cap == 0 { 0 } else { (c * housed / cap).min(left) };
@@ -946,6 +957,9 @@ impl World {
         vec![]
     }
 
+    /// The turn (45-degree steps, as `place` takes it) whose deck direction (sin, cos) lies closest to the unit direction (nx, ny).
+    pub(crate) fn drawbridge_turn(nx: f32, ny: f32) -> i32 { ((nx.atan2(ny) / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8) }
+
     /// Where a drawbridge clicked at (dx, dy) goes: snapped onto the nearest piece of moat or river (its middle line) and turned square across it, so the deck spans the water from bank to bank.
     /// [x, y, turn] relative to the origin (the turn is in 45-degree steps, as `place` takes it), or nothing when no moat is within reach.
     pub fn drawbridge_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
@@ -969,9 +983,10 @@ impl World {
         if tx == 1.0 && ty == 0.0 {   // a lone piece: the way the nearest neighbour lies, if any
             if let Some(n) = pieces.iter().filter(|p| (p.0 - qx).hypot(p.1 - qy) > 0.3).min_by(|a, b| (a.0 - qx).hypot(a.1 - qy).partial_cmp(&(b.0 - qx).hypot(b.1 - qy)).unwrap_or(std::cmp::Ordering::Equal)) { tx = n.0 - qx; ty = n.1 - qy; }
         }
-        let tl = tx.hypot(ty).max(1e-6); let (nx, ny) = (-ty / tl, tx / tl);   // square across the ditch
-        let a = nx.atan2(ny);   // the deck runs along (sin a, cos a)
-        let rot = ((a / std::f32::consts::FRAC_PI_4).round() as i32).rem_euclid(8);
+        let tl = tx.hypot(ty).max(1e-6); let (mut nx, mut ny) = (-ty / tl, tx / tl);   // square across the ditch
+        // the hinge is on the village side and the far end points outward: flip the normal if it points at the hall (the order of the moat pieces decides which way (-ty, tx) falls)
+        if nx * (qx - self.ox as f32) + ny * (qy - self.oy as f32) < 0.0 { nx = -nx; ny = -ny; }
+        let rot = Self::drawbridge_turn(nx, ny);
         vec![qx.round() - self.ox as f32, qy.round() - self.oy as f32, rot as f32]
     }
 
@@ -1193,7 +1208,7 @@ impl World {
             let ob = self.buildings[i].opts;
             let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } }
                 else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
-            let mut p = self.buildings[i].progress + self.eff * boost as u32 / 100;
+            let mut p = self.buildings[i].progress + (if staffed_first(kind) { self.eff_first } else { self.eff_rest }) * boost as u32 / 100;
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
@@ -1569,7 +1584,7 @@ impl World {
         let ports: Vec<usize> = (0..self.buildings.len()).filter(|&i| self.buildings[i].kind == PORT && self.buildings[i].staff > 0).collect();
         for pi in ports {
             let tier = self.buildings[pi].tier as i32;
-            self.buildings[pi].progress += self.eff;
+            self.buildings[pi].progress += self.eff_rest;
             if self.buildings[pi].progress < 3000 { continue; }
             self.buildings[pi].progress -= 3000;
             let mult = (4 + 5 * tier) / 4;
@@ -2206,6 +2221,7 @@ fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
 mod lend_tests;
 #[cfg(test)]
 mod ledger_tests;
+#[cfg(test)]
 mod market_tests;
 
 #[cfg(test)]
@@ -3070,6 +3086,20 @@ mod family_tests {
         let per_week = raids as f64 / (6.0 * days as f64 / 7.0);
         assert!(per_week < 2.0, "{per_week} raids a week");
         assert!(per_week > 0.2, "{per_week} raids a week");
+    }
+
+    #[test]
+    fn with_too_few_hands_food_and_wood_are_staffed_first() {
+        let mut w = farm_world(); w.population = 12;
+        let f = w.place(FARM, -20, 14, 0); let c = w.place(4, 20, 14, 0);
+        let mut extra = 0; for (k, x) in [(HOUSE, 8), (HOUSE, 14), (BARRACKS, -30), (TOWER, 30)] { for y in [-26, -34, 26, 34] { if w.place(k, x, y, 0) >= 0 { extra += 1; break; } } }
+        assert!(extra >= 1, "some more workplaces");
+        w.population = 8; w.staffing();
+        assert!(w.eff < 100, "not enough hands for every job: {}", w.eff);
+        let (f, c) = (f.max(0) as usize, c.max(0) as usize);
+        let full = |i: usize| w.buildings[i].staff >= DEFS[w.buildings[i].kind as usize].jobs;
+        assert!(full(f) && full(c), "the farm and the woodcutter are fully staffed first (eff first {}, rest {})", w.eff_first, w.eff_rest);
+        assert!(w.eff_first >= w.eff_rest, "{} vs {}", w.eff_first, w.eff_rest);
     }
 
     #[test]
@@ -4308,6 +4338,43 @@ mod pathnet_tests {
         let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
         assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
         let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
+    }
+
+    #[test]
+    fn a_snapped_drawbridge_faces_outward_across_the_moat_at_every_angle() {
+        // turn -> (sin, cos) of the deck direction, the same convention as the model and `on_deck`
+        let dir = |r: f32| { let a = r * std::f32::consts::FRAC_PI_4; (a.sin(), a.cos()) };
+        for radius in [16.0f32, 22.0] {
+            let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+            for i in 0..56 { let a = i as f32 / 56.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * radius).round() as i32, (a.sin() * radius).round() as i32, 0); }
+            let mut seen = std::collections::BTreeSet::new();
+            for k in 0..48 {
+                let a = k as f32 / 48.0 * std::f32::consts::TAU;
+                let s = w.drawbridge_snap((a.cos() * (radius - 2.0)).round() as i32, (a.sin() * (radius - 2.0)).round() as i32);
+                if s.len() != 3 { continue; }
+                let (ux, uy) = dir(s[2]);
+                let (rx, ry) = (s[0], s[1]); let rl = rx.hypot(ry).max(1e-3);
+                // the ditch is a ring, so square across it is the radial direction: the deck points away from the hall, within a 45-degree step (plus the rounding of the spot and of the ring pieces)
+                let cos = (ux * rx + uy * ry) / rl;
+                assert!(cos > 0.8, "radius {radius}, snap {s:?}: deck must point outward (cos {cos:.3})");
+                seen.insert(s[2] as i32);
+            }
+            assert!(seen.len() >= 6, "the bridge turns all the way round the ring: {seen:?}");
+        }
+    }
+
+    #[test]
+    fn a_bridge_placed_where_it_snapped_is_crossed_by_a_route_while_lowered() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        let s = w.drawbridge_snap(0, 18); assert_eq!(s.len(), 3);
+        assert_eq!(s[2], 0.0, "south of the hall the deck runs south, away from it");
+        let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "{br}");
+        let across = w.net_route(0.0, 8.0, 0.0, 36.0);
+        assert!(!across.is_empty() && across[0] == 1.0, "a route over the lowered snapped drawbridge");
+        // and the other side of the hall: a bridge snapped on the north must point north
+        let n = w.drawbridge_snap(0, -18); assert_eq!(n.len(), 3);
+        assert_eq!(n[2], 4.0, "north of the hall the deck runs north: {n:?}");
     }
 
     #[test]
