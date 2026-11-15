@@ -36,7 +36,10 @@ interface Det {
   /** Where the core had the army and when it was seen there (newest last): the army is drawn a moment behind, between two of these, so it moves at a steady pace whatever the tick rate. */
   snaps: { t: number; x: number; z: number }[];
   dots: THREE.InstancedMesh | null; flag: THREE.Group | null;
+  /** Knights (g3) and engines (g4) that march apart from the army at their own pace (see World.det_groups_flat): where they are drawn, where the core has them, and how they are heading. */
+  g3?: Cluster | null; g4?: Cluster | null;
 }
+interface Cluster { x: number; z: number; tx: number; tz: number; yaw: number; spd: number; tied: boolean }
 
 export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle'];
 
@@ -68,6 +71,18 @@ export class FieldView {
   position(id: number) { const d = this.dets.get(id); return d ? { x: d.x, z: d.z } : null; }
 
   setBridges(flat: Float32Array) { this.bridgeSeg = Array.from(flat); }
+
+  /** Read det_groups_flat() (stride 8: army id, kind, count, x, z, heading, speed, tied): riders and engines on their own march. */
+  setGroups(flat: ArrayLike<number>) {
+    const set = new Map<string, number>();
+    for (let o = 0; o + 7 < flat.length; o += 8) set.set(flat[o] + ':' + flat[o + 1], o);
+    for (const d of this.dets.values()) for (const kind of [3, 4] as const) {
+      const o = set.get(d.id + ':' + kind), key = kind === 3 ? 'g3' : 'g4';
+      if (o === undefined) { d[key] = null; continue; }
+      const old = d[key], tx = flat[o + 3], tz = flat[o + 4];
+      d[key] = { x: old ? old.x : tx, z: old ? old.z : tz, tx, tz, yaw: Math.PI / 2 - flat[o + 5], spd: flat[o + 6], tied: flat[o + 7] > 0 };
+    }
+  }
 
   /** Read det_flat() (stride 16). `path(id)` gives the army's remaining route [x, z, mode, ...], which is rounded off and then followed exactly. */
   sync(flat: Float32Array, path?: (id: number) => ArrayLike<number>) {
@@ -222,6 +237,7 @@ export class FieldView {
         const want = d.marching ? 1 : 0;
         d.col += (want - d.col) * (want > d.col ? 1 : Math.min(1, dt * 1.1));
       }
+      for (const c of [d.g3, d.g4]) if (c) { const k = 1 - Math.exp(-dt * 5); c.x += (c.tx - c.x) * k; c.z += (c.tz - c.z) * k; }
       const y = this.terrain.walkAt(d.x, d.z);
       d.banner.position.set(d.x, Math.max(y, d.state === 4 ? 0.3 : y), d.z);
       (d.banner.children[1] as THREE.Mesh).rotation.y = Math.sin(this.t * 3 + d.id) * 0.25;
@@ -234,11 +250,19 @@ export class FieldView {
       const moving = d.state === 1 || d.state === 2 || d.state === 7 || (d.state === 4);
       const cruise = Math.max(1.5, d.speed * 1.2 + 1.5);
 
+      const kStart = d.members.findIndex(q => q.kind === 3), nKn = d.members.filter(q => q.kind === 3).length;
       d.members.forEach((m, i) => {
         const row = Math.floor(i / W), col = i % W, lat = (col - (W - 1) / 2) * 1.6 + (row % 2 ? 0.4 : 0), back = row * 1.5;
         const fxp = d.x - fx * back + rx * lat, fzp = d.z - fz * back + rz * lat;
         let gx = fxp, gz = fzp, spd = 0, pursuing = false;
-        if (d.marching) {
+        const kg = m.kind === 3 ? d.g3 : null;
+        if (kg) {
+          // riders on a march of their own: a loose bunch round the point the core has them at, which they gallop after (not the file of the foot soldiers)
+          const ki = i - kStart, cols = Math.min(5, nKn), r2 = Math.floor(ki / 5), c2 = ki % 5, sx = Math.sin(kg.yaw), sz = Math.cos(kg.yaw);
+          const lat = (c2 - (cols - 1) / 2) * 2.0 + (r2 % 2 ? 0.7 : 0), back = r2 * 2.4;
+          gx = kg.x - sx * back + sz * lat; gz = kg.z - sz * back - sx * lat; pursuing = true;
+          spd = Math.max(0, kg.spd * 1.25 + 0.5 + Math.min(8, Math.hypot(gx - m.x, gz - m.z) * 0.8));
+        } else if (d.marching) {
           if (m.rel) {
             // in the file: it chases a point a little way ahead of it along the path the head took (so it goes where the head went, over a bridge or through a gate, and joins the line in a
             // smooth curve), never ahead of its own place, and goes as fast as the line does, a little faster when it has fallen behind
@@ -287,7 +311,11 @@ export class FieldView {
       engines.forEach((g, i) => {
         const pair = Math.floor(i / 2), side = i % 2 ? 1 : -1;
         let tx: number, tz: number;
-        {
+        const eg = d.g4;
+        if (eg) {   // engines on a march of their own: a loose group round the point the core has them at, two abreast, not the tail of the army's file
+          const sx = Math.sin(eg.yaw), sz = Math.cos(eg.yaw);
+          tx = eg.x - sx * pair * SIEGE_GAP + sz * side * SIEGE_SIDE; tz = eg.z - sz * pair * SIEGE_GAP - sx * side * SIEGE_SIDE;
+        } else {
           const back = rows * 1.5 + SIEGE_GAP * 0.7 + pair * SIEGE_GAP, bx = d.x - fx * back + rx * side * SIEGE_SIDE, bz = d.z - fz * back + rz * side * SIEGE_SIDE;   // at rest: a block behind the ranks
           if (d.col > 0.002) {
             const s0 = SIEGE_LEAD + pair * SIEGE_GAP, [cx2, cz2] = trailAt(d.trail, d.x, d.z, s0, fx, fz), [ax, az] = trailAt(d.trail, d.x, d.z, s0 + 1.5, fx, fz);
@@ -298,14 +326,14 @@ export class FieldView {
           // never aim into water or a steep face: fall back to the middle of the path
           if (this.terrain.wetAt(tx, tz) || this.slopeAt(tx, tz) > 0.95) { [tx, tz] = trailAt(d.trail, d.x, d.z, SIEGE_LEAD + pair * SIEGE_GAP, fx, fz); }
         }
-        const px = g.position.x, pz = g.position.z, k = 1 - Math.exp(-dt * 2.6);
+        const px = g.position.x, pz = g.position.z, k = 1 - Math.exp(-dt * (eg ? 4 : 2.6));
         g.position.x += (tx - px) * k; g.position.z += (tz - pz) * k;
         this.tmp.length = 0; this.trees.nearTrees(g.position.x, g.position.z, 2.2, this.tmp);
         for (const t of this.tmp) { const ox = g.position.x - t.x, oz = g.position.z - t.z, od = Math.hypot(ox, oz) || 0.01; if (od < 1.6) { g.position.x += ox / od * (1.6 - od); g.position.z += oz / od * (1.6 - od); } }
         for (const o of obs) { const ox = g.position.x - o.x, oz = g.position.z - o.z, od = Math.hypot(ox, oz) || 0.01, rr = o.r + 1.6; if (od < rr) { g.position.x += ox / od * (rr - od); g.position.z += oz / od * (rr - od); } }
         if (d.state !== 4 && this.terrain.wetAt(g.position.x, g.position.z) && !this.terrain.wetAt(px, pz)) { g.position.x = px; g.position.z = pz; }   // a step into water is undone
         // it rests on the ground under both ends of its frame (the higher of the two, so the wheels never sink into a rise), changing height no faster than it could roll, and tilts with the slope
-        const ddx = d.x - g.position.x, ddz = d.z - g.position.z, face = Math.atan2(ddx, ddz), hx = Math.sin(g.rotation.y), hz = Math.cos(g.rotation.y), half = SIEGE_LEN / 2;
+        const ddx = eg ? Math.sin(eg.yaw) : d.x - g.position.x, ddz = eg ? Math.cos(eg.yaw) : d.z - g.position.z, face = Math.atan2(ddx, ddz), hx = Math.sin(g.rotation.y), hz = Math.cos(g.rotation.y), half = SIEGE_LEN / 2;
         const yF = this.terrain.walkAt(g.position.x + hx * half, g.position.z + hz * half), yB = this.terrain.walkAt(g.position.x - hx * half, g.position.z - hz * half), yC = this.terrain.walkAt(g.position.x, g.position.z);
         const want = d.state === 4 ? 0.3 : Math.max(yC, (yF + yB) / 2, Math.min(yF, yB) + 0.0);
         const cy = g.userData.sy as number | undefined; g.userData.sy = cy === undefined || !Number.isFinite(cy) ? want : cy + Math.max(-6 * dt, Math.min(6 * dt, want - cy));

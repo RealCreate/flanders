@@ -28,6 +28,20 @@ pub const S_FIGHT: u8 = 8;   // its soldiers are in the battle (see battle::det_
 #[derive(Clone, Copy, Debug)]
 pub struct Wp { pub x: f32, pub y: f32, pub mode: u8 }
 
+/// Knights, catapults and other riders and engines that travel apart from the foot soldiers of an army, each at their own pace and heading straight for the place the army was sent to.
+/// They look for their own way (roads and bridges first, as everybody does); where theirs would need felling or a crossing that only the soldiers can make, they keep to the army's route
+/// (`tied`) and wait at such a place until the soldiers have made it passable.
+#[derive(Clone)]
+pub struct Grp {
+    pub units: [u32; NK],
+    pub x: f32, pub y: f32,
+    pub path: Vec<Wp>,
+    pub wi: usize,
+    pub heading: f32,
+    pub speed: f32,
+    pub tied: bool,
+}
+
 #[derive(Clone)]
 pub struct Det {
     pub id: u32,
@@ -46,6 +60,7 @@ pub struct Det {
     pub heading: f32,
     pub speed: f32,
     pub since_fell: f32,
+    pub grp: Vec<Grp>,      // riders and engines marching apart (see Grp); their soldiers are still counted in `units`
     pub defend: bool,       // sent to fight in the battle at home: joins it as soon as it is close to an attacker
 }
 
@@ -380,6 +395,16 @@ impl World {
         if m == f32::MAX { 3.0 } else { m * 1.1 }
     }
 
+    /// Who marches as the army proper and who apart from it. With foot soldiers along, knights and siege engines each make a group of their own; an army of riders or engines alone is one body.
+    pub(crate) fn split_groups(units: &[u32; NK]) -> ([u32; NK], Vec<[u32; NK]>) {
+        if units[0] + units[1] + units[2] == 0 || units[3] + units[4] + units[5] == 0 { return (*units, vec![]); }
+        let mut head = *units; head[3] = 0; head[4] = 0; head[5] = 0;
+        let mut g = vec![];
+        if units[3] > 0 { g.push([0, 0, 0, units[3], 0, 0]); }
+        if units[4] + units[5] > 0 { g.push([0, 0, 0, 0, units[4], units[5]]); }
+        (head, g)
+    }
+
     fn det_index(&self, id: u32) -> Option<usize> { self.dets.iter().position(|d| d.id == id) }
 
     // ---------------------------------------------------------------- commands
@@ -393,7 +418,7 @@ impl World {
         let (bx, by) = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hx + 10.0, hy + 10.0), |b| (b.x, b.y + 8.0));
         let ns = nav_static(self.seed); let ov = self.ov();
         let (x, y) = self.near_free(&ns, &ov, bx, by, if units[4] > 0 { 1 } else { 0 }).map_or((bx, by), cell_xy);
-        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false });
+        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![] });
         self.next_det
     }
 
@@ -403,8 +428,21 @@ impl World {
         self.det_disengage(id);   // an army in the fight breaks off to go where it is told
         let Some(i) = self.det_index(id) else { return -1 };
         let (u, x, y) = (self.dets[i].units, self.dets[i].x, self.dets[i].y);
-        match self.find_path(&u, x, y, tx, ty) {
-            Ok(p) => { let d = &mut self.dets[i]; d.path = p; d.wi = 1; d.state = if home { S_HOME } else { S_MARCH }; d.phase = 0; d.atk = attack; d.home = home; d.defend = false; d.sx = x; d.sy = y; 0 }
+        let (hu, gus) = Self::split_groups(&u);
+        let route_units = if u[4] > 0 { u } else { hu };   // (with engines along, the army's route is one they can follow: felling where the forest needs it)
+        match self.find_path(&route_units, x, y, tx, ty) {
+            Ok(p) => {
+                let old = std::mem::take(&mut self.dets[i].grp);
+                let mut grps: Vec<Grp> = vec![];
+                for gu in gus {
+                    let (gx, gy) = old.iter().find(|g| (g.units[3] > 0) == (gu[3] > 0)).map_or((x, y), |g| (g.x, g.y));   // (a group left standing somewhere starts from there)
+                    let (path, tied) = match self.find_path(&gu, gx, gy, tx, ty) {
+                        Ok(q) if q.iter().all(|w| w.mode == 0) => (q, false),
+                        _ => { let mut q = p.clone(); if let Some(f) = q.first_mut() { f.x = gx; f.y = gy; } (q, true) }
+                    };
+                    grps.push(Grp { units: gu, x: gx, y: gy, path, wi: 1, heading: 0.0, speed: 0.0, tied });
+                }
+                let d = &mut self.dets[i]; d.grp = grps; d.path = p; d.wi = 1; d.state = if home { S_HOME } else { S_MARCH }; d.phase = 0; d.atk = attack; d.home = home; d.defend = false; d.sx = x; d.sy = y; 0 }
             Err(e) => e,
         }
     }
@@ -416,7 +454,8 @@ impl World {
         if take.iter().all(|&u| u == 0) || (0..NK).any(|k| take[k] > d.units[k]) || (0..NK).all(|k| take[k] == d.units[k]) { return 0; }
         for k in 0..NK { self.dets[i].units[k] -= take[k]; }
         self.next_det += 1;
-        let mut n = d; n.id = self.next_det; n.units = take; self.dets.push(n);
+        self.dets[i].grp.clear();
+        let mut n = d; n.id = self.next_det; n.units = take; n.grp.clear(); self.dets.push(n);
         self.next_det
     }
 
@@ -424,7 +463,7 @@ impl World {
         let (Some(i), Some(j)) = (self.det_index(a), self.det_index(b)) else { return false };
         if i == j || self.dets[i].state == S_FIGHT || self.dets[j].state == S_FIGHT || ((self.dets[i].x - self.dets[j].x).powi(2) + (self.dets[i].y - self.dets[j].y).powi(2)).sqrt() > 10.0 { return false; }
         let u = self.dets[j].units; for k in 0..NK { self.dets[i].units[k] += u[k]; }
-        self.dets.remove(j); let i = self.det_index(a).unwrap(); self.dets[i].state = S_IDLE; self.dets[i].path.clear(); true
+        self.dets.remove(j); let i = self.det_index(a).unwrap(); self.dets[i].state = S_IDLE; self.dets[i].path.clear(); self.dets[i].grp.clear(); true
     }
 
     /// Hand an arrived army over to the attack on another village. Returns its soldiers.
@@ -441,10 +480,12 @@ impl World {
         while i < self.dets.len() {
             let mut d = self.dets[i].clone();
             let mut remove = false;
-            if matches!(d.state, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME) && d.wi < d.path.len() {
+            let travelling = matches!(d.state, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
+            if travelling && d.wi < d.path.len() {
                 let wp = d.path[d.wi];
-                let base = Self::march_speed(&d.units);
-                let workers = (d.units[0] + d.units[2]) as f32;
+                let hu = Self::head_units(&d);
+                let base = Self::march_speed(&hu);
+                let workers = (hu[0] + hu[2]) as f32;
                 let dens = ns.dens_at(d.x, d.y) as f32;
                 match wp.mode {
                     0 => {
@@ -502,15 +543,41 @@ impl World {
                         }
                     }
                 }
-                if d.wi >= d.path.len() {
-                    d.path.clear(); d.phase = 0;
-                    if d.home { for k in 0..NK { self.army[k] += d.units[k]; } remove = true; }
-                    else if d.atk.is_some() { d.state = S_ARRIVED; } else { d.state = S_IDLE; }
-                }
+                if d.wi >= d.path.len() { d.path.clear(); d.phase = 0; d.speed = 0.0; d.state = if d.home { S_HOME } else { S_MARCH }; }   // (it waits here for riders and engines still on their way)
+            }
+            if travelling && !d.grp.is_empty() {   // riders and engines go their own way, each at its own pace
+                let head_wi = if d.path.is_empty() { usize::MAX } else { d.wi };
+                for g in d.grp.iter_mut() { self.step_group(&ns, g, head_wi); }
+            }
+            if travelling && d.wi >= d.path.len() && d.grp.iter().all(|g| g.wi >= g.path.len()) {   // everybody is there
+                d.path.clear(); d.phase = 0; d.grp.clear();
+                if d.home { for k in 0..NK { self.army[k] += d.units[k]; } remove = true; }
+                else if d.atk.is_some() { d.state = S_ARRIVED; } else { d.state = S_IDLE; }
             }
             if !remove { let (rx, ry) = (d.x, d.y); let scouts = d.units.iter().sum::<u32>() <= 4; self.reveal(rx, ry, if scouts { 120.0 } else { 70.0 }); }   // a small party travels light and sees further   // an army on the march lifts the fog round it
             if remove { self.dets.remove(i); } else { self.dets[i] = d; i += 1; }
         }
+    }
+
+    /// What is left of the army once its riders and engines are counted out: the foot soldiers, whose pace is the army's.
+    fn head_units(d: &Det) -> [u32; NK] { let mut u = d.units; for g in &d.grp { for k in 0..NK { u[k] = u[k].saturating_sub(g.units[k]); } } u }
+
+    /// One tick of a group's march: at its own speed (slowed by woods, quickened on a road), along its own route. A tied group does not pass a place that needs felling or a crossing until the
+    /// army (whose waypoint index is `head_wi`) has got through it.
+    fn step_group(&self, ns: &NavStatic, g: &mut Grp, head_wi: usize) {
+        if g.wi >= g.path.len() { g.speed = 0.0; return; }
+        let dens = ns.dens_at(g.x, g.y) as f32;
+        g.speed = Self::march_speed(&g.units) / (1.0 + 0.06 * dens) * if self.on_road(g.x, g.y) { crate::pathnet::ROAD_SPEED } else { 1.0 };
+        let mut left = g.speed; let mut moved = false;
+        while left > 1e-4 && g.wi < g.path.len() {
+            let wp = g.path[g.wi];
+            if g.tied && wp.mode != 0 && head_wi != usize::MAX && head_wi <= g.wi { break; }   // the soldiers have not made the way yet
+            let (dx, dy) = (wp.x - g.x, wp.y - g.y); let dist = (dx * dx + dy * dy).sqrt();
+            if dist > 0.01 { g.heading = dy.atan2(dx); }
+            moved = true;
+            if dist <= left { g.x = wp.x; g.y = wp.y; g.wi += 1; left -= dist; } else { g.x += dx / dist * left; g.y += dy / dist * left; left = 0.0; }
+        }
+        if !moved { g.speed = 0.0; }
     }
 
     /// Walk along the route for one tick's worth of distance, carrying on round the corners (what is left of the step after reaching a waypoint is walked towards the next), so the pace is the
@@ -533,10 +600,11 @@ impl World {
 
     /// A planned route without giving any order: [ok, seconds, planks, wood, count, x, y, mode, ...].
     pub(crate) fn plan(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> {
+        let (head, gus) = Self::split_groups(units); let units = if units[4] > 0 { units } else { &head };   // (the army's route, which engines need to be able to follow; riders go their own way)
         match self.find_path(units, sx, sy, tx, ty) {
             Err(e) => vec![e as f32, 0.0, 0.0, 0.0, 0.0],
             Ok(p) => {
-                let base = Self::march_speed(units); let workers = (units[0] + units[2]) as f32; let total: u32 = units.iter().sum();
+                let base = Self::march_speed(&head); let workers = (units[0] + units[2]) as f32; let total: u32 = units.iter().sum();
                 let (mut t, mut planks, mut wood, mut prev) = (0.0f32, 0i32, 0i32, (sx, sy));
                 for w in &p {
                     let len = ((w.x - prev.0).powi(2) + (w.y - prev.1).powi(2)).sqrt();
@@ -546,6 +614,7 @@ impl World {
                     }
                     prev = (w.x, w.y);
                 }
+                for gu in &gus { let gt = (tx - sx).hypot(ty - sy) * 1.3 / Self::march_speed(gu); if gt > t { t = gt; } }   // (a slow engine train sets the time of arrival)
                 let mut v = vec![1.0, t, planks as f32, wood as f32, p.len() as f32];
                 for w in &p { v.extend_from_slice(&[w.x, w.y, w.mode as f32]); }
                 v
