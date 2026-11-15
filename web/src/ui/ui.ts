@@ -639,7 +639,12 @@ export class UI {
   }
 
   /** The red banner while a fight is on. */
-  battle(text: string | null) { const b = $('battle'); b.hidden = !text; if (text) b.innerHTML = text; }
+  /** The attack banner. With `onClick` it is a button (e.g. to look at where the attackers are). */
+  battle(text: string | null, onClick?: () => void) {
+    const b = $('battle'); b.hidden = !text;
+    if (text) b.innerHTML = text;
+    b.classList.toggle('clickable', !!onClick); b.onclick = onClick ?? null; b.title = onClick ? 'Click to look at the attackers' : '';
+  }
   private armyNow: number[] = [];
   maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 5).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
 

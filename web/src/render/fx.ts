@@ -65,7 +65,7 @@ export class Effects2 {
   private shots: Shot[] = [];
   private lights: THREE.PointLight[] = [];
   private acc: number[] = [];
-  private arrowGeo = new THREE.CylinderGeometry(0.025, 0.025, 1.0, 5).rotateX(Math.PI / 2);
+  private arrowGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.3, 5).rotateX(Math.PI / 2);
   private arrowMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a });
   private stoneGeo = new THREE.IcosahedronGeometry(0.32, 0);
   private stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a8782, roughness: 1 });
@@ -101,6 +101,15 @@ export class Effects2 {
       this.dust.emit(x0, y0, z0, (x1 - x0 + j()) / T, (y1 - y0) / T + 0.5 * g * T + Math.random() * 0.8, (z1 - z0 + j()) / T, T + 0.1, 0.45, 0.25, 0.55, 0.75, 0.95, 0.85);
     }
     setTimeout(() => { for (let i = 0; i < 9; i++) this.smoke.emit(x1 + (Math.random() - 0.5) * 1.4, y1, z1 + (Math.random() - 0.5) * 1.4, (Math.random() - 0.5) * 0.6, 1.2 + Math.random(), (Math.random() - 0.5) * 0.6, 1.6, 1.0, 3.6, 0.9, 0.92, 0.95, 0.5); }, T * 1000);
+  }
+
+  /** A blow landing on a soldier: a few specks of blood and dust at chest height (more when it kills). */
+  hit(x: number, y: number, z: number, killed: boolean) {
+    const n = killed ? 14 : 6;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * 6.28, s = 0.6 + Math.random() * 1.6;
+      this.dust.emit(x, y, z, Math.cos(a) * s, 0.8 + Math.random() * 1.6, Math.sin(a) * s, 0.5 + Math.random() * 0.4, 0.22, 0.5, i % 3 ? 0.6 : 0.5, i % 3 ? 0.08 : 0.4, i % 3 ? 0.06 : 0.3, 0.85);
+    }
   }
 
   burst(x: number, z: number, big = true) {

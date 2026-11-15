@@ -111,7 +111,7 @@ impl World {
             }
         }
         let ladders = if atk[0] + atk[2] > 0 { ((atk[0] + atk[2]) / 4).max(1) } else { 0 };
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; 5], fixed: vec![] });
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; 5], fixed: vec![] });
         let fixed = self.bridge_points();
         if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);

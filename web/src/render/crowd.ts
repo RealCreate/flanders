@@ -5,6 +5,7 @@ import { tint } from './geomutil';
 /** One person (or soldier) to draw this frame. */
 export interface Draw {
   x: number; y: number; z: number; yaw: number;
+  fall?: number;                      // pose 4 only: 0 standing .. 1 lying flat (default 1)
   pose: 0 | 1 | 2 | 3 | 4;           // idle, walk, work, fight, dead
   phase: number;                      // walking: gait angle in radians (advances with distance walked); otherwise a clock in seconds
   speed?: number;                     // ground speed in units/s (drives stride length, knee bend, lean)
@@ -146,8 +147,9 @@ export class Crowd {
 
     // ---- root
     const lift = d.mounted ? 0.6 : 0;
-    this.v.set(d.x, d.y + (dead ? 0.2 : lift) * sc, d.z); this.s.setScalar(sc);
-    this.e.set(dead ? -Math.PI / 2 : 0, d.yaw, 0, 'YXZ'); this.q.setFromEuler(this.e); this.B.compose(this.v, this.q, this.s);
+    const fl = d.fall ?? 1;
+    this.v.set(d.x, d.y + (dead ? 0.2 * fl : lift) * sc, d.z); this.s.setScalar(sc);
+    this.e.set(dead ? -Math.PI / 2 * fl : 0, d.yaw, 0, 'YXZ'); this.q.setFromEuler(this.e); this.B.compose(this.v, this.q, this.s);
 
     // ---- horse under a rider
     if (d.mounted && !dead) {

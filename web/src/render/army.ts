@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Terrain } from './terrain';
 import { buildCatapult, HAT, TOOL, type Crowd, type Draw } from './crowd';
 import { smoothPath } from './field';
+import { lunge, fallen, mix } from './fight';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 const S = 10;
@@ -17,6 +18,7 @@ interface Field {
   moving: boolean; seed: number; elev: number; telev: number; fireT: number; lastCore: number;   // height it stands at (on a wall) and where that is heading
   sx: number; sz: number; segT: number; segD: number; lastSync: number;   // glide from where it was drawn to where the core put it, over the time one tick takes
   gait: number; spd: number;   // gait angle (advances with distance walked) and smoothed ground speed
+  flash: number; deadAt: number;   // seconds of hit flash left; when (army clock) the soldier fell, or -1 while standing
 }
 interface Post { kind: number; x: number; z: number; y: number; yaw: number; row: number; mode: 'drill' | 'tower' | 'patrol'; ring?: number; idx?: number; n?: number; R?: number;
   /** An archer on a tower walkway paces back and forth along an arc of the ring: centre, radius, middle angle, how far it strays, how fast, and when in the cycle it starts. */
@@ -32,6 +34,8 @@ export class ArmyView {
   private field: Field[] = [];
   private posts: Post[] = [];
   private corpses: { f: Field; t: number }[] = [];
+  /** Called when a soldier is struck (x, z, height above ground, killed?), so the scene can throw up a puff of dust and blood. */
+  onHit: ((x: number, z: number, y: number, killed: boolean) => void) | null = null;
   private siege: THREE.Group[] = [];
   group = new THREE.Group();
   /** Rafts for raiders crossing a moat or river (the core marks them as wading: slow, helpless, easy to hit): a few logs lashed together, one per soldier, drawn at the water's edge. */
@@ -149,19 +153,25 @@ export class ArmyView {
     const n = flat.length / 10;
     if (n === 0) {
       if (this.battle) { // battle over: the dead stay on the field for a while
-        for (const f of this.field) if (!f.alive) this.corpses.push({ f, t: this.t });
+        for (const f of this.field) if (!f.alive && f.hp <= 0) this.corpses.push({ f, t: f.deadAt >= 0 ? f.deadAt : this.t });
         this.field = [];
       }
       this.battle = false; return;
     }
     if (!this.battle) this.quiet = 2;   // a battle just appeared (or we just loaded): whatever was mid-swing in the core is not shown as a fresh attack
     this.battle = true;
-    while (this.field.length < n) { const i = this.field.length; this.field.push({ x: flat[i * 10 + 2], z: flat[i * 10 + 3], elev: 0, telev: 0, fireT: 0, lastCore: 0, tx: 0, tz: 0, yaw: 0, side: 0, kind: 0, alive: true, anim: 0, hp: 1, max: 1, moving: false, seed: i * 2.3, gait: i * 1.7, spd: 0, sx: flat[i * 10 + 2], sz: flat[i * 10 + 3], segT: 1, segD: 1, lastSync: this.t }); }
+    while (this.field.length < n) { const i = this.field.length; this.field.push({ x: flat[i * 10 + 2], z: flat[i * 10 + 3], elev: 0, telev: 0, fireT: 0, lastCore: 0, tx: 0, tz: 0, yaw: 0, side: 0, kind: 0, alive: true, anim: 0, hp: 1, max: 1, moving: false, seed: i * 2.3, gait: i * 1.7, spd: 0, flash: 0, deadAt: -1, sx: flat[i * 10 + 2], sz: flat[i * 10 + 3], segT: 1, segD: 1, lastSync: this.t }); }
     for (let i = 0; i < n; i++) {
       const f = this.field[i], o = i * 10; f.telev = flat[o + 9];
       f.side = flat[o]; f.kind = flat[o + 1];
       if (Math.hypot(flat[o + 2] - f.tx, flat[o + 3] - f.tz) > 1e-3) { f.sx = f.x; f.sz = f.z; f.segT = 0; f.segD = f.segD * 0.6 + Math.max(0.05, Math.min(3, this.t - f.lastSync)) * 0.4; f.lastSync = this.t; }
+      const prevHp = f.hp, wasAlive = f.alive;
       f.tx = flat[o + 2]; f.tz = flat[o + 3]; f.hp = flat[o + 4]; f.max = flat[o + 5]; f.alive = flat[o + 6] > 0;
+      if (this.quiet === 0 && f.kind !== 4) {
+        const died = wasAlive && !f.alive && f.hp <= 0;
+        if (died) f.deadAt = this.t;
+        if (died || (f.alive && f.hp < prevHp - 0.01)) { f.flash = 0.3; this.onHit?.(f.tx, f.tz, this.terrain.walkAt(f.tx, f.tz) + 1.1 + f.telev, died); }
+      } else if (!f.alive && f.hp <= 0 && f.deadAt < 0) f.deadAt = this.t - 5;   // already down when we first saw it
       if (this.quiet > 0) { f.anim = 0; f.fireT = 0; }
       else { f.anim = Math.max(f.anim, flat[o + 7]); if (f.kind === 4 && flat[o + 7] >= 0.3 && f.lastCore < 0.3) f.fireT = 1.0; }   // a catapult only swings its arm when it really has just fired
       f.lastCore = flat[o + 7]; f.yaw = Math.PI / 2 - flat[o + 8];
@@ -221,7 +231,7 @@ export class ArmyView {
       const gx = f.sx + (f.tx - f.sx) * k, gz = f.sz + (f.tz - f.sz) * k;
       const dx = f.tx - f.x, dz = f.tz - f.z; f.moving = (Math.hypot(dx, dz) > 0.12 || k < 1) && f.alive;
       const mx = (gx - f.x) * lp, mz = (gz - f.z) * lp, moved = Math.hypot(mx, mz);
-      f.x += mx; f.z += mz; f.anim = Math.max(0, f.anim - dt); f.elev += (f.telev - f.elev) * Math.min(1, dt * 5); f.fireT = Math.max(0, f.fireT - dt);
+      f.x += mx; f.z += mz; f.anim = Math.max(0, f.anim - dt); f.elev += (f.telev - f.elev) * Math.min(1, dt * 5); f.fireT = Math.max(0, f.fireT - dt); f.flash = Math.max(0, f.flash - dt);
       f.spd += ((moved / Math.max(dt, 0.001)) - f.spd) * Math.min(1, dt * 5);          // smoothed ground speed, so strides match how fast they really move
       f.gait += Math.PI * moved / (0.55 + 0.13 * f.spd);                               // one step per stride length: no sliding feet
     }
@@ -232,11 +242,24 @@ export class ArmyView {
     const col = side === 1 ? this.foe : this.friend, bandit = side === 1 && this.foe === 0x4a3a2a;
     switch (kind) {
       case 0: return { body: col, hat: bandit ? HAT.BANDIT : HAT.KETTLE, tool: TOOL.SPEAR, shield: 0, shieldCol: bandit ? 0x5a4a3a : col, legs: 0x3a3a3a };
-      case 1: return { body: bandit ? 0x3a3a2a : 0x3f5a30, hat: bandit ? HAT.BANDIT : HAT.HOOD, tool: TOOL.BOW, legs: 0x3a3228 };
-      case 2: return { body: 0x8a9098, hat: bandit ? HAT.BANDIT : HAT.HELM, tool: bandit ? TOOL.AXE : TOOL.SWORD, shield: 1, shieldCol: bandit ? 0x4a3a2a : col, legs: 0x4a4a52, armor: true };
-      case 3: return { body: 0xb8bec6, hat: bandit ? HAT.BANDIT : HAT.GREAT, tool: TOOL.SWORD, shield: 1, shieldCol: col, mounted: true, legs: 0x5a5a62, armor: true };
+      case 1: return { body: bandit ? 0x3a3a2a : mix(0x3f5a30, col, 0.6), hat: bandit ? HAT.BANDIT : HAT.HOOD, tool: TOOL.BOW, legs: 0x3a3228 };
+      case 2: return { body: mix(0x8a9098, col, 0.5), hat: bandit ? HAT.BANDIT : HAT.HELM, tool: bandit ? TOOL.AXE : TOOL.SWORD, shield: 1, shieldCol: bandit ? 0x4a3a2a : col, legs: 0x4a4a52, armor: true };
+      case 3: return { body: mix(0xb8bec6, col, 0.5), hat: bandit ? HAT.BANDIT : HAT.GREAT, tool: TOOL.SWORD, shield: 1, shieldCol: col, mounted: true, legs: 0x5a5a62, armor: true };
       default: { void mine; return { body: CIV[Math.floor(Math.abs(Math.sin(seed)) * CIV.length)], hat: seed % 2 > 1 ? HAT.CAP : HAT.STRAW, tool: TOOL.FORK, legs: 0x4a3a2a }; }
     }
+  }
+
+  /** A soldier who has been killed: topples over, then lies where it fell. */
+  private drawFallen(crowd: Crowd, f: Field) {
+    if (f.kind === 4) return;
+    const l = this.look(f.side, f.kind, f.seed, false), since = f.deadAt >= 0 ? this.t - f.deadAt : 99;
+    crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z) + f.elev * (1 - fallen(since)), z: f.z, yaw: f.yaw, pose: 4, fall: fallen(since), phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw);
+  }
+
+  /** How high above the ground an archer shoots from at (x, z): up on the walkway if it stands in a tower. */
+  shooterHeight(x: number, z: number): number {
+    const tw = this.towers.find(q => (q.x - x) ** 2 + (q.z - z) ** 2 < 2.6 * 2.6);
+    return tw ? (tw.keep ? KEEP_TOP : TOWER_TOP)[tw.tier] + 1.4 : 1.5;
   }
 
   /** Queue every soldier visible right now. */
@@ -252,17 +275,21 @@ export class ArmyView {
     let si = 0, nr = 0; for (const r of this.rafts) r.visible = false;
     if (this.battle) {
       for (const f of this.field) {
-        if (!f.alive || !near(f.x, f.z)) continue;
+        if (!f.alive && f.hp > 0) continue;   // ran off the field
+        if (!near(f.x, f.z)) continue;
+        if (!f.alive) { if (f.kind !== 4) this.drawFallen(crowd, f); continue; }
         if (f.side === 1 && f.elev > 1.0 && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, f.elev + this.terrain.walkAt(f.x, f.z) - 0.1, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.05; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.04; }
         if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
+        if (f.flash > 0 && l.body !== undefined) l.body = mix(l.body, 0xff3a2a, Math.min(0.75, f.flash / 0.3 * 0.75));
         if (f.side === 0 && f.kind === 1) {   // archers stationed in a tower shoot from its walkway
           const tw = this.towers.find(q => (q.x - f.x) ** 2 + (q.z - f.z) ** 2 < 2.6 * 2.6);
           if (tw) { const a = Math.atan2(f.z - tw.z, f.x - tw.x), R = (tw.keep ? KEEP_RING : TOWER_RING)[tw.tier], x = tw.x + Math.cos(a) * R, z = tw.z + Math.sin(a) * R; crowd.add({ x, y: this.terrain.walkAt(tw.x, tw.z) + (tw.keep ? KEEP_TOP : TOWER_TOP)[tw.tier], z, yaw: f.anim > 0 ? f.yaw : Math.PI / 2 - a, pose: 3, phase: t + f.seed, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, ...l } as Draw); continue; }
         }
-        crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z) + f.elev, z: f.z, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, scale: 0.92, ...l } as Draw);
+        const lg = f.kind !== 1 && f.kind !== 4 ? lunge(f.anim) : 0;   // a melee soldier steps into the blow
+        crowd.add({ x: f.x + Math.sin(f.yaw) * lg, y: this.terrain.walkAt(f.x, f.z) + f.elev, z: f.z + Math.cos(f.yaw) * lg, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, scale: 0.92, ...l } as Draw);
       }
-      for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
+      for (const c of this.corpses) if (near(c.f.x, c.f.z)) this.drawFallen(crowd, c.f);
     } else {
       for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
       for (const p of this.posts) {
