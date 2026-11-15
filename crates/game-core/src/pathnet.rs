@@ -39,7 +39,28 @@ fn net_radius_kt(kind: u8, tier: u8) -> f32 { (crate::solid_radius(kind, tier) +
 /// The ground that a building's fields and yards cover, as rectangles in the building's own frame: (centre x, centre z, half width, half depth), the same ones its model draws
 /// (web/src/render/buildings.ts). People and soldiers never walk across them: they are blocked as the rectangles they are, not as a circle.
 pub fn field_rects(kind: u8, tier: u8) -> Vec<(f32, f32, f32, f32)> {
-    if kind != FARM { return vec![]; }
+    let t = tier as f32;
+    match kind {
+        // the fenced square of beds (the fence runs at 4.4 each way, the tool shed is inside it)
+        GARDEN => return vec![(0.0, 0.0, 4.4, 4.4)],
+        // the four trees (canopies grow with the tier), the fountain in the middle and, from tier 2, the pavilion; the gravel cross between them stays walkable
+        PARK => {
+            let h = 1.3 + 0.15 * t;
+            let mut v: Vec<_> = [(-2.8f32, -2.8f32), (2.9, -2.6), (-2.7, 2.9), (3.0, 2.8)].iter().map(|&(x, z)| (x, z, h, h)).collect();
+            v.push((0.0, 0.0, 1.2, 1.2));
+            if tier >= 2 { v.push((3.0, 0.0, 1.8, 1.8)); }
+            return v;
+        }
+        // the stalls stand round a ring (3 + tier of them, as the model puts them), each as a square about its middle; the market cross and well sit in the centre
+        MARKET => {
+            let n = 3 + tier as usize;
+            let mut v: Vec<_> = (0..n).map(|i| { let a = i as f32 / n as f32 * std::f32::consts::TAU + 0.5; (a.cos() * 3.4, a.sin() * 3.4, 1.5, 1.5) }).collect();
+            v.push((0.0, 0.0, if tier >= 2 { 1.1 } else { 0.6 }, if tier >= 2 { 1.1 } else { 0.6 }));
+            return v;
+        }
+        FARM => {}
+        _ => return vec![],
+    }
     let mut v = vec![(0.0, 1.4, 5.2, 4.2), (-1.2, -2.6, 2.2, 1.7), (2.6, -3.0, 2.2, 1.7)];   // the field, the barn, the silo and haystacks
     let extra = [(7.9f32, 1.4f32, 2.5f32, 4.2f32), (0.0, 8.0, 5.2, 2.3), (7.9, 8.0, 2.5, 2.3)];   // a bigger farm works more fields
     for e in extra.iter().take((tier as usize).min(3)) { v.push(*e); }
@@ -189,7 +210,7 @@ impl World {
                     let an = q.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
                     for t in -9..=9 { let t = t as f32 * 0.8; mark(&mut deck, q.x + sx * t, q.y + sy * t, 1.7); }
                 }
-                FARM => {   // the fields: the rectangles they are
+                FARM | GARDEN | PARK | MARKET => {   // the fields, beds and stalls: the rectangles they are
                     let (x0, x1, y0, y1) = (q.x - 18.0, q.x + 18.0, q.y - 18.0, q.y + 18.0);
                     let (i0, i1) = ((((x0 - nx0) / RC).floor() as i32).max(0), (((x1 - nx0) / RC).ceil() as i32).min(nx - 1));
                     let (j0, j1) = ((((y0 - ny0) / RC).floor() as i32).max(0), (((y1 - ny0) / RC).ceil() as i32).min(ny - 1));

@@ -1820,26 +1820,71 @@ impl World {
     pub fn building_count(&self) -> u32 { self.buildings.len() as u32 }
     pub fn take_events(&mut self) -> Vec<i32> { std::mem::take(&mut self.events) }
 
-    /// FNV-1a state hash for determinism / peer sync checks.
+    /// FNV-1a hashes of the separate sections of the state, in the order of `state_hash_part_names()`. Two copies of one village that disagree name the section that differs,
+    /// which says where to look (a building, the stock, a soldier on the march, a felled tree). Only simulated state goes in: nothing derived (paths, caches) and nothing a client may touch.
+    pub fn state_hash_parts(&self) -> Vec<u64> {
+        let part = |f: &dyn Fn(&mut dyn FnMut(u64))| -> u64 { let mut h: u64 = 0xcbf29ce484222325 ^ self.seed; f(&mut |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); }); h };
+        vec![
+            part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
+                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
+            }),
+            part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } }),
+            part(&|mix| {   // buildings: what stands, where, how built and how hurt
+                for b in &self.buildings {
+                    mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
+                    mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
+                }
+                for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
+            }),
+            part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); } }),
+            part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
+            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } }),
+            part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } } }),
+            part(&|mix| {   // trade and diplomacy
+                for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }
+                for c in &self.caravans { mix(c.eta); mix(c.amount as u64); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }
+            }),
+            part(&|mix| {   // the land the soldiers and the builders changed
+                for f in &self.felled { for v in f { mix(v.to_bits() as u64); } } mix(self.groves.len() as u64);
+                for b in &self.bridges { for v in b { mix(v.to_bits() as u64); } }
+                for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
+                mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
+            }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); } } }),
+        ]
+    }
+
+    /// FNV-1a state hash for determinism / peer sync checks: the sections of `state_hash_parts` folded into one number.
     pub fn state_hash(&self) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325 ^ self.seed;
-        let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
-        mix(self.tick); mix(self.population as u64); mix(self.sick as u64); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); } mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64)); for c in &self.caravans { mix(c.eta); mix(c.amount as u64); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }
-        for s in &self.stock { mix(*s as i64 as u64); }
-        for b in &self.buildings {
-            mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
-            mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
-        }
-        for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); }
-        for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } }
-        for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); }
-        for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
-        for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } }
-        mix(self.felled.len() as u64); mix(self.groves.len() as u64); mix(self.bridges.len() as u64);
-        mix(self.levels.len() as u64); mix(self.craters.len() as u64); mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
-        if let Some(bt) = &self.battle { for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); } }
+        for p in self.state_hash_parts() { h ^= p; h = h.wrapping_mul(0x100000001b3); }
         h
     }
+}
+
+/// The names of the sections of `World::state_hash_parts`, comma separated and in the same order.
+pub const HASH_PART_NAMES: &str = "core,stock,buildings,deposits,links,army,soldiers,diplomacy,land,battle";
+#[wasm_bindgen]
+pub fn state_hash_part_names() -> String { HASH_PART_NAMES.to_string() }
+
+/// A fingerprint of the simulation rules of this build: a small scripted village is played for a while (building, soldiers marching through woods, a raid) and its state hash is returned as text.
+/// Two builds that would play the same log differently give different fingerprints, so players on different versions are told apart from players whose copies merely drifted.
+/// Cheap once the navigation grid of `seed` has been built (see `warm_navigation`).
+#[wasm_bindgen]
+pub fn rules_fingerprint(seed: u64) -> String {
+    let mut w = World::new(seed, 0, 0);
+    w.cheat(3, 0, 0);
+    for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 18, 8), (FARM, -14, 6), (4, 20, -10), (BARRACKS, -20, 16), (TOWER, 30, 30), (WALL, 34, 30), (WALL, 38, 30), (WALL, 42, 30)] { w.place(k, x, y, 0); }
+    w.cheat(2, 0, 12); w.cheat(2, 1, 6); w.cheat(2, 2, 6);
+    for t in 0..360u32 {
+        if t == 40 { let id = w.det_form(&[8, 3, 3, 0, 0]); w.det_march(id, 150.0, -90.0, false, 0.0, 0.0); }
+        if t == 200 { w.start_raid(1.1, &[4, 2, 1, 0, 0], 7); }
+        if t % 40 == 0 { w.cheat(3, 0, 0); }
+        w.step();
+    }
+    let parts = w.state_hash_parts();
+    let mut h: u64 = 0xcbf29ce484222325 ^ seed; for p in parts { h ^= p; h = h.wrapping_mul(0x100000001b3); }
+    format!("{h:016x}")
 }
 
 fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
@@ -3855,6 +3900,30 @@ mod pathnet_tests {
         // and a walker going past does not cross them either
         let r = w.walk_route(30.0, 6.0, 2.0, 6.0);
         if !r.is_empty() { let mut pts = vec![(30.0f32, 6.0f32)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1]))); for q in pts.windows(2) { for t in 0..=30 { let f = t as f32 / 30.0; let (x, y) = (q[0].0 + (q[1].0 - q[0].0) * f, q[0].1 + (q[1].1 - q[0].1) * f); assert!(!bad(x, y), "walked across a field at {x:.1},{y:.1}"); } } }
+    }
+
+    #[test]
+    fn the_paths_never_cross_a_garden_park_or_markets_beds() {
+        for kind in [GARDEN, PARK, MARKET] {
+            for (tiers, rots) in [(0u32, [0u8, 3, 5]), (2, [1, 4, 7]), (3, [2, 6, 0])] {
+                let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+                let mut bs = vec![];
+                for ((x, y), rot) in [(16, 6), (-20, 8), (4, -24)].into_iter().zip(rots) { let i = w.place(kind, x, y, rot); if i >= 0 { bs.push(i as usize); } }
+                assert!(bs.len() >= 2, "kind {kind}: placed {}", bs.len());
+                for &f in &bs { for _ in 0..tiers { let _ = w.upgrade(f as u32); } }
+                let net = w.net_flat(); let (n, e) = (net[0] as usize, net[1] as usize);
+                let bad = |x: f32, y: f32| bs.iter().any(|&f| pathnet::in_fields(&w.buildings[f], x, y, 0.0));
+                for i in 0..n { assert!(!bad(net[2 + 2 * i], net[3 + 2 * i]), "kind {kind} tier {tiers}: a node in a bed at {:.1},{:.1}", net[2 + 2 * i], net[3 + 2 * i]); }
+                for k in 0..e { let o = 2 + 2 * n + 3 * k; let (a, b) = (net[o] as usize, net[o + 1] as usize); for t in 1..8 { let f = t as f32 / 8.0; let (x, y) = (net[2 + 2 * a] + (net[2 + 2 * b] - net[2 + 2 * a]) * f, net[3 + 2 * a] + (net[3 + 2 * b] - net[3 + 2 * a]) * f); assert!(!bad(x, y), "kind {kind} tier {tiers}: an edge across a bed at {x:.1},{y:.1}"); } }
+                // no bed lies beyond the ring, so the path round it is outside them all
+                for &f in &bs { let b = &w.buildings[f]; let rr = pathnet::ring_radius(kind, b.tier); for r in pathnet::field_rects(kind, b.tier) { assert!((r.0.abs() + r.2).hypot(r.1.abs() + r.3) < rr, "kind {kind}: a rectangle pokes out of the ring"); } }
+                // and a walker going past does not cross them either
+                for (x0, y0, x1, y1) in [(30.0f32, 6.0f32, 2.0f32, 6.0f32), (-34.0, 8.0, -6.0, 8.0), (4.0, -38.0, 4.0, -10.0)] {
+                    let r = w.walk_route(x0, y0, x1, y1);
+                    if !r.is_empty() { let mut pts = vec![(x0, y0)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1]))); for q in pts.windows(2) { for t in 0..=30 { let f = t as f32 / 30.0; let (x, y) = (q[0].0 + (q[1].0 - q[0].0) * f, q[0].1 + (q[1].1 - q[0].1) * f); assert!(!bad(x, y), "kind {kind}: walked across a bed at {x:.1},{y:.1}"); } } }
+                }
+            }
+        }
     }
 
     #[test]
