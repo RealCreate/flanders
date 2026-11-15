@@ -49,6 +49,7 @@ import { Tutorial } from './tutorial';
 import { Replay } from './replay';
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
+import { compassWord } from './ui/compass';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd } from './net/validate';
 import { Village, type Shared } from './village';
@@ -226,7 +227,7 @@ function connect() {
       let r = rivals.get(h.pub);
       if (!r) {
         const o = siteOrigin(h.site);
-        const village = new Village(new World(seedBig, o.x, o.z), 'rival:' + h.pub, h.name, false, shared, 0xb03030);
+        const village = new Village(new World(seedBig, o.x, o.z), 'rival:' + h.pub, h.name, false, shared, 0xb03030); village.foeColor = foeColorOf;
         village.onReport = rep => onRivalReport(h.pub, rep);
         r = { key: h.pub, peerId, name: h.name, site: h.site, village, online: true, sync: 'syncing…', tick: 0, log: [] };
         rivals.set(h.pub, r); ui.toast(`${h.name} has joined the world.`, 'good');
@@ -731,7 +732,7 @@ async function startGame(name: string, username: string) {
     away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
     for (let i = 0; i < away; i++) w.step();   // the world kept turning while you were away
   }
-  lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8);
+  lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf;
   lv.onReport = onLocalReport;
   deposits = new Deposits(w.deposits_flat(), terrain); scene.add(deposits.group); deposits.refit();
   buildDepositLabels();
@@ -878,15 +879,30 @@ function updateHud() {
 }
 
 function battleBanner() {
-  const list: { w: World; who: string }[] = [{ w: lv.world, who: 'your village' }, ...[...rivals.values()].map(r => ({ w: r.village.world, who: r.name + "'s village" }))];
-  for (const { w, who } of list) {
+  const list: { v: Village; who: string; mine: boolean }[] = [{ v: lv, who: 'your village', mine: true }, ...[...rivals.values()].map(r => ({ v: r.village, who: r.name + "'s village", mine: false }))];
+  for (const { v, who, mine } of list) {
+    const w = v.world;
     if (!w.battle_active()) continue;
     const u = w.battle_units_flat(); let d = 0, a = 0;
     for (let i = 0; i < u.length; i += 10) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
-    ui.battle(`⚔ Battle at ${who}<small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s</small>`); return;
+    const ang = w.battle_angle(), tag = w.battle_tag(), dx = Math.cos(ang), dz = Math.sin(ang), dir = compassWord(dx, dz);
+    const rr = w.build_radius() + 22, tx = v.ox + dx * rr, tz = v.oz + dz * rr;
+    const attacker = tag === 0 ? 'Bandits' : (tag === myTag() ? 'Your army' : rivalName(tag));
+    let role: string;
+    if (mine) role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`;
+    else if (tag === myTag()) role = `Your army attacks from the ${dir}. You are the attacker.`;
+    else role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
+    ui.battle(`⚔ Battle at ${who}<small>${role}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers</small>`,
+      () => rig.focus(tx, tz, 70));
+    return;
   }
   ui.battle(null);
 }
+
+/** Attackers wear their own village's colour (bandits are brown). */
+const foeColorOf = (tag: number): number | null => { if (tag === 0) return null; if (tag === myTag()) return lv.army.friend; for (const r of rivals.values()) if (tagOf(r.key) === tag) return r.village.army.friend; return 0xb02a2a; };
+
+function rivalName(tag: number): string { for (const r of rivals.values()) if (tagOf(r.key) === tag) return r.name; return 'Another village'; }
 
 function stepAwayFights() {
   for (const key of [...awayFights]) {

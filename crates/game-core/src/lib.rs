@@ -1599,6 +1599,8 @@ impl World {
     pub fn battle_active(&self) -> bool { self.battle.is_some() }
     /// Who is attacking: 0 bandits, otherwise the attacking player's tag.
     pub fn battle_tag(&self) -> i32 { self.battle.as_ref().map_or(0, |b| b.tag) }
+    /// Direction the attackers came from, as an angle (atan2(dy, dx)) from the village centre; 0 when there is no battle.
+    pub fn battle_angle(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.angle) }
     pub fn battle_time(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.t) }
     /// Soldiers on the field: [side, kind, x, y, hp, maxhp, alive, swinging, facing] (stride 9).
     pub fn battle_units_flat(&self) -> Vec<f32> {
@@ -1951,7 +1953,7 @@ mod tests {
     fn raid_on_weak_village_does_damage() {
         let mut w = village();
         w.population = 20;
-        assert!(w.start_raid(0.5, &[14, 6, 3, 0, 0], 0));
+        assert!(w.start_raid(0.5, &[14, 6, 3, 0, 0], 0)); assert!((w.battle_angle() - 0.5).abs() < 1e-6, "the battle remembers where the attackers came from");
         let before = w.building_count();
         run_battle(&mut w);
         let r = w.last_report();
@@ -2841,6 +2843,34 @@ mod morale_tests {
         let r = w.last_report(); let l = r.len();
         let survivors: i32 = r[6..11].iter().sum();
         assert!(survivors >= r[l - 2], "fled attackers {} are among the survivors {survivors}", r[l - 2]);
+    }
+
+    /// What the client draws from: the two armies advance, meet, swing at each other and soldiers fall (positions, swing timers and hp come from `battle_units_flat`).
+    #[test]
+    fn the_armies_meet_strike_and_fall_in_the_unit_data() {
+        let mut w = village(); w.army = [10, 4, 0, 0, 0]; w.population = 40; w.rng = Rng(5);
+        assert!(w.start_raid(0.5, &[10, 4, 0, 0, 0], 0));
+        let gap = |w: &World| { let u = w.battle_units_flat(); let mut best = f32::MAX; for i in 0..u.len() / 10 { for j in 0..u.len() / 10 { if u[i * 10] == 0.0 && u[j * 10] == 1.0 && u[i * 10 + 6] > 0.0 && u[j * 10 + 6] > 0.0 { best = best.min(((u[i * 10 + 2] - u[j * 10 + 2]).powi(2) + (u[i * 10 + 3] - u[j * 10 + 3]).powi(2)).sqrt()); } } } best };
+        let start = gap(&w);
+        let (mut closest, mut swings_melee, mut swings_shot, mut deaths, mut hp_drops) = (start, 0, 0, 0, 0);
+        let mut prev: Vec<f32> = w.battle_units_flat();
+        let mut n = 0;
+        while w.battle_active() && n < 1200 {
+            w.step(); w.stock[GR as usize] = 3000; n += 1;
+            if !w.battle_active() { break; }
+            let u = w.battle_units_flat(); closest = closest.min(gap(&w));
+            for i in 0..u.len() / 10 {
+                let o = i * 10;
+                if u[o + 7] > 0.3 && prev[o + 7] < 0.3 { if u[o + 1] == 1.0 { swings_shot += 1 } else { swings_melee += 1 } }
+                if u[o + 4] < prev[o + 4] { hp_drops += 1; }
+                if u[o + 6] == 0.0 && prev[o + 6] > 0.0 && u[o + 4] <= 0.0 { deaths += 1; }
+            }
+            prev = u;
+        }
+        eprintln!("gap {start:.1} -> {closest:.1}; melee swings {swings_melee}, arrow shots {swings_shot}, hp drops {hp_drops}, deaths {deaths}");
+        assert!(start > 15.0 && closest < 2.5, "the armies advance and meet: {start} -> {closest}");
+        assert!(swings_melee > 5 && swings_shot > 0, "melee soldiers swing and archers shoot");
+        assert!(hp_drops > 0 && deaths > 0, "blows land and soldiers fall");
     }
 }
 

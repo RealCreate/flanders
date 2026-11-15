@@ -15,6 +15,7 @@ import { Props } from './render/props';
 import { FieldView, BridgesView } from './render/field';
 import { People } from './render/people';
 import { ArmyView } from './render/army';
+import { pickFoe } from './render/fight';
 import { RiverFlow } from './render/rivers';
 import { Boats } from './render/boats';
 import { Ruins, type Effects2 } from './render/fx';
@@ -51,7 +52,7 @@ export class Village {
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
-    this.army.friend = color; this.army.radii = sh.radii;
+    this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k);
     this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
     this.army.plan = (ax, az, bx, bz) => { const p = this.world.plan_march(Uint32Array.from([1, 0, 0, 0, 0]), ax, az, bx, bz); return p[0] === 1 ? Array.from(p.slice(5)) : null; };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
@@ -166,15 +167,18 @@ export class Village {
     }
     this.syncField();
     const fighting = w.battle_active();
+    if (fighting) this.army.foe = pickFoe(this.army.friend, this.foeColor(w.battle_tag()) ?? 0x4a3a2a);
     this.army.syncBattle(fighting ? w.battle_units_flat() : new Float32Array(0));
     this.army.syncSiegeWorks(fighting ? w.battle_ladders_flat() : new Float32Array(0), fighting ? w.battle_bridges_flat() : new Float32Array(0));
     this.people.hidden = fighting; this.view.raised = fighting;
     const tk = Number(w.tick()), jumped = tk - this.lastShotTick > 8; this.lastShotTick = tk;   // after loading or catching up, old shots must not fly again
     const s = w.take_shots();
-    if (!jumped) for (let i = 0; i < s.length; i += 7) this.sh.fx.shot(s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4], s[i + 5] > 0.5);
+    if (!jumped) for (let i = 0; i < s.length; i += 7) this.sh.fx.shot(s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4], s[i + 5] > 0.5, s[i] === 0 ? this.army.shooterHeight(s[i + 1], s[i + 2]) : 1.5);
     const r = w.last_report();
     if (r.length && r[0] !== this.reportSeq) { this.reportSeq = r[0]; if (!this.fresh) this.onReport?.(Array.from(r)); }
   }
+  /** The colour of the attacking army with this tag (0 = bandits), if known. Set by main.ts, which knows every player's flag. */
+  foeColor: (tag: number) => number | null = () => null;
   /** Reports older than the moment we started watching are ignored. */
   private lastShotTick = -Infinity; private lastNet = -Infinity;
   fresh = true;
