@@ -158,7 +158,7 @@ const CHOICE_DAYS: u64 = 2;
 pub const DAY: u64 = 240;
 /// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
 fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
-     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE) }
+     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE) }
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
@@ -169,7 +169,10 @@ const BACKUP_PER_TIER: i32 = 1;
 const BACKUP_BELOW: i32 = 60;
 /// What the village eats, and how far an item goes, in quarter meals (a meal is what one tenth of a head needs each tick): raw grain and raw fish fill less, bread and smoked fish more.
 /// Each tick the villagers take from whichever of these stores holds the most food in all, so the stores run down together and none is emptied first.
-pub const FOODS: [(u8, i32); 4] = [(GR, 4), (FI, 4), (BD, 6), (SF, 6)];
+/// What a smokehouse set to meat takes and makes.
+const SMOKE_MEAT_IN: &[Amount] = &[(ME, 3), (W, 1)];
+const SMOKE_MEAT_OUT: &[Amount] = &[(SM, 3)];
+pub const FOODS: [(u8, i32); 6] = [(GR, 4), (FI, 4), (BD, 6), (SF, 6), (ME, 4), (SM, 6)];
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
@@ -180,7 +183,7 @@ pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
-const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2];
+const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2, 2, 3];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
 #[derive(Clone)]
@@ -1238,12 +1241,13 @@ impl World {
                         }
                     }
                 }
-                if d.inputs.iter().any(|&(r, n)| self.stock[r as usize] < scale(n)) { status = 1; p = need; break; }
-                if d.outputs.iter().any(|&(r, n)| self.stock[r as usize] + yield_of(r, n) > cap) { status = 3; p = need; break; }
-                for &(r, n) in d.inputs { self.stock[r as usize] -= scale(n); self.ledger.note(kind as usize, r as usize, -scale(n)); }
-                for &(r, n) in d.outputs { self.stock[r as usize] += yield_of(r, n); self.ledger.note(kind as usize, r as usize, yield_of(r, n)); }
+                let (inputs, outputs) = if kind == SMOKEHOUSE && self.buildings[i].mode == 1 { (SMOKE_MEAT_IN, SMOKE_MEAT_OUT) } else { (d.inputs, d.outputs) };   // a smokehouse set to meat smokes meat
+                if inputs.iter().any(|&(r, n)| self.stock[r as usize] < scale(n)) { status = 1; p = need; break; }
+                if outputs.iter().any(|&(r, n)| self.stock[r as usize] + yield_of(r, n) > cap) { status = 3; p = need; break; }
+                for &(r, n) in inputs { self.stock[r as usize] -= scale(n); self.ledger.note(kind as usize, r as usize, -scale(n)); }
+                for &(r, n) in outputs { self.stock[r as usize] += yield_of(r, n); self.ledger.note(kind as usize, r as usize, yield_of(r, n)); }
                 if let Some(di) = dep_idx {
-                    let out: i32 = d.outputs.iter().map(|&(_, n)| scale(n)).sum();   // ore taken from the ground does not depend on the season
+                    let out: i32 = outputs.iter().map(|&(_, n)| scale(n)).sum();   // ore taken from the ground does not depend on the season
                     self.deposits[di].rem = (self.deposits[di].rem - out).max(0);
                 }
                 status = 0;
@@ -2029,10 +2033,13 @@ impl World {
     /// Choose what a farm does with its field: 0 always sow, 1 let it lie fallow, 2 rotate (rest when the soil is worn, sow again when it is restored). 0 ok, -1 not a farm, -2 bad mode.
     pub fn set_field_mode(&mut self, idx: u32, mode: u8) -> i32 {
         let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
+        if b.kind == SMOKEHOUSE { if mode > 1 { return -2; } b.mode = mode; return 0; }   // a smokehouse: 0 smokes fish, 1 smokes meat
         if b.kind != FARM { return -1; }
         if mode > 2 { return -2; }
         b.mode = if mode == 2 && b.fert <= FERT_TIRED { 3 } else { mode }; 0
     }
+    /// What a smokehouse is set to smoke: 0 fish, 1 meat (-1 for anything that is not a smokehouse).
+    pub fn smoke_mode(&self, idx: u32) -> i32 { match self.buildings.get(idx as usize) { Some(b) if b.kind == SMOKEHOUSE => b.mode as i32, _ => -1 } }
     /// A farm's field: [soil in hundredths of a percent (10000 = rich), what it does (0 sow, 1 fallow, 2 rotate), resting right now (0/1)]; empty for anything that is not a farm.
     pub fn field_info(&self, idx: u32) -> Vec<i32> {
         match self.buildings.get(idx as usize) { Some(b) if b.kind == FARM => vec![b.fert as i32, if b.mode == 3 { 2 } else { b.mode as i32 }, (b.mode == 1 || b.mode == 3) as i32], _ => vec![] }

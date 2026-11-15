@@ -6,7 +6,7 @@ import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
 
 /** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
-const FOOD_KEYS = ['grain', 'fish', 'smokedfish', 'bread'];
+const FOOD_KEYS = ['grain', 'fish', 'smokedfish', 'bread', 'meat', 'smokedmeat'];
 const FOOD_ID = -2, CLOSED = -1;   // (the breakdown panel shows resource `i`, or all the foods at once)
 const bi = (name: string, size = 16) => icon(name, size, { mono: true });
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
@@ -179,8 +179,8 @@ export class UI {
       ${icon('ironore', 16)} Iron ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Smelter <span class="arrow">→</span> ${icon('iron', 16)} Iron<br>
       ${icon('iron', 16)} Iron + ${icon('charcoal', 16)} <span class="arrow">→</span> Blacksmith <span class="arrow">→</span> ${icon('tools', 16)} Tools<br>
       ${icon('goldore', 16)} Gold ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Mint <span class="arrow">→</span> ${icon('gold', 16)} Gold<br>
-      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison<br>
-      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish<br>
+      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('meat', 16)} Meat<br>
+      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish (or ${icon('meat', 16)} Meat + ${icon('wood', 16)} <span class="arrow">→</span> ${icon('smokedmeat', 16)} Smoked meat, when set to meat)<br>
       Farm <span class="arrow">→</span> ${icon('grain', 16)} Grain + ${icon('wood', 16)} <span class="arrow">→</span> Bakery <span class="arrow">→</span> ${icon('bread', 16)} Bread. Cooked food fills more than raw: the village eats from all its stores together.</div>
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
