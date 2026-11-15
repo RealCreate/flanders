@@ -148,3 +148,20 @@ fn a_fishing_huts_footing_stays_on_the_land_side_of_the_bank_at_every_turn() {
     }
     assert!(seen >= 10, "enough snaps checked ({seen})");
 }
+
+#[test]
+fn hunters_bring_meat_and_a_smokehouse_smokes_fish_or_meat() {
+    let mut w = World::new(1337, 0, 0); w.stock = [0; N_RES]; w.stock[GR as usize] = 10_000; w.stock[W as usize] = 200; w.population = 40; w.eff = 100;
+    assert_eq!(DEFS[LODGE as usize].outputs, &[(ME, 5)][..], "the lodge makes meat, not grain");
+    let s = put(&mut w, SMOKEHOUSE, -20.0, 20.0);
+    assert_eq!(w.smoke_mode(s as u32), 0); w.stock[FI as usize] = 60; w.stock[ME as usize] = 60;
+    let keep = |w: &mut World| { w.stock[GR as usize] = 10_000; w.stock[W as usize] = 200; w.population = 40; };
+    for _ in 0..(DAY as usize) { w.step(); keep(&mut w); }
+    assert!(w.stock[SF as usize] > 0 && w.stock[SM as usize] == 0, "set to fish: smoked fish {} smoked meat {}", w.stock[SF as usize], w.stock[SM as usize]);
+    assert_eq!(w.set_field_mode(s as u32, 1), 0); assert_eq!(w.smoke_mode(s as u32), 1);
+    for _ in 0..(DAY as usize) { w.step(); keep(&mut w); }
+    assert!(w.stock[SM as usize] > 0, "set to meat: smoked meat {}", w.stock[SM as usize]);
+    assert!(w.stock[ME as usize] < 60, "it used the meat");
+    assert_eq!(w.set_field_mode(s as u32, 2), -2);
+    assert!(FOODS.iter().any(|&(r, _)| r == ME) && FOODS.iter().any(|&(r, _)| r == SM), "both meats are food");
+}

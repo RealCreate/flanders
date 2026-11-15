@@ -15,8 +15,8 @@ try { core = require('./wasm/game_core.js'); } catch (e) {
 const { World, catalog, units: unitsJson, village_sites } = core;
 
 /** Resource order used by every array in the results. */
-export const RES = ['wood', 'planks', 'stone', 'clay', 'bricks', 'ironore', 'iron', 'goldore', 'gold', 'charcoal', 'grain', 'tools', 'fish', 'smokedfish'];
-export const RES_SHORT = ['w', 'pl', 'st', 'cl', 'br', 'io', 'ir', 'go', 'gd', 'ch', 'gr', 'tl', 'fi', 'sf'];
+export const RES = ['wood', 'planks', 'stone', 'clay', 'bricks', 'ironore', 'iron', 'goldore', 'gold', 'charcoal', 'grain', 'tools', 'fish', 'smokedfish', 'bread', 'meat', 'smokedmeat'];
+export const RES_SHORT = ['w', 'pl', 'st', 'cl', 'br', 'io', 'ir', 'go', 'gd', 'ch', 'gr', 'tl', 'fi', 'sf', 'bd', 'me', 'sm'];
 const SEASONS = ['spring', 'summer', 'autumn', 'winter'];
 const DAY = 240;
 const SEED_SALT = 3;

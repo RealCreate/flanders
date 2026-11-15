@@ -1346,6 +1346,11 @@ function updateSelection() {
         <p class="muted">Sowing every season wears the soil down and the harvest shrinks (to half at worst). A fallow field makes no grain but recovers. <b>Rotate</b> rests the field by itself when the soil is worn and sows it again when it is restored.${soil < 60 && mode === 0 ? ' <b>This soil is tired: try rotating.</b>' : ''}</p></div>`;
     }
   }
+  if (kind === 42) {   // a smokehouse smokes fish or meat
+    const sm = w.smoke_mode(selectedIdx);
+    if (sm >= 0) html += `<div><h3>What it smokes</h3><div class="btnrow" style="flex-wrap:wrap">${[['Fish', 0], ['Meat', 1]].map(([t, m]) => `<button class="pbtn ${sm === m ? 'on' : ''}" data-act="field:${m}">${sm === m ? '● ' : ''}${t}</button>`).join('')}</div>
+      <p class="muted">Set to fish it smokes raw fish into smoked fish; set to meat it smokes the hunters' meat into smoked meat. Either needs a little wood.</p></div>`;
+  }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.cycle) {
     html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>${icon('worker', 20)} ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
