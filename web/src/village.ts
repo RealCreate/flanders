@@ -195,7 +195,7 @@ export class Village {
   /** Field armies, bridges and the soldiers' progress. */
   syncField() {
     const w = this.world, flat = w.det_flat();
-    this.field.sync(flat, id => w.det_path(id));
+    this.field.sync(flat, id => w.det_path(id)); this.field.setGroups(w.det_groups_flat());
     const br = Array.from(w.bridges_flat()), bf = w.buildings_flat();
     for (let i = 0; i < bf.length; i += 10) if (bf[i] === 23) { const a = bf[i + 4] * Math.PI / 4, sx = Math.sin(a) * 6.4, sz = Math.cos(a) * 6.4; br.push(bf[i + 2] - sx, bf[i + 3] - sz, bf[i + 2] + sx, bf[i + 3] + sz); }   // drawbridges carry soldiers too
     this.field.setBridges(Float32Array.from(br));
