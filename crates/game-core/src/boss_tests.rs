@@ -26,7 +26,7 @@ fn boss_part(r: &[i32]) -> [i32; 4] { let l = r.len(); [r[l - 6], r[l - 5], r[l 
 fn a_boss_raid_is_deterministic_and_leads_with_the_warlord() {
     let run = |seed: u64| -> (Vec<u64>, Vec<i32>) {
         let mut w = village(true); w.rng = Rng(seed);
-        assert!(w.cheat(9, 150, 500));
+        assert!(w.cheat(10, 150, 500));
         let b = w.battle_boss(); assert_eq!(b[0], 1.0, "the warlord leads"); assert!(b[3] > 400.0 && b[3] < 800.0, "hit points {}", b[3]);
         let mut hashes = vec![];
         while w.battle_active() && hashes.len() < 700 { w.step(); w.stock[GR as usize] = 3000; hashes.push(w.state_hash()); }
@@ -36,7 +36,7 @@ fn a_boss_raid_is_deterministic_and_leads_with_the_warlord() {
     assert_eq!(a, b, "same village, same raid, same fight"); assert_eq!(ra, rb);
     let (c, _) = run(8);
     assert_ne!(a, c, "another random stream plays out differently");
-    let w = { let mut w = village(true); w.cheat(9, 0, 500); w };
+    let w = { let mut w = village(true); w.cheat(10, 0, 500); w };
     let rams = w.battle.as_ref().unwrap().units.iter().filter(|u| u.side == 1 && u.kind == RAM).count();
     assert!(rams >= 1, "he rides in with a ram");
 }
@@ -46,10 +46,10 @@ fn rates(n: u64) -> (u64, u64, u64) {
     let (mut held, mut killed, mut overrun) = (0, 0, 0);
     for seed in 0..n {
         let (ang, rf) = ((seed as i32 * 37) % 628, (seed as i32 * 211) % 1001);
-        let mut w = village(true); w.rng = Rng(seed * 7919 + 3); assert!(w.cheat(9, ang, rf));
+        let mut w = village(true); w.rng = Rng(seed * 7919 + 3); assert!(w.cheat(10, ang, rf));
         fight(&mut w); let r = w.last_report();
         if r[1] == 1 { held += 1; } if boss_part(&r)[2] == 1 { killed += 1; }
-        let mut w = village(false); w.rng = Rng(seed * 7919 + 3); assert!(w.cheat(9, ang, rf));
+        let mut w = village(false); w.rng = Rng(seed * 7919 + 3); assert!(w.cheat(10, ang, rf));
         fight(&mut w); let r = w.last_report();
         if r[1] == 0 && boss_part(&r)[2] == 0 && w.population >= 2 { overrun += 1; }
     }
@@ -67,7 +67,7 @@ fn a_prepared_village_survives_a_warlord_raid_and_an_empty_one_does_not() {
 
 #[test]
 fn the_horn_spurs_the_escort_for_eight_seconds_and_ends_with_the_warlord() {
-    let mut w = village(false); w.rng = Rng(5); assert!(w.cheat(9, 0, 500));
+    let mut w = village(false); w.rng = Rng(5); assert!(w.cheat(10, 0, 500));
     // a far-off, unkillable defender keeps the fight (and the horn's clock) going whatever the village's strength
     { let b = w.battle.as_mut().unwrap(); let mut u = Unit::new(0, 0, -400.0, -400.0, 0.0); u.hp = 1e9; u.maxhp = 1e9; b.units.push(u); b.start_side[0] += 1; }
     let bd = &BOSSES[0];
@@ -95,7 +95,7 @@ fn the_horn_spurs_the_escort_for_eight_seconds_and_ends_with_the_warlord() {
     assert!(on > 0 && off > on, "it sounds for a part of the time only: {on} steps on, {off} off");
     let secs = on as f32 * 0.25 / blasts as f32; assert!(secs > 7.0 && secs <= bd.horn_secs + 0.3, "each blast lasts about {} seconds, measured {secs}", bd.horn_secs);
     // the client's data says the same: an aura flag on the warlord and the men round him while it sounds
-    let mut w2 = village(true); w2.rng = Rng(5); w2.cheat(9, 0, 500);
+    let mut w2 = village(true); w2.rng = Rng(5); w2.cheat(10, 0, 500);
     let mut flagged = 0; for _ in 0..(40.0 / 0.25) as usize { w2.battle_substep(); if w2.battle_units_flat().chunks(14).any(|u| u[10] > 0.0 && u[13] > 0.0) { flagged += 1; } }
     assert!(flagged > 10 && flagged < 60, "the aura flag is on while the horn sounds: {flagged} of 160 steps");
     // kill the warlord: the horn is silent for good
@@ -111,7 +111,7 @@ fn the_horn_spurs_the_escort_for_eight_seconds_and_ends_with_the_warlord() {
 
 #[test]
 fn plate_yields_only_to_siege_and_heavy_hits() {
-    let mut w = village(false); w.cheat(9, 0, 500);
+    let mut w = village(false); w.cheat(10, 0, 500);
     let hit = |w: &mut World, dmg: f32, siege: bool| -> f32 {
         let b = w.battle.as_mut().unwrap(); let i = b.units.iter().position(|u| u.boss > 0).unwrap(); b.units[i].hp = b.units[i].maxhp; b.units[i].phase = 0;
         World::damage_from(b, i, dmg, siege); b.units[i].maxhp - b.units[i].hp
@@ -129,7 +129,7 @@ fn plate_yields_only_to_siege_and_heavy_hits() {
 
 #[test]
 fn a_boss_is_enraged_below_half_its_hit_points() {
-    let mut w = village(false); w.cheat(9, 0, 500);
+    let mut w = village(false); w.cheat(10, 0, 500);
     let b = w.battle.as_mut().unwrap(); let i = b.units.iter().position(|u| u.boss > 0).unwrap();
     let calm = unit_stat(&b.units[i]);
     b.units[i].hp = b.units[i].maxhp * 0.52; World::damage_from(b, i, 40.0, true);
@@ -158,7 +158,7 @@ fn bosses_never_come_to_player_attacks_or_to_a_young_village() {
 
 #[test]
 fn reports_name_the_boss_and_a_kill_pays() {
-    let mut w = village(true); w.rng = Rng(3); w.stock = [200; N_RES]; w.hero = Some((0, 0)); assert!(w.cheat(9, 2, 500));   // (name index 2)
+    let mut w = village(true); w.rng = Rng(3); w.stock = [200; N_RES]; w.hero = Some((0, 0)); assert!(w.cheat(10, 2, 500));   // (name index 2)
     w.take_events();
     let (xp0, rams0) = (w.hero.unwrap().1, w.army[RAM as usize]);
     let mut n = 0; while w.battle_active() && n < 700 { w.step(); n += 1; }
