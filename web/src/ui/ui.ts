@@ -1,7 +1,11 @@
 import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
-import { CATS, KIND_ICON, RES, UNIT_ICON, defs, units, fmtCost, type BuildingDef } from '../data';
+import { CATS, RES, defs, units, fmtCost, resIcon, type BuildingDef } from '../data';
+import { icon, kindIcon, unitIcon } from './icons';
+
+/** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
+const bi = (name: string, size = 16) => icon(name, size, { mono: true });
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
 import { mountFlagDesigner, paintFlag } from './flagdesigner';
 import { mountSettings } from './settingsui';
@@ -95,11 +99,11 @@ export class UI {
   <div class="brand"><h1>Flanders</h1><span class="sub" id="sub">Day 1 · Spring</span></div>
   <div class="treasury" id="treasury"></div>
   <div class="vitals">
-    <span class="pill" id="v-pop" title="Villagers / housing"><span class="ic">👥</span><b>0</b></span>
-    <span class="pill" id="v-army" title="Soldiers in your army"><span class="ic">⚔️</span><b>0</b></span>
-    <span class="pill" id="v-sick" title="Villagers sick with plague"><span class="ic">🤒</span><b>0</b></span>
-    <span class="pill" id="v-joy" title="Happiness: gardens, parks, chapels, markets and courts lift it; hunger, plague and overcrowding lower it. Happy villages grow faster and pay more tax."><span class="ic">😊</span><b>50</b></span>
-    <span class="pill" id="v-work" title="Workforce efficiency: jobs vs. available workers"><span class="ic">⚒️</span><b>100%</b></span>
+    <span class="pill" id="v-pop" title="Villagers / housing"><span class="ic">${icon('pop', 16)}</span><b>0</b></span>
+    <span class="pill" id="v-army" title="Soldiers in your army"><span class="ic">${icon('army', 16)}</span><b>0</b></span>
+    <span class="pill" id="v-sick" title="Villagers sick with plague"><span class="ic">${icon('plague', 16)}</span><b>0</b></span>
+    <span class="pill" id="v-joy" title="Happiness: gardens, parks, chapels, markets and courts lift it; hunger, plague and overcrowding lower it. Happy villages grow faster and pay more tax."><span class="ic">${icon('happy', 16)}</span><b>50</b></span>
+    <span class="pill" id="v-work" title="Workforce efficiency: jobs vs. available workers"><span class="ic">${icon('work', 16)}</span><b>100%</b></span>
   </div>
   <div class="tools">
   <div class="speed" id="speed">
@@ -107,17 +111,17 @@ export class UI {
     <button class="btn on" data-s="1" title="Normal speed (calm)"><svg viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg></button>
     <button class="btn" data-s="2" title="Fast x2"><svg viewBox="0 0 16 16"><path d="M1 2l7 6-7 6zM8 2l7 6-7 6z"/></svg></button>
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
-  <button class="btn" id="btn-mp" title="Players in this world">🌍 <span id="mp-count">Online</span></button>
-  <button class="btn" id="btn-map" title="Full-screen map (M)">🗺 Map</button>
+  <button class="btn" id="btn-mp" title="Players in this world">${bi('globe')} <span id="mp-count">Online</span></button>
+  <button class="btn" id="btn-map" title="Full-screen map (M)">${bi('map')} Map</button>
   <div class="menuwrap">
-    <button class="btn" id="btn-menu" title="Menu: display settings, sound, deposits, full screen, help" aria-haspopup="true" aria-expanded="false">☰ Menu</button>
+    <button class="btn" id="btn-menu" title="Menu: display settings, sound, deposits, full screen, help" aria-haspopup="true" aria-expanded="false">${bi('menu')} Menu</button>
     <div id="menu" hidden>
-      <button class="btn" id="btn-display" title="Quality, shadows, anti-aliasing…">⚙ Display settings</button>
+      <button class="btn" id="btn-display" title="Quality, shadows, anti-aliasing…">${bi('gear')} Display settings</button>
   <button class="btn" id="btn-sound" title="Sound on / off"><svg viewBox="0 0 16 16" id="snd-on"><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 5.2a4 4 0 0 1 0 5.6M12.8 3.6a6.3 6.3 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><svg viewBox="0 0 16 16" id="snd-off" hidden><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span class="ml">Sound on / off</span></button>
-      <button class="btn" id="btn-res" aria-pressed="false" title="Show ore and stone deposits (V)">⛏ Show deposits</button>
-      <button class="btn" id="btn-full" title="Full-screen mode (F11)">⛶ Full screen</button>
+      <button class="btn" id="btn-res" aria-pressed="false" title="Show ore and stone deposits (V)">${bi('pick')} Show deposits</button>
+      <button class="btn" id="btn-full" title="Full-screen mode (F11)">${bi('fullscreen')} Full screen</button>
       <button class="btn" id="btn-help">? Help and keys</button>
-      <button class="btn" id="btn-cheat" hidden title="Testing tools">🛠 Test tools</button>
+      <button class="btn" id="btn-cheat" hidden title="Testing tools">${bi('tools')} Test tools</button>
     </div>
   </div>
   </div>
@@ -146,7 +150,7 @@ export class UI {
     <details class="sect" id="muster-box"><summary>Muster a new army</summary>
       <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
       <div class="mrows" id="muster-row"></div>
-      <div class="btnrow"><button class="pbtn" id="muster-go">⚑ Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
+      <div class="btnrow"><button class="pbtn" id="muster-go">${bi('muster')} Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
     </details>
     <details class="sect" open><summary>Train soldiers</summary><div class="cards" id="unit-cards"></div></details>
     <p class="muted tiny">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
@@ -166,21 +170,21 @@ export class UI {
     <div><div class="eyebrow">Warehouse</div><h2>Stock &amp; Industry</h2></div>
     <table class="res" id="restable"></table>
     <div><h3>Production chains</h3><div class="chain">
-      🌳 Wood <span class="arrow">→</span> Sawmill <span class="arrow">→</span> 📏 Planks<br>
-      🌳 Wood <span class="arrow">→</span> Charcoal Burner <span class="arrow">→</span> ⚫ Charcoal<br>
-      🟤 Clay + ⚫ <span class="arrow">→</span> Brickworks <span class="arrow">→</span> 🧱 Bricks<br>
-      🟠 Iron ore + ⚫ <span class="arrow">→</span> Smelter <span class="arrow">→</span> ⛓️ Iron<br>
-      ⛓️ Iron + ⚫ <span class="arrow">→</span> Blacksmith <span class="arrow">→</span> 🔨 Tools<br>
-      🟡 Gold ore + ⚫ <span class="arrow">→</span> Mint <span class="arrow">→</span> 🪙 Gold<br>
-      🦌 Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> 🌾 Venison</div>
+      ${icon('wood', 16)} Wood <span class="arrow">→</span> Sawmill <span class="arrow">→</span> ${icon('planks', 16)} Planks<br>
+      ${icon('wood', 16)} Wood <span class="arrow">→</span> Charcoal Burner <span class="arrow">→</span> ${icon('charcoal', 16)} Charcoal<br>
+      ${icon('clay', 16)} Clay + ${icon('charcoal', 16)} <span class="arrow">→</span> Brickworks <span class="arrow">→</span> ${icon('bricks', 16)} Bricks<br>
+      ${icon('ironore', 16)} Iron ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Smelter <span class="arrow">→</span> ${icon('iron', 16)} Iron<br>
+      ${icon('iron', 16)} Iron + ${icon('charcoal', 16)} <span class="arrow">→</span> Blacksmith <span class="arrow">→</span> ${icon('tools', 16)} Tools<br>
+      ${icon('goldore', 16)} Gold ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Mint <span class="arrow">→</span> ${icon('gold', 16)} Gold<br>
+      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison</div>
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
   <section class="pane" id="pane-sel"></section>
 </aside>
-<div id="minimap-card" hidden><div class="cap" id="mm-cap" title="Hide / show the minimap (M)"><span>REALM</span><span id="mm-hint">click to travel</span><i id="mm-full" title="Full-screen map (M)">⛶</i><b id="mm-chev">▾</b></div><canvas id="minimap" width="190" height="190"></canvas></div>
+<div id="minimap-card" hidden><div class="cap" id="mm-cap" title="Hide / show the minimap (M)"><span>REALM</span><span id="mm-hint">click to travel</span><i id="mm-full" title="Full-screen map (M)">${bi('fullscreen', 14)}</i><b id="mm-chev">▾</b></div><canvas id="minimap" width="190" height="190"></canvas></div>
 <div id="goals" hidden><div class="gh" id="goals-head" title="Collapse"><b>Goals</b><span id="goals-count"></span><b id="goals-chev">▾</b></div><ul id="goal-list"></ul></div>
 <button id="ledger-open" hidden title="Show the panel (H)">◂</button>
-<div class="overlay clear" id="worldmap" hidden><div class="mapwrap"><div class="maphead"><b>The Realm</b><span class="muted">Click anywhere to travel there · Esc to close</span><button class="btn" data-close="worldmap">✕</button></div><canvas id="bigmap" width="900" height="900"></canvas></div></div>
+<div class="overlay clear" id="worldmap" hidden><div class="mapwrap"><div class="maphead"><b>The Realm</b><span class="muted">Click anywhere to travel there · Esc to close</span><button class="btn" data-close="worldmap">${bi('close', 14)}</button></div><canvas id="bigmap" width="900" height="900"></canvas></div></div>
 <div id="ctxmenu" hidden></div><div id="selbox" hidden></div>
 <div id="toasts"></div>
 <div id="hint" hidden></div>
@@ -199,7 +203,7 @@ export class UI {
     <div class="flagrow"><button type="button" class="flagmini" id="flag-mini" title="Design your flag"><canvas width="60" height="40"></canvas></button><div><b>Your flag</b><div class="muted">Click it to design your own.</div></div></div>
     <div class="btnrow"><button class="pbtn primary" id="found">Enter the world</button></div>
     <p class="muted">There is no game server: every player runs a copy of the game and your browsers connect to each other. Your village is saved in this browser and keeps growing while you are away.</p>
-    <div class="btnrow"><button class="pbtn" id="home-keys-btn">⌨ Controls and keybindings</button><button class="pbtn" id="home-display-btn">⚙ Display settings</button></div>
+    <div class="btnrow"><button class="pbtn" id="home-keys-btn">${bi('keys')} Controls and keybindings</button><button class="pbtn" id="home-display-btn">${bi('gear')} Display settings</button></div>
   </div>
 </div>
 <div class="overlay" id="flag-page" hidden style="z-index:21">
@@ -234,9 +238,9 @@ export class UI {
       <button class="pbtn" data-ch="3,0,0">Fill every store</button><button class="pbtn" data-ch="1,10,0">+10 villagers</button><button class="pbtn" data-ch="6,0,0">Cure plague</button>
     </div>
     <h3>Soldiers</h3><div class="btnrow" style="flex-wrap:wrap" id="cheat-army"></div>
-    <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">🏘 Build a model village</button><button class="pbtn" data-ch="103,0,0" title="Every building at every tier, plus the design options">🏛 Test hall: all buildings</button></div>
-    <h3>Ground</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="102,30,0">▭ Level 30</button><button class="pbtn" data-ch="102,50,0">▭ Level 50</button><button class="pbtn" data-ch="102,72,0">▭ Level 72</button></div>
-    <h3>Repair</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="7,0,0">🧯 Extinguish all fires</button><button class="pbtn" data-ch="8,0,0">⛰ Reset terrain</button><button class="pbtn danger" data-ch="101,0,0">♻ Full reset (all villages)</button></div>
+    <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">${bi('house')} Build a model village</button><button class="pbtn" data-ch="103,0,0" title="Every building at every tier, plus the design options">${bi('townhall')} Test hall: all buildings</button></div>
+    <h3>Ground</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="102,30,0">${bi('pen-rect')} Level 30</button><button class="pbtn" data-ch="102,50,0">${bi('pen-rect')} Level 50</button><button class="pbtn" data-ch="102,72,0">${bi('pen-rect')} Level 72</button></div>
+    <h3>Repair</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="7,0,0">${bi('water')} Extinguish all fires</button><button class="pbtn" data-ch="8,0,0">${bi('raiseground')} Reset terrain</button><button class="pbtn danger" data-ch="101,0,0">${bi('reset')} Full reset (all villages)</button></div>
     <h3>Trouble</h3>
     <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn danger" data-ch="4,90,200">Small raid</button><button class="pbtn danger" data-ch="4,200,700">Big raid</button><button class="pbtn danger" data-ch="5,-1,0">Burn selected building</button></div>
     <div class="btnrow"><button class="pbtn primary" data-close="cheats">Close</button></div>
@@ -248,7 +252,7 @@ export class UI {
     <p class="muted">Everyone who enters world <b id="mp-world"></b> lives on the same map. Your browser connects directly to the other players — nothing is stored on a server, and commands are signed so nobody can forge your moves.</p>
     <div class="netstat" id="net-status">Looking for other players…</div>
     <ul class="log" id="mp-peers"></ul>
-    <div class="btnrow"><button class="pbtn" id="mp-copy">📋 Copy invite link</button><button class="pbtn primary" data-close="mp">Close</button></div>
+    <div class="btnrow"><button class="pbtn" id="mp-copy">${bi('copy')} Copy invite link</button><button class="pbtn primary" data-close="mp">Close</button></div>
     <p class="muted">To invite someone, send them the link. To keep a private world, enter a different world name on the title screen.</p>
   </div>
 </div>`;
@@ -271,7 +275,7 @@ export class UI {
     $('found').onclick = () => { const s = cleanWorld(wsel.value === '__custom' ? wcus.value : wsel.value), n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n); };
     ($('username') as HTMLInputElement).onkeydown = wcus.onkeydown = e => { if (e.key === 'Enter') $('found').click(); };
     $('tabs').onclick = e => { const t = (e.target as HTMLElement).dataset.t; if (t) this.setTab(t); };
-    $('cats').innerHTML = `<button class="chip on" data-c="-1">All</button>` + CATS.map((c, i) => `<button class="chip" data-c="${i}">${c.icon} ${c.name}</button>`).join('');
+    $('cats').innerHTML = `<button class="chip on" data-c="-1">All</button>` + CATS.map((c, i) => `<button class="chip" data-c="${i}">${bi(c.icon, 15)} ${c.name}</button>`).join('');
     $('cats').onclick = e => {
       const c = (e.target as HTMLElement).dataset.c; if (c === undefined) return;
       this.filter = Number(c);
@@ -292,7 +296,7 @@ export class UI {
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => this.modal(b.dataset.close!, false));
-    $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').textContent = '✓ Copied'; setTimeout(() => ($('mp-copy').textContent = '📋 Copy invite link'), 1800); };
+    $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').innerHTML = `${bi('check')} Copied`; setTimeout(() => ($('mp-copy').innerHTML = `${bi('copy')} Copy invite link`), 1800); };
     { const up = (e: Event) => this.h.upgradeHover(!!(e.target as HTMLElement).closest('[data-act="upgrade"]'));   // hovering Upgrade outlines the bigger building
       $('pane-sel').onmouseover = up; $('pane-sel').onmouseleave = () => this.h.upgradeHover(false); }
     $('pane-sel').onclick = e => { const a = (e.target as HTMLElement).closest<HTMLElement>('[data-act]'); if (a && !(a as HTMLButtonElement).disabled) this.h.act(a.dataset.act!); };
@@ -305,7 +309,7 @@ export class UI {
     addEventListener('pointerdown', e => { if (!(e.target as HTMLElement).closest?.('#ctxmenu')) this.closeCtx(); }, true);
     addEventListener('wheel', () => this.closeCtx(), { passive: true }); addEventListener('blur', () => this.closeCtx());
     addEventListener('keydown', e => { if (e.key === 'Escape') this.closeCtx(); });
-    document.addEventListener('fullscreenchange', () => { $('btn-full').textContent = document.fullscreenElement ? '🗗 Leave full screen' : '⛶ Full screen'; });
+    document.addEventListener('fullscreenchange', () => { $('btn-full').innerHTML = document.fullscreenElement ? `${bi('windowed')} Leave full screen` : `${bi('fullscreen')} Full screen`; });
     $('minimap').onclick = e => {
       const r = this.minimap.getBoundingClientRect();
       this.h.minimapClick(((e.clientX - r.left) / r.width - 0.5) * HALF * 2, ((e.clientY - r.top) / r.height - 0.5) * HALF * 2);
@@ -380,7 +384,7 @@ export class UI {
 
   // ---- field armies ----
   private buildMuster() {
-    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<div class="mrow"><span class="mi">${UNIT_ICON[u.id]}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
+    $('muster-row').innerHTML = units.slice(0, 5).map(u => `<div class="mrow"><span class="mi">${unitIcon(u.id, 24)}</span><span class="mn">${u.name}<small id="mav-${u.id}"></small></span>
       <span class="step"><button type="button" data-step="-5" data-u="${u.id}" title="Five fewer">−5</button><button type="button" data-step="-1" data-u="${u.id}">−</button><input type="number" min="0" value="0" id="mus-${u.id}" aria-label="${u.name}"><button type="button" data-step="1" data-u="${u.id}">+</button><button type="button" data-step="5" data-u="${u.id}" title="Five more">+5</button></span></div>`).join('');
     $('muster-row').onclick = e => {
       const b = (e.target as HTMLElement).closest<HTMLElement>('[data-step]'); if (!b) return;
@@ -397,9 +401,9 @@ export class UI {
     const sig = JSON.stringify(list);
     if (sig === this.detSig) return; this.detSig = sig;
     $('det-list').innerHTML = list.length ? list.map(d => {
-      const n = d.units.reduce((s, v) => s + v, 0), mix = d.units.map((c, i) => (c ? `<span class="uc" title="${units[i].name}">${UNIT_ICON[i]} <b>${c}</b></span>` : '')).join('');
+      const n = d.units.reduce((s, v) => s + v, 0), mix = d.units.map((c, i) => (c ? `<span class="uc" title="${units[i].name}">${unitIcon(i, 16)} <b>${c}</b></span>` : '')).join('');
       return `<div class="army ${d.selected ? 'sel' : ''}">
-        <div class="army-h"><span class="army-n">⚑ Army ${d.id}</span><span class="badge">${n} soldier${n === 1 ? '' : 's'}</span></div>
+        <div class="army-h"><span class="army-n">${bi('muster')} Army ${d.id}</span><span class="badge">${n} soldier${n === 1 ? '' : 's'}</span></div>
         <div class="army-u">${mix}</div>
         <div class="army-s">${esc(d.text)}</div>
         <div class="army-b"><button class="pbtn ${d.selected ? 'primary' : ''}" data-da="select" data-id="${d.id}">${d.selected ? 'Selected' : 'Select'}</button>
@@ -433,8 +437,8 @@ export class UI {
     const enabled = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || new URLSearchParams(location.search).has('cheats');
     $('btn-cheat').hidden = !enabled; if (!enabled) return;
     $('btn-cheat').onclick = () => this.modal('cheats', true);
-    $('cheat-res').innerHTML = RES.map((r, i) => `<span>${r.icon} ${r.name}</span><button class="pbtn" data-ch="0,${i},100">+100</button><button class="pbtn" data-ch="0,${i},1000">+1000</button>`).join('');
-    $('cheat-army').innerHTML = units.slice(0, 5).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${UNIT_ICON[u.id]} +10 ${u.name}</button>`).join('');
+    $('cheat-res').innerHTML = RES.map((r, i) => `<span>${resIcon(i)} ${r.name}</span><button class="pbtn" data-ch="0,${i},100">+100</button><button class="pbtn" data-ch="0,${i},1000">+1000</button>`).join('');
+    $('cheat-army').innerHTML = units.slice(0, 5).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${unitIcon(u.id, 16)} +10 ${u.name}</button>`).join('');
     $('cheats').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
   }
 
@@ -489,8 +493,8 @@ export class UI {
     BUILDABLE.forEach((d, i) => {
       const c = document.createElement('div');
       c.className = 'card'; c.dataset.id = String(d.id);
-      c.innerHTML = `<div class="ico">${KIND_ICON[d.id]}</div><div><div class="nm"><span>${d.name}</span>${i < 9 ? `<span class="key">${i + 1}</span>` : ''}</div>
-        <div class="ds">${d.desc}</div><div class="cost">${d.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${RES[r].icon} ${n}</span>`).join('') || '<span>Free</span>'}</div>${this.io(d)}</div>`;
+      c.innerHTML = `<div class="ico">${kindIcon(d.id, 30)}</div><div><div class="nm"><span>${d.name}</span>${i < 9 ? `<span class="key">${i + 1}</span>` : ''}</div>
+        <div class="ds">${d.desc}</div><div class="cost">${d.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${resIcon(r)} ${n}</span>`).join('') || '<span>Free</span>'}</div>${this.io(d)}</div>`;
       c.onclick = () => this.h.select(d.id);
       el.appendChild(c); this.cards.set(d.id, c);
     });
@@ -500,9 +504,9 @@ export class UI {
     const el = $('unit-cards');
     units.slice(0, 5).forEach(u => {
       const c = document.createElement('div'); c.className = 'card unit'; c.dataset.u = String(u.id);
-      c.innerHTML = `<div class="ico">${UNIT_ICON[u.id]}</div><div><div class="nm"><span>${u.name}</span><span class="key">tier ${u.tier + 1}</span></div>
-        <div class="ds">${u.desc}</div><div class="io">❤ ${u.hp} · ⚔ ${u.dmg} · 🏹 range ${u.range} · 🛡 ${u.armor}</div>
-        <div class="cost">${u.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${RES[r].icon} ${n}</span>`).join('')}</div>
+      c.innerHTML = `<div class="ico">${unitIcon(u.id, 30)}</div><div><div class="nm"><span>${u.name}</span><span class="key">tier ${u.tier + 1}</span></div>
+        <div class="ds">${u.desc}</div><div class="io">${bi('heart', 14)} ${u.hp} · ${bi('attack', 14)} ${u.dmg} · ${bi('archer', 14)} range ${u.range} · ${bi('shield', 14)} ${u.armor}</div>
+        <div class="cost">${u.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${resIcon(r)} ${n}</span>`).join('')}</div>
         <div class="btnrow" style="margin-top:6px"><button class="pbtn" data-train="1">Train 1</button><button class="pbtn" data-train="5">Train 5</button></div></div>`;
       c.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-train]'); if (b) this.h.train(u.id, Number(b.dataset.train)); };
       el.appendChild(c);
@@ -511,7 +515,7 @@ export class UI {
 
   private io(d: BuildingDef) {
     if (!d.cycle) return d.housing ? `<div class="io">Houses ${d.housing} villagers</div>` : '';
-    const f = (a: [number, number][]) => a.map(([r, n]) => `${RES[r].icon}${n}`).join(' ');
+    const f = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)}${n}`).join(' ');
     return `<div class="io">${d.inputs.length ? f(d.inputs) + ' → ' : ''}${f(d.outputs)} every ${d.cycle}s · ${d.jobs} workers</div>`;
   }
 
@@ -532,7 +536,7 @@ export class UI {
     const t = $('treasury');
     RES.forEach((r, i) => {
       const p = document.createElement('span'); p.className = 'pill'; p.dataset.i = String(i);
-      p.innerHTML = `<span class="ic">${r.icon}</span><b>0</b><span class="d"></span>`;
+      p.innerHTML = `<span class="ic">${icon(r.key, 18)}</span><b>0</b><span class="d"></span>`;
       p.onmouseenter = () => { this.hoverPill = i; this.tipFor(i); };
       p.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
       t.appendChild(p); this.pills.push(p);
@@ -549,20 +553,20 @@ export class UI {
   }
 
   private buildStock() {
-    $('restable').innerHTML = RES.map((r, i) => `<tr title="${r.hint}"><td>${r.icon}</td><td>${r.name}</td><td class="r" id="rs-${i}">0</td><td class="r" id="rr-${i}"></td></tr>`).join('');
+    $('restable').innerHTML = RES.map((r, i) => `<tr title="${r.hint}"><td>${resIcon(i, 18)}</td><td>${r.name}</td><td class="r" id="rs-${i}">0</td><td class="r" id="rr-${i}"></td></tr>`).join('');
   }
 
   update(h: Hud) {
     const day = Math.floor(h.tick / 240) + 1, season = SEASONS[Math.floor((day - 1) / 10) % 4];
     const ph = dayPhase(h.tick);
-    $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season} · ${clockText(ph)} ${nightFactor(ph) > 0.5 ? '☾' : '☀'}`;
+    $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season} · ${clockText(ph)} `; $('sub').insertAdjacentHTML('beforeend', icon(nightFactor(ph) > 0.5 ? 'moon' : 'sun', 14));
     h.stocks.forEach((v, i) => {
       const p = this.pills[i], rate = h.rates[i];
       p.querySelector('b')!.textContent = String(v);
       const d = p.querySelector('.d') as HTMLElement; d.textContent = Math.abs(rate) >= 1 ? (rate > 0 ? '+' : '') + Math.round(rate) : ''; d.classList.toggle('neg', rate < 0);
       p.classList.toggle('low', i === 10 && v < 25);
       p.classList.toggle('full', v >= h.storage);
-      this.pillText[i] = `<b>${RES[i].icon} ${RES[i].name}</b><small>${v} / ${h.storage} stored</small><small>${rate >= 0 ? '+' : ''}${Math.round(rate)} per minute</small>${rate < -0.5 && v > 0 ? `<small class="warn">Runs out in about ${v / -rate < 1 ? 'a minute' : Math.round(v / -rate) + ' min'}</small>` : ''}<small>${RES[i].hint}</small>`;
+      this.pillText[i] = `<b>${resIcon(i)} ${RES[i].name}</b><small>${v} / ${h.storage} stored</small><small>${rate >= 0 ? '+' : ''}${Math.round(rate)} per minute</small>${rate < -0.5 && v > 0 ? `<small class="warn">Runs out in about ${v / -rate < 1 ? 'a minute' : Math.round(v / -rate) + ' min'}</small>` : ''}<small>${RES[i].hint}</small>`;
       if (this.hoverPill === i) this.tipFor(i);
       $(`rs-${i}`).textContent = String(v);
       const rr = $(`rr-${i}`); rr.textContent = Math.abs(rate) >= 0.5 ? `${rate > 0 ? '+' : ''}${Math.round(rate)}/min` : '–'; rr.className = 'r ' + (rate > 0.5 ? 'pos' : rate < -0.5 ? 'neg' : '');
@@ -571,7 +575,7 @@ export class UI {
     ($('v-pop').querySelector('b') as HTMLElement).textContent = `${h.pop}/${h.cap}`;
     ($('v-army').querySelector('b') as HTMLElement).textContent = String(soldiers + h.guards);
     ($('v-sick').querySelector('b') as HTMLElement).textContent = String(h.sick);
-    ($('v-joy').querySelector('.ic') as HTMLElement).textContent = h.joy >= 70 ? '😊' : h.joy >= 40 ? '🙂' : h.joy >= 20 ? '😐' : '😟'; ($('v-joy').querySelector('b') as HTMLElement).textContent = String(h.joy);
+    ($('v-joy').querySelector('.ic') as HTMLElement).innerHTML = icon(h.joy >= 70 ? 'happy' : h.joy >= 40 ? 'content' : h.joy >= 20 ? 'neutral' : 'sad', 16); ($('v-joy').querySelector('b') as HTMLElement).textContent = String(h.joy);
     ($('v-work').querySelector('b') as HTMLElement).textContent = h.jobs ? `${h.eff}%` : '–';
     $('v-sick').style.opacity = h.sick ? '1' : '.5';
     $('s-pop').textContent = String(h.pop); $('s-cap').textContent = String(h.cap); $('s-sick').textContent = String(h.sick);
@@ -588,7 +592,7 @@ export class UI {
     }
     this.updateAffordability(h.stocks);
     // army tab
-    $('army-stats').innerHTML = h.army.map((n, i) => `<div class="stat"><b>${n}</b><span>${UNIT_ICON[i]} ${units[i].name}${h.queued[i] ? ` (+${h.queued[i]})` : ''}${h.away[i] ? ` · ${h.away[i]} away` : ''}</span></div>`).join('');
+    $('army-stats').innerHTML = h.army.map((n, i) => `<div class="stat"><b>${n}</b><span>${unitIcon(i, 16)} ${units[i].name}${h.queued[i] ? ` (+${h.queued[i]})` : ''}${h.away[i] ? ` · ${h.away[i]} away` : ''}</span></div>`).join('');
     $('army-info').innerHTML = `${h.guards} guards defend your towers and hall for free. ` + (h.barracks < 0 ? '<b>Build a Barracks to train soldiers.</b>' : `Your barracks is tier ${h.barracks + 1}.`) + ` Soldiers eat grain.`;
     document.querySelectorAll<HTMLElement>('#unit-cards .card').forEach(c => { const u = units[Number(c.dataset.u)]; c.classList.toggle('locked', h.barracks < u.tier); });
   }
@@ -609,10 +613,10 @@ export class UI {
            <button class="pbtn danger" id="atk-sel" hidden></button>
            <p class="muted" id="atk-hint"></p>
            <h4>Trade</h4>
-           <div class="trade-row"><select id="trd-res" aria-label="Goods">${RES.map((r, i) => `<option value="${i}">${r.icon} ${r.name}</option>`).join('')}</select><label class="tfield" title="Amount"><span>#</span><input type="number" min="1" max="500" value="50" id="trd-amt"></label><label class="tfield" title="Spearmen as escort"><span>🛡</span><input type="number" min="0" value="0" id="trd-esc"></label></div>
-           <div class="btnrow"><button class="pbtn" id="trd-send">🐴 Send caravan</button><button class="pbtn" id="trd-pact">🤝 Trade pact</button><button class="pbtn" id="trd-peace">🕊 Peace</button></div>
+           <div class="trade-row"><select id="trd-res" aria-label="Goods">${RES.map((r, i) => `<option value="${i}">${r.name}</option>`).join('')}</select><label class="tfield" title="Amount"><span>#</span><input type="number" min="1" max="500" value="50" id="trd-amt"></label><label class="tfield" title="Spearmen as escort"><span>${bi('shield', 14)}</span><input type="number" min="0" value="0" id="trd-esc"></label></div>
+           <div class="btnrow"><button class="pbtn" id="trd-send">${bi('caravan')} Send caravan</button><button class="pbtn" id="trd-pact">${bi('pact')} Trade pact</button><button class="pbtn" id="trd-peace">${bi('peace')} Peace</button></div>
            <h4>Diplomacy</h4><p class="muted" id="dip-rel"></p>
-           <div class="btnrow"><button class="pbtn" id="dip-envoy" title="Send an envoy with gifts (20 gold, once every 3 days)">📜 Envoy</button><button class="pbtn" id="dip-ally" title="An alliance needs a trade pact and warm relations">🛡 Alliance</button><button class="pbtn" id="dip-marry" title="Marry into their house: 150 gold, needs good relations">💍 Marriage</button><button class="pbtn danger" id="dip-war" title="Declare war: treaties end and relations collapse">🔥 Declare war</button></div>`
+           <div class="btnrow"><button class="pbtn" id="dip-envoy" title="Send an envoy with gifts (20 gold, once every 3 days)">${bi('envoy')} Envoy</button><button class="pbtn" id="dip-ally" title="An alliance needs a trade pact and warm relations">${bi('alliance')} Alliance</button><button class="pbtn" id="dip-marry" title="Marry into their house: 150 gold, needs good relations">${bi('marriage')} Marriage</button><button class="pbtn danger" id="dip-war" title="Declare war: treaties end and relations collapse">${bi('war')} Declare war</button></div>`
         : '<p class="muted">No other villages to attack yet — invite someone, or wait for neighbours to arrive.</p>';
       const trade = (action: string) => { const key = ($('atk-target') as HTMLSelectElement).value; this.h.trade(key, action, Number(($('trd-res') as HTMLSelectElement).value), Number(($('trd-amt') as HTMLInputElement).value) || 0, Number(($('trd-esc') as HTMLInputElement).value) || 0); };
       for (const [id, a] of [['trd-send', 'caravan'], ['trd-pact', 'pact'], ['trd-peace', 'peace'], ['dip-envoy', 'envoy'], ['dip-ally', 'alliance'], ['dip-marry', 'marriage'], ['dip-war', 'war']] as const) { const b = document.getElementById(id); if (b) b.onclick = () => trade(a); }
@@ -634,7 +638,7 @@ export class UI {
     const go = document.getElementById('atk-sel') as HTMLButtonElement | null, hint = document.getElementById('atk-hint');
     if (!go || !hint) return;
     const n = this.selectedArmies;
-    go.hidden = n === 0; go.textContent = n > 1 ? `⚔ March the ${n} selected armies` : '⚔ March the selected army';
+    go.hidden = n === 0; go.innerHTML = `${bi('attack')} ${n > 1 ? `March the ${n} selected armies` : 'March the selected army'}`;
     hint.textContent = n ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.';
   }
 
@@ -674,6 +678,6 @@ export class UI {
   setResourcesToggle(on: boolean) { $('btn-res').setAttribute('aria-pressed', String(on)); $('btn-res').classList.toggle('on', on); }
   netStatus(s: string) { $('net-status').textContent = s; }
   get labels() { return $('labels'); }
-  costHtml(c: [number, number][], stocks: number[]) { return c.map(([r, n]) => `<span class="${stocks[r] < n ? 'short' : ''}">${RES[r].icon} ${n}</span>`).join(' '); }
+  costHtml(c: [number, number][], stocks: number[]) { return c.map(([r, n]) => `<span class="${stocks[r] < n ? 'short' : ''}">${resIcon(r)} ${n}</span>`).join(' '); }
   fmt = fmtCost;
 }

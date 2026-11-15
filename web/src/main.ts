@@ -8,7 +8,8 @@ import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation } from './wasm/game_core.js';
-import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
+import { icon } from './ui/icons';
+import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
 import { buildShowroom } from './render/showroom';
@@ -195,7 +196,7 @@ function moveToSite(i: number) {
  *  (it is rebuilt from their next history) instead of letting a bad message break the whole game. */
 function quarantine(r: Rival, e: unknown) {
   console.warn('A rival village could not be replayed; ignoring it until it sends a fresh history.', e);
-  r.broken = true; r.sync = 'broken ⚠';
+  r.broken = true; r.sync = 'broken';
   try { r.village.setWorld(new World(seedBig, siteOrigin(r.site).x, siteOrigin(r.site).z)); r.village.syncFull(); } catch { /* keep the old copy */ }
   updatePeers();
 }
@@ -258,7 +259,7 @@ function connect() {
         if (c.op === 'return') {   // check the attacker's claim against the battle as the defender's copy played it
           for (const o of rivals.values()) if (o !== r) o.village.advanceTo(c.tick);   // (your own village is live: it is already as far as it will get)
           const v = ledger.claim(tagOf(r.key), c.units, c.loot); c = { ...c, units: v.units, loot: v.loot };
-          if (v.lied) { r.sync = 'claimed false loot ⚠'; console.warn(`${r.name} reported loot or survivors that the battle did not give; the real result was used.`); }
+          if (v.lied) { r.sync = 'claimed false loot'; console.warn(`${r.name} reported loot or survivors that the battle did not give; the real result was used.`); }
         }
         r.village.advanceTo(c.tick); applyCmd(r.village.world, c);
         if (c.op === 'style') r.village.syncFull();
@@ -277,7 +278,7 @@ function connect() {
       const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || replay?.target === r.village) return;
       if (!Number.isFinite(tick) || tick > r.tick + 2 || tick < 0) return;   // a hash from the future would make us run the replica ahead on a stranger's say-so
       r.village.advanceTo(tick); r.tick = tick;
-      r.sync = r.village.world.tick() === BigInt(tick) && r.village.world.state_hash().toString() === hash ? 'in sync ✓' : 'out of sync ⚠';
+      r.sync = r.village.world.tick() === BigInt(tick) && r.village.world.state_hash().toString() === hash ? 'in sync' : 'out of sync';
     },
     onLeave: peerId => { const r = rivals.get(byPeer.get(peerId) ?? ''); if (r) { r.online = false; r.sync = 'away'; ui.toast(`${r.name} has left the world.`, 'info'); } byPeer.delete(peerId); updatePeers(); },
   });
@@ -639,7 +640,7 @@ function startReplay(key: string) {
   rp.onWorld = w => showWorld(target, w, true);
   const label = own ? 'Your village' : r!.name;
   const sess: ReplaySession = { r: rp, target, key, playing: true, rate: 120, goal: 0, label, bar: null as unknown as ReplayBar };
-  sess.bar = showReplayBar(`▶ ${label}`, rp.end, {
+  sess.bar = showReplayBar(label, rp.end, {
     toggle: () => { if (sess.goal >= rp.end) sess.goal = 0; sess.playing = !sess.playing; },
     seek: t => { sess.goal = t; sess.playing = false; },
     rate: v => { sess.rate = v; },
@@ -892,7 +893,7 @@ function battleBanner() {
     if (mine) role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`;
     else if (tag === myTag()) role = `Your army attacks from the ${dir}. You are the attacker.`;
     else role = `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
-    ui.battle(`⚔ Battle at ${who}<small>${role}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers</small>`,
+    ui.battle(`${icon('attack', 18, { mono: true })} Battle at ${who}<small>${role}</small><small>Defenders ${d} · Attackers ${a} · ${Math.round(w.battle_time())}s · click to look at the attackers</small>`,
       () => rig.focus(tx, tz, 70));
     return;
   }
@@ -1037,7 +1038,7 @@ function drawPenBar() {
     bar.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-shape]'); if (b) setPenShape(b.dataset.shape as Shape); };
     document.body.appendChild(bar);
   }
-  bar.innerHTML = SHAPES.map(sh => `<button data-shape="${sh.id}" title="${sh.label}: ${sh.hint}" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${sh.id === penShape ? '#ffe08a' : '#6d5a38'};background:${sh.id === penShape ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;font-size:20px;line-height:1">${sh.icon}</span><span style="font-size:10px">${sh.label}</span></button>`).join('');
+  bar.innerHTML = SHAPES.map(sh => `<button data-shape="${sh.id}" title="${sh.label}: ${sh.hint}" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${sh.id === penShape ? '#ffe08a' : '#6d5a38'};background:${sh.id === penShape ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon(sh.icon, 24, { mono: true })}</span><span style="font-size:10px">${sh.label}</span></button>`).join('');
 }
 
 /** While the pointer is on the Upgrade button: an outline of the bigger building (green when there is room, red with the neighbours in the way marked red too). */
@@ -1080,10 +1081,10 @@ function updateSelection() {
   const d = defs[kind];
   selRing.visible = true; selRing.set(x, z, footprint(kind, tier) + 1.1);
   const stocks = Array.from(w.stocks());
-  const io = (a: [number, number][]) => a.map(([r, n]) => `${RES[r].icon} ${n} ${RES[r].name}`).join(', ');
+  const io = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)} ${n} ${RES[r].name}`).join(', ');
   const health = hp[selectedIdx * 3] / hp[selectedIdx * 3 + 1], burning = hp[selectedIdx * 3 + 2] > 0;
   let html = `<div><div class="eyebrow">${CATS[d.cat].name} · Tier ${tier + 1} of 4</div><h2>${tierName(kind, tier)}</h2><p class="muted">${d.name}</p></div><p>${d.desc}</p>`;
-  html += `<div><div class="eyebrow">${burning ? '🔥 On fire!' : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
+  html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
   if (health < 0.995 && !burning) {   // damaged: offer repairs
     const rc = w.repair_cost(selectedIdx), rcost: [number, number][] = []; for (let i = 0; i < rc.length; i += 2) rcost.push([rc[i], rc[i + 1]]);
     const rok = rcost.every(([r, n]) => stocks[r] >= n);
@@ -1121,10 +1122,10 @@ function updateSelection() {
   }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.cycle) {
-    html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>👷 ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
+    html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>${icon('worker', 20)} ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
       <div><div class="eyebrow">Production cycle</div><div class="bar"><i style="width:${pct}%"></i></div></div>
       <p class="muted">${d.inputs.length ? `Uses ${io(scaled(d.inputs, tier))}<br>` : ''}Makes ${io(scaled(d.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(d.outputs, tier + 1))}.` : ''}</p>`;
-  } else if (d.housing) html += `<div class="stats"><div class="stat"><b>🏠 ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
+  } else if (d.housing) html += `<div class="stats"><div class="stat"><b>${icon('house', 20)} ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
   if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p>`;
   if (kind === 19) {   // the lord who leads the defence
     const h = w.hero_flat();
@@ -1143,7 +1144,7 @@ function updateSelection() {
     const afford = ocost.every(([r, n]) => stocks[r] >= n);
     html += `<div><h3>Design options</h3><div class="optlist">` + opts.map((op, i) => {
       const on = (have & (1 << i)) !== 0, locked = tier < op.t;
-      return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${on ? '☑' : '☐'} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
+      return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
     }).join('') + `</div></div>`;
   }
   html += `<div class="btnrow">${kind !== 15 ? '<button class="pbtn danger" data-act="demolish">Demolish (50% refund)</button>' : ''}<button class="pbtn" data-act="deselect">Close</button></div>`;
@@ -1458,7 +1459,7 @@ function buildDepositLabels() {
   const raw = deposits.raw;
   for (let i = 0; i < raw.length; i += 5) {
     const el = document.createElement('div'); el.className = 'lbl'; el.hidden = true;
-    el.innerHTML = `${DEPOSIT[raw[i]].icon}<span>${DEPOSIT[raw[i]].name}</span>`; ui.labels.appendChild(el); depLabels.push(el);
+    el.innerHTML = `${icon(DEPOSIT[raw[i]].icon, 18)}<span>${DEPOSIT[raw[i]].name}</span>`; ui.labels.appendChild(el); depLabels.push(el);
     el.style.pointerEvents = 'auto'; el.style.cursor = 'pointer'; el.title = 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
     const idx = i / 5; let armed = 0;
     el.onclick = e => {   // the first click asks, the second (within 4 seconds) clears it
@@ -1515,7 +1516,7 @@ function updateHallLabels(all: Village[]) {
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist > 28;
     el.hidden = !on; if (!on) continue;
     el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
-    const html = `${v.mine ? '🏰' : '⚔️'}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`;
+    const html = `${icon(v.mine ? 'castle' : 'attack', 18)}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`;
     if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
   }
 }
