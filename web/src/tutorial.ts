@@ -34,7 +34,7 @@ export const STEPS: Step[] = [
   { title: 'Defence', text: 'Bandits come sooner or later. Raise a Watchtower and dig a Well (fire spreads fast through thatch), then station archers in the tower.', done: c => c.n(3) >= 1 && c.n(16) >= 1 },
   { title: 'A grander hall', text: 'Click your town hall and upgrade it. A better hall widens your border and unlocks more.', done: c => c.hall >= 1 },
   { title: 'An army', text: 'Build a Barracks and train soldiers on the Army tab. Soldiers defend the village and can march out on other players.', done: c => c.n(19) >= 1 && c.army >= 5, point: { sel: '#cards .card', has: 'Barracks' } },
-  { title: 'Other players, and keeping your village', text: 'The 🌍 button shows who else is in your world: trade, make treaties, or fight. Press {photo} for photo mode. Your village lives in this browser: save a backup under Display settings. Have a good reign!', point: { sel: '#btn-mp' } },
+  { title: 'Other players, and keeping your village', text: 'The 🌍 button shows who else is in your world: trade, make treaties, or fight. Caravans, envoys, offers, wedding parties and heralds walk the road between the cities, and what they carry takes effect when they arrive. Press {photo} for photo mode. Your village lives in this browser: save a backup under Display settings. Have a good reign!', point: { sel: '#btn-mp' } },
 ];
 
 const KEY = 'flanders:tutorial';

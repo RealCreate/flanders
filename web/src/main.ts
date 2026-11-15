@@ -23,6 +23,8 @@ import { Forest } from './render/trees';
 import { buildModel, Effects } from './render/buildings';
 import { Deposits } from './render/deposits';
 import { Crowd } from './render/crowd';
+import { Travellers, type TVillage } from './render/travellers';
+import { JK, arrivedText } from './render/journey';
 import { Effects2 } from './render/fx';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
@@ -460,33 +462,60 @@ function onTrade(r: Rival, c: Cmd) {
     else { commit({ op: 'treaty', idx: their, kind: c.kind, y: 0, to: r.key }); ui.toast(`${r.name} offers ${what}, but we do not trust them enough. Refused.`, 'info'); }
   } else if (c.op === 'treaty' && c.y === 0) {   // they turned our offer down: it is void on our side too
     w.treaty_end(their, c.kind ?? 0); commit({ op: 'treaty', idx: their, kind: c.kind, y: 0 }); ui.toast(`${r.name} refused your offer.`, 'info'); afterLocalChange();
+  } else if (c.op === 'arrive') {   // their errand reached us: an offer is answered, the rest is only news
+    const kind = c.kind ?? 0;
+    if (kind <= 2) answerOffer(r, kind, c.x ?? 10); else ui.toast(arrivedText(kind, r.name, 'you', false), kind === JK.WAR ? 'bad' : 'good');
   } else if (c.op === 'war') {
     ui.toast(`${r.name} has declared war on you!`, 'bad');
   }
 }
 
-/** What the trade form in the peers pane asks for. */
+/** How far the way to a village is: the length of the invisible path chained to its city (or the straight line while there is none). */
+function roadTo(r: Rival): number {
+  const p = lv.world.link_points(r.village.ox, r.village.oz); let d = 0;
+  for (let k = 2; k < p.length; k += 2) d += Math.hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]);
+  return Math.min(2900, d > 1 ? d : Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz));
+}
+/** A neighbour answers an offer that has reached it: it agrees when it trusts us enough (and tells us with its own signed copy), otherwise the offer is void. */
+function answerOffer(r: Rival, kind: number, days: number) {
+  const w = lv.world, their = tagOf(r.key), what = kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact';
+  if (w.treaty_acceptable(their, kind) && w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days }); ui.toast(`${r.name} offers ${what} for ${days} days. Agreed.`, 'good'); }
+  else { commit({ op: 'treaty', idx: their, kind, y: 0, to: r.key }); ui.toast(`${r.name} offers ${what}, but we do not trust them enough. Refused.`, 'info'); }
+}
+
+/** What the trade form in the peers pane asks for. Nothing happens at once: a caravan, an offer, an envoy, a wedding party or a herald sets out along the path to the other city and does its work on arrival. */
 function doTrade(key: string, action: string, res: number, amount: number, escort: number) {
-  const r = rivals.get(key); if (!r || !r.online) { ui.toast('That village is not online right now.', 'bad'); return; }
-  const w = lv.world, their = tagOf(key);
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (action === 'caravan' && !r.online) { ui.toast('That village is not online right now: caravans need somebody to take the goods.', 'bad'); return; }
+  const w = lv.world, their = tagOf(key), dist = roadTo(r);
   if (action === 'caravan') {
-    const dist = Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz), code = w.caravan_send(res, amount, their, dist, escort);
+    const code = w.caravan_send(res, amount, their, dist, escort);
     if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : 'Cannot send that.', 'bad'); return; }
-    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud();
-  } else {
-    if (action === 'envoy') { const code = w.envoy(their); if (code === 0) { commit({ op: 'envoy', idx: their }); ui.toast(`An envoy with gifts rides to ${r.name}.`, 'good'); updateHud(); } else ui.toast(code === -20 ? 'An envoy went recently: wait a few days.' : 'An envoy costs 20 gold.', 'bad'); return; }
-    if (action === 'marriage') { const code = w.marriage(their); if (code === 0) { commit({ op: 'marriage', idx: their }); ui.toast(`A royal marriage binds your house to ${r.name}'s.`, 'good'); updateHud(); } else ui.toast(code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -1 ? 'You are already married into that house.' : 'A wedding costs 150 gold.', 'bad'); return; }
-    if (action === 'war') { w.declare_war(their); commit({ op: 'war', idx: their, to: key }); ui.toast(`You declared war on ${r.name}.`, 'bad'); return; }
-    const kind = action === 'alliance' ? 2 : action === 'peace' ? 1 : 0, days = 30;
-    if (!w.treaty_acceptable(their, kind)) { ui.toast(kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.', 'bad'); return; }
-    if (w.treaty_set(their, kind, days)) { commit({ op: 'treaty', idx: their, kind, x: days, to: key }); ui.toast(`You offer ${r.name} ${kind === 2 ? 'an alliance' : kind ? 'peace' : 'a trade pact'} for ${days} days.`, 'info'); }
+    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud(); return;
   }
+  const kind = action === 'alliance' ? JK.ALLIANCE : action === 'peace' ? JK.PEACE : action === 'envoy' ? JK.ENVOY : action === 'marriage' ? JK.MARRIAGE : action === 'war' ? JK.WAR : JK.TRADE, days = kind <= 2 ? 30 : 0;
+  const code = w.journey_start(kind, their, days, dist);
+  if (code !== 0) {
+    ui.toast(code === -7 ? 'One of those is already on its way.' : code === -20 ? 'An envoy went recently: wait a few days.' : code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -6 ? (kind === JK.ENVOY ? 'An envoy costs 20 gold.' : 'A wedding costs 150 gold.') : code === -1 && kind === JK.MARRIAGE ? 'You are already married into that house.' : code === -22 ? (kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.') : 'Cannot send that now.', 'bad'); return;
+  }
+  commit({ op: 'journey', kind, idx: their, x: days, y: dist }); sound.click(); updateHud();
+  ui.toast(kind === JK.ENVOY ? `An envoy with gifts sets out for ${r.name}.` : kind === JK.MARRIAGE ? `A wedding party sets out for ${r.name}.` : kind === JK.WAR ? `A herald with your declaration of war rides for ${r.name}.` : `Envoys set out for ${r.name} to offer ${kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact'} for ${days} days.`, kind === JK.WAR ? 'bad' : 'info');
 }
 
 /** Caravans that arrived: tell the village they were sent to, so it can take them and pay. */
 function pollTrade() {
   const d = lv.world.take_delivered();
   for (let i = 0; i + 2 < d.length; i += 3) { for (const [key] of rivals) if (tagOf(key) === d[i + 2]) { commit({ op: 'goods', kind: d[i], x: d[i + 1], to: key }); break; } }
+  // errands of ours that reached their village: the core did the deed on this very tick; now the village hears of it and answers
+  const a = lv.world.take_arrivals(), now = Number(lv.world.tick());
+  for (let i = 0; i + 3 < a.length; i += 4) {
+    const kind = a[i], tag = a[i + 1], days = a[i + 2];
+    if (now - a[i + 3] > 40) continue;   // (an old arrival from a history that was just replayed)
+    const r = [...rivals.values()].find(x => tagOf(x.key) === tag); if (!r) continue;
+    ui.toast(arrivedText(kind, 'you', r.name, true), kind === JK.WAR ? 'bad' : 'good'); updateHud();
+    if (r.online) commit({ op: 'arrive', kind, x: days, to: r.key });
+    else if (kind <= 2 && !r.village.world.treaty_acceptable(myTag(), kind)) { lv.world.treaty_end(tag, kind); commit({ op: 'treaty', idx: tag, kind, y: 0 }); ui.toast(`${r.name} turned the offer down.`, 'info'); }
+  }
 }
 
 /** An army that has stopped beside an abbey, a ruin or a bandit camp goes in. */
@@ -796,6 +825,7 @@ async function startGame(name: string, username: string) {
   ui.progress(50, 'Waking the animals…'); await nextFrame();
   wildlife = new Wildlife(seedBig, terrain, forest.all, Array.from(village_sites(seedBig))); scene.add(wildlife.group);
   crowd = new Crowd(); scene.add(crowd.group);
+  travellers = new Travellers(terrain); scene.add(travellers.group);
   fx = new Effects2(terrain); scene.add(fx.group);
   effects = new Effects(); scene.add(effects.smoke.points);
   selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
@@ -1619,8 +1649,32 @@ function updateHallLabels(all: Village[]) {
   }
 }
 
+/** Every village in view as the procession renderer wants it. */
+function travellerVillages(): TVillage[] {
+  const mk = (v: Village, key: string, tag: number, name: string, mine: boolean): TVillage => ({ key, tag, name, mine, x: v.ox, z: v.oz, radius: v.radius, color: v.army.friend, world: v.world });
+  return [mk(lv, 'me', myTag(), myName, true), ...[...rivals.values()].map(r => mk(r.village, r.key, tagOf(r.key), r.name, false))];
+}
+
+/** A small caption floating over each procession on the road: what it is and between whom. */
+const journeyLabels = new Map<string, HTMLElement>();
+function updateJourneyLabels() {
+  const live = new Set<string>();
+  for (const l of travellers.labels()) {
+    let el = journeyLabels.get(l.id);
+    if (!el) { el = document.createElement('div'); el.className = 'lbl jr'; ui.labels.appendChild(el); journeyLabels.set(l.id, el); }
+    live.add(l.id);
+    vtmp.set(l.x, l.y, l.z).project(rig.cam);
+    const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist < 220;
+    el.hidden = !on; if (!on) continue;
+    el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
+    if (el.textContent !== l.text) { el.textContent = l.text; el.dataset.kind = String(l.kind); }
+  }
+  for (const [id, el] of [...journeyLabels]) if (!live.has(id)) { el.remove(); journeyLabels.delete(id); }
+}
+
 // ---------- main loop ----------
 let worldShips: WorldShips | null = null;
+let travellers!: Travellers;
 let tideLevel = 0;   // the water rises and falls a little, slowly
 let noteT = 0, sCount = 0, sT = 0, fireBuf = new Float32Array(256);
 let lastPhase = -1;   // the day phase the light was last set for
@@ -1705,7 +1759,7 @@ function frame(now: number) {
   const view = Math.max(90, rig.dist * 1.7 + 50);        // simulate and draw crowds and animals only around the camera
   wildlife.update(dt, scares, rig.target.x, rig.target.z, view);
   perf.stop('animals');
-  perf.start('crowd upload'); crowd.begin(); all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view)); worldShips?.draw(crowd, rig.target.x, rig.target.z, view); crowd.end(); perf.stop('crowd upload');
+  perf.start('crowd upload'); crowd.begin(); all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view)); worldShips?.draw(crowd, rig.target.x, rig.target.z, view); travellers.update(dt, now / 1000, travellerVillages()); travellers.draw(crowd, rig.target.x, rig.target.z, view); crowd.end(); perf.stop('crowd upload');
   perf.start('fire + particles');
   let nf = 0; for (const v of all) nf += v.fireData.length;
   if (fireBuf.length < nf) fireBuf = new Float32Array(Math.max(nf, fireBuf.length * 2));   // one buffer reused every frame
@@ -1716,7 +1770,7 @@ function frame(now: number) {
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   perf.start('labels + minimap');
-  updateHallLabels(all);
+  updateHallLabels(all); updateJourneyLabels();
   updateLabels();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {
