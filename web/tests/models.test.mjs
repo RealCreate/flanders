@@ -42,3 +42,18 @@ test('the mine\'s spoil shelf does not share a top face with the stone footing o
     }
   }
 });
+
+// The watermill: its stone footing stops at the bank (the core's WHEEL_FOOT, 3.2 from the house's middle) and the wheel hangs out over the water on an axle WHEEL_REACH (5.2) out, clear of the footing.
+test('the watermill footing ends before the wheel starts, at every tier', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) {
+    const g = B.buildModel(29, tier, 0x2f5fa8, 1, 0, undefined, false); g.updateMatrixWorld(true);
+    const foot = g.getObjectByName('footing'), wheel = g.getObjectByName('wheel');
+    assert.ok(foot && wheel, `tier ${tier}: footing and wheel are named`);
+    const fb = new THREE.Box3().setFromObject(foot), wb = new THREE.Box3().setFromObject(wheel);
+    assert.ok(Math.abs(fb.max.x - 3.2) < 1e-3, `tier ${tier}: the footing ends at the bank, ${fb.max.x}`);
+    assert.ok(wb.min.x - fb.max.x >= 1.0, `tier ${tier}: the wheel (from ${wb.min.x}) hangs clear of the footing (to ${fb.max.x})`);
+    assert.ok(Math.abs((wb.min.x + wb.max.x) / 2 - 5.2) < 0.05, `tier ${tier}: the axle is 5.2 out, ${(wb.min.x + wb.max.x) / 2}`);
+    assert.ok(fb.max.y < 0.5 && wb.min.y < 0, `tier ${tier}: the wheel dips below the footing's level`);
+  }
+});

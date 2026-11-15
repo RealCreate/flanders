@@ -10,8 +10,8 @@ export interface WildLike { nearest(x: number, z: number, r: number): Huntable |
 export interface Hooks { wild: WildLike | null; arrow(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void; splash(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void }
 
 /** Workplaces whose workers haul goods to the storehouse, and the colour of what they carry. */
-const HAULS: Record<number, boolean> = { 1: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: true, 14: true, 29: true, 30: true };
-const LOAD: Record<number, number> = { 1: 0xd9b95a, 4: 0x7a5230, 5: 0xc9a56a, 6: 0x9a9a9a, 7: 0xb5693a, 8: 0xa4553b, 9: 0x6a5a50, 10: 0xb0902a, 11: 0x2a2a2a, 12: 0x8a8a90, 13: 0x777777, 14: 0xe0b030, 29: 0xc9a56a, 30: 0x6a9a3a };
+const HAULS: Record<number, boolean> = { 1: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: true, 14: true, 29: true, 30: true, 41: true, 42: true };
+const LOAD: Record<number, number> = { 1: 0xd9b95a, 4: 0x7a5230, 5: 0xc9a56a, 6: 0x9a9a9a, 7: 0xb5693a, 8: 0xa4553b, 9: 0x6a5a50, 10: 0xb0902a, 11: 0x2a2a2a, 12: 0x8a8a90, 13: 0x777777, 14: 0xe0b030, 29: 0xc9a56a, 30: 0x6a9a3a, 41: 0xaab8be, 42: 0x9a6a2e };
 
 const SKIN = [0xe8c4a0, 0xd9a877, 0xc68e63, 0xf0d2b4, 0xb98055];
 const PLAIN = [0x8c3b2f, 0x3b5f8c, 0x5f7a3b, 0x8c7a3b, 0x6b4a7a, 0x7a5a3b, 0x4a6b6b, 0xb08a4a, 0x7a3b4a];

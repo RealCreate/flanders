@@ -176,7 +176,8 @@ export class UI {
       ${icon('ironore', 16)} Iron ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Smelter <span class="arrow">→</span> ${icon('iron', 16)} Iron<br>
       ${icon('iron', 16)} Iron + ${icon('charcoal', 16)} <span class="arrow">→</span> Blacksmith <span class="arrow">→</span> ${icon('tools', 16)} Tools<br>
       ${icon('goldore', 16)} Gold ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Mint <span class="arrow">→</span> ${icon('gold', 16)} Gold<br>
-      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison</div>
+      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison<br>
+      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish (eaten before grain)</div>
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
   <section class="pane" id="pane-sel"></section>
@@ -687,6 +688,20 @@ export class UI {
   setResourcesToggle(on: boolean) { $('btn-res').setAttribute('aria-pressed', String(on)); $('btn-res').classList.toggle('on', on); }
   netStatus(s: string) { $('net-status').textContent = s; }
   get labels() { return $('labels'); }
+  /** The market's stall list: `goods` is `World.market_goods()` (resource, left, cap, refill a day, unit price x100, days until full each); `tick` the clock and `day` the ticks in a day. */
+  marketHtml(goods: ArrayLike<number>, stocks: number[], tick: number, day: number, room: number) {
+    const toDawn = day - (tick % day), rows: string[] = [];
+    for (let i = 0; i + 5 < goods.length; i += 6) {
+      const [r, left, cap, refill, p100, days] = [goods[i], goods[i + 1], goods[i + 2], goods[i + 3], goods[i + 4], goods[i + 5]];
+      const unit = (n: number) => Math.ceil(p100 * n / 100), canNow = (n: number) => left >= n && stocks[8] >= unit(n) && stocks[r] + n <= room;
+      const most = Math.max(0, Math.min(left, room - stocks[r], Math.floor(stocks[8] * 100 / Math.max(1, p100))));
+      const when = left >= cap ? 'full' : `full in ${days} day${days === 1 ? '' : 's'}`;
+      rows.push(`<div class="mkt-row"><span class="mkt-good">${resIcon(r)} <b>${RES[r].name}</b></span><span class="mkt-left" title="Refills ${refill} a day">${left} / ${cap} left<small> · ${when}</small></span>
+        <span class="mkt-price">${icon('gold', 14)} ${(p100 / 100).toFixed(p100 % 100 ? 2 : 0)} each</span>
+        <span class="btnrow"><button class="pbtn" data-act="buy:${r}:10" ${canNow(10) ? '' : 'disabled'}>+10</button><button class="pbtn" data-act="buy:${r}:50" ${canNow(50) ? '' : 'disabled'}>+50</button><button class="pbtn" data-act="buy:${r}:${most}" ${most < 1 ? 'disabled' : ''} title="As many as the stall has, you can pay for and the stores hold">All${most > 0 ? ` (${most}, ${unit(most)})` : ''}</button></span></div>`);
+    }
+    return `<div><h3>Market</h3><div class="mkt">${rows.join('')}</div><p class="muted">Buy with gold at a markup. The stalls restock at the turn of every day (next in ${Math.ceil(toDawn / day * 24)} hours); a grander market, or a second one, stocks more.</p></div>`;
+  }
   costHtml(c: [number, number][], stocks: number[]) { return c.map(([r, n]) => `<span class="${stocks[r] < n ? 'short' : ''}">${resIcon(r)} ${n}</span>`).join(' '); }
   fmt = fmtCost;
 }

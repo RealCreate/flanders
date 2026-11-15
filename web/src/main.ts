@@ -47,7 +47,7 @@ import { applyCmd, stepTo, validSavedLog } from './commands';
 import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
-import { dayPhase } from './daycycle';
+import { dayPhase, DAY_TICKS } from './daycycle';
 import { cleanWorld, inviteLink, withWorld } from './worldname';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
@@ -1319,6 +1319,7 @@ function updateSelection() {
       <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="gar+" ${cur >= cap || avail < 1 ? 'disabled' : ''}>+ Archer</button><button class="pbtn" data-act="gar-" ${cur < 1 ? 'disabled' : ''}>− Archer</button><button class="pbtn" data-act="garfill" ${cur >= cap || avail < 1 ? 'disabled' : ''}>Fill</button><button class="pbtn" data-act="garempty" ${cur < 1 ? 'disabled' : ''}>Empty</button></div>
       <p class="muted">${cur === 0 ? 'The tower is empty — it only defends once you station archers in it. Train archers at a barracks.' : 'Archers fire from the walkway at the top. They come from the barracks and go back when you empty the tower.'}</p></div>`;
   }
+  if (kind === 28) { const mg = w.market_goods(); if (mg.length) html += ui.marketHtml(mg, stocks, Number(w.tick()), DAY_TICKS, w.storage_limit()); }
   if (kind === 38) { const sp = w.bridge_spans_flat(); for (let i = 0; i + 9 < sp.length; i += 10) if (sp[i] === selectedIdx) html += `<p class="muted">${sp[i + 4].toFixed(0)} units long. A footbridge spans up to 14 units of water, a timber bridge 22, a stone bridge 34 and a great bridge 50. Supports stand in the middle wherever the water is wide.</p>`; }
   if (kind === 23) {
     const up = f[o + 6] === 5;
@@ -1396,6 +1397,12 @@ function onAct(a: string) {
   if (a === 'repair') {
     const code = lv.world.repair(selectedIdx);
     if (code === 0) { commit({ op: 'repair', idx: selectedIdx }); sound.upgrade(); ui.toast('Repaired.', 'good'); afterLocalChange(); } else ui.toast(PLACE_ERRORS[code] ?? 'Cannot repair that.', 'bad');
+    return;
+  }
+  if (a.startsWith('buy:')) {
+    const [, rs, ns] = a.split(':'), res = Number(rs), n = Number(ns), code = lv.world.buy(res, n);
+    if (code === 0) { commit({ op: 'buy', kind: res, idx: n }); sound.click(); ui.toast(`Bought ${n} ${RES[res].name.toLowerCase()}.`, 'good'); afterLocalChange(); updateHud(); }
+    else ui.toast(code === -2 ? 'The stalls have not that much left.' : code === -6 ? 'You cannot pay for that.' : code === -7 ? 'The stores have no room for that.' : 'That is not for sale.', 'bad');
     return;
   }
   if (a.startsWith('field:')) {
@@ -1486,7 +1493,7 @@ function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.client
 /** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
  *  the pointer is on (anywhere round it), turned so its door faces away from the deposit. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
 function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
-  if (kind === 29) { const s = lv.world.waterwheel_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a waterwheel stands on the bank with its wheel out over the water (the core checks it again)
+  if (kind === 29 || kind === 41) { const s = kind === 29 ? lv.world.waterwheel_snap(dx, dy) : lv.world.fishing_hut_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a waterwheel stands on the bank with its wheel out over the water (the core checks it again)
   if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
   const d = defs[kind]; if (d.req !== 1) return null;
   const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
@@ -1525,14 +1532,14 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
   let code = w.can_place(selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
-  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (selectedKind === 29) code = -16; }   // a mine or quarry snaps onto its deposit; a waterwheel with no bank to snap to cannot be built
+  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (selectedKind === 29 || selectedKind === 41) code = -16; }   // a mine or quarry snaps onto its deposit; a waterwheel with no bank to snap to cannot be built
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
     if (t) { gx = Math.round(t.x - lv.ox); gy = Math.round(t.z - lv.oz); grot = t.rot; const st = Array.from(w.stocks()); code = defs[22].cost.every(([r, n]) => st[r] >= n) ? 0 : -6; } else code = -3;
   }
   const x = lv.ox + gx, z = lv.oz + gy, d = defs[selectedKind];
   // the core levels the ground to the average of five samples: show the same levelling under the ghost so it never clips the terrain
-  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29) h = Math.min(h, w.wheel_pad_cap(x, z, grot & 7));   // (a waterwheel house stands low on the bank, WHEEL_PAD_MAX above the water under its wheel: a moat's own level, as the core)
+  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29 || selectedKind === 41) h = Math.min(h, w.wheel_pad_cap(x, z, grot & 7));   // (a waterwheel house stands low on the bank, WHEEL_PAD_MAX above the water under its wheel: a moat's own level, as the core)
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = terrain.heightAt(x, z);
