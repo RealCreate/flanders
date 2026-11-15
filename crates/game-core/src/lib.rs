@@ -4,6 +4,7 @@ use wasm_bindgen::prelude::*;
 mod battle;
 mod catalog;
 mod lend;
+mod ledger;
 mod market;
 mod march;
 mod military;
@@ -252,6 +253,7 @@ pub struct World {
     events: Vec<i32>,
     sites: Vec<(f32, f32)>,
     flow: [i32; N_RES],
+    ledger: ledger::Ledger,       // where each resource came from and went to over the last day (derived display data: never read by the rules, never hashed)
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
     road_links: Vec<(u32, u32)>,  // (child, parent) building indices for each segment
@@ -357,7 +359,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -1149,6 +1151,7 @@ impl World {
     pub fn step(&mut self) {
         self.tick += 1;
         let before = self.stock;
+        self.ledger.begin(self.tick, &self.stock);
         let cap = self.storage_cap();
 
         self.staffing();
@@ -1193,8 +1196,8 @@ impl World {
                 }
                 if d.inputs.iter().any(|&(r, n)| self.stock[r as usize] < scale(n)) { status = 1; p = need; break; }
                 if d.outputs.iter().any(|&(r, n)| self.stock[r as usize] + yield_of(r, n) > cap) { status = 3; p = need; break; }
-                for &(r, n) in d.inputs { self.stock[r as usize] -= scale(n); }
-                for &(r, n) in d.outputs { self.stock[r as usize] += yield_of(r, n); }
+                for &(r, n) in d.inputs { self.stock[r as usize] -= scale(n); self.ledger.note(kind as usize, r as usize, -scale(n)); }
+                for &(r, n) in d.outputs { self.stock[r as usize] += yield_of(r, n); self.ledger.note(kind as usize, r as usize, yield_of(r, n)); }
                 if let Some(di) = dep_idx {
                     let out: i32 = d.outputs.iter().map(|&(_, n)| scale(n)).sum();   // ore taken from the ground does not depend on the season
                     self.deposits[di].rem = (self.deposits[di].rem - out).max(0);
@@ -1211,6 +1214,7 @@ impl World {
         // food, growth, starvation
         let soldiers: u32 = self.army.iter().sum::<u32>() + self.away.iter().sum::<u32>() + self.dets.iter().map(|d| d.units.iter().sum::<u32>()).sum::<u32>();
         let eat = ((self.population + soldiers) as i32 + 5) / 10;
+        let (gr0, sf0) = (self.stock[GR as usize], self.stock[SF as usize]);
         if self.food() >= eat {
             let from_fish = eat.min(self.stock[SF as usize] * SMOKED_MEAL_PER_FISH);   // smoked fish is eaten first, grain makes up the rest
             self.stock[SF as usize] -= (from_fish + SMOKED_MEAL_PER_FISH - 1) / SMOKED_MEAL_PER_FISH; self.stock[GR as usize] -= eat - from_fish;
@@ -1224,12 +1228,19 @@ impl World {
                 self.push_event(EV_STARVE, 1, 0);
             }
         }
+        {   // the ledger: what was eaten (grain and smoked fish), shared between villagers and soldiers by head
+            let share = if soldiers > 0 { eat as i64 * soldiers as i64 / (self.population as i64 + soldiers as i64).max(1) } else { 0 };
+            let (c1, c2) = (self.ledger.extra(ledger::EX_SOLDIERS), self.ledger.extra(ledger::EX_VILLAGERS));
+            for (r, used) in [(GR, gr0 - self.stock[GR as usize]), (SF, sf0 - self.stock[SF as usize])] {
+                let s = (used as i64 * share / eat.max(1) as i64) as i32; self.ledger.note(c1, r as usize, -s); self.ledger.note(c2, r as usize, -(used - s));
+            }
+        }
         // overcrowding pressure if capacity shrank (demolished houses)
         let cap_pop = self.capacity();
         if self.population > cap_pop { self.leave(1); }
 
         // tax
-        if self.tick % 10 == 0 { self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], ((self.population as i32 / 10).max(1) * (50 + self.happiness() as i32) / 100).max(1), cap); }
+        if self.tick % 10 == 0 { let n = ((self.population as i32 / 10).max(1) * (50 + self.happiness() as i32) / 100).max(1); self.gain(ledger::EX_TAX, GD, n, cap); }
 
         // seasons, warmth and the generations
         self.household_step();
@@ -1238,7 +1249,7 @@ impl World {
         if self.tick % BACKUP_EVERY == 0 {
             if let Some(th) = self.buildings.iter().find(|b| b.kind == TOWN_HALL) {
                 let n = BACKUP_AMOUNT + BACKUP_PER_TIER * th.tier as i32;
-                for r in [W, GR] { if self.stock[r as usize] < BACKUP_BELOW { self.stock[r as usize] = Self::add_capped(self.stock[r as usize], n, cap); } }
+                for r in [W, GR] { if self.stock[r as usize] < BACKUP_BELOW { self.gain(ledger::EX_BACKUP, r, n, cap); } }
             }
         }
 
@@ -1248,7 +1259,7 @@ impl World {
         // random events
         if self.rng.range(200) == 0 {
             let n = 30 + self.rng.range(40) as i32;
-            self.stock[GR as usize] = Self::add_capped(self.stock[GR as usize], n, cap);
+            self.gain(ledger::EX_HARVEST, GR, n, cap);
             self.push_event(EV_HARVEST, n, 0);
         }
         // bandits: a real fight on the village grounds
@@ -1260,7 +1271,7 @@ impl World {
         }
         if self.rng.range(320) == 0 {
             let g = 20 + self.rng.range(40) as i32;
-            self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], g, cap);
+            self.gain(ledger::EX_MERCHANTS, GD, g, cap);
             self.push_event(EV_CARAVAN, g, 0);
         }
         // soldiers train, fires burn, battles run (4 sub-steps of 0.25s per tick)
@@ -1274,6 +1285,7 @@ impl World {
         self.caravan_step();
         self.journey_step();
         for _ in 0..4 { self.fire_substep(); self.battle_substep(); }
+        self.ledger.end(&self.stock);
         for i in 0..N_RES { self.flow[i] = self.stock[i] - before[i]; }
         self.staffing();
     }
@@ -1427,11 +1439,12 @@ impl World {
         if self.season() == 3 {
             if self.tick % 10 == 0 {
                 let need = (((self.population + 9) / 10) as i32 / if self.tick < self.share_until { 2 } else { 1 } - self.perks().woodsheds / 6).max(0);
+                let used = need.min(self.stock[W as usize]); let c = self.ledger.extra(ledger::EX_WINTER); self.ledger.note(c, W as usize, -used);
                 if self.stock[W as usize] >= need { self.stock[W as usize] -= need; self.warm = true; } else { self.stock[W as usize] = 0; self.warm = false; }
             }
         } else { self.warm = true; }
         if self.tick % DAY != 0 { return; }
-        { let doves = self.perks().doves; if doves > 0 { let cap = self.storage_cap(); self.stock[GR as usize] = Self::add_capped(self.stock[GR as usize], doves, cap); } }
+        { let doves = self.perks().doves; if doves > 0 { let cap = self.storage_cap(); self.gain(ledger::EX_DOVES, GR, doves, cap); } }
         let now = self.tick; self.treaties.retain(|t| t.until > now);
         self.market_refill();
         self.death_care_step();
@@ -1439,7 +1452,7 @@ impl World {
         let churches: Vec<u32> = self.buildings.iter().filter(|b| b.kind == CHAPEL).map(|b| b.tier as u32 + 1).collect();
         if !churches.is_empty() && (now / DAY) % 7 == 6 {
             let tithe: u32 = churches.iter().map(|&t| (self.population / 8).max(1) * t).sum::<u32>().min(60);
-            let cap = self.storage_cap(); self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], tithe as i32, cap);
+            let cap = self.storage_cap(); self.gain(ledger::EX_TITHE, GD, tithe as i32, cap);
             self.devotion = (self.devotion + 12 + 4 * churches.iter().sum::<u32>() as i32).min(100); self.push_event(EV_SERVICE, tithe as i32, 0);
         } else if self.devotion > 0 && (now / DAY) % 2 == 0 { self.devotion -= 1; }
         // feelings cool towards indifference (allies and married partners keep them)
@@ -1490,7 +1503,7 @@ impl World {
             }).count() as u32;
             if near == 0 { continue; }   // a toll post away from every road catches nobody
             let coins = ((1 + near).min(6) * mult) as i32;
-            self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], coins, cap);
+            self.gain(ledger::EX_TOLL, GD, coins, cap);
         }
     }
 
@@ -1537,14 +1550,14 @@ impl World {
             // buy grain if hungry
             if self.food() < 40 {
                 let n = 20 * mult; let cost = n * 3 / 2;
-                if self.stock[GD as usize] >= cost && self.stock[GR as usize] + n <= cap { self.stock[GD as usize] -= cost; self.stock[GR as usize] += n; self.push_event(EV_TRADE, -cost, GR as i32); continue; }
+                if self.stock[GD as usize] >= cost && self.stock[GR as usize] + n <= cap { self.stock[GD as usize] -= cost; self.stock[GR as usize] += n; { let c = self.ledger.extra(ledger::EX_PORT); self.ledger.note(c, GD as usize, -cost); self.ledger.note(c, GR as usize, n); } self.push_event(EV_TRADE, -cost, GR as i32); continue; }
             }
             // otherwise sell what there is most of
             let mut best: Option<(usize, i32)> = None;
             for r in 0..N_RES { if r == GD as usize { continue; } let excess = self.stock[r] - cap / 2; if excess > 0 && best.map_or(true, |(_, e)| excess > e) { best = Some((r, excess)); } }
             if let Some((r, excess)) = best {
                 let units = excess.min(30 * mult); let gold = (units * self.price(r) * 8 / 10).max(1);
-                self.stock[r] -= units; self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], gold, cap);
+                self.stock[r] -= units; { let c = self.ledger.extra(ledger::EX_PORT); self.ledger.note(c, r, -units); } self.gain(ledger::EX_PORT, GD, gold, cap);
                 self.push_event(EV_TRADE, gold, r as i32);
             }
         }
@@ -1562,6 +1575,13 @@ impl World {
     pub fn prices(&self) -> Vec<i32> { (0..N_RES).map(|r| self.price_x100(r)).collect() }
 
     /// Add to a stock without ever cutting down what is already above the cap (a demolished storehouse, say).
+    /// Add to a store (up to the cap) and tell the ledger what really came in and from where.
+    fn gain(&mut self, extra: usize, r: u8, n: i32, cap: i32) {
+        let before = self.stock[r as usize]; self.stock[r as usize] = Self::add_capped(before, n, cap);
+        let c = self.ledger.extra(extra); self.ledger.note(c, r as usize, self.stock[r as usize] - before);
+    }
+    /// Where the resources came from and went to over the last day, flattened (see `ledger::Ledger::flat`). Derived display data: not part of the state.
+    pub fn ledger_flat(&self) -> Vec<i32> { self.ledger.flat(self.tick) }
     fn add_capped(cur: i32, add: i32, cap: i32) -> i32 { if cur >= cap { cur } else { cur.saturating_add(add).min(cap) } }
 
     fn storage_cap(&self) -> i32 {
@@ -2125,6 +2145,10 @@ impl World {
 
 /// The names of the sections of `World::state_hash_parts`, comma separated and in the same order.
 pub const HASH_PART_NAMES: &str = "core,stock,buildings,deposits,links,army,soldiers,diplomacy,land,battle";
+/// The names of the ledger's categories that are not building kinds, comma separated, in order (their ids follow the building kinds).
+#[wasm_bindgen]
+pub fn ledger_extra_names() -> String { ledger::EXTRAS.join(",") }
+
 #[wasm_bindgen]
 pub fn state_hash_part_names() -> String { HASH_PART_NAMES.to_string() }
 
@@ -2155,6 +2179,7 @@ fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
 #[cfg(test)]
 mod lend_tests;
 #[cfg(test)]
+mod ledger_tests;
 mod market_tests;
 
 #[cfg(test)]

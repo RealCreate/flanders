@@ -371,6 +371,16 @@ svg.gi { display: inline-block; vertical-align: -0.28em; flex: none; overflow: v
 .cost span svg.gi, .io svg.gi, .stat svg.gi { margin-right: 1px; }
 td svg.gi { vertical-align: middle; }
 
+/* the breakdown of one resource (click a resource in the bar) */
+.pill { cursor: pointer; }
+.flowsheet h2 { display: flex; align-items: center; gap: 8px; margin: 0; }
+.flowsheet h3 { margin: 6px 0 2px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); font-weight: 400; }
+table.flowtab { width: 100%; border-collapse: collapse; }
+table.flowtab td { padding: 3px 4px; border-bottom: 1px solid var(--paper-edge); }
+table.flowtab td:first-child { width: 24px; }
+table.flowtab td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pill .d { min-width: 5.6ch; }
+
 /* the market's stall list */
 .mkt { display: flex; flex-direction: column; gap: 8px; }
 .mkt-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }

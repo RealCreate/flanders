@@ -1,8 +1,9 @@
 import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
-import { CATS, RES, defs, units, fmtCost, resIcon, type BuildingDef } from '../data';
-import { icon, kindIcon, unitIcon } from './icons';
+import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, type BuildingDef } from '../data';
+import { breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
+import { icon, kindIcon, unitIcon, type IconName } from './icons';
 
 /** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
 const bi = (name: string, size = 16) => icon(name, size, { mono: true });
@@ -51,7 +52,7 @@ export interface Handlers {
 }
 
 export interface Hud {
-  tick: number; stocks: number[]; rates: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
+  tick: number; stocks: number[]; rates: number[]; flow?: FlowData; kinds?: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
   radius: number; buildings: number; storage: number;
   vitals?: number[]; beds?: number; devotion?: number;
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
@@ -246,6 +247,10 @@ export class UI {
     <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn danger" data-ch="4,90,200">Small raid</button><button class="pbtn danger" data-ch="4,200,700">Big raid</button><button class="pbtn danger" data-ch="5,-1,0">Burn selected building</button></div>
     <div class="btnrow"><button class="pbtn primary" data-close="cheats">Close</button></div>
   </div>
+</div>
+<div class="overlay clear" id="flow" hidden>
+  <div class="sheet flowsheet"><h2 id="flow-title"></h2><div id="flow-body"></div>
+    <div class="btnrow"><button class="pbtn primary" data-close="flow">Close</button></div></div>
 </div>
 <div class="overlay clear" id="mp" hidden>
   <div class="sheet">
@@ -539,9 +544,27 @@ export class UI {
       const p = document.createElement('span'); p.className = 'pill'; p.dataset.i = String(i);
       p.innerHTML = `<span class="ic">${icon(r.key, 18)}</span><b>0</b><span class="d"></span>`;
       p.onmouseenter = () => { this.hoverPill = i; this.tipFor(i); };
+      p.onclick = () => this.openFlow(i); p.title = '';
       p.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
       t.appendChild(p); this.pills.push(p);
     });
+  }
+  private flowOpen = -1; private lastHud: Hud | null = null;
+  /** The breakdown of one resource: what makes it and what uses it, per day (from the core's ledger of the last day). */
+  openFlow(i: number) { this.flowOpen = i; this.modal('flow', true); if (this.lastHud) this.renderFlow(this.lastHud); }
+  private renderFlow(h: Hud) {
+    const i = this.flowOpen; if (i < 0 || !h.flow) return;
+    const rows = (list: Row[], sign: string) => list.length ? list.map(r => {
+      const x = r.key.startsWith('b') && /^b\d+$/.test(r.key) ? { label: defs[Number(r.key.slice(1))]?.name ?? '?', ic: KIND_ICON[Number(r.key.slice(1))], hint: defs[Number(r.key.slice(1))]?.desc ?? '' } : { label: EXTRA_INFO[r.key]?.label ?? r.key, ic: EXTRA_INFO[r.key]?.icon ?? 'unknown', hint: EXTRA_INFO[r.key]?.hint ?? '' };
+      return `<tr title="${esc(x.hint)}"><td>${icon(x.ic as IconName, 18)}</td><td>${esc(x.label)}${r.count > 1 ? ` <span class="muted">× ${r.count}</span>` : ''}</td><td class="r">${sign}${Math.round(r.perDay)}/day</td></tr>`;
+    }).join('') : `<tr><td></td><td class="muted">Nothing</td><td></td></tr>`;
+    const b = breakdown(h.flow, i, c => (c < h.flow!.nk ? h.kinds?.[c] ?? 0 : 0));
+    const v = h.stocks[i], left = daysLeft(v, b.steady);
+    $('flow-title').innerHTML = `${resIcon(i, 26)} ${RES[i].name}`;
+    $('flow-body').innerHTML = `<p class="muted">${v} / ${h.storage} stored · steady rate <b class="${b.steady < 0 ? 'neg' : b.steady > 0 ? 'pos' : ''}">${fmtRate(b.steady)}</b>${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)}</b>` : ''}</p>
+      <h3>Comes in</h3><table class="flowtab">${rows(b.sources, '+')}</table>
+      <h3>Goes out</h3><table class="flowtab">${rows(b.sinks, '−')}</table>
+      <p class="muted">All figures are per day (${DAY_TICKS} ticks), taken over the last ${Math.round(b.covered / 24) / 10} days of play. The steady rate leaves out your own orders and one-off events, so a raid or a new building does not make it jump.${b.net !== b.steady ? ` Counting everything the stock changed by ${fmtRate(b.net)}.` : ''}</p>`;
   }
   private lastTip = '';
   private pillText: string[] = [];
@@ -561,16 +584,17 @@ export class UI {
     const day = Math.floor(h.tick / 240) + 1, season = SEASONS[Math.floor((day - 1) / 10) % 4];
     const ph = dayPhase(h.tick);
     $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season} · ${clockText(ph)} `; $('sub').insertAdjacentHTML('beforeend', icon(nightFactor(ph) > 0.5 ? 'moon' : 'sun', 14));
+    this.lastHud = h; if (this.flowOpen >= 0 && !$('flow').hidden) this.renderFlow(h);
     h.stocks.forEach((v, i) => {
-      const p = this.pills[i], rate = h.rates[i];
+      const p = this.pills[i], rate = h.rates[i], left = daysLeft(v, rate);
       p.querySelector('b')!.textContent = String(v);
-      const d = p.querySelector('.d') as HTMLElement; d.textContent = Math.abs(rate) >= 1 ? (rate > 0 ? '+' : '') + Math.round(rate) : ''; d.classList.toggle('neg', rate < 0);
+      const d = p.querySelector('.d') as HTMLElement; d.textContent = Math.abs(rate) >= 1 ? fmtRate(rate) : ''; d.classList.toggle('neg', rate < 0);
       p.classList.toggle('low', i === 10 && v < 25);
       p.classList.toggle('full', v >= h.storage);
-      this.pillText[i] = `<b>${resIcon(i)} ${RES[i].name}</b><small>${v} / ${h.storage} stored</small><small>${rate >= 0 ? '+' : ''}${Math.round(rate)} per minute</small>${rate < -0.5 && v > 0 ? `<small class="warn">Runs out in about ${v / -rate < 1 ? 'a minute' : Math.round(v / -rate) + ' min'}</small>` : ''}<small>${RES[i].hint}</small>`;
+      this.pillText[i] = `<b>${resIcon(i)} ${RES[i].name}</b><small>${v} / ${h.storage} stored</small><small>${fmtRate(rate)} (steady, over the last day)</small>${left !== null ? `<small class="warn">Runs out in ${fmtDaysLeft(left)}</small>` : ''}<small>${RES[i].hint}</small><small class="muted">Click for what makes it and what uses it</small>`;
       if (this.hoverPill === i) this.tipFor(i);
       $(`rs-${i}`).textContent = String(v);
-      const rr = $(`rr-${i}`); rr.textContent = Math.abs(rate) >= 0.5 ? `${rate > 0 ? '+' : ''}${Math.round(rate)}/min` : '–'; rr.className = 'r ' + (rate > 0.5 ? 'pos' : rate < -0.5 ? 'neg' : '');
+      const rr = $(`rr-${i}`); rr.textContent = Math.abs(rate) >= 0.5 ? fmtRate(rate) : '–'; rr.className = 'r ' + (rate > 0.5 ? 'pos' : rate < -0.5 ? 'neg' : '');
     });
     const soldiers = h.army.reduce((a, b) => a + b, 0);
     ($('v-pop').querySelector('b') as HTMLElement).textContent = `${h.pop}/${h.cap}`;
