@@ -180,12 +180,14 @@ export class Village {
   fresh = true;
   markCaughtUp() { this.view.animateNew = true; this.fresh = false; const r = this.world.last_report(); if (r.length) this.reportSeq = r[0]; }
 
-  /** Advance a replica to `tick`. Battle projectiles are dropped when catching up a long way. */
-  advanceTo(tick: number) {
+  /** Advance a replica to `tick`. Battle projectiles are dropped when catching up a long way. Returns whether it got there: it stops after 8000 steps (a command that far ahead
+   *  is not applied, because it would land at the wrong tick). */
+  advanceTo(tick: number): boolean {
     const w = this.world; let n = 0;
-    while (w.tick() < BigInt(tick)) { w.step(); n++; if (n > 4000) break; }
+    while (w.tick() < BigInt(tick)) { w.step(); n++; if (n >= 8000) break; }
     if (n > 8) w.take_shots();
     if (n > 0) this.afterTick();
+    return w.tick() >= BigInt(tick);
   }
 
   /** Field armies, bridges and the soldiers' progress. */

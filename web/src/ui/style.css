@@ -178,6 +178,7 @@ table.res td.r { text-align: right; }
 #perf td i { display: block; height: 6px; background: #8a6a2a; border-radius: 1px; }
 #perf tr.top td { color: #ffd98a; font-weight: 700; } #perf tr.top td i { background: #e0a030; }
 #perf .hot { background: #3a2a14; border-left: 3px solid #e0a030; padding: 4px 7px; margin: 4px 0; }
+#perf .kv-line { margin: 0 0 5px; user-select: text; color: #d8cba6; }
 #perf .kv { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; margin-bottom: 8px; } #perf .kv b { font-variant-numeric: tabular-nums; text-align: right; }
 #perf .eyebrow { color: #b9a982; letter-spacing: .1em; text-transform: uppercase; font-size: 10.5px; margin-top: 6px; }
 #perf .pb button { width: 100%; font: 700 12.5px var(--f-ui); padding: 6px; background: #8a6a2a; color: #fff6dc; border: 1px solid #c9a24a; border-radius: 3px; cursor: pointer; }

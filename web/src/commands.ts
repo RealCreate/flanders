@@ -47,7 +47,8 @@ export function applyCmd(w: World, c: Cmd) {
     default: break; // 'refuse' has no effect on the issuer's own world
   }
 }
-export const stepTo = (w: World, t: number) => { let n = 0; while (w.tick() < BigInt(t) && n++ < 20000) w.step(); };
+/** Step a world to a tick. The ticks in a history are bounded by the checks in validate.ts, so this only guards against nonsense (a command must land on its own tick, never an earlier one). */
+export const stepTo = (w: World, t: number) => { let n = 0; while (w.tick() < BigInt(t) && n++ < 2_000_000) w.step(); };
 
 
 /** The saved history of your own village, read back carefully: a damaged or edited save must not crash the game. Testing-tool commands are your own and stay. */

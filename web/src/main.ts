@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation } from './wasm/game_core.js';
+import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation, state_hash_part_names, rules_fingerprint } from './wasm/game_core.js';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING } from './data';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
@@ -47,6 +47,7 @@ import { dayPhase } from './daycycle';
 import { cleanWorld, inviteLink, withWorld } from './worldname';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
+import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Verdict } from './net/sync';
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
@@ -107,7 +108,17 @@ let penLastClick = 0;                                    // when the last corner
 let tunnels!: Tunnels;
 let deposits!: Deposits, minimap!: Minimap, effects!: Effects, crowd!: Crowd, fx!: Effects2, wildlife!: Wildlife, shared!: Shared;
 let lv!: Village;                           // your village
-interface Rival { key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number; broken?: boolean; log: Cmd[] }
+interface Rival {
+  key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number; broken?: boolean; log: Cmd[];
+  /** The bookkeeping that tells whether this copy still matches the owner's village (net/sync.ts), and what the game is doing about it. */
+  track: ReplicaTrack; policy: ResyncPolicy;
+  versionOk: boolean;                          // false: they run other simulation rules, so their history cannot be judged here
+  state: 'ok' | 'resyncing' | 'failed';
+  confirming: boolean;                         // their history was just asked for and replayed: the next comparison says whether that helped
+  forked: boolean;                             // our own army fought in this copy (an away village): it no longer follows their history
+  liar: boolean;                               // we corrected the loot they claimed, so this copy differs from theirs on purpose
+  desyncs: number; resyncs: number; lastDiag: string; bigJumpAt: number; failedAt: number;
+}
 const tutorial = new Tutorial();
 tutorial.setKeys(a => { const b = keys.binds[a as Action]; return b && b.length ? b.slice(0, 2).map(k => prettyKey(k)).join(' / ') : a; });
 keys.onChange(() => tutorial.refresh());
@@ -145,6 +156,11 @@ let identity!: Identity;
 let room: Room | null = null;
 const myLog: Signed[] = [];
 let cmdN = 0, sendChain: Promise<void> = Promise.resolve(), saveTimer = 0;
+/** How many commands of our history other players replay, and whether we have used testing tools (their effects cannot be replayed). Both go out with every hash so copies can tell what to expect. */
+let sharedCount = 0, usedTools = false, myRules = '';
+const isTool = (op: string) => op === 'cheat' || op === 'flatten' || op === 'demo';
+/** What the saved history looks like to the others. */
+const countShared = (log: { cmd: Cmd }[]) => { let n = 0; for (const e of log) if (isTool(e.cmd.op)) usedTools = true; else n++; return n; };
 const myTag = () => tagOf(identity.pub);
 const slot = params.get('player') ?? ''; // lets several players share one browser profile (testing)
 let resetting = false;   // set while the full reset is wiping the saves, so nothing writes them back
@@ -156,6 +172,7 @@ try { for (const k of Object.keys(localStorage)) if (k.startsWith('flanders:save
 async function commit(cmd: Omit<Cmd, 'tick' | 'n'>) {
   if (replay?.target === lv) return;   // watching your own history: the village on screen is a replay, not the game
   const full: Cmd = { ...cmd, tick: Number(lv.world.tick()), n: cmdN++ };
+  if (isTool(cmd.op)) usedTools = true; else sharedCount++;
   const signing = identity.sign(full);
   sendChain = sendChain.then(async () => { const s = await signing; myLog.push(s); room?.broadcastCmd(s); save(); });
   await sendChain;
@@ -166,7 +183,7 @@ function save() {
   clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
     if (resetting) return;
-    try { localStorage.setItem(saveKey(), JSON.stringify({ site: mySite, name: myName, log: myLog, savedAt: Date.now(), tick: Number(lv.world.tick()) })); } catch { /* storage full or blocked */ }
+    try { localStorage.setItem(saveKey(), JSON.stringify({ site: mySite, name: myName, log: myLog, savedAt: Date.now(), tick: Number(lv.world.tick()), v: SYNC_PROTOCOL, rules: myRules })); } catch { /* storage full or blocked */ }
   }, 400);
 }
 
@@ -196,7 +213,80 @@ function quarantine(r: Rival, e: unknown) {
   console.warn('A rival village could not be replayed; ignoring it until it sends a fresh history.', e);
   r.broken = true; r.sync = 'broken ⚠';
   try { r.village.setWorld(new World(seedBig, siteOrigin(r.site).x, siteOrigin(r.site).z)); r.village.syncFull(); } catch { /* keep the old copy */ }
-  updatePeers();
+  startResync(r, 'the copy could not be replayed'); updatePeers();
+}
+
+// ---------- keeping the copies of other villages in step (the rules are in net/sync.ts) ----------
+let PART_NAMES: string[] = [];
+
+/** Rebuild a copy from a history (theirs, as they sent it or as we kept it). */
+function loadReplica(r: Rival, cmds: Cmd[]) {
+  r.log = cmds.slice();
+  if (replay?.target === r.village) return;   // being watched: the replay shows their history; it is rebuilt from r.log when you leave
+  try {
+    const o = siteOrigin(r.site), w = new World(seedBig, o.x, o.z);
+    for (const c of cmds) { stepTo(w, c.tick); applyCmd(w, c); }
+    r.village.setWorld(w); r.tick = Number(w.tick()); r.broken = false; r.forked = false; r.liar = false;
+    r.track.reset(cmds.map(c => c.op)); if (r.versionOk && r.state === 'ok' && r.sync !== 'in sync ✓') r.sync = 'syncing…';
+    refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
+  } catch (e) { quarantine(r, e); }
+}
+
+/** Bring a copy to a tick for a comparison. A stranger's hash must not be able to make us run a copy far ahead over and over, so big jumps are rationed. */
+function advanceReplica(r: Rival, tick: number): boolean {
+  if (tick - Number(r.village.world.tick()) > 300) { const now = performance.now(); if (now - r.bigJumpAt < 3000) return false; r.bigJumpAt = now; }
+  return r.village.advanceTo(tick);
+}
+
+function judged(r: Rival, v: Verdict | null) {
+  if (!v) return;
+  const before = r.sync;
+  switch (v.kind) {
+    case 'match':
+      r.tick = Number(r.village.world.tick()); r.confirming = false; r.sync = 'in sync ✓';
+      if (r.state !== 'ok') { r.state = 'ok'; r.policy.reset(); ui.toast(`Back in sync with ${r.name}.`, 'good'); console.info(`Back in sync with ${r.name} at tick ${r.tick}.`); }
+      break;
+    case 'wait': if (r.sync !== 'in sync ✓') r.sync = 'syncing…'; break;
+    case 'tools': r.sync = 'testing tools in use'; break;
+    case 'mismatch': case 'lost': desynced(r, v); break;
+    default: break;
+  }
+  if (r.sync !== before) updatePeers();
+}
+
+/** A copy disagrees with its owner. The owner is right (their village is the real one); ours is rebuilt from their history. */
+function desynced(r: Rival, v: Verdict & { kind: 'mismatch' | 'lost' }) {
+  const what = v.kind === 'mismatch' ? describe(v.diag) : `${v.missing} command${v.missing === 1 ? '' : 's'} never arrived`;
+  if (r.state === 'ok') { r.desyncs++; console.warn(`Out of sync with ${r.name}: ${what}`, v); }
+  r.lastDiag = what;
+  if (r.state === 'failed') { if (performance.now() - r.failedAt > 300_000) { r.state = 'ok'; r.policy.reset(); } else return; }   // (told already; tries again every five minutes)
+  if (r.confirming) { failSync(r, 'their history plays out differently here, so they are probably on another version of the game or using testing tools'); return; }
+  startResync(r, what);
+}
+
+function startResync(r: Rival, why: string) {
+  if (r.state === 'failed') return;
+  const go = r.policy.ask(performance.now());
+  if (go === 'stop') { failSync(r, 'it keeps going wrong'); return; }
+  if (r.state === 'ok') ui.toast(`Re-syncing with ${r.name}…`, 'info');
+  r.state = 'resyncing'; r.sync = 're-syncing…'; updatePeers();
+  if (go === 'go') { r.resyncs++; console.info(`Re-syncing with ${r.name} (${why}).`); room?.requestLog(r.peerId); }
+}
+
+function failSync(r: Rival, why: string) {
+  r.state = 'failed'; r.confirming = false; r.failedAt = performance.now(); r.sync = 'could not sync ⚠';
+  ui.toast(`Could not sync with ${r.name}: ${why}. Their village may look a little different here.`, 'info');
+  console.warn(`Could not sync with ${r.name}: ${why}. ${r.lastDiag}`); updatePeers();
+}
+
+/** The lines the performance panel (F3) shows about the sync with each player. */
+function syncNotes(): string[] {
+  const out = [`You: ${sharedCount} commands shared · build ${SYNC_PROTOCOL}/${myRules || '?'}${usedTools ? ' · testing tools used: others cannot replay those changes' : ''}`];
+  for (const r of rivals.values()) {
+    out.push(`${r.name}: ${r.sync} · ${r.desyncs} desync${r.desyncs === 1 ? '' : 's'} · ${r.resyncs} re-sync${r.resyncs === 1 ? '' : 's'} · tick ${Number(r.village.world.tick())} · ${r.track.count} commands`);
+    if (r.lastDiag) out.push(`  last: ${r.lastDiag}`);
+  }
+  return out;
 }
 
 let yielding = false;
@@ -212,7 +302,8 @@ function giveWayToOtherTab(otherPeer: string) {
 }
 
 function connect() {
-  room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName }), () => myLog, {
+  (window as unknown as { flandersSync: () => string[] }).flandersSync = syncNotes;   // for the console: how every copy of another village stands
+  room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName, v: SYNC_PROTOCOL, rules: myRules }), () => myLog, {
     onStatus: s => ui.netStatus(s),
     onHello: (peerId, h) => {
       if (h.world !== worldName || h.site >= sites.length) return;
@@ -228,26 +319,27 @@ function connect() {
         const o = siteOrigin(h.site);
         const village = new Village(new World(seedBig, o.x, o.z), 'rival:' + h.pub, h.name, false, shared, 0xb03030);
         village.onReport = rep => onRivalReport(h.pub, rep);
-        r = { key: h.pub, peerId, name: h.name, site: h.site, village, online: true, sync: 'syncing…', tick: 0, log: [] };
+        r = { key: h.pub, peerId, name: h.name, site: h.site, village, online: true, sync: 'syncing…', tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0 };
         rivals.set(h.pub, r); ui.toast(`${h.name} has joined the world.`, 'good');
         refreshTerrain(village.world); village.syncFull();
         chainTo(r);
       } else if (r.site !== h.site) {
         // they moved to another site: rebuild their replica there once their log arrives
-        const o = siteOrigin(h.site); r.site = h.site; r.village.setWorld(new World(seedBig, o.x, o.z)); terrain.resetPads(); refreshAll();
+        // (their history is the same, only the ground it stands on moved: replay what we have, and ask for it again to be sure)
+        r.site = h.site; loadReplica(r, r.log); terrain.resetPads(); refreshAll(); room?.requestLog(peerId);
       }
-      r.peerId = peerId; r.online = true; r.name = h.name; updatePeers();
+      r.peerId = peerId; r.online = true; r.name = h.name;
+      const same = sameBuild({ v: h.v, rules: h.rules }, { v: SYNC_PROTOCOL, rules: myRules });
+      if (!same && r.versionOk) { ui.toast(`${h.name} plays a different version of the game, so their village may not look the same here. Reload the page to get the latest.`, 'info'); console.warn(`${h.name} runs another build (protocol ${h.v ?? 0}, rules ${h.rules || 'unknown'}; ours ${SYNC_PROTOCOL}, ${myRules}).`); }
+      if (!same) r.sync = 'different game version'; else if (!r.versionOk) { r.sync = 'syncing…'; r.state = 'ok'; r.policy.reset(); }
+      r.versionOk = same; updatePeers();
     },
     onLog: (peerId, cmds) => {
       const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r) return;
       r.log = cmds.slice();
       if (replay?.target === r.village) return;   // being watched: the replay shows their history; it is rebuilt from r.log when you leave
-      try {
-        const o = siteOrigin(r.site), w = new World(seedBig, o.x, o.z);
-        for (const c of cmds) { stepTo(w, c.tick); applyCmd(w, c); }
-        r.village.setWorld(w); r.tick = Number(w.tick()); r.broken = false;
-        refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
-      } catch (e) { quarantine(r, e); }
+      loadReplica(r, cmds);
+      if (r.state === 'resyncing') r.confirming = true;   // we asked for this: the next comparison tells whether it helped
     },
     onCmd: (peerId, c) => {
       const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || r.broken) return;
@@ -257,13 +349,15 @@ function connect() {
         if (c.op === 'return') {   // check the attacker's claim against the battle as the defender's copy played it
           for (const o of rivals.values()) if (o !== r) o.village.advanceTo(c.tick);   // (your own village is live: it is already as far as it will get)
           const v = ledger.claim(tagOf(r.key), c.units, c.loot); c = { ...c, units: v.units, loot: v.loot };
-          if (v.lied) { r.sync = 'claimed false loot ⚠'; console.warn(`${r.name} reported loot or survivors that the battle did not give; the real result was used.`); }
+          if (v.lied) { r.liar = true; r.sync = 'claimed false loot ⚠'; console.warn(`${r.name} reported loot or survivors that the battle did not give; the real result was used.`); }
         }
-        r.village.advanceTo(c.tick); applyCmd(r.village.world, c);
+        if (!r.village.advanceTo(c.tick)) { startResync(r, 'a command far ahead of the copy'); return; }   // (never apply a command at the wrong tick)
+        applyCmd(r.village.world, c); r.track.applied(c.op);
         if (c.op === 'style') r.village.syncFull();
         if (c.op === 'place' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') refreshTerrain(r.village.world);
         r.village.syncFull(); r.village.afterTick(); r.tick = c.tick;
       } catch (e) { quarantine(r, e); return; }
+      judged(r, r.track.recheck(r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));   // a hash that was waiting for this command can be judged now
       if ((c.op === 'attack' || c.op === 'sendatk') && c.to === identity.pub) defendAgainst(r, c);
       else if (c.op === 'refuse' && c.to === identity.pub) {
         lv.world.return_army(Uint32Array.from(c.units ?? []), new Int32Array(RES.length));
@@ -272,11 +366,10 @@ function connect() {
       if (c.op === 'raid') ui.toast(`${r.name}'s village is under attack!`, 'info');
       if (c.to === identity.pub) onTrade(r, c);
     },
-    onHash: (peerId, tick, hash) => {
-      const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || replay?.target === r.village) return;
-      if (!Number.isFinite(tick) || tick > r.tick + 2 || tick < 0) return;   // a hash from the future would make us run the replica ahead on a stranger's say-so
-      r.village.advanceTo(tick); r.tick = tick;
-      r.sync = r.village.world.tick() === BigInt(tick) && r.village.world.state_hash().toString() === hash ? 'in sync ✓' : 'out of sync ⚠';
+    onHash: (peerId, msg) => {
+      const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || r.broken || replay?.target === r.village) return;
+      if (!r.versionOk || r.forked || r.liar) return;   // these copies differ from theirs for a known reason: there is nothing to judge
+      judged(r, r.track.judge(msg, r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));
     },
     onLeave: peerId => { const r = rivals.get(byPeer.get(peerId) ?? ''); if (r) { r.online = false; r.sync = 'away'; ui.toast(`${r.name} has left the world.`, 'info'); } byPeer.delete(peerId); updatePeers(); },
   });
@@ -545,7 +638,7 @@ function checkArrivals() {
 const awayFights = new Set<string>();
 function attackAway(r: Rival, u: number[]) {
   const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
-  if (r.village.world.start_raid(angle, Uint32Array.from(u), myTag())) { awayFights.add(r.key); r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
+  if (r.village.world.start_raid(angle, Uint32Array.from(u), myTag())) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
   else { lv.world.return_army(Uint32Array.from(u), new Int32Array(RES.length)); commit({ op: 'return', units: u, loot: new Array(RES.length).fill(0) }); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'bad'); updateHud(); }
 }
 
@@ -658,6 +751,7 @@ function stopReplay() {
   const live = new Replay<Cmd>({ make: () => new World(seedBig, o.x, o.z), apply: applyCmd, cmds }, to);
   live.advanceTo(to);
   showWorld(s.target, live.world, true);
+  if (r) { r.track.reset(cmds.map(c => c.op)); r.forked = false; }
   if (own) acc = 0;
   ui.toast('Back in the game.', 'good'); updateHud(); updatePeers();
 }
@@ -720,13 +814,15 @@ async function startGame(name: string, username: string) {
 
   ui.progress(60, 'Gathering your villagers…'); await nextFrame();
   // your village: restore from the last visit, or found a new one
-  let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number } | null = null;
+  let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number; v?: number; rules?: string } | null = null;
   try { saved = JSON.parse(localStorage.getItem(saveKey()) ?? 'null'); } catch { /* ignore */ }
   mySite = saved && saved.site < sites.length ? saved.site : 0;
   const o = siteOrigin(mySite), w = new World(seedBig, o.x, o.z);
   let away = 0;
   if (saved) {
-    for (const s of validSavedLog(saved.log)) { myLog.push(s.signed); stepTo(w, s.cmd.tick); applyCmd(w, s.cmd); cmdN = Math.max(cmdN, s.cmd.n + 1); }
+    const entries = validSavedLog(saved.log);
+    for (const s of entries) { myLog.push(s.signed); stepTo(w, s.cmd.tick); applyCmd(w, s.cmd); cmdN = Math.max(cmdN, s.cmd.n + 1); }
+    sharedCount = countShared(entries);
     stepTo(w, saved.tick);
     away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
     for (let i = 0; i < away; i++) w.step();   // the world kept turning while you were away
@@ -742,6 +838,9 @@ async function startGame(name: string, username: string) {
   rebuildForest(); updateHud();
   rig.focus(o.x, o.z, 75); rig.snap();
   await warmUp();
+  PART_NAMES = state_hash_part_names().split(',');
+  try { myRules = rules_fingerprint(seedBig); } catch { /* without a fingerprint other players cannot tell our build */ }
+  if (saved && (saved.v !== SYNC_PROTOCOL || saved.rules !== myRules)) console.warn(`This village was last saved by another build (${saved.v ?? 'unknown'}/${saved.rules ?? 'unknown'}); its history is replayed with the rules of this one (${SYNC_PROTOCOL}/${myRules}).`);
   ui.setTab('build');
   ui.hint('Choose a building on the right, then click the ground. Start with houses and a farm.');
   setTimeout(() => ui.hint(null), 7000);
@@ -906,7 +1005,7 @@ function stepLocal() {
   const t = Number(w.tick());
   if (t % 4 === 0) updateGoals();
   pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
-  room?.broadcastHash(t, w.state_hash().toString());
+  if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools });
   if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
@@ -1507,7 +1606,7 @@ function updateHallLabels(all: Village[]) {
 // ---------- main loop ----------
 let worldShips: WorldShips | null = null;
 let tideLevel = 0;   // the water rises and falls a little, slowly
-let sCount = 0, sT = 0, fireBuf = new Float32Array(256);
+let noteT = 0, sCount = 0, sT = 0, fireBuf = new Float32Array(256);
 let lastPhase = -1;   // the day phase the light was last set for
 let last = 0, miniT = 0, scareT = 0, scares: { x: number; z: number }[] = [];
 /** Put the display settings into effect (at start, and whenever one changes). */
@@ -1619,6 +1718,7 @@ function frame(now: number) {
   renderer.shadowMap.needsUpdate = (shadowFrame++ & 1) === 0;   // shadows drift slowly: redraw them every other frame
   perf.render(renderer, scene, rig.cam);
   perf.stop('render (CPU side)');
+  if (perf.open && now - noteT > 500) { noteT = now; perf.netNotes(syncNotes()); }
   perf.counts({ Villagers: lv.people.count, Animals: wildlife.visible, Buildings: lv.world.building_count(), Soldiers: (now - sT > 500 ? (sT = now, sCount = lv.army.positions().length) : sCount) });
   perf.frame(now, { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures });
   requestAnimationFrame(frame);
