@@ -370,3 +370,10 @@ svg.gi { display: inline-block; vertical-align: -0.28em; flex: none; overflow: v
 .mrow .mi { display: grid; place-items: center; }
 .cost span svg.gi, .io svg.gi, .stat svg.gi { margin-right: 1px; }
 td svg.gi { vertical-align: middle; }
+
+/* the market's stall list */
+.mkt { display: flex; flex-direction: column; gap: 8px; }
+.mkt-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+.mkt-row .btnrow { grid-column: 1 / -1; flex-wrap: wrap; gap: 4px; }
+.mkt-left small { opacity: .7; }
+.mkt-price { white-space: nowrap; }

@@ -4,6 +4,7 @@ use wasm_bindgen::prelude::*;
 mod battle;
 mod catalog;
 mod lend;
+mod market;
 mod march;
 mod military;
 mod pathnet;
@@ -223,6 +224,8 @@ pub struct World {
     relations: Vec<(i32, i32)>,   // how another village (tag) feels about this one, -100..100
     married: Vec<i32>,            // villages joined by a royal marriage
     last_envoy: Vec<(i32, u64)>,
+    /// How much of each market good has been sold since it was last full (see market.rs).
+    market_sold: [i32; market::MARKET_GOODS.len()],
     style: u32,                   // the village's flag as one number (see web/src/flag.ts), 0 = none chosen; part of the state so every peer sees it
     hero: Option<(u8, u32)>,      // the village's lord: name index and experience (level follows from it)
     defer_roads: bool,            // inside place_batch: the path network is rebuilt once at the end
@@ -349,7 +352,7 @@ impl World {
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
@@ -1363,6 +1366,7 @@ impl World {
         if self.tick % DAY != 0 { return; }
         { let doves = self.perks().doves; if doves > 0 { let cap = self.storage_cap(); self.stock[GR as usize] = Self::add_capped(self.stock[GR as usize], doves, cap); } }
         let now = self.tick; self.treaties.retain(|t| t.until > now);
+        self.market_refill();
         self.death_care_step();
         // the church: a service every seventh day brings the village together, and its tithe
         let churches: Vec<u32> = self.buildings.iter().filter(|b| b.kind == CHAPEL).map(|b| b.tier as u32 + 1).collect();
@@ -2017,7 +2021,7 @@ impl World {
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
                 mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
-            part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } }),
+            part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } for s in &self.market_sold { mix(*s as i64 as u64); } }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
                 for b in &self.buildings {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
@@ -2083,6 +2087,8 @@ fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
 
 #[cfg(test)]
 mod lend_tests;
+#[cfg(test)]
+mod market_tests;
 
 #[cfg(test)]
 mod tests {
