@@ -173,7 +173,7 @@ fn the_army_comes_out_of_the_fight_with_its_survivors_and_can_leave_early() {
     for _ in 0..300 { w.step(); w.stock[GR as usize] = 3000; if w.det_flat().len() >= 16 && w.det_flat()[8] as u8 == march::S_FIGHT { seen_fight = true; } if !w.battle_active() { break; } }
     assert!(seen_fight && !w.battle_active());
     let f = w.det_flat();
-    assert!(f.len() == 16, "the army is still in the field afterwards");
+    assert!(f.len() == 17, "the army is still in the field afterwards (one record of 17 numbers): {}", f.len());
     let left: u32 = f[3..8].iter().map(|&v| v as u32).sum();
     assert!(left > 0 && left <= 18 && f[8] as u8 == march::S_IDLE, "survivors idle in the field: {left}");
     // an army that is told to go home in the middle of a fight leaves it
