@@ -3,15 +3,15 @@ export interface P { x: number; z: number }
 export type Shape = 'line' | 'path' | 'rect' | 'square' | 'circle' | 'ellipse' | 'triangle' | 'hexagon' | 'octagon';
 
 export const SHAPES: { id: Shape; icon: string; label: string; hint: string }[] = [
-  { id: 'line', icon: '▬', label: 'Line', hint: 'click for one piece, or press and drag for a straight run' },
-  { id: 'path', icon: '⌇', label: 'Path', hint: 'click to add corners · double-click or Enter to build · click the first point to close · Backspace removes the last corner' },
-  { id: 'rect', icon: '▭', label: 'Rectangle', hint: 'press at one corner and drag to the opposite corner' },
-  { id: 'square', icon: '◻', label: 'Square', hint: 'press at the centre and drag out: the corner follows the pointer, so you can turn it' },
-  { id: 'circle', icon: '○', label: 'Circle', hint: 'press at the centre and drag out to the radius' },
-  { id: 'ellipse', icon: '⬭', label: 'Ellipse', hint: 'press at one corner and drag to the opposite corner of its box' },
-  { id: 'triangle', icon: '△', label: 'Triangle', hint: 'press at the centre and drag out: a corner follows the pointer' },
-  { id: 'hexagon', icon: '⬡', label: 'Hexagon', hint: 'press at the centre and drag out: a corner follows the pointer' },
-  { id: 'octagon', icon: '⯃', label: 'Octagon', hint: 'press at the centre and drag out: a corner follows the pointer' },
+  { id: 'line', icon: 'pen-line', label: 'Line', hint: 'click for one piece, or press and drag for a straight run' },
+  { id: 'path', icon: 'pen-path', label: 'Path', hint: 'click to add corners · double-click or Enter to build · click the first point to close · Backspace removes the last corner' },
+  { id: 'rect', icon: 'pen-rect', label: 'Rectangle', hint: 'press at one corner and drag to the opposite corner' },
+  { id: 'square', icon: 'pen-square', label: 'Square', hint: 'press at the centre and drag out: the corner follows the pointer, so you can turn it' },
+  { id: 'circle', icon: 'pen-circle', label: 'Circle', hint: 'press at the centre and drag out to the radius' },
+  { id: 'ellipse', icon: 'pen-ellipse', label: 'Ellipse', hint: 'press at one corner and drag to the opposite corner of its box' },
+  { id: 'triangle', icon: 'pen-triangle', label: 'Triangle', hint: 'press at the centre and drag out: a corner follows the pointer' },
+  { id: 'hexagon', icon: 'pen-hexagon', label: 'Hexagon', hint: 'press at the centre and drag out: a corner follows the pointer' },
+  { id: 'octagon', icon: 'pen-octagon', label: 'Octagon', hint: 'press at the centre and drag out: a corner follows the pointer' },
 ];
 
 /** Figures drawn by dragging (the others are a line or built from clicked corners). */

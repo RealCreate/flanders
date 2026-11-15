@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { buildCatapult, HAT, TOOL, type Crowd, type Draw } from './crowd';
+import { buildCatapult, buildRam, HAT, TOOL, type Crowd, type Draw } from './crowd';
 import { smoothPath } from './field';
 import { lunge, fallen, mix } from './fight';
 import { moatLevelAt, standHeight, onWater, chase } from './wading';
@@ -39,6 +39,7 @@ export class ArmyView {
   /** Called when a soldier is struck (x, z, height above ground, killed?), so the scene can throw up a puff of dust and blood. */
   onHit: ((x: number, z: number, y: number, killed: boolean) => void) | null = null;
   private siege: THREE.Group[] = [];
+  private rams: THREE.Group[] = [];
   group = new THREE.Group();
   /** Rafts for raiders crossing a moat or river (the core marks them as wading: slow, helpless, easy to hit): a few logs lashed together, one per soldier, drawn at the water's edge. */
   private rafts: THREE.Mesh[] = [];
@@ -267,7 +268,7 @@ export class ArmyView {
 
   /** A soldier who has been killed: topples over, then lies where it fell. */
   private drawFallen(crowd: Crowd, f: Field) {
-    if (f.kind === 4) return;
+    if (f.kind === 4 || f.kind === 5) return;
     const l = this.look(f.side, f.kind, f.seed, false), since = f.deadAt >= 0 ? this.t - f.deadAt : 99;
     crowd.add({ x: f.x, y: this.height(f) + f.elev * (1 - fallen(since)), z: f.z, yaw: f.yaw, pose: 4, fall: fallen(since), phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw);
   }
@@ -288,15 +289,23 @@ export class ArmyView {
       // fire = seconds of the throwing motion left (1 -> 0): a quick swing forward, then the arm is winched back
       const p = 1 - fire; (g.userData.arm as THREE.Object3D).rotation.x = fire <= 0 ? -0.9 : p < 0.25 ? -0.9 + (p / 0.25) * 2.1 : 1.2 - ((p - 0.25) / 0.75) * 2.1;
     };
+    let ri = 0;
+    const placeRam = (x: number, z: number, yaw: number, swing: number) => {
+      let g = this.rams[ri]; if (!g) { g = buildRam(); this.rams[ri] = g; this.group.add(g); } ri++;
+      g.position.set(x, this.terrain.walkAt(x, z), z); g.rotation.y = yaw; g.visible = true; sg.add(g);
+      (g.userData.log as THREE.Object3D).position.z = swing > 0 ? Math.sin((1 - swing) * Math.PI) * 0.9 : 0;   // the log swings forward as it strikes
+    };
     let si = 0, nr = 0; for (const r of this.rafts) r.visible = false;
     if (this.battle) {
       for (const f of this.field) {
         if (!f.alive && f.hp > 0) continue;   // ran off the field
         if (!near(f.x, f.z)) continue;
-        if (!f.alive) { if (f.kind !== 4) this.drawFallen(crowd, f); continue; }
-        if (f.wet && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, this.height(f) - 0.1, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.05; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.04; }
+        if (!f.alive) { if (f.kind !== 4 && f.kind !== 5) this.drawFallen(crowd, f); continue; }
+        if (f.wet && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, this.height(f) - 0.28 + Math.sin(t * 3.1 + f.seed) * 0.07, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.12; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.14; r.rotation.x = Math.sin(t * 1.7 + f.seed * 3) * 0.08; }   // (a raft wallows: the raiders on it are helpless, see the core's WADE_* numbers)
+        if (f.kind === 5) { placeRam(f.x, f.z, f.yaw, Math.min(1, f.anim / 0.5)); continue; }
         if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
+        if (f.side === 1 && f.elev > 0.3 && l.body !== undefined) l.body = mix(l.body, 0x4a6a84, 0.4);   // soaked and struggling in the water: a cold, grey-blue tint
         if (f.flash > 0 && l.body !== undefined) l.body = mix(l.body, 0xff3a2a, Math.min(0.75, f.flash / 0.3 * 0.75));
         if (f.side === 0 && f.kind === 1) {   // archers stationed in a tower shoot from its walkway
           const tw = this.towers.find(q => (q.x - f.x) ** 2 + (q.z - f.z) ** 2 < 2.6 * 2.6);
@@ -307,7 +316,7 @@ export class ArmyView {
       }
       for (const c of this.corpses) if (near(c.f.x, c.f.z)) this.drawFallen(crowd, c.f);
     } else {
-      for (const c of this.corpses) { const f = c.f; if (f.kind === 4) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
+      for (const c of this.corpses) { const f = c.f; if (f.kind === 4 || f.kind === 5) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
       for (const p of this.posts) {
         if (p.mode !== 'patrol' && !near(p.x, p.z)) continue;
         const l = this.look(0, p.kind, p.x * 3.1 + p.z, true);

@@ -133,6 +133,23 @@ export class Crowd {
   }
   private put(mesh: THREE.InstancedMesh, i: number, m: THREE.Matrix4, hex?: number) { mesh.setMatrixAt(i, m); if (hex !== undefined) mesh.setColorAt(i, this.col.setHex(hex)); }
 
+  /** A horse with nobody on it (pulling a cart, carrying a pack): standing at (x, y, z) facing `yaw`. `phase` is the gait angle and `speed` the ground speed, as for a person. */
+  addHorse(x: number, y: number, z: number, yaw: number, phase: number, speed: number, hex: number, scale = 1) {
+    if (this.n.horse >= MAX - 1 || this.n.hleg > MAX * 4 - 5) return;
+    const walk = speed > 0.35, gallop = speed > 5, trot = speed > 2.2;
+    const hbob = walk ? Math.abs(Math.sin(phase * (gallop ? 1 : 2))) * (gallop ? 0.14 : trot ? 0.06 : 0.03) : 0;
+    this.v.set(x, y, z); this.s.setScalar(scale); this.e.set(0, yaw, 0, 'YXZ'); this.q.setFromEuler(this.e); this.B.compose(this.v, this.q, this.s);
+    this.frame(this.Hm, this.B, 0, hbob, 0, walk ? Math.sin(phase) * (gallop ? 0.07 : 0.03) : 0);
+    this.Hm.scale(this.s.set(1.05, 1.05, 1.05));
+    this.put(this.horse, this.n.horse++, this.Hm, hex);
+    const off = gallop ? [0, 0.25, 2.3, 2.55] : trot ? [0, Math.PI, Math.PI, 0] : [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
+    const amp = walk ? (gallop ? 0.95 : trot ? 0.6 : 0.42) : 0;
+    [[0.16, 0.45], [-0.16, 0.45], [0.16, -0.45], [-0.16, -0.45]].forEach(([lx, lz], k) => {
+      this.frame(this.l1, this.Hm, lx, 0.92, lz, -(amp * Math.sin(phase + off[k])));
+      this.put(this.horseLeg, this.n.hleg++, this.l1);
+    });
+  }
+
   add(d: Draw) {
     if (this.n.torso >= MAX - 1) return;
     const sc = d.scale ?? 1, ph = d.phase, sp = d.speed ?? 0, dead = d.pose === 4, walk = d.pose === 1 && !dead;
@@ -223,6 +240,23 @@ export class Crowd {
 }
 
 // ---------- catapult ----------
+/** A battering ram: a roofed timber shed on wheels with an iron-shod log hanging inside (`userData.log` swings when it strikes). */
+export function buildRam(): THREE.Group {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 }), iron = new THREE.MeshStandardMaterial({ color: 0x55585c, roughness: 0.6, metalness: 0.4 }), hide = new THREE.MeshStandardMaterial({ color: 0x8a7550, roughness: 1 });
+  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
+  add(new THREE.BoxGeometry(1.5, 0.2, 3.2), wood, 0, 0.55, 0);
+  for (const sx of [-0.8, 0.8]) for (const sz of [-1.0, 1.0]) { const w = add(new THREE.CylinderGeometry(0.42, 0.42, 0.16, 12), dark, sx, 0.42, sz); w.rotation.z = Math.PI / 2; }
+  for (const sx of [-0.65, 0.65]) for (const sz of [-1.3, 1.3]) add(new THREE.BoxGeometry(0.14, 1.3, 0.14), wood, sx, 1.25, sz);
+  const roof = add(new THREE.BoxGeometry(1.7, 0.1, 3.5), hide, 0, 1.95, 0); roof.rotation.z = 0;
+  for (const sx of [-1, 1]) { const r = add(new THREE.BoxGeometry(0.1, 0.1, 3.5), dark, sx * 0.82, 1.92, 0); r.rotation.z = 0; }
+  const log = new THREE.Group(); log.position.set(0, 1.2, 0); g.add(log);
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 3.6, 8), wood); beam.rotation.x = Math.PI / 2; beam.castShadow = true; log.add(beam);
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.5, 8), iron); head.rotation.x = Math.PI / 2; head.position.z = 2.0; log.add(head);
+  g.userData.log = log;
+  return g;
+}
+
 export function buildCatapult(): THREE.Group {
   const g = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 });

@@ -159,8 +159,12 @@ table.res td.r { text-align: right; }
 .atk-row label { display: flex; flex-direction: column; align-items: center; font-size: 16px; }
 .atk-row input { width: 100%; text-align: center; }
 #battle { position: fixed; z-index: 7; top: 74px; left: 50%; transform: translateX(calc(-50% - 187px)); background: #4a1510ee; border: 1px solid #d9604e; color: #ffd8cf; padding: 8px 20px; border-radius: 3px; font-family: var(--f-display); letter-spacing: .08em; font-size: 17px; box-shadow: 0 8px 30px #000a; animation: pulse 1.6s ease-in-out infinite; pointer-events: none; text-align: center; }
-#battle.clickable { pointer-events: auto; cursor: pointer; }
+#battle.clickable { pointer-events: auto; }
+#battle.clickable #battle-text { cursor: pointer; }
 #battle.clickable:hover { background: #6a1c14ee; }
+#battle-acts { display: flex; gap: 8px; justify-content: center; margin-top: 6px; }
+#battle-acts:empty { display: none; }
+#battle-acts .pbtn { font-size: 13px; padding: 3px 10px; letter-spacing: 0; }
 #battle small { display: block; font-family: var(--f-ui); font-size: 13px; letter-spacing: 0; color: #f0b8aa; margin-top: 2px; }
 @keyframes pulse { 50% { box-shadow: 0 8px 36px #d9604e88; } }
 .log li .chip { margin-left: 6px; padding: 0 8px; font-size: 13px; }
@@ -345,3 +349,16 @@ kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5
 .trade-row .tfield input { border: 0; background: transparent; padding: 0 4px; text-align: center; min-width: 0; height: 34px; -moz-appearance: textfield; }
 .trade-row .tfield input::-webkit-outer-spin-button, .trade-row .tfield input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 #attack-form select { height: 36px; box-sizing: border-box; }
+/* a caption over a procession on the road between two villages */
+.lbl.jr { left: 0; top: 0; will-change: transform; white-space: nowrap; font: 600 11px var(--f-ui); color: #fff; background: #000b; padding: 2px 8px; border-radius: 9px; text-shadow: 0 1px 2px #000; }
+.lbl.jr[data-kind="99"] { background: #7a1010e0; }
+
+/* ---------- drawn icons (see ui/icons.ts) ---------- */
+svg.gi { display: inline-block; vertical-align: -0.28em; flex: none; overflow: visible; }
+.pill .ic { display: inline-flex; align-items: center; }
+.pill .ic svg.gi, .topbar svg.gi { filter: drop-shadow(0 0 1px #efe4c8cc); }
+.btn svg.gi, .pbtn svg.gi, .chip svg.gi { margin-right: 2px; filter: none; }
+.card .ico svg.gi, .mrow .mi svg.gi { vertical-align: middle; margin: 0; }
+.mrow .mi { display: grid; place-items: center; }
+.cost span svg.gi, .io svg.gi, .stat svg.gi { margin-right: 1px; }
+td svg.gi { vertical-align: middle; }

@@ -1,4 +1,5 @@
 import type * as THREE from 'three';
+import { icon } from './ui/icons';
 
 interface Layer { name: string; set(on: boolean): void }
 interface Result { name: string; ms: number }
@@ -23,7 +24,7 @@ export class Perf {
   constructor(host: HTMLElement) {
     this.badge = document.createElement('button'); this.badge.id = 'fps-badge'; this.badge.title = 'Performance monitor (F3)'; this.badge.textContent = '-- fps';
     this.panel = document.createElement('div'); this.panel.id = 'perf'; this.panel.hidden = true;
-    this.panel.innerHTML = `<div class="ph"><b>Performance</b><span id="perf-sub"></span><button id="perf-x" title="Close">✕</button></div><canvas id="perf-g" width="260" height="56"></canvas><div id="perf-body"></div><div class="pb"><button id="perf-prof">Find the biggest cost</button></div>`;
+    this.panel.innerHTML = `<div class="ph"><b>Performance</b><span id="perf-sub"></span><button id="perf-x" title="Close">${icon('close', 12, { mono: true })}</button></div><canvas id="perf-g" width="260" height="56"></canvas><div id="perf-body"></div><div class="pb"><button id="perf-prof">Find the biggest cost</button></div>`;
     host.append(this.badge, this.panel);
     this.graph = this.panel.querySelector('#perf-g') as HTMLCanvasElement; this.body = this.panel.querySelector('#perf-body') as HTMLElement;
     this.btn = this.panel.querySelector('#perf-prof') as HTMLButtonElement;

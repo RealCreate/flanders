@@ -30,6 +30,8 @@ export function applyCmd(w: World, c: Cmd) {
     case 'envoy': w.envoy(c.idx!); break;
     case 'marriage': w.marriage(c.idx!); break;
     case 'war': w.declare_war(c.idx!); break;
+    case 'journey': w.journey_start(c.kind ?? 0, c.idx ?? 0, c.x ?? 0, c.y ?? 0); break;   // an errand sets out for another village: the treaty, gifts, wedding or war is done when it arrives
+    case 'arrive': break;   // a notice that an errand reached its village: the receiver answers it (see onTrade), nothing to replay
     case 'clear': w.clear_deposit(c.idx!); break;
     case 'demo': w.demo(c.kind ?? 0, c.x ?? 0, c.y ?? 0, c.idx ?? 0); break;   // model-village testing tool
     case 'gate': w.gate_set(c.idx!, (c.kind ?? 0) === 1); break;
@@ -42,6 +44,9 @@ export function applyCmd(w: World, c: Cmd) {
     case 'merge': w.det_merge(c.idx!, c.kind!); break;
     case 'halt': w.det_halt(c.idx!); break;
     case 'sendatk': w.det_send(c.idx!); break;
+    case 'defend': w.det_defend(c.idx!); break;   // a field army marches to the fight at home and joins the defenders
+    case 'retreat': if (c.tag) w.battle_retreat(c.tag); break;   // (the attacker's own call has no `tag`: it is only a request, which the defender's village carries out and records with the tag)
+    case 'reinforce': if (c.tag) w.battle_reinforce(c.tag, Uint32Array.from(c.units ?? [])); break;
     case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
     case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;
     default: break; // 'refuse' has no effect on the issuer's own world

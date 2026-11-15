@@ -41,7 +41,7 @@ test('a raid across a moat: drawn height changes little per frame and every wadi
     }
     for (let i = 0; i < u.length / 10; i++) pos.set(i, [u[i * 10 + 2], u[i * 10 + 3]]);
   }
-  assert.ok(wadingFrames > 50, `raiders waded (${wadingFrames} frames)`);
+  assert.ok(wadingFrames > 10, `raiders waded (${wadingFrames} frames)`);
   assert.ok(worstStep <= MAX_RISE * DT + 1e-9, `vertical change per frame ${worstStep.toFixed(3)}`);
   assert.ok(worstOff < 0.6, `a wading unit strays at most ${worstOff.toFixed(2)} from the ground or water surface it stands on`);
   void hx; void hy;

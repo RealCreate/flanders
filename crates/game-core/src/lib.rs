@@ -126,6 +126,8 @@ pub const DIED_WAR: usize = 4;
 /// Names of the lords and ladies who may take command of the village's defence.
 const HERO_NAMES: [&str; 12] = ["Sir Aldric", "Dame Isolde", "Lord Godfrey", "Lady Maud", "Sir Baldwin", "Dame Hawise", "Lord Roland", "Lady Eleanor", "Sir Hugh", "Dame Alys", "Lord Edmund", "Lady Cecily"];
 /// The lord's levels: experience needed for each.
+/// Counts per soldier kind from a list a caller made: five numbers (older callers: no rams) or six. None if there are fewer than five.
+pub(crate) fn kinds(v: &[u32]) -> Option<[u32; NK]> { if v.len() < 5 { return None; } let mut a = [0u32; NK]; for k in 0..NK { a[k] = v.get(k).copied().unwrap_or(0); } Some(a) }
 const HERO_XP: [u32; 5] = [0, 30, 80, 150, 250];
 const HERO_COST: i32 = 150;
 const EV_CHOSE: i32 = 19;
@@ -140,6 +142,9 @@ const CHOICE_DAYS: u64 = 2;
 pub const DAY: u64 = 240;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
+/// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
+pub const WHEEL_REACH: f32 = 4.4;
+pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
@@ -147,7 +152,18 @@ const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
 #[derive(Clone)]
-pub struct Caravan { res: u8, amount: i32, to: i32, eta: u64, escort: u32 }
+pub struct Caravan { res: u8, amount: i32, to: i32, start: u64, eta: u64, escort: u32 }
+/// A diplomatic errand on the road to another village (`tag`): `kind` is a treaty kind (0 trade pact, 1 peace, 2 alliance) or one of JK_ENVOY, JK_MARRIAGE, JK_WAR; `arg` is the treaty's length in days.
+/// It sets out at `start` and its effect happens when it arrives at `arrive`. Everyone's copy of the village holds the same list, so the procession can be shown on all of them.
+#[derive(Clone)]
+pub struct Journey { kind: u8, tag: i32, arg: i32, start: u64, arrive: u64 }
+pub const JK_ENVOY: u8 = 3;
+pub const JK_MARRIAGE: u8 = 4;
+pub const JK_WAR: u8 = 5;
+/// The kind a caravan has in `journeys_flat`.
+pub const JK_CARAVAN: u8 = 6;
+/// Ticks per unit of road for each journey kind (a rider is quicker than a procession).
+const JOURNEY_SPEED: [f32; 6] = [2.2, 1.6, 1.5, 1.8, 1.0, 3.0];
 /// An agreement with another village: `kind` 0 trade pact (better prices), 1 non-aggression (neither side may start a battle against the other), 2 alliance (the same, and the best prices), until tick `until`.
 #[derive(Clone)]
 pub struct Treaty { tag: i32, kind: u8, until: u64 }
@@ -196,6 +212,8 @@ pub struct World {
     plague_start: u64,           // when the latest outbreak began and when it is due to end (see plague.rs); zeros before the first
     plague_end: u64,
     caravans: Vec<Caravan>,   // goods on the road to another village
+    journeys: Vec<Journey>,   // envoys, treaty offers, brides and war heralds on the road to another village (part of the state)
+    arrivals: Vec<[i32; 4]>,  // [kind, tag, arg, tick] of journeys that arrived since the last call to take_arrivals (a notice for the player's own client, not part of the state)
     awaiting: Vec<[i32; 3]>,  // [resource, amount, to] delivered caravans whose payment has not been settled yet (part of the state)
     delivered: Vec<[i32; 3]>, // the same, but only as a notice for the player's own client to pass on (drained by take_delivered, not part of the state)
     treaties: Vec<Treaty>,    // agreements with other villages
@@ -210,10 +228,10 @@ pub struct World {
     road_links: Vec<(u32, u32)>,  // (child, parent) building indices for each segment
     road_paths: Vec<(u32, u32, Vec<(f32, f32)>)>,   // full walkable route of each link, child doorstep to parent doorstep (crosses drawbridges)
     road_cache: std::collections::HashMap<(u32, u32), (u64, Option<Vec<(f32, f32)>>)>,   // routes already found, valid while nothing changed round them
-    army: [u32; 5],
-    queue: [u32; 5],
+    army: [u32; NK],
+    queue: [u32; NK],
     train_prog: u32,
-    away: [u32; 5],
+    away: [u32; NK],
     battle: Option<Battle>,
     wildfires: Vec<Wildfire>,
     craters: Vec<[f32; 4]>,
@@ -301,9 +319,9 @@ impl World {
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; 5], queue: [0; 5], train_prog: 0, away: [0; 5], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], map_ver: 0,
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -353,10 +371,10 @@ impl World {
             0 => { self.end_plague(); self.mood = 12; self.mood_until = self.tick + 15 * DAY; }
             1 => { for (r, base) in [(ST, 120), (IR, 20), (GD, 80), (PL, 60)] { let n = (base as f32 * (0.6 + h)) as i32; self.stock[r as usize] = Self::add_capped(self.stock[r as usize], n, cap); } }
             _ => {
-                let power: f32 = (0..5).map(|k| units[k] as f32 * UNITS[k].hp * UNITS[k].dmg / UNITS[k].cd.max(0.5)).sum();
+                let power: f32 = (0..NK).map(|k| units[k] as f32 * UNITS[k].hp * UNITS[k].dmg / UNITS[k].cd.max(0.5)).sum();
                 let camp = 9000.0 + 14000.0 * h;
                 if power >= camp { self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], 120, cap); self.stock[IR as usize] = Self::add_capped(self.stock[IR as usize], 15, cap); }
-                else { for k in 0..5 { self.dets[di].units[k] /= 2; } if self.dets[di].units.iter().all(|&u| u == 0) { self.dets.remove(di); } return kind as i32 + 100; }   // beaten: not marked done, it can be tried again
+                else { self.dets[di].grp.clear(); for k in 0..NK { self.dets[di].units[k] /= 2; } if self.dets[di].units.iter().all(|&u| u == 0) { self.dets.remove(di); } return kind as i32 + 100; }   // beaten: not marked done, it can be tried again
             }
         }
         self.neutral_done[ni] = true; self.reveal(nx, ny, 80.0); self.push_event(EV_VISIT, kind as i32, 0);
@@ -699,6 +717,7 @@ impl World {
         if kind == BRIDGE { return self.place_bridge(dx, dy); }
         let code = self.can_place(kind, dx, dy);
         if code != 0 { return code; }
+        if kind == WATERWHEEL && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
         let d = &DEFS[kind as usize];
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
@@ -709,6 +728,7 @@ impl World {
             let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
             pad_h = hi.max(0.3);
         }
+        if kind == WATERWHEEL { pad_h = pad_h.min(WHEEL_PAD_MAX); }   // the house stands low on the bank so its wheel dips into the water
         if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
             let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
             let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
@@ -736,6 +756,41 @@ impl World {
         self.defer_roads = false;
         self.after_change();
         out
+    }
+
+    /// Which way the waterwheel's wheel looks for a turn `rot`: the model's +x axis turned by r * 45 degrees (the renderer rotates about the vertical, which sends +x to (cos, -sin)).
+    fn wheel_dir(rot: u8) -> (f32, f32) { let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; (a.cos(), -a.sin()) }
+    /// Does a waterwheel house at (x, y) turned `rot` have its wheel out over open water?
+    fn wheel_in_water(&self, x: f32, y: f32, rot: u8) -> bool {
+        let (ux, uy) = Self::wheel_dir(rot);
+        self.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2 && self.height_at(x + ux * (WHEEL_REACH + 1.2), y + uy * (WHEEL_REACH + 1.2)) < 0.2
+    }
+    /// Where a waterwheel clicked at (dx, dy) goes: pulled onto the bank beside the nearest water and turned so its wheel hangs out over it.
+    /// [dx, dy, turn] relative to the origin (what `place` takes), or nothing when there is no water within reach or no bank there where the house can stand. Pure function of the world, so
+    /// the client only ever sends the answer: `place` checks it again.
+    pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        let wet = |px: f32, py: f32| self.height_at(px, py) < 0.1;
+        let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
+        'find: for r in 1..=16 { for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; let (px, py) = (x + a.cos() * r as f32, y + a.sin() * r as f32); if wet(px, py) { p = Some((px, py)); break 'find; } } }
+        let Some((px, py)) = p else { return vec![] };
+        // the turns, best first: the one whose wheel points most nearly from the click towards the water (all eight when the click is in the water itself)
+        let (vx, vy) = (px - x, py - y); let vl = vx.hypot(vy);
+        let mut turns: Vec<(f32, u8)> = (0..8u8).map(|r| { let (ux, uy) = Self::wheel_dir(r); (if vl < 0.5 { 0.0 } else { -(ux * vx + uy * vy) / vl }, r) }).collect();
+        turns.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+        for &(_, r) in &turns {
+            let (ux, uy) = Self::wheel_dir(r);
+            // walk back from the water along the opposite of the wheel's way to the first dry bank
+            let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
+            for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
+                let back = t + 3.4 + extra - (WHEEL_REACH - 3.4);
+                let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
+                let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
+                let code = self.can_place(WATERWHEEL, cx as i32, cy as i32);
+                if (code == 0 || code == -6) && self.wheel_in_water(sx, sy, r) { return vec![cx, cy, r as f32]; }
+            }
+        }
+        vec![]
     }
 
     /// Where a drawbridge clicked at (dx, dy) goes: snapped onto the nearest piece of moat or river (its middle line) and turned square across it, so the deck spans the water from bank to bank.
@@ -1079,10 +1134,12 @@ impl World {
         // soldiers train, fires burn, battles run (4 sub-steps of 0.25s per tick)
         self.training_step();
         self.march_step();
+        self.defence_step();
         self.builders_step();
         self.trade_step();
         self.toll_step();
         self.caravan_step();
+        self.journey_step();
         for _ in 0..4 { self.fire_substep(); self.battle_substep(); }
         for i in 0..N_RES { self.flow[i] = self.stock[i] - before[i]; }
         self.staffing();
@@ -1316,6 +1373,23 @@ impl World {
         self.caravans = rest;
     }
 
+    /// Errands that reach the other village do what they came for: the treaty is signed, the envoy's gifts warm the feelings, the bride is wed, the war declared.
+    fn journey_step(&mut self) {
+        if self.journeys.is_empty() { return; }
+        let now = self.tick; let mut rest = vec![]; let mut done = vec![];
+        for j in std::mem::take(&mut self.journeys) { if j.arrive <= now { done.push(j); } else { rest.push(j); } }
+        self.journeys = rest;
+        for j in done {
+            match j.kind {
+                TREATY_TRADE | TREATY_PEACE | TREATY_ALLIANCE => { self.treaty_set(j.tag, j.kind, j.arg.max(1) as u32); }
+                JK_ENVOY => { self.rel_add(j.tag, 8); self.push_event(EV_DIPLO, 0, 0); }
+                JK_MARRIAGE => { if !self.married.contains(&j.tag) { self.married.push(j.tag); self.rel_add(j.tag, 30); self.push_event(EV_DIPLO, 2, 0); } }
+                _ => { self.declare_war(j.tag); }
+            }
+            if self.arrivals.len() < 64 { self.arrivals.push([j.kind as i32, j.tag, j.arg, now as i32]); }
+        }
+    }
+
     /// Ports sell the most plentiful stock for gold every half minute, and buy grain when the village runs short.
     pub(crate) fn trade_step(&mut self) {
         let cap = self.storage_cap();
@@ -1424,7 +1498,7 @@ impl World {
         if (tx - hx).hypot(ty - hy) < 40.0 { return -4; }
         let same = |pl: &Vec<(f32, f32)>| pl.last().map_or(false, |e| (e.0 - tx).hypot(e.1 - ty) < 12.0);
         if self.links.len() >= 24 && !self.links.iter().any(same) { return -3; }
-        let route = match self.route_on_graph(&[1, 0, 0, 0, 0], hx, hy, tx, ty, true) { Ok(r) => r, Err(_) => return -2 };
+        let route = match self.route_on_graph(&[1, 0, 0, 0, 0, 0], hx, hy, tx, ty, true) { Ok(r) => r, Err(_) => return -2 };
         let pl: Vec<(f32, f32)> = route.iter().map(|w| (w.x, w.y)).collect();
         if let Some(k) = self.links.iter().position(same) { self.links[k] = pl; } else { self.links.push(pl); }
         0
@@ -1504,17 +1578,17 @@ impl World {
     }
     /// Send soldiers away to attack another village. They stop defending and eat but are not in the barracks.
     pub fn send_army(&mut self, counts: &[u32]) -> bool {
-        if counts.len() < 5 || self.battle.is_some() { return false; }
-        for k in 0..5 { if counts[k] > self.army[k] { return false; } }
-        for k in 0..5 { self.army[k] -= counts[k]; self.away[k] += counts[k]; }
+        let Some(counts) = kinds(counts) else { return false }; if self.battle.is_some() { return false; }
+        for k in 0..NK { if counts[k] > self.army[k] { return false; } }
+        for k in 0..NK { self.army[k] -= counts[k]; self.away[k] += counts[k]; }
         true
     }
     /// Survivors come home with loot. Only soldiers that were really sent away can come back, and loot cannot exceed a raider's share of a full store,
     /// so a forged "return" command cannot print soldiers or goods out of nothing (it can still claim loot a battle did not give: only the battle's other side could check that).
     pub fn return_army(&mut self, survivors: &[u32], loot: &[i32]) {
         let sent = self.away;
-        for k in 0..5.min(survivors.len()) { self.army[k] = self.army[k].saturating_add(survivors[k].min(sent[k])).min(ARMY_MAX); }
-        self.away = [0; 5];
+        for k in 0..NK.min(survivors.len()) { self.army[k] = self.army[k].saturating_add(survivors[k].min(sent[k])).min(ARMY_MAX); }
+        self.away = [0; NK];
         let cap = self.storage_cap(); let most = cap / 100 * 35;
         for r in 0..N_RES.min(loot.len()) { self.stock[r] = Self::add_capped(self.stock[r], loot[r].clamp(0, most), cap); }
     }
@@ -1524,7 +1598,8 @@ impl World {
         if atk.len() < 5 || self.has_treaty(tag, TREATY_PEACE) || self.has_treaty(tag, TREATY_ALLIANCE) { return false; }
         if tag != 0 { self.rel_add(tag, -40); }   // whoever marches on us is not our friend
         let c = |n: u32| n.min(300);
-        self.begin_battle([c(atk[0]), c(atk[1]), c(atk[2]), c(atk[3]), c(atk[4])], angle, tag)
+        let Some(atk) = kinds(atk) else { return false };
+        self.begin_battle(atk.map(c), angle, tag)
     }
     // ---------- trade and treaties ----------
     /// Agree something with another village (tag) for `days` days. kind 0 trade pact, 1 non-aggression. Replaces an older agreement of the same kind.
@@ -1545,8 +1620,44 @@ impl World {
         if self.stock[res as usize] < amount { return -2; }
         if escort > self.army[0] { return -3; }
         self.stock[res as usize] -= amount; self.army[0] -= escort;
-        self.caravans.push(Caravan { res, amount, to, eta: self.tick + 60 + (distance / CARAVAN_SPEED) as u64, escort });
+        self.caravans.push(Caravan { res, amount, to, start: self.tick, eta: self.tick + 60 + (distance / CARAVAN_SPEED) as u64, escort });
         0
+    }
+    /// Send an errand to another village (tag) over `distance` units of road: kind 0..2 a treaty offer (arg = days), 3 an envoy with gifts (20 coins), 4 a royal marriage (150 coins), 5 a declaration of war.
+    /// It costs what the instant version cost, now; the effect comes when the party arrives. 0 ok, -1 nonsense, -6 poor, -7 one of that kind is already on the road, -20 too soon, -21 not liked enough, -22 will not agree.
+    pub fn journey_start(&mut self, kind: u8, tag: i32, arg: i32, distance: f32) -> i32 {
+        if kind > JK_WAR || tag == 0 || self.journeys.len() >= 16 || !(0.0..=3000.0).contains(&distance) { return -1; }
+        if self.journeys.iter().any(|j| j.tag == tag && j.kind == kind) { return -7; }
+        match kind {
+            TREATY_TRADE | TREATY_PEACE | TREATY_ALLIANCE => { if arg < 1 || arg > 120 { return -1; } if !self.treaty_acceptable(tag, kind) { return -22; } }
+            JK_ENVOY => {
+                if self.last_envoy.iter().any(|e| e.0 == tag && self.tick < e.1 + 3 * DAY) { return -20; }
+                if self.stock[GD as usize] < 20 { return -6; }
+                self.stock[GD as usize] -= 20; self.last_envoy.retain(|e| e.0 != tag); self.last_envoy.push((tag, self.tick));
+            }
+            JK_MARRIAGE => {
+                if self.married.contains(&tag) { return -1; }
+                if self.relation(tag) < 30 { return -21; }
+                if self.stock[GD as usize] < 150 { return -6; }
+                self.stock[GD as usize] -= 150;
+            }
+            _ => {}
+        }
+        let dur = 30 + (distance / JOURNEY_SPEED[kind as usize]) as u64;
+        self.journeys.push(Journey { kind, tag, arg, start: self.tick, arrive: self.tick + dur });
+        0
+    }
+    /// Everything on the road to another village: [kind, to (tag), a, b, escort, start tick, arrival tick] each, stride 7. Kinds 0..5 as in `journey_start` (a = days), 6 a caravan (a = resource, b = amount).
+    pub fn journeys_flat(&self) -> Vec<i32> {
+        let mut v: Vec<i32> = self.journeys.iter().flat_map(|j| [j.kind as i32, j.tag, j.arg, 0, 0, j.start as i32, j.arrive as i32]).collect();
+        for c in &self.caravans { v.extend([JK_CARAVAN as i32, c.to, c.res as i32, c.amount, c.escort as i32, c.start as i32, c.eta as i32]); }
+        v
+    }
+    /// Errands that arrived since the last call: [kind, to (tag), arg, tick] each. Only a notice for the player's own client (the effect was already applied in `step`).
+    pub fn take_arrivals(&mut self) -> Vec<i32> { std::mem::take(&mut self.arrivals).into_iter().flatten().collect() }
+    /// The invisible path from our city to the village whose hall is at (tx, ty), as [x, y, x, y, ...] from our hall to theirs, or empty when none was chained.
+    pub fn link_points(&self, tx: f32, ty: f32) -> Vec<f32> {
+        self.links.iter().find(|pl| pl.last().map_or(false, |e| (e.0 - tx).hypot(e.1 - ty) < 12.0)).map_or(vec![], |pl| pl.iter().flat_map(|p| [p.0, p.1]).collect())
     }
     /// Goods on the road: [resource, amount, to, ticks left, escort] each.
     pub fn caravans_flat(&self) -> Vec<i32> { self.caravans.iter().flat_map(|c| [c.res as i32, c.amount, c.to, (c.eta.saturating_sub(self.tick)) as i32, c.escort as i32]).collect() }
@@ -1623,7 +1734,7 @@ impl World {
         match action {
             0 => { if a >= 0 && (a as usize) < N_RES { let cap = self.storage_cap(); self.stock[a as usize] = self.stock[a as usize].saturating_add(b).clamp(0, cap); true } else { false } }
             1 => { let cap = self.capacity().max(2); let want = ((self.population as i32).saturating_add(a).max(2) as u32).min(cap); if want > self.population { self.arrive(want - self.population); } else { self.leave(self.population - want); } self.staffing(); true }
-            2 => { if a >= 0 && a < 5 { self.army[a as usize] = ((self.army[a as usize] as i32).saturating_add(b).clamp(0, 100_000)) as u32; true } else { false } }
+            2 => { if a >= 0 && (a as usize) < NK { self.army[a as usize] = ((self.army[a as usize] as i32).saturating_add(b).clamp(0, 100_000)) as u32; true } else { false } }
             3 => { let cap = self.storage_cap(); for r in 0..N_RES { self.stock[r] = cap; } true }
             4 => { let f = self.bandit_force(b.clamp(0, 1000) as f32 / 1000.0); self.begin_battle(f, a as f32 * 0.01, 0) }
             5 => { self.ignite(a.max(0) as usize); true }
@@ -1645,8 +1756,7 @@ impl World {
 
     // ---------- field armies ----------
     /// Take soldiers out of the barracks into a field army (units = [spear, archer, sword, knight, catapult]). Returns its id, 0 on failure.
-    pub fn det_form(&mut self, units: &[u32]) -> u32 { if units.len() < 5 { return 0; } self.det_form_arr([units[0], units[1], units[2], units[3], units[4]]) }
-    fn det_form_arr(&mut self, u: [u32; 5]) -> u32 { self.det_form_inner(u) }
+    pub fn det_form(&mut self, units: &[u32]) -> u32 { let Some(u) = kinds(units) else { return 0 }; self.det_form_inner(u) }
     /// March to (tx, ty). 0 ok, -1 no such army, -2 unreachable, -3 siege engines need soldiers to cut the forest, -5 water too wide.
     pub fn det_march(&mut self, id: u32, tx: f32, ty: f32, attack: bool, ax: f32, ay: f32) -> i32 {
         // a peer chooses these numbers: NaN, infinity or a point far off the map would make the router search forever
@@ -1654,19 +1764,31 @@ impl World {
         self.det_march_inner(id, tx, ty, if attack { Some((ax, ay)) } else { None }, false) }
     /// Send the army back to the town hall, where it rejoins the barracks.
     pub fn det_recall(&mut self, id: u32) -> i32 { let (hx, hy) = (self.buildings[0].x, self.buildings[0].y + 9.0); self.det_march_inner(id, hx, hy, None, true) }
-    pub fn det_split(&mut self, id: u32, take: &[u32]) -> u32 { if take.len() < 5 { return 0; } self.det_split_inner(id, [take[0], take[1], take[2], take[3], take[4]]) }
+    pub fn det_split(&mut self, id: u32, take: &[u32]) -> u32 { let Some(t) = kinds(take) else { return 0 }; self.det_split_inner(id, t) }
     pub fn det_merge(&mut self, a: u32, b: u32) -> bool { self.det_merge_inner(a, b) }
-    pub fn det_halt(&mut self, id: u32) { if let Some(i) = self.dets.iter().position(|d| d.id == id) { let d = &mut self.dets[i]; d.path.clear(); d.state = march::S_IDLE; d.phase = 0; d.atk = None; } }
+    pub fn det_halt(&mut self, id: u32) { if let Some(i) = self.dets.iter().position(|d| d.id == id) { let d = &mut self.dets[i]; if d.state == march::S_FIGHT { return; } d.defend = false; d.path.clear(); d.state = march::S_IDLE; d.phase = 0; d.atk = None; for g in d.grp.iter_mut() { g.path.clear(); g.speed = 0.0; } } }
     /// An army that has arrived at an enemy village joins the attack; returns its soldiers (empty on failure).
+    /// Send a field army to the fight in this village: it marches to the nearest attacker and joins the defenders once it is within reach (`battle::JOIN_REACH`). 0 ok, -10 there is no battle, other codes as `det_march`.
+    pub fn det_defend(&mut self, id: u32) -> i32 { self.det_defend_inner(id) }
+    /// Call off the attack of the army with this tag: its soldiers break and run. Only the attackers' side can be made to retreat. True if there was such a battle.
+    pub fn battle_retreat(&mut self, tag: i32) -> bool { self.retreat_attackers(tag) }
+    /// More soldiers of the same attacker (tag) arrive at the battle already going on. True if they joined.
+    pub fn battle_reinforce(&mut self, tag: i32, atk: &[u32]) -> bool { let Some(a) = kinds(atk) else { return false }; self.reinforce_attackers(tag, a.map(|n| n.min(300))) }
+    /// Soldiers still standing in the standing army's defence of the battle, per kind (what can be sent out to meet the raiders).
+    pub fn battle_standing(&self) -> Vec<u32> { self.standing_in_battle().to_vec() }
     pub fn det_send(&mut self, id: u32) -> Vec<u32> { self.det_send_inner(id).map_or(vec![], |u| u.to_vec()) }
-    /// [id, x, y, spear, archer, sword, knight, catapult, state, legMode, legsLeft, workProgress, atkX, atkY, heading, speed] (stride 16)
+    /// [id, x, y, spear, archer, sword, knight, catapult, state, legMode, legsLeft, workProgress, atkX, atkY, heading, speed] (stride 17, the last is the number of rams)
     pub fn det_flat(&self) -> Vec<f32> {
         self.dets.iter().flat_map(|d| {
             let mode = d.path.get(d.wi).map_or(0.0, |w| w.mode as f32);
             let prog = if d.work_total > 0.0 && d.phase == 1 { (d.work / d.work_total).min(1.0) } else { 0.0 };
             let (ax, ay) = d.atk.unwrap_or((0.0, 0.0));
-            [d.id as f32, d.x, d.y, d.units[0] as f32, d.units[1] as f32, d.units[2] as f32, d.units[3] as f32, d.units[4] as f32, d.state as f32, mode, (d.path.len().saturating_sub(d.wi)) as f32, prog, ax, ay, d.heading, d.speed]
+            [d.id as f32, d.x, d.y, d.units[0] as f32, d.units[1] as f32, d.units[2] as f32, d.units[3] as f32, d.units[4] as f32, d.state as f32, mode, (d.path.len().saturating_sub(d.wi)) as f32, prog, ax, ay, d.heading, d.speed, d.units[5] as f32]
         }).collect()
+    }
+    /// Riders and engines marching apart from their army: [army id, kind (3 knights, 4 catapults), count, x, y, heading, speed, tied] (stride 8).
+    pub fn det_groups_flat(&self) -> Vec<f32> {
+        self.dets.iter().flat_map(|d| d.grp.iter().flat_map(move |g| { let k = if g.units[3] > 0 { 3 } else { 4 }; [d.id as f32, k as f32, (if k == 3 { g.units[3] } else { g.units[4] + g.units[5] }) as f32, g.x, g.y, g.heading, g.speed, g.tied as u8 as f32] })).collect()
     }
     /// Remaining route of an army: [x, y, mode, ...] starting at its current position.
     pub fn det_path(&self, id: u32) -> Vec<f32> {
@@ -1735,7 +1857,7 @@ impl World {
     pub fn felled_flat(&self) -> Vec<f32> { self.felled.iter().flatten().copied().collect() }
     pub fn bridges_flat(&self) -> Vec<f32> { self.bridges.iter().flatten().copied().collect() }
     /// Plan a route without ordering it: [ok(1) | error code, seconds, planks, wood, count, x, y, mode, ...].
-    pub fn plan_march(&self, units: &[u32], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> { if units.len() < 5 { return vec![-1.0]; } self.plan(&[units[0], units[1], units[2], units[3], units[4]], sx, sy, tx, ty) }
+    pub fn plan_march(&self, units: &[u32], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> { let Some(u) = kinds(units) else { return vec![-1.0] }; self.plan(&u, sx, sy, tx, ty) }
 
 
     // ---------- repair and rebuilding ----------
@@ -1808,11 +1930,11 @@ impl World {
             }),
             part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
-            part(&|mix| { for k in 0..5 { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } }),
-            part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); for k in 0..5 { mix(d.units[k] as u64); } } }),
+            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } }),
+            part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); } } }),
             part(&|mix| {   // trade and diplomacy
                 for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }
-                for c in &self.caravans { mix(c.eta); mix(c.amount as u64); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }
+                for c in &self.caravans { mix(c.start); mix(c.eta); mix(c.amount as u64); mix(c.res as u64); mix(c.to as i64 as u64); mix(c.escort as u64); } for j in &self.journeys { mix(j.kind as u64); mix(j.tag as i64 as u64); mix(j.arg as i64 as u64); mix(j.start); mix(j.arrive); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }
             }),
             part(&|mix| {   // the land the soldiers and the builders changed
                 for f in &self.felled { for v in f { mix(v.to_bits() as u64); } } mix(self.groves.len() as u64);
@@ -1820,7 +1942,7 @@ impl World {
                 for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
-            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); } } }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); } } }),
         ]
     }
 
@@ -1981,7 +2103,7 @@ mod tests {
     fn raid_on_weak_village_does_damage() {
         let mut w = village();
         w.population = 20;
-        assert!(w.start_raid(0.5, &[14, 6, 3, 0, 0], 0)); assert!((w.battle_angle() - 0.5).abs() < 1e-6, "the battle remembers where the attackers came from");
+        assert!(w.start_raid(0.5, &[14, 6, 3, 0, 0, 0], 0)); assert!((w.battle_angle() - 0.5).abs() < 1e-6, "the battle remembers where the attackers came from");
         let before = w.building_count();
         run_battle(&mut w);
         let r = w.last_report();
@@ -1994,9 +2116,9 @@ mod tests {
     fn strong_defence_repels_bandits() {
         let mut w = village();
         for _ in 0..4 { w.place(BARRACKS, 30 + 0, 20, 0); }
-        w.army = [14, 10, 8, 4, 0];
+        w.army = [14, 10, 8, 4, 0, 0];
         w.population = 40;
-        assert!(w.start_raid(1.2, &[6, 2, 0, 0, 0], 0));
+        assert!(w.start_raid(1.2, &[6, 2, 0, 0, 0, 0], 0));
         run_battle(&mut w);
         let r = w.last_report();
         assert_eq!(r[1], 1, "defenders hold: {:?}", r);
@@ -2032,7 +2154,7 @@ mod tests {
         let mut w = village();
         let h0 = w.height_at(12.0, 4.0);
         w.population = 30;
-        w.start_raid(0.0, &[0, 0, 0, 0, 4], 0);
+        w.start_raid(0.0, &[0, 0, 0, 0, 4, 0], 0);
         run_battle(&mut w);
         assert!(!w.scorch_flat().is_empty() || w.terrain_version() > 0);
         let moved = (0..40).any(|i| (w.height_at(i as f32, 4.0) - w.base(i as f32, 4.0)).abs() > 0.2) || w.height_at(12.0, 4.0) != h0;
@@ -2091,8 +2213,8 @@ mod tests {
     #[test]
     fn armies_march_around_buildings() {
         let mut w = village();
-        w.army = [10, 0, 0, 0, 0];
-        let id = w.det_form(&[10, 0, 0, 0, 0]);
+        w.army = [10, 0, 0, 0, 0, 0];
+        let id = w.det_form(&[10, 0, 0, 0, 0, 0]);
         assert!(id > 0 && w.army()[0] == 0);
         // a target behind the cluster of buildings
         let r = w.det_march(id, 30.0, 8.0, false, 0.0, 0.0);
@@ -2115,19 +2237,19 @@ mod tests {
     fn catapults_need_felled_trees_and_soldiers_cut_them() {
         let ns = march::nav_static(1337);
         let mut w = village();
-        w.army = [8, 0, 0, 0, 2];
+        w.army = [8, 0, 0, 0, 2, 0];
         let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
         // a patch of dense forest away from the village that the siege train can reach by cutting trees
         let mut spot = None;
         for i in 0..(march::NC * march::NC) as usize {
             let (x, y) = nav_cell_centre(i);
             if ns.dens(i) >= 4 && ns.height(i) > 2.0 && x.abs() < 150.0 && y.abs() < 150.0 && x.hypot(y) > 70.0 && (x - 300.0).hypot(y) > 70.0 {
-                let p = w.plan_march(&[8, 0, 0, 0, 2], hx, hy, x, y);
+                let p = w.plan_march(&[8, 0, 0, 0, 2, 0], hx, hy, x, y);
                 if p[0] == 1.0 && p[5..].chunks(3).any(|c| c.len() == 3 && c[2] == 1.0) { spot = Some((x, y)); break; }
             }
         }
         let (tx, ty) = spot.expect("the map has dense forest");
-        let id = w.det_form(&[8, 0, 0, 0, 2]);
+        let id = w.det_form(&[8, 0, 0, 0, 2, 0]);
         let r = w.det_march(id, tx, ty, false, 0.0, 0.0);
         assert_eq!(r, 0, "a route exists, by cutting trees");
         let p = w.det_path(id);
@@ -2136,8 +2258,8 @@ mod tests {
         assert!(!w.felled_flat().is_empty(), "soldiers cut trees");
         assert_eq!(w.det_flat()[8] as u8, march::S_IDLE, "the siege train arrived");
         // without soldiers, catapults cannot clear the forest
-        let mut w2 = village(); w2.army = [0, 0, 0, 0, 2];
-        let id2 = w2.det_form(&[0, 0, 0, 0, 2]);
+        let mut w2 = village(); w2.army = [0, 0, 0, 0, 2, 0];
+        let id2 = w2.det_form(&[0, 0, 0, 0, 2, 0]);
         assert_eq!(w2.det_march(id2, tx, ty, false, 0.0, 0.0), -3);
     }
 
@@ -2155,11 +2277,11 @@ mod tests {
         } }
         let Some((a, b)) = pair else { eprintln!("bridge test: no narrow water on this seed"); return };
         let (sx, sy) = nav_cell_centre(a); let (tx, ty) = nav_cell_centre(b);
-        let mut w = village(); w.army = [6, 0, 0, 0, 0];
-        let id = w.det_form(&[6, 0, 0, 0, 0]);
+        let mut w = village(); w.army = [6, 0, 0, 0, 0, 0];
+        let id = w.det_form(&[6, 0, 0, 0, 0, 0]);
         // move the army next to the water, then order the crossing
         w.dets[0].x = sx; w.dets[0].y = sy;
-        let plan = w.plan_march(&[6, 0, 0, 0, 0], sx, sy, tx, ty);
+        let plan = w.plan_march(&[6, 0, 0, 0, 0, 0], sx, sy, tx, ty);
         if plan[0] != 1.0 { eprintln!("bridge test: no route {}", plan[0]); return; }
         if !plan[5..].chunks(3).any(|c| c[2] == 2.0) { eprintln!("bridge test: route walked around the lake"); return; }
         assert_eq!(w.det_march(id, tx, ty, false, 0.0, 0.0), 0);
@@ -2172,8 +2294,8 @@ mod tests {
     fn water_legs_are_bridged_or_ferried() {
         for (len, expect_bridge) in [(9.0f32, true), (30.0, false)] {
             let mut w = village();
-            w.army = [6, 0, 0, 0, 1];
-            let id = w.det_form(&[6, 0, 0, 0, 1]);
+            w.army = [6, 0, 0, 0, 1, 0];
+            let id = w.det_form(&[6, 0, 0, 0, 1, 0]);
             let (x0, y0) = (w.dets[0].x, w.dets[0].y);
             w.dets[0].path = vec![march::Wp { x: x0, y: y0, mode: 0 }, march::Wp { x: x0 + len, y: y0, mode: 2 }, march::Wp { x: x0 + len + 5.0, y: y0, mode: 0 }];
             w.dets[0].wi = 1; w.dets[0].state = march::S_MARCH;
@@ -2234,8 +2356,8 @@ mod tests {
         w.stock = [3000; N_RES]; w.population = 20;
         let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
         for i in 0..8 { put(&mut w, WALL, hx + 24.0, hy - 21.0 + i as f32 * 6.0, 0); let n = w.buildings.len() - 1; w.buildings[n].tier = 2; w.buildings[n].hp = battle::max_hp(WALL, 2); }
-        w.army = [4, 6, 4, 0, 0];
-        w.begin_battle([6, 0, 0, 0, 0], 0.0, 0);     // attackers come from the east, where the wall is
+        w.army = [4, 6, 4, 0, 0, 0];
+        w.begin_battle([6, 0, 0, 0, 0, 0], 0.0, 0);     // attackers come from the east, where the wall is
         for _ in 0..10 { w.step(); }
         let b = w.battle.as_ref().expect("still fighting");
         let up = b.units.iter().filter(|u| u.side == 0 && u.alive && u.elev > 0.0).count();
@@ -2261,7 +2383,7 @@ mod tests {
         w.stock = [3000; N_RES]; w.population = 20;
         let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
         let n = 24; for i in 0..n { let a = i as f32 / n as f32 * std::f32::consts::TAU; put(&mut w, WALL, hx + a.cos() * 20.0, hy + a.sin() * 20.0, 0); }
-        w.begin_battle([6, 0, 0, 0, 0], 0.0, 0);
+        w.begin_battle([6, 0, 0, 0, 0, 0], 0.0, 0);
         let mut climbed = false;
         for _ in 0..200 {
             w.step();
@@ -2280,7 +2402,7 @@ mod tests {
         w.stock = [3000; N_RES]; w.population = 20;
         let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
         let n = 40; for i in 0..n { let a = i as f32 / n as f32 * std::f32::consts::TAU; put(&mut w, MOAT, hx + a.cos() * 18.0, hy + a.sin() * 18.0, 0); }
-        assert!(w.begin_battle([6, 0, 4, 0, 0], 0.0, 0));
+        assert!(w.begin_battle([6, 0, 4, 0, 0, 0], 0.0, 0));
         let (mut waded, mut crossed, mut worst_ratio) = (false, false, 0.0f32);
         let mut last: Vec<(f32, f32)> = vec![];
         for _ in 0..1500 {
@@ -2305,17 +2427,17 @@ mod tests {
     }
 
     #[test]
-    fn a_soldier_in_the_water_takes_twice_the_damage() {
+    fn a_soldier_in_the_water_takes_much_more_damage() {
         let mut w = World::new(1337, 0, 0);
         w.population = 20;
-        assert!(w.begin_battle([2, 0, 0, 0, 0], 0.0, 0));
+        assert!(w.begin_battle([2, 0, 0, 0, 0, 0], 0.0, 0));
         let b = w.battle.as_mut().unwrap();
         let i = b.units.iter().position(|u| u.side == 1).unwrap();
         let j = b.units.iter().rposition(|u| u.side == 1).unwrap();
         b.units[i].hp = 1000.0; b.units[j].hp = 1000.0; b.units[j].wading = true;
         World::damage_unit(b, i, 20.0); World::damage_unit(b, j, 20.0);
         let (dry, wet) = (1000.0 - b.units[i].hp, 1000.0 - b.units[j].hp);
-        assert!((wet / dry - 2.0).abs() < 0.01, "dry {dry}, wet {wet}");
+        assert!((wet / dry - battle::WADE_DAMAGE).abs() < 0.01 && battle::WADE_DAMAGE >= 3.0, "dry {dry}, wet {wet}");
     }
 
     #[test]
@@ -2399,19 +2521,19 @@ mod tests {
                 if skip == Some(i) { if gate { put(w, GATE, x, y, 0); } } else { put(w, WALL, x, y, 0); } }
         };
         ring(&mut w, None, false);
-        assert_eq!(w.plan_march(&[5, 0, 0, 0, 0], hx, hy, hx + 40.0, hy)[0], -2.0, "a closed wall ring traps the army");
+        assert_eq!(w.plan_march(&[5, 0, 0, 0, 0, 0], hx, hy, hx + 40.0, hy)[0], -2.0, "a closed wall ring traps the army");
         ring(&mut w, Some(0), true);
-        assert_eq!(w.plan_march(&[5, 0, 0, 0, 0], hx, hy, hx + 40.0, hy)[0], 1.0, "a gate lets it out");
+        assert_eq!(w.plan_march(&[5, 0, 0, 0, 0, 0], hx, hy, hx + 40.0, hy)[0], 1.0, "a gate lets it out");
         // a moat ring needs a bridge (water leg); a drawbridge makes the way free
         w.buildings.truncate(1);
         for i in 0..40 { let a = i as f32 / 40.0 * std::f32::consts::TAU; put(&mut w, MOAT, hx + a.cos() * 14.0, hy + a.sin() * 14.0, 0); }
-        let p = w.plan_march(&[5, 0, 0, 0, 0], hx, hy, hx + 40.0, hy);
+        let p = w.plan_march(&[5, 0, 0, 0, 0, 0], hx, hy, hx + 40.0, hy);
         assert_eq!(p[0], 1.0); assert!(p[2] > 0.0 || p[3] > 0.0, "crossing a moat costs planks or boats");
         put(&mut w, DRAWBRIDGE, hx + 14.0, hy, 2);
-        let q = w.plan_march(&[5, 0, 0, 0, 0], hx, hy, hx + 40.0, hy);
+        let q = w.plan_march(&[5, 0, 0, 0, 0, 0], hx, hy, hx + 40.0, hy);
         assert_eq!(q[0], 1.0); assert_eq!(q[2] + q[3], 0.0, "the drawbridge spares the planks");
         let di = w.buildings.len() as u32 - 1; assert_eq!(w.drawbridge_set(di, true), 0);
-        let up = w.plan_march(&[5, 0, 0, 0, 0], hx, hy, hx + 40.0, hy); assert!(up[2] + up[3] > 0.0, "a raised drawbridge cannot be crossed");
+        let up = w.plan_march(&[5, 0, 0, 0, 0, 0], hx, hy, hx + 40.0, hy); assert!(up[2] + up[3] > 0.0, "a raised drawbridge cannot be crossed");
     }
 
     #[test]
@@ -2490,7 +2612,7 @@ mod tests {
 
     #[test]
     fn battles_are_deterministic() {
-        let run = || { let mut w = village(); w.population = 25; w.start_raid(2.0, &[10, 5, 2, 1, 1], 7); for _ in 0..200 { w.step(); w.stock[GR as usize] = 3000; } w.state_hash() };
+        let run = || { let mut w = village(); w.population = 25; w.start_raid(2.0, &[10, 5, 2, 1, 1, 0], 7); for _ in 0..200 { w.step(); w.stock[GR as usize] = 3000; } w.state_hash() };
         assert_eq!(run(), run());
     }
 
@@ -2721,6 +2843,38 @@ mod trade_tests {
     fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [300; N_RES]; w }
 
     #[test]
+    fn errands_travel_and_do_their_work_only_when_they_arrive() {
+        let mut w = rich(); w.rel_add(7, 60);
+        // an offer costs nothing but sets out; nothing is signed until it arrives
+        assert_eq!(w.journey_start(TREATY_PEACE, 7, 30, 200.0), 0);
+        assert_eq!(w.journey_start(TREATY_PEACE, 7, 30, 200.0), -7, "one of a kind at a time");
+        assert_eq!(w.journey_start(TREATY_ALLIANCE, 7, 30, 200.0), -22, "no alliance without a pact");
+        assert_eq!(w.journey_start(JK_ENVOY, 7, 0, 100.0), 0); assert_eq!(w.stock[GD as usize], 280);
+        assert_eq!(w.journey_start(JK_MARRIAGE, 7, 0, 300.0), 0); assert_eq!(w.stock[GD as usize], 130);
+        assert!(!w.has_treaty(7, TREATY_PEACE) && !w.married_to(7));
+        let f = w.journeys_flat(); assert_eq!(f.len(), 21);
+        let arrive: Vec<i32> = f.chunks(7).map(|c| c[6]).collect();
+        assert_eq!(arrive[0], 30 + (200.0f32 / 1.6) as i32);
+        let before = w.relation(7);
+        let mut seen = vec![];
+        for _ in 0..400 { w.step(); let now = w.tick() as i32; for c in w.journeys_flat().chunks(7) { assert!(c[5] <= now && now < c[6]); } for a in w.take_arrivals().chunks(4) { assert_eq!(a[3], now); seen.push((a[0], now)); } }
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        for (k, at) in &seen { let idx = [1, 3, 4].iter().position(|x| x == k).unwrap(); assert_eq!(*at, arrive[idx], "kind {k} arrives on its tick"); }
+        assert!(w.has_treaty(7, TREATY_PEACE) && w.married_to(7) && w.relation(7) > before);
+        assert!(w.journeys_flat().is_empty());
+        // a war herald ends treaties when it gets there
+        assert_eq!(w.journey_start(JK_WAR, 7, 0, 50.0), 0); assert!(w.married_to(7));
+        for _ in 0..200 { w.step(); }
+        assert!(!w.married_to(7) && !w.has_treaty(7, TREATY_PEACE));
+    }
+
+    #[test]
+    fn link_points_follow_the_chained_path() {
+        let mut w = World::new(1337, 0, 0); assert!(w.link_points(300.0, 0.0).is_empty());
+        if w.link_village(300.0, 0.0) == 0 { let p = w.link_points(300.0, 0.0); assert!(p.len() >= 4 && p.len() % 2 == 0); assert!((p[p.len() - 2] - 300.0).hypot(p[p.len() - 1]) < 12.0); }
+    }
+
+    #[test]
     fn scarce_goods_cost_more_and_plenty_costs_less() {
         let mut w = rich(); let cap = w.storage_cap();
         w.stock[IR as usize] = 0; let scarce = w.prices()[IR as usize];
@@ -2767,11 +2921,11 @@ mod trade_tests {
     #[test]
     fn treaties_stop_wars_and_improve_prices() {
         let mut w = rich();
-        assert!(w.start_raid(0.5, &[3, 0, 0, 0, 0], 9), "no treaty: the raid starts");
+        assert!(w.start_raid(0.5, &[3, 0, 0, 0, 0, 0], 9), "no treaty: the raid starts");
         let mut w = rich();
         assert!(w.treaty_set(9, TREATY_PEACE, 10)); assert!(w.has_treaty(9, TREATY_PEACE));
-        assert!(!w.start_raid(0.5, &[3, 0, 0, 0, 0], 9), "a peace treaty stops their attack");
-        assert!(w.start_raid(0.5, &[3, 0, 0, 0, 0], 8), "but not someone else's");
+        assert!(!w.start_raid(0.5, &[3, 0, 0, 0, 0, 0], 9), "a peace treaty stops their attack");
+        assert!(w.start_raid(0.5, &[3, 0, 0, 0, 0, 0], 8), "but not someone else's");
         assert!(!w.treaty_set(0, TREATY_PEACE, 10) && !w.treaty_set(9, 5, 10));
         let mut w = rich(); w.stock[GD as usize] = 1000; let plain = w.receive_goods(IR, 20);
         let mut w = rich(); w.stock[GD as usize] = 1000; w.treaty_set(9, TREATY_TRADE, 5); let pact = w.receive_goods(IR, 20);
@@ -2852,8 +3006,8 @@ mod morale_tests {
         let mut fled = 0; let mut finished = 0;
         for seed in 0..6u64 {
             let mut w = village(); w.rng = Rng(seed * 104729 + 17);
-            w.army = [14, 10, 8, 4, 0]; w.population = 40;
-            assert!(w.start_raid(1.2, &[10, 3, 0, 0, 0], 0));
+            w.army = [14, 10, 8, 4, 0, 0]; w.population = 40;
+            assert!(w.start_raid(1.2, &[10, 3, 0, 0, 0, 0], 0));
             let mut n = 0; while w.battle_active() && n < 600 { w.step(); w.stock[GR as usize] = 3000; n += 1; }
             if !w.battle_active() { finished += 1; }
             let r = w.last_report(); let l = r.len();
@@ -2865,8 +3019,8 @@ mod morale_tests {
 
     #[test]
     fn the_ones_who_ran_come_home_with_the_survivors() {
-        let mut w = village(); w.army = [14, 10, 8, 4, 0]; w.population = 40; w.rng = Rng(99);
-        assert!(w.start_raid(0.4, &[12, 0, 0, 0, 0], 5));
+        let mut w = village(); w.army = [14, 10, 8, 4, 0, 0]; w.population = 40; w.rng = Rng(99);
+        assert!(w.start_raid(0.4, &[12, 0, 0, 0, 0, 0], 5));
         let mut n = 0; while w.battle_active() && n < 600 { w.step(); w.stock[GR as usize] = 3000; n += 1; }
         let r = w.last_report(); let l = r.len();
         let survivors: i32 = r[6..11].iter().sum();
@@ -2876,8 +3030,8 @@ mod morale_tests {
     /// What the client draws from: the two armies advance, meet, swing at each other and soldiers fall (positions, swing timers and hp come from `battle_units_flat`).
     #[test]
     fn the_armies_meet_strike_and_fall_in_the_unit_data() {
-        let mut w = village(); w.army = [10, 4, 0, 0, 0]; w.population = 40; w.rng = Rng(5);
-        assert!(w.start_raid(0.5, &[10, 4, 0, 0, 0], 0));
+        let mut w = village(); w.army = [10, 4, 0, 0, 0, 0]; w.population = 40; w.rng = Rng(5);
+        assert!(w.start_raid(0.5, &[10, 4, 0, 0, 0, 0], 0));
         let gap = |w: &World| { let u = w.battle_units_flat(); let mut best = f32::MAX; for i in 0..u.len() / 10 { for j in 0..u.len() / 10 { if u[i * 10] == 0.0 && u[j * 10] == 1.0 && u[i * 10 + 6] > 0.0 && u[j * 10 + 6] > 0.0 { best = best.min(((u[i * 10 + 2] - u[j * 10 + 2]).powi(2) + (u[i * 10 + 3] - u[j * 10 + 3]).powi(2)).sqrt()); } } } best };
         let start = gap(&w);
         let (mut closest, mut swings_melee, mut swings_shot, mut deaths, mut hp_drops) = (start, 0, 0, 0, 0);
@@ -2905,8 +3059,8 @@ mod morale_tests {
 #[cfg(test)]
 mod neutral_tests {
     use super::*;
-    fn world() -> World { let mut w = World::new(1337, 0, 0); w.stock = [100; N_RES]; w.army = [40, 20, 20, 10, 0]; w }
-    fn army_at(w: &mut World, x: f32, y: f32, units: [u32; 5]) -> u32 { w.army = units; let id = w.det_form(&units); let i = w.dets.iter().position(|d| d.id == id).unwrap(); w.dets[i].x = x; w.dets[i].y = y; id }
+    fn world() -> World { let mut w = World::new(1337, 0, 0); w.stock = [100; N_RES]; w.army = [40, 20, 20, 10, 0, 0]; w }
+    fn army_at(w: &mut World, x: f32, y: f32, units: [u32; NK]) -> u32 { w.army = units; let id = w.det_form(&units); let i = w.dets.iter().position(|d| d.id == id).unwrap(); w.dets[i].x = x; w.dets[i].y = y; id }
     fn first_of(seed: u64, kind: u8) -> Option<(usize, f32, f32)> { terrain::neutrals(seed).iter().enumerate().find(|(_, n)| n.0 == kind).map(|(i, n)| (i, n.1, n.2)) }
 
     #[test]
@@ -2924,7 +3078,7 @@ mod neutral_tests {
         let seen = |w: &World| w.explored_flat().iter().filter(|&&c| c != 0).count();
         let start = seen(&w); assert!(start > 4 && start < 80, "only the home region is known: {start}");
         assert!(w.neutrals_flat().len() <= 4 * 8, "few places known at the start");
-        let id = w.det_form(&[10, 0, 0, 0, 0]); assert!(id > 0);
+        let id = w.det_form(&[10, 0, 0, 0, 0, 0]); assert!(id > 0);
         assert_eq!(w.det_march(id, 90.0, 0.0, false, 0.0, 0.0), 0);
         for _ in 0..80 { w.step(); w.stock[GR as usize] = 500; }
         assert!(seen(&w) > start, "the army saw new ground: {} > {start}", seen(&w));
@@ -2934,25 +3088,25 @@ mod neutral_tests {
     fn abbeys_heal_castles_pay_camps_fight_and_each_place_is_used_once() {
         let seed = 1337;
         let (ai, ax, ay) = first_of(seed, 0).expect("an abbey");
-        let mut w = world(); w.sick = 12; let id = army_at(&mut w, ax, ay, [5, 0, 0, 0, 0]);
+        let mut w = world(); w.sick = 12; let id = army_at(&mut w, ax, ay, [5, 0, 0, 0, 0, 0]);
         assert_eq!(w.visit_neutral(id), 0); assert_eq!(w.sick(), 0, "the sick are healed"); assert!(w.neutral_done[ai]);
         assert_eq!(w.visit_neutral(id), -3, "an abbey is used once");
         let (_, cx, cy) = first_of(seed, 1).expect("a ruin");
-        let mut w = world(); let id = army_at(&mut w, cx, cy, [5, 0, 0, 0, 0]); let gold = w.stock[GD as usize];
+        let mut w = world(); let id = army_at(&mut w, cx, cy, [5, 0, 0, 0, 0, 0]); let gold = w.stock[GD as usize];
         assert_eq!(w.visit_neutral(id), 1); assert!(w.stock[GD as usize] > gold, "the hoard");
         let (_, bx, by) = first_of(seed, 2).expect("a camp");
-        let mut w = world(); let weak = army_at(&mut w, bx, by, [2, 0, 0, 0, 0]);
+        let mut w = world(); let weak = army_at(&mut w, bx, by, [2, 0, 0, 0, 0, 0]);
         assert_eq!(w.visit_neutral(weak), 102, "a weak party is beaten"); assert!(w.dets.iter().all(|d| d.units[0] <= 1), "and loses half its men");
-        let mut w = world(); let strong = army_at(&mut w, bx, by, [60, 30, 30, 20, 0]); let gold = w.stock[GD as usize];
+        let mut w = world(); let strong = army_at(&mut w, bx, by, [60, 30, 30, 20, 0, 0]); let gold = w.stock[GD as usize];
         assert_eq!(w.visit_neutral(strong), 2); assert!(w.stock[GD as usize] > gold, "the cleared camp pays");
-        let mut w = world(); let far = army_at(&mut w, 0.0, 0.0, [5, 0, 0, 0, 0]);
+        let mut w = world(); let far = army_at(&mut w, 0.0, 0.0, [5, 0, 0, 0, 0, 0]);
         assert_eq!(w.visit_neutral(far), -2, "nothing near the village"); assert_eq!(w.visit_neutral(999), -1);
     }
 
     #[test]
     fn visiting_a_place_reveals_it() {
         let (_, ax, ay) = first_of(1337, 0).unwrap(); let mut w = world();
-        let before = w.neutrals_flat().len(); let id = army_at(&mut w, ax, ay, [5, 0, 0, 0, 0]); w.visit_neutral(id);
+        let before = w.neutrals_flat().len(); let id = army_at(&mut w, ax, ay, [5, 0, 0, 0, 0, 0]); w.visit_neutral(id);
         assert!(w.neutrals_flat().len() > before || w.is_seen(ax, ay));
     }
 }
@@ -3031,8 +3185,8 @@ mod hero_tests {
     fn a_defence_wins_the_lord_experience_and_a_defeat_can_cost_his_life() {
         let mut xp_gained = 0u32; let mut fell = 0;
         for seed in 0..6u64 {
-            let mut w = village(); w.rng = Rng(seed * 7919 + 3); w.army = [14, 10, 8, 4, 0]; w.population = 40; w.hero = Some((2, 0));
-            assert!(w.start_raid(1.2, &[10, 3, 0, 0, 0], 0));
+            let mut w = village(); w.rng = Rng(seed * 7919 + 3); w.army = [14, 10, 8, 4, 0, 0]; w.population = 40; w.hero = Some((2, 0));
+            assert!(w.start_raid(1.2, &[10, 3, 0, 0, 0, 0], 0));
             let mut n = 0; while w.battle_active() && n < 600 { w.step(); w.stock[GR as usize] = 3000; n += 1; }
             match w.hero { Some((_, xp)) => xp_gained += xp, None => fell += 1 }
         }
@@ -3041,8 +3195,8 @@ mod hero_tests {
         // a hopeless defence: the raiders win and the lord may be lost
         let mut lost = 0;
         for seed in 0..24u64 {
-            let mut w = village(); w.rng = Rng(seed * 104729 + 11); w.population = 12; w.hero = Some((1, 0)); w.army = [0; 5];
-            assert!(w.start_raid(0.5, &[16, 8, 6, 0, 0], 0));
+            let mut w = village(); w.rng = Rng(seed * 104729 + 11); w.population = 12; w.hero = Some((1, 0)); w.army = [0; NK];
+            assert!(w.start_raid(0.5, &[16, 8, 6, 0, 0, 0], 0));
             let mut n = 0; while w.battle_active() && n < 600 { w.step(); w.stock[GR as usize] = 3000; n += 1; }
             if w.hero.is_none() { lost += 1; }
         }
@@ -3055,11 +3209,11 @@ mod oil_tests {
     use super::*;
     /// An attacker standing on a ladder against the wall at (hx + 14, hy): how much health it has after a few moments.
     fn climber_hp(oil: bool, tier: u8) -> f32 {
-        let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.army = [4, 4, 0, 0, 0]; w.population = 30;
+        let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.army = [4, 4, 0, 0, 0, 0]; w.population = 30;
         let i = w.place(WALL, 14, 0, 0); assert!(i >= 0, "wall: {i}");
         for _ in 0..tier { w.upgrade(i as u32); }
         if oil { assert_eq!(w.set_option(i as u32, 2, true), 0, "hoarding"); }
-        assert!(w.start_raid(0.0, &[6, 0, 0, 0, 0], 0));
+        assert!(w.start_raid(0.0, &[6, 0, 0, 0, 0, 0], 0));
         let (x, y) = (w.buildings[i as usize].x, w.buildings[i as usize].y);
         { let b = w.battle.as_mut().unwrap(); let k = b.units.iter().position(|u| u.side == 1).unwrap(); b.units[k].x = x + 2.0; b.units[k].y = y; b.units[k].climb = 3.0; b.units[k].hp = 500.0; b.units[k].spot = 0; }
         for _ in 0..8 { w.battle_substep(); }
@@ -3109,10 +3263,48 @@ mod toll_tests {
 }
 
 #[cfg(test)]
+mod own_pace_tests {
+    use super::*;
+    /// Foot soldiers, knights and catapults sent together each go at their own pace along their own route; the army has arrived when the slowest has.
+    #[test]
+    fn riders_and_engines_march_apart_at_their_own_pace() {
+        let units = [12u32, 0, 0, 4, 2, 1]; let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.army = units;
+        let id = w.det_form(&units); assert!(id > 0);
+        assert_eq!(w.det_march(id, 160.0, 0.0, true, 160.0, 0.0), 0);
+        let g = w.det_groups_flat(); assert_eq!(g.len(), 16, "knights and catapults march as their own groups");
+        let (mut foot_t, mut cav_t, mut eng_t, mut done_t) = (0, 0, 0, 0);
+        let mut max_gap = 0.0f32;
+        for t in 1..=400 {
+            w.step(); w.stock = [3000; N_RES];
+            let f = w.det_flat(); let g = w.det_groups_flat();
+            let (hx, hy) = (f[1], f[2]);
+            let at = |x: f32, y: f32| (x - 160.0).hypot(y) < 3.0;
+            if foot_t == 0 && at(hx, hy) { foot_t = t; }
+            for c in g.chunks(8) { max_gap = max_gap.max((c[3] - hx).hypot(c[4] - hy)); if c[1] == 3.0 && cav_t == 0 && at(c[3], c[4]) { cav_t = t; } if c[1] == 4.0 && eng_t == 0 && at(c[3], c[4]) { eng_t = t; } }
+            if f[8] as u8 == march::S_ARRIVED { done_t = t; break; }
+        }
+        eprintln!("arrived: knights {cav_t}s, foot {foot_t}s, catapults {eng_t}s, army {done_t}s, widest gap {max_gap:.0}");
+        assert!(cav_t > 0 && foot_t > 0 && eng_t > 0 && done_t > 0, "all three groups arrive");
+        assert!((cav_t as f32) < foot_t as f32 * 0.7, "knights ride much faster than the foot: {cav_t} vs {foot_t}");
+        assert!((foot_t as f32) < eng_t as f32 * 0.8, "catapults are slower than the foot: {foot_t} vs {eng_t}");
+        assert!(done_t >= eng_t, "the army has arrived only when the slowest group has");
+        assert!(max_gap > 30.0, "they really spread out on the way");
+        assert_eq!(w.det_flat()[3] as u32 + w.det_flat()[6] as u32 + w.det_flat()[7] as u32 + w.det_flat()[16] as u32, 12 + 4 + 2 + 1, "nobody is lost");
+        assert!(w.det_groups_flat().is_empty(), "once there the groups are one army again");
+    }
+    #[test]
+    fn an_army_of_riders_alone_is_one_body() {
+        let units = [0u32, 0, 0, 5, 0, 0]; let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.army = units;
+        let id = w.det_form(&units); assert_eq!(w.det_march(id, 60.0, 0.0, false, 0.0, 0.0), 0);
+        assert!(w.det_groups_flat().is_empty());
+    }
+}
+
+#[cfg(test)]
 mod scout_tests {
     use super::*;
     fn seen(w: &World) -> usize { w.explored_flat().iter().filter(|&&c| c != 0).count() }
-    fn run(units: [u32; 5]) -> usize {
+    fn run(units: [u32; NK]) -> usize {
         let mut w = World::new(1337, 0, 0); w.stock = [500; N_RES]; w.army = units;
         let id = w.det_form(&units); assert!(id > 0);
         assert_eq!(w.det_march(id, 80.0, 0.0, false, 0.0, 0.0), 0);
@@ -3121,7 +3313,7 @@ mod scout_tests {
     }
     #[test]
     fn a_scout_sees_further_than_an_army() {
-        let (scout, army) = (run([0, 0, 0, 2, 0]), run([20, 0, 0, 0, 0]));
+        let (scout, army) = (run([0, 0, 0, 2, 0, 0]), run([20, 0, 0, 0, 0, 0]));
         assert!(scout > army, "two riders reveal more ground than a column of twenty: {scout} vs {army}");
     }
 }
@@ -3221,7 +3413,7 @@ mod road_piece_tests {
         while i < v.len() { if v[i] as i32 == h { found = true; } i += 3 + 2 * v[i + 2] as usize; }
         assert!(found, "the house is connected through the road pieces");
         // a field army walks straight over a road (nothing blocks it)
-        w.army = [10, 0, 0, 0, 0]; let id = w.det_form(&[10, 0, 0, 0, 0]); assert!(id > 0);
+        w.army = [10, 0, 0, 0, 0, 0]; let id = w.det_form(&[10, 0, 0, 0, 0, 0]); assert!(id > 0);
         assert_eq!(w.det_march(id, 40.0, 4.0, false, 0.0, 0.0), 0, "a route over the road exists");
     }
 
@@ -3233,7 +3425,7 @@ mod road_piece_tests {
         if let Some((x, y)) = probe { assert!(sea.can_place(ROAD, x, y) < 0, "no road in the sea"); }
         // raiders ignore dirt roads: with only road pieces besides the hall, they still go for the hall
         let mut w = rich(); for k in 0..5 { w.place(ROAD, 12 + k * 4, 0, 0); }
-        assert!(w.start_raid(1.0, &[4, 0, 0, 0, 0], 0));
+        assert!(w.start_raid(1.0, &[4, 0, 0, 0, 0, 0], 0));
         for _ in 0..40 { w.step(); }
         assert!(w.buildings.iter().filter(|b| b.kind == ROAD).all(|b| b.hp >= battle::max_hp(ROAD, 0) - 0.01), "no road was damaged");
     }
@@ -3315,7 +3507,7 @@ mod bridge_tests {
         assert!(has_link(&w, out), "over the bridge the house is joined to the village");
         // a raid: the bridge points let attackers over the water
         assert!(!w.bridge_points().is_empty());
-        w.army = [10, 0, 0, 0, 0]; let id = w.det_form(&[10, 0, 0, 0, 0]); assert!(id > 0);
+        w.army = [10, 0, 0, 0, 0, 0]; let id = w.det_form(&[10, 0, 0, 0, 0, 0]); assert!(id > 0);
         assert_eq!(w.det_march(id, 14.0, 0.0, false, 0.0, 0.0), 0, "an army crosses by the bridge");
     }
 
@@ -3349,7 +3541,7 @@ mod care_tests {
             if t % 240 == 238 { w.cheat(1, -4, 0); }   // room for babies, and people leaving
             if t == 1300 { w.cheat(1, 12, 0); }
             if t == 2600 { w.cheat(1, -9, 0); }
-            if t == 3100 && !w.battle_active() { w.start_raid(0.5, &[8, 2, 0, 0, 0], 0); }
+            if t == 3100 && !w.battle_active() { w.start_raid(0.5, &[8, 2, 0, 0, 0, 0], 0); }
             assert_eq!(w.ledger_population(), w.population() as i64, "tick {t}: the ledger says {} but the village counts {}: {:?}", w.ledger_population(), w.population(), w.vitals());
             let (kids, old) = (w.demographics()[0], w.demographics()[2]);
             assert!(kids + old <= w.population(), "tick {t}: {kids} children and {old} elders cannot be more than the {} villagers", w.population());
@@ -3451,9 +3643,9 @@ mod relation_tests {
     #[test]
     fn war_wrecks_relations_and_allies_cannot_attack() {
         let mut w = world(); w.rel_add(7, 70); w.treaty_set(7, TREATY_TRADE, 30); w.treaty_set(7, TREATY_ALLIANCE, 30); w.treaty_set(7, TREATY_PEACE, 30);
-        assert!(!w.start_raid(0.5, &[3, 0, 0, 0, 0], 7), "an ally's attack is refused");
+        assert!(!w.start_raid(0.5, &[3, 0, 0, 0, 0, 0], 7), "an ally's attack is refused");
         w.declare_war(7); assert!(w.relation(7) <= -60, "{}", w.relation(7)); assert!(!w.has_treaty(7, TREATY_ALLIANCE) && !w.has_treaty(7, TREATY_PEACE) && !w.has_treaty(7, TREATY_TRADE));
-        assert!(w.start_raid(0.5, &[3, 0, 0, 0, 0], 7), "once at war they may attack"); assert!(w.relation(7) <= -100 + 1 || w.relation(7) < -60, "and an attack is not forgotten");
+        assert!(w.start_raid(0.5, &[3, 0, 0, 0, 0, 0], 7), "once at war they may attack"); assert!(w.relation(7) <= -100 + 1 || w.relation(7) < -60, "and an attack is not forgotten");
     }
 
     #[test]
@@ -3523,9 +3715,9 @@ mod gate_tests {
         assert_eq!(w.gate_set(g as u32, true), -2, "a wooden gate has no doors");
         for _ in 0..2 { assert_eq!(w.upgrade(g as u32), 0); }
         assert!(w.gates_shut_flat().is_empty(), "open by default");
-        let open = w.plan_march(&[5, 0, 0, 0, 0], 0.0, 18.0, 0.0, 44.0);
+        let open = w.plan_march(&[5, 0, 0, 0, 0, 0], 0.0, 18.0, 0.0, 44.0);
         assert_eq!(w.gate_set(g as u32, true), 0); assert_eq!(w.gates_shut_flat(), vec![g as u32]);
-        let shut = w.plan_march(&[5, 0, 0, 0, 0], 0.0, 18.0, 0.0, 44.0);
+        let shut = w.plan_march(&[5, 0, 0, 0, 0, 0], 0.0, 18.0, 0.0, 44.0);
         assert!(shut.len() != open.len() || shut != open, "the route changes (or fails) when the gate is barred");
         assert_eq!(w.gate_set(g as u32, false), 0); assert!(w.gates_shut_flat().is_empty());
         assert_eq!(w.gate_set(99, true), -1);
@@ -3543,7 +3735,7 @@ mod pathing_room_tests {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
         let mut placed = 0; for k in -3..=3 { if w.place(HOUSE, k * 9, 30, 0) >= 0 { placed += 1; } }
         assert!(placed >= 5, "a row of houses with gaps of about 2.8: {placed}");
-        let p = w.plan_march(&[5, 0, 0, 0, 0], 0.0, 12.0, 0.0, 48.0);
+        let p = w.plan_march(&[5, 0, 0, 0, 0, 0], 0.0, 12.0, 0.0, 48.0);
         assert_eq!(p[0], 1.0, "a route exists: {:?}", &p[..5.min(p.len())]);
         let mut len = 0.0; let mut prev = (0.0f32, 12.0f32); for q in p[5..].chunks(3) { len += ((q[0] - prev.0).powi(2) + (q[1] - prev.1).powi(2)).sqrt(); prev = (q[0], q[1]); }
         assert!(len < 70.0, "it goes through the gaps, not all the way round the row: {len:.0} units");
@@ -3745,7 +3937,7 @@ mod pathnet_tests {
     fn nobody_walks_through_a_fence_between_its_posts_and_armies_march_through_the_middle_of_a_gate() {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
         for x in (-10..=10).step_by(5) { assert!(w.place(FENCE, x, 24, 0) >= 0, "fence at {x}"); }
-        let u = [5u32, 0, 0, 0, 0];
+        let u = [5u32, 0, 0, 0, 0, 0];
         for sx in [-9.0f32, -3.0, 0.0, 2.5, 8.0] {
             let p = w.find_path(&u, sx, 18.0, sx, 30.0).expect("a way round the fence");
             let mut all = vec![(sx, 18.0)]; all.extend(p.iter().map(|q| (q.x, q.y))); all.push((sx, 30.0));
@@ -3772,13 +3964,39 @@ mod pathnet_tests {
         let mut pts = vec![(0.0f32, 8.0f32)]; pts.extend(r[1..].chunks(2).map(|c| (c[0], c[1])));
         for p in pts.windows(2) { for t in 0..=40 { let f = t as f32 / 40.0; let (x, y) = (p[0].0 + (p[1].0 - p[0].0) * f, p[0].1 + (p[1].1 - p[0].1) * f); assert!(w.height_at(x, y) > 0.1 || (x.abs() <= 2.0 && (y - 20.0).abs() <= 7.5), "waded at {x:.1},{y:.1}"); } }
         // an army goes the same way, over the deck
-        let a = w.find_path(&[5, 0, 0, 0, 0], 0.0, 8.0, 0.0, 36.0).expect("a route");
+        let a = w.find_path(&[5, 0, 0, 0, 0, 0], 0.0, 8.0, 0.0, 36.0).expect("a route");
         assert!(a.iter().all(|q| q.mode == 0), "no ferry where there is a drawbridge");
         // the roads are the cheap lines: two houses with a road between them are joined along it
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES];
         for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 30, 4)] { w.place(k, x, y, 0); }
-        let p = w.find_path(&[5, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
+        let p = w.find_path(&[5, 0, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
         assert!(p.len() >= 2 && p.last().map_or(false, |q| (q.x - 30.0).abs() < 3.0));
+    }
+
+    #[test]
+    fn a_waterwheel_snaps_to_the_bank_with_its_wheel_over_the_water() {
+        let mut w = village(); w.stock = [500; N_RES];
+        for i in 0..6 { assert!(w.place(RIVER, 20 + i * 4, -30, 2) >= 0); }
+        let mut seen = 0;
+        for (cx, cy) in [(24, -22), (30, -24), (28, -40), (36, -30), (34, -36), (22, -23)] {
+            let s = w.waterwheel_snap(cx, cy);
+            if s.is_empty() { continue; }
+            seen += 1;
+            let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
+            let (x, y) = ((w.ox + dx) as f32, (w.oy + dy) as f32);
+            let (ux, uy) = World::wheel_dir(rot);
+            assert!(w.height_at(x, y) >= 0.4, "the house is on dry land: {s:?}");
+            assert!(w.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2, "the wheel hangs over water: {s:?}");
+            assert_eq!(w.waterwheel_snap(cx, cy), s, "snapping is a pure function");
+            // turned the other way the wheel would be in the air over dry ground
+            assert_eq!(w.place(WATERWHEEL, dx, dy, (rot + 4) & 7), -16, "wheel facing the land is refused");
+            if seen == 1 {
+                assert!(w.place(WATERWHEEL, dx, dy, rot) >= 0, "the snapped spot can be built on: {s:?}");
+                assert!(w.buildings.last().unwrap().pad_h <= WHEEL_PAD_MAX + 1e-4);
+            }
+        }
+        assert!(seen >= 3, "the snap finds the bank from most clicks ({seen})");
+        assert!(w.waterwheel_snap(-60, 60).is_empty(), "no water, no snap");
     }
 
     #[test]
@@ -3818,7 +4036,7 @@ mod pathnet_tests {
         let mut spot = None;
         'find: for r in (60..260).step_by(10) { for k in 0..48 { let a = k as f32 / 48.0 * std::f32::consts::TAU; let (x, y) = (a.cos() * r as f32, a.sin() * r as f32); let (ux, uy) = (a.cos(), a.sin()); if (0..=6).all(|q| ns.dens_at(x + ux * q as f32 * 4.0, y + uy * q as f32 * 4.0) >= 3 && w.height_at(x + ux * q as f32 * 4.0, y + uy * q as f32 * 4.0) > 1.0) { spot = Some((x + ux * 24.0, y + uy * 24.0)); break 'find; } } }
         let (fx, fy) = spot.expect("there is thick wood near the village");
-        w.army = [8, 0, 0, 0, 0]; let id = w.det_form(&[8, 0, 0, 0, 0]); assert!(id > 0);
+        w.army = [8, 0, 0, 0, 0, 0]; let id = w.det_form(&[8, 0, 0, 0, 0, 0]); assert!(id > 0);
         let r = w.det_march(id, fx, fy, false, 0.0, 0.0); assert_eq!(r, 0, "a way to the wood");
         let before = w.felled.len();
         for _ in 0..1200 { w.step(); w.stock[GR as usize] = 3000; if w.det_flat().len() >= 9 && w.det_flat()[8] as u8 != march::S_MARCH { break; } }
@@ -3857,7 +4075,7 @@ mod pathnet_tests {
         // the path is part of the network: it reaches out of the city towards the other one, and marching takes it
         let net = w.net_flat(); let n = net[0] as usize;
         let far = (0..n).filter(|&i| net[2 + 2 * i] > 120.0).count(); assert!(far > 3, "network nodes out along the path: {far}");
-        let p = w.find_path(&[10, 0, 0, 0, 0], 8.0, 8.0, 280.0, 36.0).expect("a march to the other city");
+        let p = w.find_path(&[10, 0, 0, 0, 0, 0], 8.0, 8.0, 280.0, 36.0).expect("a march to the other city");
         assert!(p.last().map_or(false, |q| (q.x - 280.0).abs() < 6.0));
     }
 
@@ -3910,3 +4128,6 @@ mod pathnet_tests {
         assert!(!w.on_road(60.0, 60.0));
     }
 }
+
+#[cfg(test)]
+mod combat_tests;
