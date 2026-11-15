@@ -13,6 +13,8 @@ mod plague;
 mod wallnet;
 #[cfg(test)]
 mod roadcheck;
+#[cfg(test)]
+mod farmcheck;
 mod terrain;
 use catalog::*;
 use military::*;
@@ -743,6 +745,11 @@ impl World {
             let r0 = pad_inner(d);
             let r1 = r0 + 3.5;
             let (dx, dy) = (x - b.x, y - b.y);
+            // a farm's fields reach far past its circle once it is upgraded (up to 15 from its middle, and to one side): the ground is levelled under all of them, not just the circle
+            if b.kind == FARM && dx.abs() <= FARM_PAD_REACH && dy.abs() <= FARM_PAD_REACH {
+                let fd = pathnet::field_distance(b, x, y);
+                if fd < FARM_PAD_BLEND { h = lerp(h, b.pad_h, 1.0 - smoothstep(FARM_PAD_FLAT, FARM_PAD_BLEND, fd)); }
+            }
             if dx.abs() > r1 || dy.abs() > r1 { continue; }
             let dist = (dx * dx + dy * dy).sqrt();
             if matches!(b.kind, WALL | GATE | FENCE) {   // a wall builds the ground it stands on: earth is heaped up where it is missing (never dug away), so no wall hangs over a drop or a ditch
@@ -1096,6 +1103,7 @@ impl World {
         let (k, t) = (self.buildings[idx as usize].kind, self.buildings[idx as usize].tier);
         self.buildings[idx as usize].hp = battle::max_hp(k, t);
         self.buildings[idx as usize].burning = 0.0;
+        if k == FARM { self.terrain_ver += 1; }   // a bigger farm works more fields: the ground is levelled under them too, so everything standing near must be fitted to it again
         self.after_change();
         0
     }
@@ -2217,6 +2225,12 @@ pub fn rules_fingerprint(seed: u64) -> String {
 }
 
 fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
+/// The ground under a farm is levelled flat out to FLAT from the edge of its fields, then eased into the land over the next stretch. The fields lie flat at the farm's pad height,
+/// so on a slope any field standing on ground higher than that would be buried.
+const FARM_PAD_FLAT: f32 = 0.9;
+const FARM_PAD_BLEND: f32 = 4.6;
+/// No field of a farm of any tier lies farther than this from its middle (plus the blend).
+const FARM_PAD_REACH: f32 = 22.0;
 
 #[cfg(test)]
 mod lend_tests;
