@@ -1092,6 +1092,7 @@ impl World {
         // soldiers train, fires burn, battles run (4 sub-steps of 0.25s per tick)
         self.training_step();
         self.march_step();
+        self.defence_step();
         self.builders_step();
         self.trade_step();
         self.toll_step();
@@ -1675,8 +1676,16 @@ impl World {
     pub fn det_recall(&mut self, id: u32) -> i32 { let (hx, hy) = (self.buildings[0].x, self.buildings[0].y + 9.0); self.det_march_inner(id, hx, hy, None, true) }
     pub fn det_split(&mut self, id: u32, take: &[u32]) -> u32 { if take.len() < 5 { return 0; } self.det_split_inner(id, [take[0], take[1], take[2], take[3], take[4]]) }
     pub fn det_merge(&mut self, a: u32, b: u32) -> bool { self.det_merge_inner(a, b) }
-    pub fn det_halt(&mut self, id: u32) { if let Some(i) = self.dets.iter().position(|d| d.id == id) { let d = &mut self.dets[i]; d.path.clear(); d.state = march::S_IDLE; d.phase = 0; d.atk = None; } }
+    pub fn det_halt(&mut self, id: u32) { if let Some(i) = self.dets.iter().position(|d| d.id == id) { let d = &mut self.dets[i]; if d.state == march::S_FIGHT { return; } d.defend = false; d.path.clear(); d.state = march::S_IDLE; d.phase = 0; d.atk = None; } }
     /// An army that has arrived at an enemy village joins the attack; returns its soldiers (empty on failure).
+    /// Send a field army to the fight in this village: it marches to the nearest attacker and joins the defenders once it is within reach (`battle::JOIN_REACH`). 0 ok, -10 there is no battle, other codes as `det_march`.
+    pub fn det_defend(&mut self, id: u32) -> i32 { self.det_defend_inner(id) }
+    /// Call off the attack of the army with this tag: its soldiers break and run. Only the attackers' side can be made to retreat. True if there was such a battle.
+    pub fn battle_retreat(&mut self, tag: i32) -> bool { self.retreat_attackers(tag) }
+    /// More soldiers of the same attacker (tag) arrive at the battle already going on. True if they joined.
+    pub fn battle_reinforce(&mut self, tag: i32, atk: &[u32]) -> bool { if atk.len() < 5 { return false; } let c = |n: u32| n.min(300); self.reinforce_attackers(tag, [c(atk[0]), c(atk[1]), c(atk[2]), c(atk[3]), c(atk[4])]) }
+    /// Soldiers still standing in the standing army's defence of the battle, per kind (what can be sent out to meet the raiders).
+    pub fn battle_standing(&self) -> Vec<u32> { self.standing_in_battle().to_vec() }
     pub fn det_send(&mut self, id: u32) -> Vec<u32> { self.det_send_inner(id).map_or(vec![], |u| u.to_vec()) }
     /// [id, x, y, spear, archer, sword, knight, catapult, state, legMode, legsLeft, workProgress, atkX, atkY, heading, speed] (stride 16)
     pub fn det_flat(&self) -> Vec<f32> {
@@ -1823,10 +1832,10 @@ impl World {
         for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } }
         for k in 0..5 { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); }
         for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
-        for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); for k in 0..5 { mix(d.units[k] as u64); } }
+        for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..5 { mix(d.units[k] as u64); } }
         mix(self.felled.len() as u64); mix(self.groves.len() as u64); mix(self.bridges.len() as u64);
         mix(self.levels.len() as u64); mix(self.craters.len() as u64); mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
-        if let Some(bt) = &self.battle { for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); } }
+        if let Some(bt) = &self.battle { for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); } }
         h
     }
 }
@@ -2277,7 +2286,7 @@ mod tests {
     }
 
     #[test]
-    fn a_soldier_in_the_water_takes_twice_the_damage() {
+    fn a_soldier_in_the_water_takes_much_more_damage() {
         let mut w = World::new(1337, 0, 0);
         w.population = 20;
         assert!(w.begin_battle([2, 0, 0, 0, 0], 0.0, 0));
@@ -2287,7 +2296,7 @@ mod tests {
         b.units[i].hp = 1000.0; b.units[j].hp = 1000.0; b.units[j].wading = true;
         World::damage_unit(b, i, 20.0); World::damage_unit(b, j, 20.0);
         let (dry, wet) = (1000.0 - b.units[i].hp, 1000.0 - b.units[j].hp);
-        assert!((wet / dry - 2.0).abs() < 0.01, "dry {dry}, wet {wet}");
+        assert!((wet / dry - battle::WADE_DAMAGE).abs() < 0.01 && battle::WADE_DAMAGE >= 3.0, "dry {dry}, wet {wet}");
     }
 
     #[test]

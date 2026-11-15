@@ -56,6 +56,16 @@ pub struct Unit {
     pub elev: f32,  // height it stands at right now
     pub held: bool, // has a defensive post
     pub face: f32,
+    pub det: u32,     // the field army this soldier marched in with (0 = none): its survivors go back to that army when the fight ends
+    pub soak: f32,    // seconds left of being sodden after leaving the water of a moat or river: slower and weaker (see battle::SOAK_*)
+    pub escaped: bool, // ran off the field alive (not killed)
+}
+
+impl Unit {
+    /// A fresh soldier standing at (x, y), holding that spot. The caller adjusts the few fields that differ (post, charge, ...).
+    pub fn new(side: u8, kind: u8, x: f32, y: f32, face: f32) -> Unit {
+        Unit { side, kind, x, y, hx: x, hy: y, hp: UNITS[kind as usize].hp, cd: if kind == 4 { 6.0 } else { 0.5 }, alive: true, from_army: false, charge: kind == 3, wading: false, anim: 0.0, climb: 0.0, spot: -1, pelev: 0.0, elev: 0.0, held: false, face, det: 0, soak: 0.0, escaped: false }
+    }
 }
 
 #[derive(Clone)]
