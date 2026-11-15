@@ -158,7 +158,7 @@ impl World {
                     for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.bridge, b.x + sx * t, b.y + sy * t, 1.6); }
                 }
                 _ => {
-                    if b.kind == FARM {   // its fields are blocked as the rectangles they are (nobody walks across a crop)
+                    if matches!(b.kind, FARM | GARDEN | PARK | MARKET) {   // its fields, beds and stalls are blocked as the rectangles they are (nobody walks across a crop)
                         let (i0, i1) = ((((b.x - 18.0 - ORG) / CELL).floor() as i32).max(0), (((b.x + 18.0 - ORG) / CELL).ceil() as i32).min(NC - 1));
                         let (j0, j1) = ((((b.y - 18.0 - ORG) / CELL).floor() as i32).max(0), (((b.y + 18.0 - ORG) / CELL).ceil() as i32).min(NC - 1));
                         for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cell_xy((j * NC + i) as usize); if crate::pathnet::in_fields(b, cx, cy, 0.9) { ov.blocked[(j * NC + i) as usize] = true; } } }
