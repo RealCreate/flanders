@@ -1418,6 +1418,7 @@ function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.client
 /** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
  *  the pointer is on (anywhere round it), turned so its door faces away from the deposit. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
 function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
+  if (kind === 29) { const s = lv.world.waterwheel_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a waterwheel stands on the bank with its wheel out over the water (the core checks it again)
   if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
   const d = defs[kind]; if (d.req !== 1) return null;
   const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
@@ -1456,14 +1457,14 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
   let code = w.can_place(selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
-  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } }   // a mine or quarry snaps onto its deposit
+  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (selectedKind === 29) code = -16; }   // a mine or quarry snaps onto its deposit; a waterwheel with no bank to snap to cannot be built
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
     if (t) { gx = Math.round(t.x - lv.ox); gy = Math.round(t.z - lv.oz); grot = t.rot; const st = Array.from(w.stocks()); code = defs[22].cost.every(([r, n]) => st[r] >= n) ? 0 : -6; } else code = -3;
   }
   const x = lv.ox + gx, z = lv.oz + gy, d = defs[selectedKind];
   // the core levels the ground to the average of five samples: show the same levelling under the ghost so it never clips the terrain
-  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5;
+  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29) h = Math.min(h, 0.7);   // (a waterwheel house stands low on the bank: WHEEL_PAD_MAX in the core)
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = terrain.heightAt(x, z);

@@ -141,6 +141,9 @@ const CHOICE_DAYS: u64 = 2;
 pub const DAY: u64 = 240;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
+/// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
+pub const WHEEL_REACH: f32 = 4.4;
+pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
@@ -698,6 +701,7 @@ impl World {
         if kind == BRIDGE { return self.place_bridge(dx, dy); }
         let code = self.can_place(kind, dx, dy);
         if code != 0 { return code; }
+        if kind == WATERWHEEL && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
         let d = &DEFS[kind as usize];
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
@@ -708,6 +712,7 @@ impl World {
             let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
             pad_h = hi.max(0.3);
         }
+        if kind == WATERWHEEL { pad_h = pad_h.min(WHEEL_PAD_MAX); }   // the house stands low on the bank so its wheel dips into the water
         if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
             let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
             let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
@@ -735,6 +740,41 @@ impl World {
         self.defer_roads = false;
         self.after_change();
         out
+    }
+
+    /// Which way the waterwheel's wheel looks for a turn `rot`: the model's +x axis turned by r * 45 degrees (the renderer rotates about the vertical, which sends +x to (cos, -sin)).
+    fn wheel_dir(rot: u8) -> (f32, f32) { let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; (a.cos(), -a.sin()) }
+    /// Does a waterwheel house at (x, y) turned `rot` have its wheel out over open water?
+    fn wheel_in_water(&self, x: f32, y: f32, rot: u8) -> bool {
+        let (ux, uy) = Self::wheel_dir(rot);
+        self.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2 && self.height_at(x + ux * (WHEEL_REACH + 1.2), y + uy * (WHEEL_REACH + 1.2)) < 0.2
+    }
+    /// Where a waterwheel clicked at (dx, dy) goes: pulled onto the bank beside the nearest water and turned so its wheel hangs out over it.
+    /// [dx, dy, turn] relative to the origin (what `place` takes), or nothing when there is no water within reach or no bank there where the house can stand. Pure function of the world, so
+    /// the client only ever sends the answer: `place` checks it again.
+    pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        let wet = |px: f32, py: f32| self.height_at(px, py) < 0.1;
+        let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
+        'find: for r in 1..=16 { for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; let (px, py) = (x + a.cos() * r as f32, y + a.sin() * r as f32); if wet(px, py) { p = Some((px, py)); break 'find; } } }
+        let Some((px, py)) = p else { return vec![] };
+        // the turns, best first: the one whose wheel points most nearly from the click towards the water (all eight when the click is in the water itself)
+        let (vx, vy) = (px - x, py - y); let vl = vx.hypot(vy);
+        let mut turns: Vec<(f32, u8)> = (0..8u8).map(|r| { let (ux, uy) = Self::wheel_dir(r); (if vl < 0.5 { 0.0 } else { -(ux * vx + uy * vy) / vl }, r) }).collect();
+        turns.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+        for &(_, r) in &turns {
+            let (ux, uy) = Self::wheel_dir(r);
+            // walk back from the water along the opposite of the wheel's way to the first dry bank
+            let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
+            for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
+                let back = t + 3.4 + extra - (WHEEL_REACH - 3.4);
+                let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
+                let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
+                let code = self.can_place(WATERWHEEL, cx as i32, cy as i32);
+                if (code == 0 || code == -6) && self.wheel_in_water(sx, sy, r) { return vec![cx, cy, r as f32]; }
+            }
+        }
+        vec![]
     }
 
     /// Where a drawbridge clicked at (dx, dy) goes: snapped onto the nearest piece of moat or river (its middle line) and turned square across it, so the deck spans the water from bank to bank.
@@ -3846,6 +3886,32 @@ mod pathnet_tests {
         for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 30, 4)] { w.place(k, x, y, 0); }
         let p = w.find_path(&[5, 0, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
         assert!(p.len() >= 2 && p.last().map_or(false, |q| (q.x - 30.0).abs() < 3.0));
+    }
+
+    #[test]
+    fn a_waterwheel_snaps_to_the_bank_with_its_wheel_over_the_water() {
+        let mut w = village(); w.stock = [500; N_RES];
+        for i in 0..6 { assert!(w.place(RIVER, 20 + i * 4, -30, 2) >= 0); }
+        let mut seen = 0;
+        for (cx, cy) in [(24, -22), (30, -24), (28, -40), (36, -30), (34, -36), (22, -23)] {
+            let s = w.waterwheel_snap(cx, cy);
+            if s.is_empty() { continue; }
+            seen += 1;
+            let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
+            let (x, y) = ((w.ox + dx) as f32, (w.oy + dy) as f32);
+            let (ux, uy) = World::wheel_dir(rot);
+            assert!(w.height_at(x, y) >= 0.4, "the house is on dry land: {s:?}");
+            assert!(w.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2, "the wheel hangs over water: {s:?}");
+            assert_eq!(w.waterwheel_snap(cx, cy), s, "snapping is a pure function");
+            // turned the other way the wheel would be in the air over dry ground
+            assert_eq!(w.place(WATERWHEEL, dx, dy, (rot + 4) & 7), -16, "wheel facing the land is refused");
+            if seen == 1 {
+                assert!(w.place(WATERWHEEL, dx, dy, rot) >= 0, "the snapped spot can be built on: {s:?}");
+                assert!(w.buildings.last().unwrap().pad_h <= WHEEL_PAD_MAX + 1e-4);
+            }
+        }
+        assert!(seen >= 3, "the snap finds the bank from most clicks ({seen})");
+        assert!(w.waterwheel_snap(-60, 60).is_empty(), "no water, no snap");
     }
 
     #[test]
