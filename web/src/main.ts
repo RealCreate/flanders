@@ -1532,7 +1532,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
   const x = lv.ox + gx, z = lv.oz + gy, d = defs[selectedKind];
   // the core levels the ground to the average of five samples: show the same levelling under the ghost so it never clips the terrain
-  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29) h = Math.min(h, 0.7);   // (a waterwheel house stands low on the bank: WHEEL_PAD_MAX in the core)
+  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29) h = Math.min(h, w.wheel_pad_cap(x, z, grot & 7));   // (a waterwheel house stands low on the bank, WHEEL_PAD_MAX above the water under its wheel: a moat's own level, as the core)
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = terrain.heightAt(x, z);
