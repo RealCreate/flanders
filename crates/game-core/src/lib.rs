@@ -728,7 +728,7 @@ impl World {
             let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
             pad_h = hi.max(0.3);
         }
-        if kind == WATERWHEEL { pad_h = pad_h.min(WHEEL_PAD_MAX); }   // the house stands low on the bank so its wheel dips into the water
+        if kind == WATERWHEEL { pad_h = pad_h.min(self.wheel_pad_cap(x, y, rot & 7)); }   // the house stands low on the bank so its wheel dips into the water (the visible surface: a moat's own level, not the sea's)
         if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
             let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
             let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
@@ -760,6 +760,12 @@ impl World {
 
     /// Which way the waterwheel's wheel looks for a turn `rot`: the model's +x axis turned by r * 45 degrees (the renderer rotates about the vertical, which sends +x to (cos, -sin)).
     fn wheel_dir(rot: u8) -> (f32, f32) { let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; (a.cos(), -a.sin()) }
+    /// The highest a waterwheel house at (x, y) turned `rot` may stand: WHEEL_PAD_MAX above the surface of the water under its wheel. That surface is the moat's drawn level
+    /// (`moat_level_at`) when the wheel hangs over a moat, and the sea (0) for a river or lake.
+    pub fn wheel_pad_cap(&self, x: f32, y: f32, rot: u8) -> f32 {
+        let (ux, uy) = Self::wheel_dir(rot);
+        WHEEL_PAD_MAX + self.moat_level_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH)
+    }
     /// Does a waterwheel house at (x, y) turned `rot` have its wheel out over open water?
     fn wheel_in_water(&self, x: f32, y: f32, rot: u8) -> bool {
         let (ux, uy) = Self::wheel_dir(rot);
@@ -3971,6 +3977,26 @@ mod pathnet_tests {
         for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 30, 4)] { w.place(k, x, y, 0); }
         let p = w.find_path(&[5, 0, 0, 0, 0, 0], 12.0, 10.0, 30.0, 10.0).expect("a route");
         assert!(p.len() >= 2 && p.last().map_or(false, |q| (q.x - 30.0).abs() < 3.0));
+    }
+
+    #[test]
+    fn a_waterwheel_at_a_moat_stands_at_the_moat_water_level() {
+        let mut w = village(); w.stock = [30000; N_RES]; w.flatten(40);
+        for i in 0..52 { let a = i as f32 / 52.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 24.0).round() as i32, (a.sin() * 24.0).round() as i32, 0); }
+        let level = w.moat_level_at(0.0, 24.0);
+        assert!(level > 1.0, "a moat's water stands well above the sea: {level}");
+        let s = w.waterwheel_snap(0, 33);
+        assert!(!s.is_empty(), "the wheel snaps to the moat bank");
+        let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
+        let (x, y) = ((w.ox + dx) as f32, (w.oy + dy) as f32);
+        let cap = w.wheel_pad_cap(x, y, rot);
+        let (ux, uy) = World::wheel_dir(rot);
+        let surface = w.moat_level_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH);
+        assert!(surface > 1.0 && (cap - (surface + WHEEL_PAD_MAX)).abs() < 1e-4, "cap {cap} follows the visible surface {surface}");
+        let i = w.place(WATERWHEEL, dx, dy, rot); assert!(i >= 0, "built: {i}");
+        let pad = w.buildings[i as usize].pad_h;
+        assert!(pad > WHEEL_PAD_MAX + 0.5, "the house is not sunk to the sea-level cap, pad {pad}");
+        assert!(pad <= surface + WHEEL_PAD_MAX + 1e-4 && pad >= surface - 1.5, "pad {pad} sits at the water surface {surface}");
     }
 
     #[test]
