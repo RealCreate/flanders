@@ -256,3 +256,25 @@ fn a_catapult_never_crosses_cliffs_water_or_buildings_on_a_long_march() {
     }
     assert!(checked > 100, "enough of a march was checked: {checked}");
 }
+
+#[test]
+fn a_replica_replaying_the_commands_sees_the_same_battle_hash_for_hash() {
+    // the defender's live village, and a peer's copy that only replays the signed commands at their ticks (raid, muster, defend, retreat)
+    let setup = || { let mut w = weak_village(); w.army = [14, 8, 6, 0, 0]; w };
+    let cmds: Vec<(u64, u8)> = vec![(30, 0), (31, 1), (33, 2), (120, 3)];   // raid, form, defend, attacker calls the retreat
+    let drive = |w: &mut World, upto: u64, log: &mut Vec<u64>| {
+        let mut det = 0u32;
+        while w.tick() < upto {
+            for &(t, c) in &cmds { if t == w.tick() {
+                match c { 0 => { assert!(w.start_raid(0.0, &[14, 6, 3, 0, 0], 9)); } 1 => { det = w.det_form(&[14, 8, 6, 0, 0]); assert!(det > 0); } 2 => { assert_eq!(w.det_defend(1), 0); } _ => { w.battle_retreat(9); } }
+            } }
+            let _ = det;
+            w.step(); w.stock[GR as usize] = 3000;
+            if w.tick() % 10 == 0 { log.push(w.state_hash()); }
+        }
+    };
+    let (mut a, mut b) = (setup(), setup()); let (mut la, mut lb) = (vec![], vec![]);
+    drive(&mut a, 260, &mut la); drive(&mut b, 260, &mut lb);
+    assert_eq!(la, lb, "every peer's copy of the village stays in step");
+    assert!(la.len() >= 20 && !a.battle_active());
+}
