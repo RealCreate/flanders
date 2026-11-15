@@ -935,7 +935,7 @@ function fish(b: B, mat: THREE.Material, x: number, y: number, z: number, len = 
 const fishingHut: Model = b => {
   const t = b.t, m = M(), f = fishMats();
   const W = 3.0 + t * 0.3, D = 2.6, h = 1.9 + t * 0.2, wm = t >= 2 ? m.timber : m.wood;
-  b.box(W + 0.3, 0.3, D + 0.3, m.stone, -0.6, -0.12, 0); b.box(W, h, D, wm, -0.6, 0.18, 0);
+  b.box(W + 0.3, 0.3, D + 0.3, m.stone, -0.6, -0.12, 0).name = 'footing'; b.box(W, h, D, wm, -0.6, 0.18, 0);   // the footing ends at -0.6 + W/2 + 0.15 <= 1.5, well short of the bank (the core's HUT_FOOT = 3.8 from the middle)
   b.gable(W + 0.2, D, 1.3 + t * 0.2, t >= 1 ? m.tile : m.thatch, -0.6, h + 0.18, 0, 0.4);
   b.box(0.8, 1.5, 0.12, m.door, -0.6, 0.18, D / 2 + 0.04); b.window(-0.6 + W * 0.3, 1.1, D / 2 + 0.02);
   if (t >= 2) b.chimney(-1.5, h + 0.9, -0.5, 1.1);
@@ -946,7 +946,7 @@ const fishingHut: Model = b => {
   for (const z of [-JW / 2, JW / 2]) b.box(J1 - J0, 0.1, 0.14, m.darkwood, (J0 + J1) / 2, -0.12, z);
   for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.13, 0.14, 0.9, m.darkwood, J1 - 0.1, 0.1, z, 6);   // the mooring bollards
   // a rowboat tied alongside: a hull, thwarts, an oar and the catch
-  const bx = J0 + 2.4, bz = JW / 2 + 1.0;
+  const bx = J0 + 3.0, bz = JW / 2 + 1.0;
   b.box(2.3, 0.14, 0.9, m.wood, bx, -0.55, bz);
   for (const sz of [-1, 1]) { b.box(2.1, 0.4, 0.08, m.wood, bx, -0.5, bz + sz * 0.45); b.box(0.5, 0.4, 0.08, m.wood, bx + 1.25, -0.42, bz + sz * 0.2, sz * 0.5); }
   for (const dx of [-0.5, 0.4]) b.box(0.1, 0.07, 0.8, m.darkwood, bx + dx, -0.2, bz);
