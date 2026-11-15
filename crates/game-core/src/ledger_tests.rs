@@ -38,7 +38,7 @@ fn orders_between_ticks_and_one_off_changes_are_accounted_for_too() {
 
 #[test]
 fn every_meal_and_every_harvest_has_its_own_line() {
-    let mut w = village(); w.stock[GR as usize] = 300; w.army[0] = 10;
+    let mut w = village(); w.stock[GR as usize] = 300; w.stock[SF as usize] = 0; w.army[0] = 10;
     for _ in 0..120 { w.step(); }
     let flat = w.ledger_flat(); let nk = flat[1] as usize;
     let line = |cat: usize, r: u8| flat[3..].chunks(4).find(|e| e[0] as usize == cat && e[1] == r as i32).map(|e| (e[2], e[3])).unwrap_or((0, 0));

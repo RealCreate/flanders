@@ -1,0 +1,109 @@
+//! Fishing huts, smokehouses and the smoked fish the village eats.
+use super::*;
+
+fn put(w: &mut World, kind: u8, x: f32, y: f32) -> usize {
+    let pad_h = w.base(x, y);
+    w.buildings.push(Building { kind, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 1, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
+    w.buildings.len() - 1
+}
+fn moat_world() -> World {
+    let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40);
+    for i in 0..52 { let a = i as f32 / 52.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 24.0).round() as i32, (a.sin() * 24.0).round() as i32, 0); }
+    w
+}
+
+#[test]
+fn a_fishing_hut_snaps_to_a_river_bank_with_its_jetty_over_the_water() {
+    let mut w = World::new(1337, 0, 0); w.stock = [500; N_RES];
+    for (k, x, y) in [(HOUSE, 12, 4), (HOUSE, 17, 4), (HOUSE, 22, 4), (HOUSE, -12, 6), (TOWER, 0, 16), (TOWER, 8, -16)] { w.place(k, x, y, 0); }
+    for i in 0..6 { assert!(w.place(RIVER, 20 + i * 4, -30, 2) >= 0); }
+    let mut seen = 0;
+    for (cx, cy) in [(24, -22), (30, -24), (28, -40), (36, -30), (34, -36), (22, -23)] {
+        let s = w.fishing_hut_snap(cx, cy);
+        if s.is_empty() { continue; }
+        seen += 1;
+        let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
+        let (x, y) = ((w.ox + dx) as f32, (w.oy + dy) as f32);
+        let (ux, uy) = World::wheel_dir(rot);
+        assert!(w.height_at(x, y) >= 0.4, "on dry land: {s:?}");
+        assert!(w.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2, "the jetty ends over water: {s:?}");
+        assert_eq!(w.fishing_hut_snap(cx, cy), s, "a pure function");
+        assert_eq!(w.place(FISHING_HUT, dx, dy, (rot + 4) & 7), -16, "a hut turned to the land is refused");
+        if seen == 1 { assert!(w.place(FISHING_HUT, dx, dy, rot) >= 0, "the snapped spot can be built on: {s:?}"); }
+    }
+    assert!(seen >= 3, "the snap finds the bank from most clicks ({seen})");
+    assert!(w.fishing_hut_snap(-60, 60).is_empty(), "no water, no snap");
+    assert_ne!(w.place(FISHING_HUT, -60, 60, 0), 0, "no hut away from water");
+    assert_eq!(w.place(FISHING_HUT, -12, -2, 0), -16, "no hut on dry land inland");
+}
+
+#[test]
+fn a_fishing_hut_at_a_moat_stands_at_the_visible_water_level() {
+    let mut w = moat_world();
+    let level = w.moat_level_at(0.0, 24.0);
+    assert!(level > 1.0, "a moat's water stands above the sea: {level}");
+    let s = w.fishing_hut_snap(0, 33);
+    assert!(!s.is_empty(), "the hut snaps to the moat bank");
+    let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
+    let cap = w.wheel_pad_cap((w.ox + dx) as f32, (w.oy + dy) as f32, rot);
+    let i = w.place(FISHING_HUT, dx, dy, rot); assert!(i >= 0, "built: {i}");
+    let (x, y) = (w.buildings[i as usize].x, w.buildings[i as usize].y);
+    let (ux, uy) = World::wheel_dir(rot);
+    let surface = w.moat_level_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH);
+    let pad = w.buildings[i as usize].pad_h;
+    assert!(surface > 1.0 && pad > WHEEL_PAD_MAX + 0.5, "not sunk to the sea: pad {pad}");
+    assert!(pad <= cap + 1e-4 && cap > 1.0 + WHEEL_PAD_MAX && pad >= surface - 1.5, "pad {pad} (cap {cap}) at the surface {surface}");
+}
+
+#[test]
+fn fishing_huts_land_raw_fish_and_smokehouses_smoke_it() {
+    let mut w = World::new(1337, 0, 0); w.stock = [0; N_RES]; w.stock[GR as usize] = 10_000; w.population = 20; w.children = 0; w.elders = 0;
+    let h = put(&mut w, FISHING_HUT, 20.0, 20.0); let s = put(&mut w, SMOKEHOUSE, -20.0, 20.0);
+    w.stock[W as usize] = 10;
+    let (mut raw, mut smoked) = (0, 0);
+    for _ in 0..120 { w.step(); w.stock[GR as usize] = 10_000; w.stock[W as usize] = w.stock[W as usize].max(10); w.population = 20; raw = raw.max(w.stock[FI as usize]); smoked = smoked.max(w.stock[SF as usize]); }
+    eprintln!("hut {:?} smokehouse {:?} eff {}", w.buildings[h].status, w.buildings[s].status, w.eff);
+    assert!(raw > 0 && smoked > 0, "fish was landed and smoked ({raw} raw at most, {smoked} smoked at most; eff {})", w.eff);
+    let _ = s;
+    // the numbers: a smokehouse turns 3 fish and 1 wood into 3 smoked fish
+    let d = &DEFS[SMOKEHOUSE as usize];
+    assert_eq!(d.inputs, &[(FI, 3), (W, 1)]); assert_eq!(d.outputs, &[(SF, 3)]);
+    assert_eq!(DEFS[FISHING_HUT as usize].outputs, &[(FI, 4)]);
+}
+
+#[test]
+fn a_smokehouse_without_fish_waits() {
+    let mut w = World::new(1337, 0, 0); w.stock = [0; N_RES]; w.stock[GR as usize] = 10_000; w.stock[W as usize] = 50; w.population = 40; w.eff = 100;
+    let s = put(&mut w, SMOKEHOUSE, -20.0, 20.0);
+    for _ in 0..30 { w.step(); w.stock[GR as usize] = 10_000; w.stock[W as usize] = 50; w.population = 40; }
+    assert_eq!(w.stock[SF as usize], 0, "no fish, nothing smoked");
+    assert_eq!(w.buildings[s].status, 1, "it says it lacks something");
+}
+
+#[test]
+fn smoked_fish_is_eaten_before_grain_and_raw_fish_is_not_food() {
+    let mut w = World::new(1337, 0, 0); w.stock = [0; N_RES]; w.population = 100; w.children = 0; w.elders = 0;
+    let eat = (w.population as i32 + 5) / 10;
+    w.stock[SF as usize] = 100; w.stock[GR as usize] = 100;
+    w.step();
+    assert_eq!(w.stock[SF as usize], 100 - eat, "smoked fish went first"); assert_eq!(w.stock[GR as usize], 100);
+    // fish runs short: grain makes up the rest
+    w.stock[SF as usize] = 3; w.stock[GR as usize] = 100; w.step();
+    assert_eq!(w.stock[SF as usize], 0); assert_eq!(w.stock[GR as usize], 100 - (eat - 3));
+    // raw fish does not feed anyone
+    let mut v = World::new(1337, 0, 0); v.stock = [0; N_RES]; v.population = 100; v.stock[FI as usize] = 500; v.step();
+    assert_eq!(v.stock[FI as usize], 500, "raw fish is untouched"); assert_eq!(v.food(), 0);
+    // smoked fish alone keeps people fed: no one dies of hunger
+    let mut u = World::new(1337, 0, 0); u.stock = [0; N_RES]; u.population = 40; u.stock[SF as usize] = 200;
+    for _ in 0..30 { u.step(); u.stock[SF as usize] = 200; }
+    assert_eq!(u.died[DIED_HUNGER as usize], 0, "nobody starved"); assert!(u.food() >= 10);
+}
+
+#[test]
+fn fish_hash_and_wide_stock_are_deterministic() {
+    let run = || { let mut w = moat_world(); let s = w.fishing_hut_snap(0, 33); w.place(FISHING_HUT, s[0] as i32, s[1] as i32, s[2] as u8); w.place(SMOKEHOUSE, 6, 8, 0); w.stock[FI as usize] = 0; w.stock[SF as usize] = 0; for _ in 0..60 { w.step(); } w.state_hash() };
+    assert_eq!(run(), run());
+    let mut a = moat_world(); let b = moat_world();
+    a.stock[SF as usize] += 1;
+    assert_ne!(a.state_hash_parts()[1], b.state_hash_parts()[1], "smoked fish is in the stock section of the hash");
+}

@@ -164,15 +164,19 @@ const BACKUP_EVERY: u64 = 6;
 const BACKUP_AMOUNT: i32 = 1;
 const BACKUP_PER_TIER: i32 = 1;
 const BACKUP_BELOW: i32 = 60;
+/// What the village eats: smoked fish first (`SMOKED_MEAL_PER_FISH` meals a fish, in grain's units: 1), then grain. Raw fish is not food until it is smoked.
+const SMOKED_MEAL_PER_FISH: i32 = 1;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
-pub const WHEEL_REACH: f32 = 4.4;
+pub const WHEEL_REACH: f32 = 5.2;
+/// Where the house's stone footing ends on the water side: the bank. The wheel's axle hangs `WHEEL_REACH - WHEEL_FOOT` beyond it, over the water, clear of the footing.
+pub const WHEEL_FOOT: f32 = 3.2;
 pub const WHEEL_PAD_MAX: f32 = 0.7;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
-const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6];
+const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
 #[derive(Clone)]
@@ -435,50 +439,106 @@ impl World {
         let net = self.net_base();
         let ctx = self.road_ctx();
         let base_stamp = self.net_stamp();
-        let mut used: std::collections::HashSet<(u32, u32)> = Default::default();
-        for (pos, &i) in ends.iter().enumerate() {
-            if pos == 0 { continue; }
-            let (bx, by) = (self.buildings[i].x, self.buildings[i].y);
-            let mut cand: Vec<(usize, f32)> = ends[..pos].iter().map(|&j| (j, ((self.buildings[j].x - bx).powi(2) + (self.buildings[j].y - by).powi(2)).sqrt() * if j == 0 { 0.8 } else { 1.0 })).filter(|c| c.1 < 80.0).collect();
-            cand.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            // the nearest few earlier buildings, by roads that keep clear of everything; a building that has no such way gets a squeezed road, and failing that the cheapest route over the network
-            let mut linked = false;
-            for level in 0u8..3 {
-                if linked { break; }
-                for &(j, _) in cand.iter().take(4) {
-                    let key = (i as u32, j as u32);
-                    let route = if level == 0 {
-                        let stamp = self.route_stamp(base_stamp, i, j);
-                        let cached = match self.road_cache.get(&key) { Some((h, r)) if *h == stamp => Some(r.clone()), _ => None };
-                        match cached { Some(r) => r, None => { let r = self.road_route(&net, &ctx, i, j, 0); self.road_cache.insert(key, (stamp, r.clone())); r } }
-                    } else { self.road_route(&net, &ctx, i, j, level) };
-                    let Some(pts) = route else { continue };
-                    // graded segments: only the stretches over dry ground (a road across a moat or river must never fill it in)
-                    let (ha, hb) = (self.buildings[i].pad_h, self.buildings[j].pad_h);
-                    let total: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
-                    let mut run = 0.0f32;
-                    for w in pts.windows(2) {
-                        let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
-                        if self.leg_is_dry(w[0], w[1]) {
-                            let (t0, t1) = (run / total, (run + l) / total);
-                            let (ci, pj) = (i as u32, j as u32);
-                            self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
-                            self.road_links.push((ci, pj));
-                        }
-                        run += l;
-                    }
-                    if used.insert(key) { self.road_paths.push((i as u32, j as u32, pts)); }
-                    linked = true;
-                    break;
-                }
-            }
+        let mut memo: std::collections::HashMap<(usize, usize), Option<Vec<(f32, f32)>>> = Default::default();
+        let m = ends.len();
+        let dist = |w: &World, a: usize, b: usize| ((w.buildings[ends[a]].x - w.buildings[ends[b]].x).powi(2) + (w.buildings[ends[a]].y - w.buildings[ends[b]].y).powi(2)).sqrt();
+        fn find(c: &mut [usize], x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } let mut y = x; while c[y] != r { let nx = c[y]; c[y] = r; y = nx; } r }
+        let mut comp: Vec<usize> = (0..m).collect();
+        let mut chosen: Vec<(usize, usize)> = vec![];
+        // The roads form a tree over the buildings, built shortest link first (so every building is joined to its nearest neighbours and no two roads run side by side to the same place):
+        // each building offers its few nearest neighbours, and a link is laid when it joins two parts that are not yet joined and there is a walkable route.
+        let mut cand: Vec<(f32, usize, usize)> = vec![];
+        for a in 0..m {
+            let mut near: Vec<(f32, usize)> = (0..m).filter(|&b| b != a).map(|b| (dist(self, a, b) * if a == 0 || b == 0 { 0.8 } else { 1.0 }, b)).filter(|c| c.0 < 80.0).collect();
+            near.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)));
+            for &(d, b) in near.iter().take(5) { cand.push((d, a.min(b), a.max(b))); }
         }
+        cand.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
+        cand.dedup_by(|p, q| p.1 == q.1 && p.2 == q.2);
+        for &(_, a, b) in &cand {
+            let (ra, rb) = (find(&mut comp, a), find(&mut comp, b));
+            if ra == rb { continue; }
+            if self.route_for(&mut memo, &net, &ctx, base_stamp, ends[b], ends[a]).is_some() { chosen.push((ends[b], ends[a])); comp[ra] = rb; }
+        }
+        // whatever is still cut off from the town hall is chained to it by the nearest walkable link, however far, one part at a time (only water and walls keep a building apart)
+        let mut tried = 0;
+        for _round in 0..64 {
+            let main = find(&mut comp, 0);
+            let mut far: Vec<(f32, usize, usize)> = vec![];
+            for a in 0..m { if find(&mut comp, a) == main { continue; } for b in 0..m { if find(&mut comp, b) != main { continue; } let d = dist(self, a, b); if d < 220.0 { far.push((d, a, b)); } } }
+            far.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
+            let mut joined = false;
+            for &(_, a, b) in far.iter().take(40) {
+                tried += 1;
+                if self.route_for(&mut memo, &net, &ctx, base_stamp, ends[a].max(ends[b]), ends[a].min(ends[b])).is_some() { chosen.push((ends[a].max(ends[b]), ends[a].min(ends[b]))); let ra = find(&mut comp, a); comp[ra] = main; joined = true; break; }
+            }
+            if !joined || tried > 400 { break; }
+        }
+        // buildings that stand close together are joined into blocks: a short extra road between two neighbours that the tree only reaches the long way round (3 to 5 roads about)
+        // closes a loop, so the roads there form squares and no awkward gap is left. It is only laid where it crosses none of the roads already laid.
+        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+        for &(i, j) in &chosen { adj[i].push(j); adj[j].push(i); }
+        let mut laid: Vec<Vec<(f32, f32)>> = chosen.iter().filter_map(|&(i, j)| memo.get(&(i, j)).and_then(|c| c.clone())).collect();
+        let cross = |a: &[(f32, f32)], b: &[(f32, f32)]| -> bool {
+            let ccw = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
+            let near = |p: (f32, f32), q: (f32, f32)| (p.0 - q.0).hypot(p.1 - q.1) < 2.5;
+            a.windows(2).any(|s| b.windows(2).any(|t| {
+                if near(s[0], t[0]) || near(s[0], t[1]) || near(s[1], t[0]) || near(s[1], t[1]) { return false; }
+                ccw(s[0], s[1], t[0]) * ccw(s[0], s[1], t[1]) < 0.0 && ccw(t[0], t[1], s[0]) * ccw(t[0], t[1], s[1]) < 0.0
+            }))
+        };
+        for &(d, a, b) in &cand {
+            if d > 16.0 { break; }
+            let (i, j) = (ends[b], ends[a]);   // the later building is the child
+            if adj[i].contains(&j) || adj[i].len() >= 4 || adj[j].len() >= 4 { continue; }
+            // how many roads lead from one to the other through the roads laid so far
+            let mut hops = vec![u32::MAX; n]; hops[j] = 0; let mut q = std::collections::VecDeque::from([j]);
+            while let Some(x) = q.pop_front() { for &y in &adj[x] { if hops[y] == u32::MAX { hops[y] = hops[x] + 1; q.push_back(y); } } }
+            if !(3..=5).contains(&hops[i]) { continue; }
+            let Some(r) = self.route_for(&mut memo, &net, &ctx, base_stamp, i, j) else { continue };
+            let len: f32 = r.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
+            if len > 24.0 || laid.iter().any(|l| cross(&r, l)) { continue; }
+            chosen.push((i, j)); adj[i].push(j); adj[j].push(i); laid.push(r);
+        }
+        chosen.sort();
+        for (i, j) in chosen { if let Some(Some(pts)) = memo.get(&(i, j)).cloned() { self.lay_road(i, j, pts); } }
         // drop cache entries that point at buildings which no longer exist
         if self.road_cache.len() > 4 * n + 64 { self.road_cache.retain(|k, _| (k.0 as usize) < n && (k.1 as usize) < n); }
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
         for (c, p, pts) in &self.road_paths { mix(*c as u64); mix(*p as u64); for q in pts { mix(q.0.to_bits() as u64); mix(q.1.to_bits() as u64); } }
         self.road_sig = h;
+    }
+
+    /// The road route between two buildings (`i` the later one), found once per rebuild: over the path network keeping clear of everything (kept between rebuilds until something round
+    /// them changes), failing that a squeezed road, failing that the cheapest route over the network.
+    fn route_for(&mut self, memo: &mut std::collections::HashMap<(usize, usize), Option<Vec<(f32, f32)>>>, net: &pathnet::Net, ctx: &pathnet::RoadCtx, base_stamp: u64, i: usize, j: usize) -> Option<Vec<(f32, f32)>> {
+        if let Some(r) = memo.get(&(i, j)) { return r.clone(); }
+        let key = (i as u32, j as u32);
+        let stamp = self.route_stamp(base_stamp, i, j);
+        let cached = match self.road_cache.get(&key) { Some((h, r)) if *h == stamp => Some(r.clone()), _ => None };
+        let mut r = match cached { Some(r) => r, None => { let r = self.road_route(net, ctx, i, j, 0); self.road_cache.insert(key, (stamp, r.clone())); r } };
+        for level in 1u8..3 { if r.is_some() { break; } r = self.road_route(net, ctx, i, j, level); }
+        memo.insert((i, j), r.clone());
+        r
+    }
+
+    /// Lay the road from building `i` (the later one) to `j` along `pts`.
+    fn lay_road(&mut self, i: usize, j: usize, pts: Vec<(f32, f32)>) {
+        // graded segments: only the stretches over dry ground (a road across a moat or river must never fill it in)
+        let (ha, hb) = (self.buildings[i].pad_h, self.buildings[j].pad_h);
+        let total: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
+        let mut run = 0.0f32;
+        for w in pts.windows(2) {
+            let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+            if self.leg_is_dry(w[0], w[1]) {
+                let (t0, t1) = (run / total, (run + l) / total);
+                self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
+                self.road_links.push((i as u32, j as u32));
+            }
+            run += l;
+        }
+        self.road_paths.push((i as u32, j as u32, pts));
     }
 
     /// Is a straight leg of a route over dry, ordinary ground (not water and not a drawbridge deck)?
@@ -537,6 +597,9 @@ impl World {
     pub(crate) fn moat_level_at(&self, x: f32, y: f32) -> f32 {
         self.moat_water.iter().filter(|p| (p[0] - x).hypot(p[1] - y) < p[2] + 1.0).map(|p| p[3]).fold(0.0, f32::max)
     }
+
+    /// Food in the larder, in meals: smoked fish and grain.
+    pub(crate) fn food(&self) -> i32 { self.stock[SF as usize] * SMOKED_MEAL_PER_FISH + self.stock[GR as usize] }
 
     /// Workforce efficiency, and how villagers are spread over workplaces and homes.
     fn staffing(&mut self) {
@@ -770,7 +833,7 @@ impl World {
         if kind == BRIDGE { return self.place_bridge(dx, dy); }
         let code = self.can_place(kind, dx, dy);
         if code != 0 { return code; }
-        if kind == WATERWHEEL && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
+        if matches!(kind, WATERWHEEL | FISHING_HUT) && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
         let d = &DEFS[kind as usize];
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
@@ -781,7 +844,7 @@ impl World {
             let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
             pad_h = hi.max(0.3);
         }
-        if kind == WATERWHEEL { pad_h = pad_h.min(self.wheel_pad_cap(x, y, rot & 7)); }   // the house stands low on the bank so its wheel dips into the water (the visible surface: a moat's own level, not the sea's)
+        if matches!(kind, WATERWHEEL | FISHING_HUT) { pad_h = pad_h.min(self.wheel_pad_cap(x, y, rot & 7)); }   // the house stands low on the bank so its wheel dips into the water (the visible surface: a moat's own level, not the sea's)
         if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
             let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
             let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
@@ -827,7 +890,10 @@ impl World {
     /// Where a waterwheel clicked at (dx, dy) goes: pulled onto the bank beside the nearest water and turned so its wheel hangs out over it.
     /// [dx, dy, turn] relative to the origin (what `place` takes), or nothing when there is no water within reach or no bank there where the house can stand. Pure function of the world, so
     /// the client only ever sends the answer: `place` checks it again.
-    pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+    pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> { self.shore_snap(WATERWHEEL, dx, dy) }
+    /// Where a fishing hut clicked at (dx, dy) goes: the same bank snap as the waterwheel (its jetty plays the wheel's part), at a river, lake, sea or moat edge.
+    pub fn fishing_hut_snap(&self, dx: i32, dy: i32) -> Vec<f32> { self.shore_snap(FISHING_HUT, dx, dy) }
+    fn shore_snap(&self, kind: u8, dx: i32, dy: i32) -> Vec<f32> {
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         let wet = |px: f32, py: f32| self.height_at(px, py) < 0.1;
         let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
@@ -842,10 +908,10 @@ impl World {
             // walk back from the water along the opposite of the wheel's way to the first dry bank
             let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
             for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
-                let back = t + 3.4 + extra - (WHEEL_REACH - 3.4);
+                let back = t + WHEEL_FOOT + extra;   // the footing ends at the bank
                 let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
                 let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
-                let code = self.can_place(WATERWHEEL, cx as i32, cy as i32);
+                let code = self.can_place(kind, cx as i32, cy as i32);
                 if (code == 0 || code == -6) && self.wheel_in_water(sx, sy, r) { return vec![cx, cy, r as f32]; }
             }
         }
@@ -1148,19 +1214,25 @@ impl World {
         // food, growth, starvation
         let soldiers: u32 = self.army.iter().sum::<u32>() + self.away.iter().sum::<u32>() + self.dets.iter().map(|d| d.units.iter().sum::<u32>()).sum::<u32>();
         let eat = ((self.population + soldiers) as i32 + 5) / 10;
-        let eat_soldiers = if soldiers > 0 { (eat as i64 * soldiers as i64 / (self.population as i64 + soldiers as i64).max(1)) as i32 } else { 0 };
-        let eaten = eat.min(self.stock[GR as usize]);   // (a village that cannot feed everyone eats what there is)
-        { let (c1, c2) = (self.ledger.extra(ledger::EX_SOLDIERS), self.ledger.extra(ledger::EX_VILLAGERS)); let s = (eaten as i64 * eat_soldiers as i64 / eat.max(1) as i64) as i32; self.ledger.note(c1, GR as usize, -s); self.ledger.note(c2, GR as usize, -(eaten - s)); }
-        if self.stock[GR as usize] >= eat {
-            self.stock[GR as usize] -= eat;
+        let (gr0, sf0) = (self.stock[GR as usize], self.stock[SF as usize]);
+        if self.food() >= eat {
+            let from_fish = eat.min(self.stock[SF as usize] * SMOKED_MEAL_PER_FISH);   // smoked fish is eaten first, grain makes up the rest
+            self.stock[SF as usize] -= (from_fish + SMOKED_MEAL_PER_FISH - 1) / SMOKED_MEAL_PER_FISH; self.stock[GR as usize] -= eat - from_fish;
             let cap_pop = self.capacity();
             let hap = self.happiness();
             if self.population < cap_pop && self.rng.range(if hap >= 70 { 4 } else if hap < 30 { 8 } else { 5 }) == 0 { self.arrive(1); }
         } else {
-            self.stock[GR as usize] = 0;
+            self.stock[GR as usize] = 0; self.stock[SF as usize] = 0;
             if self.population > 2 && self.rng.range(3) == 0 {
                 self.kill(1, DIED_HUNGER, 0);
                 self.push_event(EV_STARVE, 1, 0);
+            }
+        }
+        {   // the ledger: what was eaten (grain and smoked fish), shared between villagers and soldiers by head
+            let share = if soldiers > 0 { eat as i64 * soldiers as i64 / (self.population as i64 + soldiers as i64).max(1) } else { 0 };
+            let (c1, c2) = (self.ledger.extra(ledger::EX_SOLDIERS), self.ledger.extra(ledger::EX_VILLAGERS));
+            for (r, used) in [(GR, gr0 - self.stock[GR as usize]), (SF, sf0 - self.stock[SF as usize])] {
+                let s = (used as i64 * share / eat.max(1) as i64) as i32; self.ledger.note(c1, r as usize, -s); self.ledger.note(c2, r as usize, -(used - s));
             }
         }
         // overcrowding pressure if capacity shrank (demolished houses)
@@ -1404,7 +1476,7 @@ impl World {
         let adults = self.adults(); let aged = take(&mut self.rng, adults, 90); self.elders += aged;
         let died = take(&mut self.rng, self.elders, 25).min(self.population.saturating_sub(2));
         self.kill(died, DIED_OLD, 1);
-        if self.stock[GR as usize] >= 10 && self.happiness() >= 40 && self.population < self.capacity() {
+        if self.food() >= 10 && self.happiness() >= 40 && self.population < self.capacity() {
             let couples = self.adults() / 2; let room = self.capacity() - self.population;
             let born = take(&mut self.rng, couples, 14).min(room);
             self.born_n(born);
@@ -1476,7 +1548,7 @@ impl World {
             self.buildings[pi].progress -= 3000;
             let mult = (4 + 5 * tier) / 4;
             // buy grain if hungry
-            if self.stock[GR as usize] < 40 {
+            if self.food() < 40 {
                 let n = 20 * mult; let cost = n * 3 / 2;
                 if self.stock[GD as usize] >= cost && self.stock[GR as usize] + n <= cap { self.stock[GD as usize] -= cost; self.stock[GR as usize] += n; { let c = self.ledger.extra(ledger::EX_PORT); self.ledger.note(c, GD as usize, -cost); self.ledger.note(c, GR as usize, n); } self.push_event(EV_TRADE, -cost, GR as i32); continue; }
             }
@@ -2001,7 +2073,7 @@ impl World {
         let count = |k: u8| self.buildings.iter().filter(|b| b.kind == k).count() as i32;
         let tiers = |k: u8| self.buildings.iter().filter(|b| b.kind == k).map(|b| b.tier as i32 + 1).sum::<i32>();
         let mut h = 40 + (4 * count(PARK)).min(16) + (2 * count(GARDEN)).min(8) + (5 * tiers(CHAPEL)).min(20) + (4 * count(MARKET)).min(8) + (4 * count(COURTHOUSE)).min(8) + (2 * count(WELL)).min(6);
-        if self.stock[GR as usize] < 10 { h -= 15; }
+        if self.food() < 10 { h -= 15; }
         if self.population > 0 { h -= (self.sick as i32 * 40) / self.population as i32; }
         if self.eff < 60 { h -= (60 - self.eff as i32) / 3; }
         if self.population > self.capacity() { h -= 10; }
@@ -2109,6 +2181,9 @@ mod lend_tests;
 #[cfg(test)]
 mod ledger_tests;
 mod market_tests;
+
+#[cfg(test)]
+mod fish_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2593,7 +2668,7 @@ mod tests {
         let h0 = w.happiness();
         put(&mut w, PARK, 30.0, 30.0, 0); put(&mut w, GARDEN, -30.0, 30.0, 0); put(&mut w, CHAPEL, 30.0, -30.0, 0);
         assert!(w.happiness() >= h0 + 10, "{} -> {}", h0, w.happiness());
-        w.stock[GR as usize] = 0; assert!(w.happiness() < h0 + 10, "hunger makes people unhappy");
+        w.stock[GR as usize] = 0; w.stock[SF as usize] = 0; assert!(w.happiness() < h0 + 10, "hunger makes people unhappy");
         // a wide moat piece digs a broader ditch than a thin one
         let (x, y) = (w.buildings[0].x + 40.0, w.buildings[0].y);
         put(&mut w, MOAT, x, y, 0); let thin = (0..30).filter(|k| w.height_at(x + *k as f32 * 0.25, y) < 0.0).count();
@@ -2794,8 +2869,26 @@ mod road_tests {
     }
 
     #[test]
+    fn every_building_is_chained_to_the_hall_by_roads() {
+        let mut w = rich(); w.deposits.clear();
+        let mut placed = 0;
+        for (x, y) in [(16, 0), (28, 4), (22, 12), (40, -6), (-18, 8), (-30, 20), (-12, -20), (6, -26), (50, 30), (-60, -10), (70, -40), (30, 18), (33, 21)] { if w.place(HOUSE, x, y, 0) >= 0 { placed += 1; } }
+        assert!(placed >= 8, "placed {placed}");
+        let n = w.buildings.len();
+        let mut comp: Vec<usize> = (0..n).collect();
+        fn find(c: &mut Vec<usize>, x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } r }
+        let mut links = 0;
+        for (c, p, _) in &w.road_paths { let (a, b) = (find(&mut comp, *c as usize), find(&mut comp, *p as usize)); if a != b { comp[a] = b; } links += 1; }
+        let h = find(&mut comp, 0);
+        for i in 0..n { assert_eq!(find(&mut comp, i), h, "building {i} is not chained to the hall"); }
+        assert!(links >= n - 1 && links <= n * 2, "links {links} for {n} buildings");
+        let mut seen = std::collections::HashSet::new();
+        for (c, p, _) in &w.road_paths { assert!(seen.insert((*c, *p)), "the same road twice"); }
+    }
+
+    #[test]
     fn roads_do_not_cross_moats_and_use_drawbridges() {
-        let mut w = rich();
+        let mut w = rich(); w.deposits.clear();   // (a rock in the ring would leave a gap)
         ring(&mut w, 20.0, 44, MOAT);
         let outside = [(0, 36), (6, 38), (-8, 40), (12, 36), (-14, 36)].into_iter().map(|(x, y)| w.place(HOUSE, x, y, 0)).find(|&i| i >= 0).unwrap_or(-1);
         assert!(outside >= 0, "house outside the moat: {outside}");
@@ -3607,7 +3700,7 @@ mod bridge_tests {
     use super::*;
     fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40); w }
     /// A moat ring round the hall, so there is water to cross.
-    fn with_moat() -> World { let mut w = rich(); for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); } w }
+    fn with_moat() -> World { let mut w = rich(); w.deposits.clear(); for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); } w }
 
     #[test]
     fn a_bridge_snaps_to_the_banks_of_a_moat_and_crosses_it_the_short_way() {
@@ -4073,7 +4166,8 @@ mod pathnet_tests {
 
         // a moat: only a lowered drawbridge gets you across, and only along its deck
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
-        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; let r = w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); print!("{r} "); }
+        for k in 0..44 { let a = k as f32 / 44.0 * std::f32::consts::TAU; print!("{:.1} ", w.height_ground(a.cos() * 20.0, a.sin() * 20.0)); } println!();
         let br = w.place(DRAWBRIDGE, 0, 20, 0); assert!(br >= 0);
         let across = w.net_route(0.0, 8.0, 0.0, 36.0);
         assert!(!across.is_empty() && across[0] == 1.0, "a route over the lowered drawbridge");
@@ -4108,7 +4202,8 @@ mod pathnet_tests {
     #[test]
     fn villagers_and_soldiers_share_the_lines_and_nobody_wades() {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
-        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; let r = w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); print!("{r} "); }
+        for k in 0..44 { let a = k as f32 / 44.0 * std::f32::consts::TAU; print!("{:.1} ", w.height_ground(a.cos() * 20.0, a.sin() * 20.0)); } println!();
         let dry = w.walk_route(0.0, 8.0, 0.0, 36.0); assert!(dry.is_empty(), "no dry way across an unbroken moat: {dry:?}");
         let br = w.place(DRAWBRIDGE, 0, 20, 0); assert!(br >= 0);
         let r = w.walk_route(0.0, 8.0, 0.0, 36.0);
@@ -4160,6 +4255,10 @@ mod pathnet_tests {
             assert!(w.height_at(x, y) >= 0.4, "the house is on dry land: {s:?}");
             assert!(w.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2, "the wheel hangs over water: {s:?}");
             assert_eq!(w.waterwheel_snap(cx, cy), s, "snapping is a pure function");
+            // the footing (to WHEEL_FOOT from the middle) ends at the bank, and the wheel's axle hangs beyond it: no water under the footing, none of the wheel over dry ground
+            let foot = WHEEL_FOOT - 1.0; assert!(w.height_at(x + ux * foot, y + uy * foot) >= 0.3, "the footing stands on land: {s:?}");
+            let mut bank = 0.0f32; while bank < WHEEL_REACH && w.height_at(x + ux * bank, y + uy * bank) >= 0.45 { bank += 0.25; }
+            assert!(bank >= WHEEL_FOOT - 0.5, "the footing ends ({WHEEL_FOOT}) no later than the bank ({bank}): {s:?}");
             // turned the other way the wheel would be in the air over dry ground
             assert_eq!(w.place(WATERWHEEL, dx, dy, (rot + 4) & 7), -16, "wheel facing the land is refused");
             if seen == 1 {
@@ -4174,7 +4273,8 @@ mod pathnet_tests {
     #[test]
     fn a_drawbridge_snaps_onto_the_moat_and_lies_square_across_it() {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
-        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; let r = w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); print!("{r} "); }
+        for k in 0..44 { let a = k as f32 / 44.0 * std::f32::consts::TAU; print!("{:.1} ", w.height_ground(a.cos() * 20.0, a.sin() * 20.0)); } println!();
         // near the south of the ring the ditch runs east-west, so the deck runs north-south (turn 0 or 4); near the east it runs the other way (turn 2 or 6)
         let s = w.drawbridge_snap(3, 17); assert_eq!(s.len(), 3, "a moat is near");
         assert!((s[0].hypot(s[1]) - 20.0).abs() < 1.5, "snapped onto the ring: {s:?}");
@@ -4187,7 +4287,8 @@ mod pathnet_tests {
     #[test]
     fn a_drawbridge_can_go_anywhere_along_a_moat_that_is_not_too_wide() {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
-        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+        for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; let r = w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); print!("{r} "); }
+        for k in 0..44 { let a = k as f32 / 44.0 * std::f32::consts::TAU; print!("{:.1} ", w.height_ground(a.cos() * 20.0, a.sin() * 20.0)); } println!();
         let placed = w.buildings.iter().filter(|b| b.kind == MOAT).count();
         assert!(placed >= 10, "{placed} moat pieces");
         // pointing at many different places along the ditch gives many different spots, each on the ditch and each turned square across it
