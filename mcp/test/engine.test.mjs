@@ -20,7 +20,7 @@ function opening(g) {
 test('a new game opens with a compact status and goals', () => {
   const g = new Game({ world: 'test-a' });
   const s = g.status();
-  assert.ok(s.pop >= 2 && s.stock.length === 12 && s.next?.length > 0);
+  assert.ok(s.pop >= 2 && s.stock.length === 14 && s.next?.length > 0);
   assert.ok(size(s) < 900, `status is ${size(s)} characters`);
 });
 

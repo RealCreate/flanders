@@ -24,7 +24,7 @@ function checkXml(s) {
 
 test('every resource has an icon of its own', () => {
   const keys = [...read('../src/data.ts').matchAll(/key: '(\w+)', name:/g)].map(m => m[1]);
-  assert.equal(keys.length, 12);
+  assert.equal(keys.length, 14);
   for (const k of keys) assert.ok(ICONS[k], `resource ${k}`);
 });
 

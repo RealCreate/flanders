@@ -919,7 +919,84 @@ const graveyard: Model = b => {
   for (const [x, z] of [[-R + 0.5, -R + 0.5], [R - 0.5, -R + 0.5]] as const) { b.cyl(0.2, 0.3, 1.8, m.log, x, 0, z, 7); b.cone(0.9, 2.6, leaf, x, 1.0, z, 8); }
   if (t >= 2) { b.box(0.5, 1.6, 0.5, m.stone, 0, 0, 0); b.box(1.1, 0.25, 0.25, m.stone, 0, 1.2, 0); }
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard];
+let _fishSilver: THREE.MeshStandardMaterial | null = null, _fishNet: THREE.MeshStandardMaterial | null = null, _fishSmoked: THREE.MeshStandardMaterial | null = null;
+const fishMats = () => ({
+  silver: (_fishSilver ??= new THREE.MeshStandardMaterial({ color: 0xaab8be, roughness: 0.45, metalness: 0.15 })),
+  net: (_fishNet ??= new THREE.MeshStandardMaterial({ color: 0x8c7d58, roughness: 1 })),
+  smoked: (_fishSmoked ??= new THREE.MeshStandardMaterial({ color: 0x9a6a2e, roughness: 0.7 })),
+});
+/** A fish: a flat body with a tail, lying along local X. */
+function fish(b: B, mat: THREE.Material, x: number, y: number, z: number, len = 0.5, ry = 0) {
+  b.box(len, 0.1, 0.16, mat, x, y, z, ry);
+  b.box(len * 0.28, 0.12, 0.2, mat, x - Math.cos(ry) * len * 0.62, y, z + Math.sin(ry) * len * 0.62, ry + 0.5);
+}
+// Fishing hut: a little timber house on the bank with a long jetty out over the water (+x: the core turns the house so the jetty's end is over water), a moored rowboat, nets drying on a frame and fish on a rack.
+const fishingHut: Model = b => {
+  const t = b.t, m = M(), f = fishMats();
+  const W = 3.0 + t * 0.3, D = 2.6, h = 1.9 + t * 0.2, wm = t >= 2 ? m.timber : m.wood;
+  b.box(W + 0.3, 0.3, D + 0.3, m.stone, -0.6, -0.12, 0); b.box(W, h, D, wm, -0.6, 0.18, 0);
+  b.gable(W + 0.2, D, 1.3 + t * 0.2, t >= 1 ? m.tile : m.thatch, -0.6, h + 0.18, 0, 0.4);
+  b.box(0.8, 1.5, 0.12, m.door, -0.6, 0.18, D / 2 + 0.04); b.window(-0.6 + W * 0.3, 1.1, D / 2 + 0.02);
+  if (t >= 2) b.chimney(-1.5, h + 0.9, -0.5, 1.1);
+  // the jetty: planks on piles, from the house out over the water
+  const J0 = W / 2 - 0.5, J1 = 5.6, JW = 1.5, n = Math.round((J1 - J0) / 0.5);
+  for (let i = 0; i < n; i++) b.box(0.44, 0.1, JW, i % 2 ? m.wood : m.log, J0 + 0.25 + i * 0.5, 0.0, 0);
+  for (const x of [J0 + 0.5, J0 + 2.0, J0 + 3.5, J1 - 0.2]) for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.11, 0.13, 2.0, m.darkwood, x, -1.7, z, 6);
+  for (const z of [-JW / 2, JW / 2]) b.box(J1 - J0, 0.1, 0.14, m.darkwood, (J0 + J1) / 2, -0.12, z);
+  for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.13, 0.14, 0.9, m.darkwood, J1 - 0.1, 0.1, z, 6);   // the mooring bollards
+  // a rowboat tied alongside: a hull, thwarts, an oar and the catch
+  const bx = J0 + 2.4, bz = JW / 2 + 1.0;
+  b.box(2.3, 0.14, 0.9, m.wood, bx, -0.55, bz);
+  for (const sz of [-1, 1]) { b.box(2.1, 0.4, 0.08, m.wood, bx, -0.5, bz + sz * 0.45); b.box(0.5, 0.4, 0.08, m.wood, bx + 1.25, -0.42, bz + sz * 0.2, sz * 0.5); }
+  for (const dx of [-0.5, 0.4]) b.box(0.1, 0.07, 0.8, m.darkwood, bx + dx, -0.2, bz);
+  b.box(1.1, 0.05, 0.05, m.darkwood, bx - 0.2, -0.1, bz + 0.1).rotation.z = 0.2;
+  b.box(0.5, 0.08, 0.3, f.silver, bx + 0.5, -0.46, bz); fish(b, f.silver, bx + 0.1, -0.45, bz + 0.15, 0.4, 0.3);
+  // nets drying on a frame beside the house, and a rack of fish
+  const nx = -0.6 - W / 2 - 0.9;
+  for (const z of [-2.3, -0.9]) b.cyl(0.07, 0.09, 2.2, m.darkwood, nx, 0, z, 6);
+  b.box(0.1, 0.1, 1.7, m.darkwood, nx, 2.0, -1.6);
+  for (let i = 0; i < 6; i++) b.box(0.05, 1.3 - (i % 3) * 0.2, 0.2, f.net, nx, 0.7 + (i % 3) * 0.1, -2.2 + i * 0.28);
+  for (const x of [-1.8, 0.2]) b.cyl(0.06, 0.07, 1.5, m.darkwood, x, 0, D / 2 + 0.9, 6);
+  b.box(2.4, 0.07, 0.07, m.darkwood, -0.8, 1.35, D / 2 + 0.9);
+  for (let i = 0; i < 6; i++) b.box(0.1, 0.3, 0.12, i % 2 ? f.silver : f.smoked, -1.6 + i * 0.34, 1.0, D / 2 + 0.9);
+  // creels and a barrel
+  b.box(0.5, 0.45, 0.5, m.hay, 1.0, 0.1, -D / 2 - 0.5); b.box(0.45, 0.4, 0.45, m.hay, 1.5, 0.1, -D / 2 - 0.4, 0.5);
+  b.cyl(0.35, 0.35, 0.7, m.log, -2.6, 0, 1.3, 9);
+  if (t >= 1) for (const z of [-0.3, 0.3]) b.cyl(0.05, 0.05, 1.4, m.darkwood, J1 - 1.4, 0.1, z * 3, 5).rotation.x = 0.35;   // rods leaning on the rail
+  if (t >= 3) b.flag(-0.6 + W / 2 - 0.2, h + 1.0, -D / 2 + 0.3, 2.0);
+};
+// Smokehouse: a tall, windowless timber smoking shed with a vented roof and a glowing firebox, racks of fish hung to dry and wood stacked for the fire.
+const smokehouse: Model = b => {
+  const t = b.t, m = M(), f = fishMats();
+  const W = 3.0 + t * 0.3, D = 3.0, h = 2.8 + t * 0.3;
+  b.box(W + 0.4, 0.4, D + 0.4, m.stone, 0, -0.1, 0); b.box(W, h, D, t >= 2 ? m.timber : m.darkwood, 0, 0.3, 0);
+  for (let i = 0; i < 5; i++) b.box(0.08, h, 0.06, m.wood, -W / 2 + 0.3 + i * (W - 0.6) / 4, 0.3, D / 2 + 0.03);   // board battens
+  b.gable(W + 0.2, D, 1.6 + t * 0.2, t >= 1 ? m.slate : m.thatch, 0, h + 0.3, 0, 0.4);
+  // the roof vent: a little louvred lantern on the ridge that lets the smoke out
+  const top = h + 1.65 + t * 0.2;
+  b.box(1.0, 0.5, 0.7, m.darkwood, 0, top, 0); b.gable(1.2, 0.8, 0.35, m.thatch, 0, top + 0.5, 0, 0.12);
+  b.smoke.push(new THREE.Vector3(0, top + 1.2, 0));
+  // the firebox: a low stone oven against the front with a glowing mouth and its own chimney
+  b.box(1.6, 1.0, 0.9, m.stone, -W / 2 + 0.2, 0, D / 2 + 0.55); b.box(0.7, 0.45, 0.1, m.glow, -W / 2 + 0.2, 0.25, D / 2 + 1.03);
+  b.chimney(-W / 2 + 0.2, 1.0, D / 2 + 0.55, 2.0, m.stone);
+  b.box(0.9, 1.7, 0.12, m.door, W / 2 - 0.9, 0.3, D / 2 + 0.04);
+  // hanging fish racks: frames with rows of fish on rails
+  const racks: [number, number][] = [[W / 2 + 1.5, 0.6], [-W / 2 - 1.3, -1.0]]; if (t >= 1) racks.push([W / 2 + 1.5, -1.6]);
+  for (const [x, z] of racks) {
+    for (const dz of [-0.9, 0.9]) b.cyl(0.07, 0.09, 2.1, m.darkwood, x, 0, z + dz, 6);
+    for (const y of [1.2, 1.7]) b.box(0.07, 0.07, 1.9, m.darkwood, x, y, z);
+    for (let i = 0; i < 7; i++) { b.box(0.1, 0.42, 0.14, f.smoked, x + (i % 2) * 0.04, 0.95, z - 0.78 + i * 0.26); b.box(0.1, 0.42, 0.14, i % 2 ? f.silver : f.smoked, x + (i % 2) * 0.04, 1.45, z - 0.78 + i * 0.26); }
+  }
+  // firewood stacked under a lean-to, a chopping block with an axe, a basket of fish
+  for (const z of [-D / 2 + 0.2, -D / 2 + 1.5]) b.cyl(0.07, 0.08, 1.3, m.darkwood, -W / 2 - 0.5, 0, z, 6);
+  b.box(0.9, 0.08, 1.6, m.thatch, -W / 2 - 0.3, 1.25, -D / 2 + 0.85).rotation.z = -0.25;
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3 - r; c++) b.logH(1.2, 0.14, m.log, -W / 2 - 0.45, 0.14 + r * 0.26, -D / 2 + 0.35 + c * 0.32 + r * 0.16, 'z');
+  b.cyl(0.3, 0.36, 0.45, m.log, W / 2 + 0.9, 0, D / 2 + 1.1, 8); b.box(0.06, 0.55, 0.06, m.darkwood, W / 2 + 0.9, 0.45, D / 2 + 1.1).rotation.z = 0.5;
+  b.box(0.5, 0.35, 0.5, m.hay, W / 2 + 0.2, 0, D / 2 + 1.6); fish(b, f.silver, W / 2 + 0.2, 0.38, D / 2 + 1.6, 0.35, 0.4);
+  if (t >= 2) { b.box(0.9, 0.8, 0.9, m.stone, W / 2 + 0.2, 0, -D / 2 - 0.2); b.chimney(W / 2 + 0.2, 0.8, -D / 2 - 0.2, 1.6, m.stone); }
+  if (t >= 3) b.flag(W / 2 - 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
+};
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,

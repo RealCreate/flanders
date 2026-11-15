@@ -27,7 +27,7 @@ test('exactly five tools, none of them a cheat, with a small fixed cost in the a
 test('a game can be played end to end through the protocol, in tiny replies', async () => {
   const { client, call } = await connect();
   try {
-    const st = await call('status'); assert.ok(st.raw.length < 900 && st.json.stock.length === 12);
+    const st = await call('status'); assert.ok(st.raw.length < 900 && st.json.stock.length === 14);
     const act = await call('act', { a: [['place', 0, 12, 4, 0, 6], ['place', 0, 18, 8, 0, 6], ['place', 1, -14, 6, 0, 8], ['nonsense']] });
     assert.equal(act.json.length, 4); assert.ok(Array.isArray(act.json[0]) && act.json[0].length === 3, act.raw); assert.equal(act.json[3], 'unknown action nonsense');
     assert.ok(act.raw.length < 120, `act reply: ${act.raw}`);
