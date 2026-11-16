@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
+import { deposit_near } from './depositcull';
 
 const rand = (s: number) => { const x = Math.sin(s * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
 
@@ -31,6 +32,21 @@ export class Deposits {
   /** Every rock with the ore chips on it, so each can be seated on the ground under it (a deposit on a slope would otherwise hang in the air on its downhill side). */
   private parts: { g: THREE.Group; rock: THREE.Mesh; ore: { o: THREE.Mesh; dy: number }[]; lift: number }[] = [];
 
+  /** The static scene graph of a thousand deposits (about ten thousand objects) was re-composed, re-multiplied and culled every frame. Their transforms only change in `refit`, `sync`, `attach` and
+   *  `release`, so every object is frozen (`matrixAutoUpdate` off) and re-composed only there (`stamp`), and groups far from the camera are hidden altogether (`cull`). */
+  private stamp(g: THREE.Group) { g.updateMatrix(); for (const c of g.children) c.updateMatrix(); }
+  private show(g: THREE.Group) { g.visible = !g.userData.sub && !g.userData.gone && !g.userData.far; }
+  private cullAt = { x: NaN, z: NaN, r: 0 };
+  /** Hide the deposits farther than `r` from (x, z) (they cannot be on screen); call a few times a second. */
+  cull(x: number, z: number, r: number) {
+    const c = this.cullAt; if (Math.abs(c.x - x) < 8 && Math.abs(c.z - z) < 8 && c.r === r) return;
+    this.cullAt = { x, z, r };
+    for (let i = 0; i < this.groups.length; i++) {
+      const g = this.groups[i], far = !deposit_near(this.flat[i * 5 + 1], this.flat[i * 5 + 2], x, z, r);
+      if (!!g.userData.far !== far) { g.userData.far = far; this.show(g); }
+    }
+  }
+
   /** Deposits that a mine, quarry or clay pit stands against: the pile is drawn right up to the door, and the earth between is worked bare. */
   private worked = new Map<number, { key: string; decal: THREE.Mesh; tinted: { rock: THREE.Mesh; mat: THREE.Material | THREE.Material[] }[] }>();
   private decalMat = new THREE.MeshStandardMaterial({ color: 0x4a3f33, roughness: 1, transparent: true, opacity: 0.88, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
@@ -56,7 +72,7 @@ export class Deposits {
       if (cur) this.release(d);
       const g = this.groups[d], door = 2.0, R = 1.5;   // the door stands 2 units from the building's middle; the middle of the biggest rock sits a little behind it
       const px = w.x + w.dx * (door + R), pz = w.z + w.dz * (door + R);
-      g.position.x = px; g.position.z = pz;
+      g.position.x = px; g.position.z = pz; this.stamp(g);
       const decal = new THREE.Mesh(new THREE.CircleGeometry(2.7, 20).rotateX(-Math.PI / 2), this.decalMat);
       decal.position.set(w.x + w.dx * (door + 0.4), this.terrain.heightAt(w.x + w.dx * door, w.z + w.dz * door) + 0.07, w.z + w.dz * (door + 0.4)); decal.renderOrder = 2; this.group.add(decal);
       const tinted: { rock: THREE.Mesh; mat: THREE.Material | THREE.Material[] }[] = [];
@@ -75,7 +91,7 @@ export class Deposits {
     const w = this.worked.get(d); if (!w) return;
     this.group.remove(w.decal); w.decal.geometry.dispose();
     for (const t of w.tinted) { (t.rock.material as THREE.Material).dispose(); t.rock.material = t.mat; }
-    this.groups[d].position.x = this.flat[d * 5 + 1]; this.groups[d].position.z = this.flat[d * 5 + 2];
+    this.groups[d].position.x = this.flat[d * 5 + 1]; this.groups[d].position.z = this.flat[d * 5 + 2]; this.stamp(this.groups[d]);
     this.worked.delete(d);
   }
 
@@ -102,13 +118,15 @@ export class Deposits {
       }
       this.groups.push(g); this.group.add(g);
     }
+    this.group.matrixAutoUpdate = false; this.group.traverse(o => { if (o !== this.group) o.matrixAutoUpdate = false; });
+    for (const g of this.groups) this.stamp(g);
   }
 
   /** Sit every deposit on the ground as it is now (villages level the ground, rivers and earthworks change it); one under water is hidden. */
   refit() {
     for (let i = 0; i < this.groups.length; i++) {
       const g = this.groups[i], h = this.terrain.heightAt(g.position.x, g.position.z);
-      g.position.y = h - 0.15; g.userData.sub = h < 0.3; g.visible = !g.userData.sub && !g.userData.gone;
+      g.position.y = h - 0.15; g.userData.sub = h < 0.3; this.show(g);
     }
     for (const p of this.parts) {   // each rock rests on the ground right under it, sunk a little so no edge floats
       const gx = p.g.position.x + p.rock.position.x, gz = p.g.position.z + p.rock.position.z, r = p.rock.scale.x * 0.6;
@@ -116,6 +134,7 @@ export class Deposits {
       p.rock.position.y = ground - p.g.position.y + p.lift - 0.2;
       for (const c of p.ore) c.o.position.y = p.rock.position.y + c.dy;
     }
+    for (const g of this.groups) this.stamp(g);
   }
 
   /** Shrink deposits as they are mined out. */
@@ -123,14 +142,14 @@ export class Deposits {
     let moved = false;
     for (let i = 0; i < this.groups.length; i++) {
       if (flat[i * 5 + 1] !== this.flat[i * 5 + 1] || flat[i * 5 + 2] !== this.flat[i * 5 + 2]) {   // the model village moves deposits to where its mines need them
-        this.flat[i * 5 + 1] = flat[i * 5 + 1]; this.flat[i * 5 + 2] = flat[i * 5 + 2]; this.groups[i].position.x = flat[i * 5 + 1]; this.groups[i].position.z = flat[i * 5 + 2]; moved = true; if (this.worked.has(i)) this.release(i);
+        this.flat[i * 5 + 1] = flat[i * 5 + 1]; this.flat[i * 5 + 2] = flat[i * 5 + 2]; this.groups[i].position.x = flat[i * 5 + 1]; this.groups[i].position.z = flat[i * 5 + 2]; this.groups[i].updateMatrix(); moved = true; if (this.worked.has(i)) this.release(i);
       }
       const rem = flat[i * 5 + 3], max = flat[i * 5 + 4], f = max > 0 ? rem / max : 0, g = this.groups[i];
       const dormant = asleep?.[i] === 1;
-      g.scale.setScalar(dormant ? 0.45 + 0.15 * Math.min(1, f / 0.15) : 0.55 + 0.45 * f);
+      { const sc = dormant ? 0.45 + 0.15 * Math.min(1, f / 0.15) : 0.55 + 0.45 * f; if (g.scale.x !== sc) { g.scale.setScalar(sc); g.updateMatrix(); } }
       if (!!g.userData.dormant !== dormant) this.setDormant(i, dormant);
       const gone = max <= 0;   // cleared by the villagers
-      if (!!g.userData.gone !== gone) { g.userData.gone = gone; g.visible = !gone && !g.userData.sub; }
+      if (!!g.userData.gone !== gone) { g.userData.gone = gone; this.show(g); }
     }
     if (moved) this.refit();
   }

@@ -973,7 +973,7 @@ async function startGame(name: string, username: string) {
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, 1)); renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // the shadow map is redrawn every other frame (see frame())
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.72;
-  scene = new THREE.Scene();
+  scene = new THREE.Scene(); scene.matrixAutoUpdate = false;   // the scene itself never moves: with its matrix 'dirty' every frame, every object below was re-multiplied every frame
   ui.progress(10, 'Painting the sky…'); await nextFrame();
   atmo = new Atmosphere(scene, renderer);
   ui.progress(22, 'Raising the mountains…'); await nextFrame();
@@ -2257,6 +2257,7 @@ function frame(now: number) {
   forest.tick(now / 1000, rig.cam.position); perf.stop('camera + world');
   perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1)); perf.stop('villages (people, army)');
   perf.start('animals');
+  deposits.cull(rig.target.x, rig.target.z, Math.max(160, rig.dist * 1.7 + 120));   // deposits far from the camera are not drawn or traversed
   if (now - scareT > 250) { scareT = now; scares = all.flatMap(v => [...v.people.positions(), ...v.army.positions()]); }
   const view = Math.max(90, rig.dist * 1.7 + 50);        // simulate and draw crowds and animals only around the camera
   wildlife.update(dt, scares, rig.target.x, rig.target.z, view);
