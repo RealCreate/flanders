@@ -61,7 +61,7 @@ export const TIER_NAMES: Record<number, string[]> = {
 };
 export const tierName = (kind: number, tier: number) => (TIER_NAMES[kind] ?? GENERIC_TIERS)[tier];
 
-export const STATUS = ['Working', 'Waiting for materials', 'Resource exhausted', 'Storage full', 'Idle', 'Drawn up'];
+export const STATUS = ['Working', 'Waiting for materials', 'Resource exhausted', 'Storage full', 'Idle', 'Drawn up', 'Lowered for an army', 'Deposit dormant'];
 
 export const PLACE_ERRORS: Record<number, string> = {
   [-1]: 'Unknown building', [-2]: 'Outside your village border — build more to grow it', [-3]: 'Something is in the way',

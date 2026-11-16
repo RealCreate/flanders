@@ -124,6 +124,7 @@ table.res td.r { text-align: right; }
 #tooltip b { font-family: var(--f-display); font-weight: 400; color: var(--gold-soft); font-size: 15px; letter-spacing: .03em; }
 #tooltip small { color: #cdbb95; display: block; }
 .lbl { position: absolute; transform: translate(-50%, -100%); font-size: 18px; filter: drop-shadow(0 2px 3px #000c); pointer-events: none; text-align: center; }
+.lbl.dormant { opacity: .7; filter: grayscale(1) drop-shadow(0 2px 3px #000c); } .lbl.dormant span { font-style: italic; color: #cfcfcf; }
 .lbl span { display: block; font-family: var(--f-ui); font-size: 11px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; letter-spacing: .04em; }
 
 /* ---------- modals ---------- */

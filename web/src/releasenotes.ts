@@ -20,6 +20,7 @@ export const RELEASES: Release[] = [
       'This version number and the release notes page.',
     ],
     changed: [
+      'Deposits are far bigger (stone, clay, iron and gold last for months of mining) and are never gone for good: a used-up deposit goes dormant (greyed, no ore, its mine says "Deposit dormant") and slowly regrows, a little faster when nobody works it, waking again at 15%. Mine and quarry panels show what is left, how many days it lasts and how far a dormant deposit has recovered. Deposits you clear away stay cleared. Forests are unchanged.',
       'Armies cross water only by a bridge or a temporarily lowered drawbridge.',
       'Combat overhaul: defending, raiders, siege engines, fire and rams all behave more distinctly.',
       'Knights and siege engines march at their own pace.',
