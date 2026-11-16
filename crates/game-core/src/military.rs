@@ -159,6 +159,7 @@ pub struct Battle {
     pub pillage: f32,
     pub tag: i32, // 0 = bandits, otherwise id of the attacking player
     pub angle: f32, // direction (from the village centre) the attackers came from
+    pub spawn: [f32; 2], // where the line of attackers formed up (the middle of its front), fixed when the fight began
     #[allow(dead_code)] pub atk_start: [u32; NK],
     pub atk_dead: u32,
     pub def_dead: u32,

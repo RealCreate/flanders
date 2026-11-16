@@ -255,3 +255,50 @@ fn lair_outcomes_hold_across_every_lair_and_seed() {
     assert!(strong_won * 10 >= n * 9, "a strong army clears a lair: {strong_won}/{n}");
     assert_eq!(weak_lost, n, "a handful of soldiers never does");
 }
+
+/// Where the attackers stand at the start of a raid, against the point the banner sends the camera to (`battle_spawn`, and the same formula in `defence.ts`: out from the village
+/// centre by build radius + 22 along the raid angle): the middle of the line of attackers is within a few paces of it, for any direction, for the owner's village and for a copy of
+/// another village at an offset, and for a boss raid.
+#[test]
+fn the_camera_target_is_where_the_attackers_stand() {
+    for (ox, oy) in [(0, 0), (420, -310), (-700, 515)] {
+        for k in 0..8 {
+            for boss in [0u8, 1] {
+                let angle = -3.0 + k as f32 * 0.8;
+                let mut w = World::new(1337, ox, oy);
+                w.stock = [3000; N_RES]; w.population = 40; w.tick = 20 * DAY;
+                for (kind, x, y) in [(HOUSE, 12, 4), (HOUSE, 17, 4), (HOUSE, -12, 6), (HOUSE, -16, 10)] { w.place(kind, x, y, 0); }
+                let r = w.build_radius() as f32 + 22.0;
+                let atk = [14, 6, 3, 0, 0, 0];
+                assert!(if boss > 0 { w.begin_battle_boss(atk, angle, 0, boss, 0, 1.0) } else { w.begin_battle(atk, angle, 7) });
+                let sp = w.battle_spawn(); assert_eq!(sp.len(), 2);
+                let (fx, fy) = (ox as f32 + angle.cos() * r, oy as f32 + angle.sin() * r);   // what the client computes from the angle alone
+                assert!((sp[0] - fx).hypot(sp[1] - fy) < 0.01, "the stored spawn is the formula's point: {sp:?} vs ({fx}, {fy})");
+                let u = w.battle_units_flat();
+                let (mut n, mut cx, mut cy) = (0.0f32, 0.0f32, 0.0f32);
+                for c in u.chunks(14) { if c[0] == 1.0 && c[6] > 0.0 { n += 1.0; cx += c[2]; cy += c[3]; } }
+                let (cx, cy) = (cx / n, cy / n);
+                assert!((cx - fx).hypot(cy - fy) < 6.0, "attackers' centre ({cx:.1}, {cy:.1}) vs target ({fx:.1}, {fy:.1}) at angle {angle}, origin ({ox}, {oy}), boss {boss}");
+                // and the first seconds: they have not gone far
+                for _ in 0..3 { w.step(); w.stock[GR as usize] = 3000; }
+                let u = w.battle_units_flat();
+                let (mut n, mut cx, mut cy) = (0.0f32, 0.0f32, 0.0f32);
+                for c in u.chunks(14) { if c[0] == 1.0 && c[6] > 0.0 { n += 1.0; cx += c[2]; cy += c[3]; } }
+                assert!(((cx / n) - fx).hypot((cy / n) - fy) < 14.0, "three seconds in they are still near the target");
+            }
+        }
+    }
+}
+
+/// Why the spawn point alone is not enough: the raiders march on, so some seconds into the fight nobody stands where they formed up.
+#[test]
+fn the_raiders_leave_the_spawn_point_within_seconds() {
+    let mut w = World::new(1337, 0, 0); w.stock = [3000; N_RES]; w.population = 40; w.tick = 20 * DAY;
+    for (kind, x, y) in [(HOUSE, 12, 4), (HOUSE, -12, 6)] { w.place(kind, x, y, 0); }
+    assert!(w.begin_battle([14, 6, 3, 0, 0, 0], 1.0, 7));
+    let sp = w.battle_spawn();
+    let mut at = |w: &World| { let u = w.battle_units_flat(); let (mut n, mut x, mut y) = (0.0f32, 0.0f32, 0.0f32); for c in u.chunks(14) { if c[0] == 1.0 && c[6] > 0.0 { n += 1.0; x += c[2]; y += c[3]; } } (x / n - sp[0]).hypot(y / n - sp[1]) };
+    let d0 = at(&w); for _ in 0..25 { w.step(); w.stock[GR as usize] = 3000; if !w.battle_active() { break; } }
+    let d1 = at(&w); eprintln!("centroid {d0:.1} from the spawn at the start, {d1:.1} after 25s");
+    assert!(d0 < 6.0 && d1 > 20.0, "{d0} {d1}");
+}

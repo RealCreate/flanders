@@ -53,3 +53,30 @@ export function newlyLent(flat: ArrayLike<number>, before: ReadonlySet<number>):
   for (let i = 0; i + 9 < flat.length; i += 10) if (flat[i] === 23 && isLent(flat[i + 6])) { now.add(i / 10); if (!before.has(i / 10)) fresh.push(i / 10); }
   return { fresh, now };
 }
+
+/** The middle of the living attackers right now (`battle_units_flat`, side 1), or null when there are none. */
+export function foeCentroid(flat: ArrayLike<number>, stride = 14): { x: number; z: number; n: number } | null {
+  let n = 0, x = 0, z = 0;
+  for (let i = 0; i + 6 < flat.length; i += stride) if (flat[i] === 1 && flat[i + 6] > 0) { n++; x += flat[i + 2]; z += flat[i + 3]; }
+  return n ? { x: x / n, z: z / n, n } : null;
+}
+
+/** Where the camera goes to see the attackers: the middle of the living ones as they stand now (they march on from where they formed up, so the spot where they began is soon empty);
+ *  before there are any, the point where they formed up (`battle_spawn`), and failing that the point worked out from the raid's angle. */
+export function foeTarget(flat: ArrayLike<number>, spawn: ArrayLike<number>, angle: number, ox: number, oz: number, buildRadius: number): { x: number; z: number } {
+  const c = foeCentroid(flat);
+  if (c) return { x: c.x, z: c.z };
+  if (spawn.length >= 2) return { x: spawn[0], z: spawn[1] };
+  return foeFocus(angle, ox, oz, buildRadius);
+}
+
+/** A marker at the edge of the screen for something off it: where to put it (pixels) and which way it points (radians, 0 = right, clockwise). `sx, sy` is the thing's place on the screen in pixels
+ *  (it may lie outside, or be mirrored when behind the camera: pass `behind`). Null while it is on the screen. */
+export function edgeArrow(sx: number, sy: number, w: number, h: number, behind = false, margin = 36): { x: number; y: number; angle: number } | null {
+  if (!behind && sx >= 0 && sx <= w && sy >= 0 && sy <= h) return null;
+  const cx = w / 2, cy = h / 2;
+  let dx = sx - cx, dy = sy - cy; if (behind) { dx = -dx; dy = -dy; }
+  if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) dy = 1;
+  const k = Math.min((cx - margin) / Math.max(1e-6, Math.abs(dx)), (cy - margin) / Math.max(1e-6, Math.abs(dy)));
+  return { x: cx + dx * k, y: cy + dy * k, angle: Math.atan2(dy, dx) };
+}

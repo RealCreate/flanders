@@ -401,3 +401,5 @@ table.winter td .muted { font-size: 13.5px; line-height: 1.35; margin-top: 2px; 
 #tooltip .hlline { color: #e9dcb8; }
 table.flowbld td { border-bottom: 0; padding: 1px 4px; font-size: 13px; color: #cdbb95; }
 table.flowbld .pbtn { padding: 2px 8px; font-size: 12px; }
+
+#foearrow { position: fixed; z-index: 7; font-size: 34px; line-height: 1; color: #ff4a36; text-shadow: 0 0 6px #000, 0 0 12px #a01a10; cursor: pointer; user-select: none; animation: pulse 1.2s ease-in-out infinite; }
