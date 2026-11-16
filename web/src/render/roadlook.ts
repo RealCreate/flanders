@@ -18,6 +18,10 @@ export const roadHalfWidth = (hallTier: number) => (roadMaterialFor(hallTier) ==
 /** The colour of the grass of the terrain (its two greens, as terrain.ts paints them, times its brightening): what a dirt road has to stand out from. */
 export const GRASS_RGB: [number, number, number][] = [[0x5f, 0x8a, 0x3a], [0x7a, 0x9a, 0x45]].map(c => c.map(v => Math.min(255, Math.round(v * 1.18))) as [number, number, number]);
 
+/** The patch of trodden earth under a building is a faint, plain tint (colour as a 0..1 multiplier, and the most opaque it gets), not a road: it never has the road's texture. */
+export const APRON_RGB: [number, number, number] = [0.6, 0.5, 0.36];
+export const APRON_ALPHA = 0.35;
+
 const lin = (v: number) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
 /** Relative luminance (0..1) of an sRGB colour with channels 0..255. */
 export const luminance = (r: number, g: number, b: number) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
