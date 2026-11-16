@@ -36,9 +36,7 @@ export class Paths {
         float paved = (1.0 - smoothstep(pv * 1.15 - 0.15, pv * 1.15, vRoad.y)) * step(0.001, pv);
         vec2 cu = vMapUv * 5.0; float cob = step(0.1, fract(cu.x)) * step(0.1, fract(cu.y + floor(cu.x) * 0.5));
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.64, 0.62, 0.58) * (0.78 + 0.22 * cob), paved * 0.92);
-        float plaza = step(1.5, vRoad.z);   // a square is stone paving from the first day (roads are paved slowly)
-        vec2 cp = vMapUv * 3.0; float slab = step(0.06, fract(cp.x + floor(cp.y) * 0.5)) * step(0.06, fract(cp.y));
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.66, 0.64, 0.60) * (0.74 + 0.26 * slab), plaza * 0.97);`);
+`);
     };
     this.mat.customProgramCacheKey = () => 'paths' + this.mat.id;   // one program per village: each has its own clock uniform (see patchWater)
     this.tracks = new THREE.Mesh(new THREE.BufferGeometry(), this.mat);
@@ -117,8 +115,8 @@ export class Paths {
     rb = -1e6; rs = 0.5; rp = 2;
     for (let q = 0; q + 3 < squares.length; q += 4) {
       const cx = squares[q], cz = squares[q + 1], R = squares[q + 2], rings = 4, seg = 36, base = pos.length / 3;
-      vert(cx, cz, 0.95, 0.5, 0.5);
-      for (let r = 1; r <= rings; r++) for (let k = 0; k < seg; k++) { const a = (k / seg) * Math.PI * 2, rr = (R * r) / rings; vert(cx + Math.cos(a) * rr, cz + Math.sin(a) * rr, r === rings ? 0 : 0.95, 0.5 + Math.cos(a) * (r / rings) * 0.5, 0.5 + Math.sin(a) * (r / rings) * 0.5); }
+      vert(cx, cz, 0.95, cx / 3, cz / 4);
+      for (let r = 1; r <= rings; r++) for (let k = 0; k < seg; k++) { const a = (k / seg) * Math.PI * 2, rr = (R * r) / rings; { const x = cx + Math.cos(a) * rr, z = cz + Math.sin(a) * rr; vert(x, z, r === rings ? 0 : 0.95, x / 3, z / 4); } }   // (world-scale texture coordinates: the same size of cobble as the roads have, ribbon width 3, 4 along)
       for (let k = 0; k < seg; k++) idx.push(base, base + 1 + k, base + 1 + ((k + 1) % seg));
       for (let r = 1; r < rings; r++) for (let k = 0; k < seg; k++) { const a = base + 1 + (r - 1) * seg + k, b = base + 1 + (r - 1) * seg + ((k + 1) % seg), c = a + seg, d = b + seg; idx.push(a, c, b, b, c, d); }
     }
