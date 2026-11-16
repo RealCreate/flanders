@@ -24,6 +24,7 @@ export const RELEASES: Release[] = [
       'Winter is gentler: farms make 55% grain (85% with haystacks) instead of 25%, the village burns about a third less firewood, the town hall hearth keeps it warm while any wood is left, and the cold now takes unhappiness first, nobody for the first 3 cold days (5 with a staffed hospital), then a daily chance that grows. Fishing, hunting and smoked food are untouched by winter.',
       'New Winter panel (click the season in the top bar, or hover it): exactly what winter does, firewood per day and days left at the present size, and a warning toast a season ahead.',
       'The rules fingerprint changed again for the winter rules: villages on this version only sync with players on the same version.',
+      'Deposits are far bigger (stone, clay, iron and gold last for months of mining) and are never gone for good: a used-up deposit goes dormant (greyed, no ore, its mine says "Deposit dormant") and slowly regrows, a little faster when nobody works it, waking again at 15%. Mine and quarry panels show what is left, how many days it lasts and how far a dormant deposit has recovered. Deposits you clear away stay cleared. Forests are unchanged.',
       'Armies cross water only by a bridge or a temporarily lowered drawbridge.',
       'Combat overhaul: defending, raiders, siege engines, fire and rams all behave more distinctly.',
       'Knights and siege engines march at their own pace.',

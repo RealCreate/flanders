@@ -29,6 +29,7 @@ import { CameraRig } from './render/camera';
 import { Forest } from './render/trees';
 import { buildModel, Effects } from './render/buildings';
 import { Deposits } from './render/deposits';
+import { depositLabel, depositPanel, parseBuildingDeposit } from './depositinfo';
 import { Crowd } from './render/crowd';
 import { Travellers, type TVillage } from './render/travellers';
 import { JK, arrivedText } from './render/journey';
@@ -463,7 +464,7 @@ function toggleShowroom() {
 async function runModelVillage(ask: boolean) {
   if (ask && !(await ui.confirm('This clears every building except the town hall and builds a model village in its place.', 'Build it', 'Build the model village?'))) return;
   const w = lv.world;
-  if (!runModelVillageIn({ world: w, commit: c => commit(c), changed: () => { deposits.sync(w.deposits_flat()); deposits.refit(); forestDirtyFlag = true; afterLocalChange(); refreshTerrain(w); } })) { ui.toast('Not during a battle.', 'bad'); return; }
+  if (!runModelVillageIn({ world: w, commit: c => commit(c), changed: () => { deposits.sync(w.deposits_flat(), w.deposits_asleep()); deposits.refit(); forestDirtyFlag = true; afterLocalChange(); refreshTerrain(w); } })) { ui.toast('Not during a battle.', 'bad'); return; }
   lv.afterTick(); updateHud(); updateSelection();
   const f = w.buildings_flat(); rig.focus(f[2], f[3], 90);
   ui.toast(`Your model village is ready: ${w.building_count()} buildings.`, 'good');
@@ -1232,7 +1233,7 @@ function stepLocal() {
   pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
   if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools });
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
-  if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
+  if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
   if (forestDirtyFlag) rebuildForest(true);
@@ -1501,7 +1502,7 @@ function updateSelection() {
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.cycle) {
     html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>${icon('worker', 20)} ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
-      <div><div class="eyebrow">Production cycle</div><div class="bar"><i style="width:${pct}%"></i></div></div>
+      <div><div class="eyebrow">Production cycle</div><div class="bar"><i style="width:${pct}%"></i></div></div>${depositHtml(selectedIdx)}
       <p class="muted">${d.inputs.length ? `Uses ${io(scaled(d.inputs, tier))}<br>` : ''}Makes ${io(scaled(d.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(d.outputs, tier + 1))}.` : ''}</p>`;
   } else if (d.housing) html += `<div class="stats"><div class="stat"><b>${icon('house', 20)} ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
   if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p>`;
@@ -1920,6 +1921,12 @@ function bindInput() {
   });
 }
 
+/** The deposit a mine, quarry or clay pit works: how much is left, how long it lasts at this rate, or that it lies dormant and how far it has regrown. */
+function depositHtml(idx: number): string {
+  const bd = parseBuildingDeposit(lv.world.building_deposit(idx)); if (!bd) return '';
+  const p = depositPanel(bd);
+  return `<div><div class="eyebrow">Deposit · ${p.headline}</div><div class="bar ${bd.asleep ? 'red' : ''}"><i style="width:${p.fill}%"></i></div><p class="muted">${p.detail}</p></div>`;
+}
 // ---------- deposits overlay ----------
 function buildDepositLabels() {
   const raw = deposits.raw;
@@ -1941,14 +1948,15 @@ function toggleResources() { showDeposits = !showDeposits; ui.setResourcesToggle
 const vtmp = new THREE.Vector3();
 function updateLabels() {
   if (!showDeposits) return;
-  const flat = lv.world.deposits_flat();
+  const flat = lv.world.deposits_flat(), asleep = lv.world.deposits_asleep();
   for (let i = 0; i < Math.min(depLabels.length, flat.length / 5); i++) {
     const x = flat[i * 5 + 1], z = flat[i * 5 + 2], rem = flat[i * 5 + 3];
     vtmp.set(x, terrain.heightAt(x, z) + 3.2, z).project(rig.cam);
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.05 && Math.abs(vtmp.y) < 1.05 && Math.hypot(x - rig.target.x, z - rig.target.z) < 210;
     const el = depLabels[i]; el.hidden = !on || flat[i * 5 + 4] <= 0; if (el.hidden) continue;
     el.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; el.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
-    (el.firstElementChild as HTMLElement).textContent = `${DEPOSIT[flat[i * 5]].name} · ${Math.round(rem)}`;
+    const text = depositLabel(DEPOSIT[flat[i * 5]].name, { rem, max: flat[i * 5 + 4], asleep: asleep[i] === 1 });
+    (el.firstElementChild as HTMLElement).textContent = text; el.classList.toggle('dormant', asleep[i] === 1); el.title = asleep[i] === 1 ? 'Dormant, recovering. It wakes by itself once it has regrown. Click twice to clear it off the land (40 wood, 10 tools)' : 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
   }
 }
 

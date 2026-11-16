@@ -51,7 +51,7 @@ struct Building {
     rot: u8,
     pad_h: f32,
     progress: u32,
-    status: u8, // 0 working, 1 missing input, 2 depleted / no resource, 3 storage full, 4 passive
+    status: u8, // 0 working, 1 missing input, 2 depleted / no resource, 3 storage full, 4 passive, 7 its deposit is dormant (regrowing)
     aux: i32,   // deposit index for mines
     staff: u32,     // villagers currently working here
     residents: u32, // villagers living here
@@ -842,9 +842,9 @@ impl World {
         if (hi - lo) / (fr * 2.0) > d.max_slope { return -5; }
         if d.req != 1 {   // nothing is built or dug on top of an ore or stone deposit (only mines and quarries stand beside one)
             let clear = if is_edit(kind) { 2.6 } else if matches!(kind, WALL | FENCE | GATE) { 0.6 } else { d.r + 1.6 };   // a wall may run over an outcrop (only its very middle is in the way)
-            if self.deposits.iter().any(|dep| dep.rem > 0 && (dep.x - x).powi(2) + (dep.y - y).powi(2) < clear * clear) { return -17; }
+            if self.deposits.iter().any(|dep| dep.max > 0 && (dep.x - x).powi(2) + (dep.y - y).powi(2) < clear * clear) { return -17; }
         }
-        if d.req == 1 && self.nearest_deposit(x, y, d.req_arg).is_none() { return -7; }
+        if d.req == 1 && self.nearest_deposit(x, y, d.req_arg, true).is_none() { return -7; }
         if d.req == 2 && self.forest_here(x, y, 12.0) < 0.12 { return -8; }
         if d.req == 3 && !self.water_near(x, y, d.r + 5.0) { return -16; }
         for &(res, n) in d.cost { if self.stock[res as usize] < n { return -6; } }
@@ -874,10 +874,11 @@ impl World {
         self.felled.push([x, y, 2.4]); self.map_ver += 1;
     }
 
-    fn nearest_deposit(&self, x: f32, y: f32, kind: u8) -> Option<usize> {
+    /// The nearest deposit of this kind within reach; with `dormant_too` a dormant one counts (a mine may be built beside it and wait for it to wake), else only one that can be worked now.
+    fn nearest_deposit(&self, x: f32, y: f32, kind: u8, dormant_too: bool) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (i, dep) in self.deposits.iter().enumerate() {
-            if dep.kind != kind || dep.rem <= 0 || self.height_at(dep.x, dep.y) < 0.3 { continue; }   // a deposit drowned by a river or lake cannot be worked
+            if dep.kind != kind || !(dep.active() || (dormant_too && dep.max > 0)) || self.height_at(dep.x, dep.y) < 0.3 { continue; }   // a deposit drowned by a river or lake cannot be worked
             let d2 = (dep.x - x).powi(2) + (dep.y - y).powi(2);
             if d2 <= 15.0 * 15.0 && best.map_or(true, |(_, b)| d2 < b) { best = Some((i, d2)); }
         }
@@ -912,7 +913,7 @@ impl World {
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             pad_h = match gate { Some((d, h)) if d < 30.0 => h, _ => bank(sx, sy).max(bank(-sx, -sy)).max(0.8) };
         }
-        let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg).map_or(-1, |i| i as i32) } else { -1 };
+        let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg, true).map_or(-1, |i| i as i32) } else { -1 };
         let mut status = if d.cycle > 0 { 1 } else { 4 };
         if kind == ROAD { let t = tgts.unwrap_or_else(|| self.road_tgts_near(x, y)); status = if self.road_piece_attached(x, y, &t) { 4 } else { 2 }; self.road_conn.push(roadline::RoadConn { x, y, to: t }); }
         self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
@@ -1207,7 +1208,7 @@ impl World {
         if self.buildings.iter().any(|b| b.aux == i as i32 && DEFS[b.kind as usize].req == 1) { return -4; }
         if self.stock[W as usize] < 40 || self.stock[TL as usize] < 10 { return -6; }
         self.stock[W as usize] -= 40; self.stock[TL as usize] -= 10;
-        let dep = &mut self.deposits[i as usize]; dep.rem = 0; dep.max = 0;
+        let dep = &mut self.deposits[i as usize]; dep.rem = 0; dep.max = 0; dep.asleep = false;
         self.map_ver += 1; self.after_change();
         0
     }
@@ -1288,12 +1289,12 @@ impl World {
                 let mut dep_idx: Option<usize> = None;
                 if d.req == 1 {
                     let a = self.buildings[i].aux;
-                    let ok = a >= 0 && self.deposits[a as usize].rem > 0;
+                    let ok = a >= 0 && self.deposits[a as usize].active();
                     if ok { dep_idx = Some(a as usize); } else {
                         let (bx, by) = (self.buildings[i].x, self.buildings[i].y);
-                        match self.nearest_deposit(bx, by, d.req_arg) {
+                        match self.nearest_deposit(bx, by, d.req_arg, false) {
                             Some(n) => { self.buildings[i].aux = n as i32; dep_idx = Some(n); }
-                            None => { status = 2; p = need; break; }
+                            None => { let sleeping = a >= 0 && self.deposits.get(a as usize).map_or(false, |dd| dd.max > 0); status = if sleeping { 7 } else { 2 }; p = need; break; }
                         }
                     }
                 }
@@ -1304,7 +1305,8 @@ impl World {
                 for &(r, n) in outputs { self.stock[r as usize] += yield_of(r, n); self.ledger.note(kind as usize, r as usize, yield_of(r, n)); }
                 if let Some(di) = dep_idx {
                     let out: i32 = outputs.iter().map(|&(_, n)| scale(n)).sum();   // ore taken from the ground does not depend on the season
-                    self.deposits[di].rem = (self.deposits[di].rem - out).max(0);
+                    let dd = &mut self.deposits[di]; dd.rem = (dd.rem - out).max(0);
+                    if dd.rem == 0 { dd.asleep = true; }   // used up: dormant until it has regrown (see `Deposit::grow`)
                 }
                 status = 0;
                 p -= need;
@@ -1555,6 +1557,7 @@ impl World {
             }
         } else { self.warm = true; }
         if self.tick % DAY != 0 { return; }
+        self.regrow_deposits();
         { let doves = self.perks().doves; if doves > 0 { let cap = self.storage_cap(); self.gain(ledger::EX_DOVES, GR, doves, cap); } }
         let now = self.tick; self.treaties.retain(|t| t.until > now);
         self.market_refill();
@@ -1778,6 +1781,25 @@ impl World {
     pub fn walk_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.walk_route_inner(sx, sy, gx, gy) }
 
     /// Flat [kind, x, y, remaining, max, ...] (stride 5).
+    /// 1 for every deposit that lies dormant (used up, regrowing), 0 otherwise; one entry per deposit, in the order of `deposits_flat`.
+    pub fn deposits_asleep(&self) -> Vec<u8> { self.deposits.iter().map(|d| d.asleep as u8).collect() }
+    /// What the building at `idx` works: [deposit index, remaining, maximum, dormant 0/1, ore taken per day at its present staffing], or empty when it needs no deposit.
+    pub fn building_deposit(&self, idx: u32) -> Vec<f32> {
+        let Some(b) = self.buildings.get(idx as usize) else { return vec![] };
+        let d = &DEFS[b.kind as usize];
+        if d.req != 1 || b.aux < 0 { return vec![]; }
+        let Some(dep) = self.deposits.get(b.aux as usize) else { return vec![] };
+        let mult = 4 + 5 * b.tier as i32; let out: i32 = d.outputs.iter().map(|&(_, n)| ((n * mult + 2) / 4).max(n)).sum();
+        let eff = if staffed_first(b.kind) { self.eff_first } else { self.eff_rest } as f32 / 100.0;
+        vec![b.aux as f32, dep.rem as f32, dep.max as f32, dep.asleep as u8 as f32, out as f32 * DAY as f32 / d.cycle as f32 * eff]
+    }
+    /// Once a day every deposit regrows a little, faster when no working building stands at it; one used up and dormant wakes at `WAKE_PCT` of its maximum. Cleared deposits (`max == 0`) stay gone.
+    fn regrow_deposits(&mut self) {
+        let mut worked = vec![false; self.deposits.len()];
+        for b in &self.buildings { if DEFS[b.kind as usize].req == 1 && b.status == 0 && b.aux >= 0 { if let Some(w) = worked.get_mut(b.aux as usize) { *w = true; } } }
+        for (d, w) in self.deposits.iter_mut().zip(worked) { d.grow(w); }
+    }
+
     pub fn deposits_flat(&self) -> Vec<f32> {
         self.deposits.iter().flat_map(|d| [d.kind as f32, d.x, d.y, d.rem as f32, d.max as f32]).collect()
     }
@@ -2110,7 +2132,7 @@ impl World {
             0 => {
                 let r = (a as f32).clamp(10.0, 200.0);
                 self.felled.push([hx, hy, r]); self.groves.clear();
-                for d in self.deposits.iter_mut() { if (d.x - hx).hypot(d.y - hy) < r { d.rem = 0; d.max = 0; } }
+                for d in self.deposits.iter_mut() { if (d.x - hx).hypot(d.y - hy) < r { d.rem = 0; d.max = 0; d.asleep = false; } }
                 self.map_ver += 1; self.terrain_ver += 1; 0
             }
             1 => {
@@ -2120,7 +2142,7 @@ impl World {
                     .or_else(|| self.deposits.iter().enumerate().filter(|(_, d)| d.kind == kind).min_by(|(_, p), (_, q)| (p.x - hx).hypot(p.y - hy).total_cmp(&(q.x - hx).hypot(q.y - hy))).map(|(i, _)| i));
                 let Some(i) = slot else { return -1 };
                 let amount = match kind { 0 => 1500, 1 => 1200, 2 => 900, _ => 320 };
-                self.deposits[i] = Deposit { kind, x, y, rem: amount, max: amount };
+                self.deposits[i] = Deposit { kind, x, y, rem: amount, max: amount, asleep: false };
                 self.map_ver += 1; self.terrain_ver += 1; i as i32
             }
             2 => { if !(-400..=400).contains(&a) || !(-400..=400).contains(&b) || self.groves.len() >= 16 { return -1; } self.groves.push([hx + a as f32, hy + b as f32, (c as f32).clamp(5.0, 60.0)]); self.map_ver += 1; 0 }
@@ -2237,7 +2259,7 @@ impl World {
                 for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
                 for c in &self.road_conn { mix(c.x.to_bits() as u64); mix(c.y.to_bits() as u64); for t in &c.to { mix(t.x.to_bits() as u64); mix(t.y.to_bits() as u64); mix(t.k as u64); } }   // how the roads the player laid are joined
             }),
-            part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); } }),
+            part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); mix(d.asleep as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
             part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } }),
             part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); } } }),
@@ -4038,6 +4060,70 @@ mod deposit_tests {
         assert_ne!(w.can_place(HOUSE, (d.x - w.ox as f32) as i32, (d.y - w.oy as f32) as i32), -17, "nothing is in the way any more");
         assert_eq!(w.clear_deposit(99999), -1);
         let mut poor = World::new(1337, 0, 0); poor.stock = [0; N_RES]; assert_eq!(poor.clear_deposit(i), -6);
+    }
+
+    /// A quarry (6), clay pit (7), iron mine (9) or gold mine (10) beside the nearest deposit of its kind that lies within reach; returns the building index.
+    fn mine(w: &mut World, kind: u8) -> usize {
+        for r in [10i32, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50] { for a in 0..24 {
+            let t = a as f32 * 0.2618; let (dx, dy) = ((t.cos() * r as f32) as i32, (t.sin() * r as f32) as i32);
+            let i = w.place(kind, dx, dy, 0); if i >= 0 { return i as usize; }
+        } }
+        panic!("no place for kind {kind}")
+    }
+    fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.population = 400; w }
+
+    #[test]
+    fn a_tier_zero_mine_takes_weeks_to_empty_even_the_poorest_deposit() {
+        for (kind, bkind) in [(0usize, 6usize), (1, 7), (2, 9), (3, 10)] {
+            let d = &DEFS[bkind]; let per_day = d.outputs.iter().map(|&(_, n)| n).sum::<i32>() as f32 * DAY as f32 / d.cycle as f32;
+            for seed in [1u64, 7, 1337, 99] {
+                let deps = terrain::deposits(seed);
+                let poorest = deps.iter().filter(|x| x.kind as usize == kind).map(|x| x.max).min().expect("every kind exists");
+                assert!(poorest as f32 / per_day >= terrain::MIN_DAYS_TO_EMPTY as f32, "kind {kind} seed {seed}: {poorest} lasts only {} days", poorest as f32 / per_day);
+            }
+        }
+    }
+
+    #[test]
+    fn a_used_up_deposit_goes_dormant_stops_production_and_wakes_after_regrowing() {
+        let mut w = rich(); let b = mine(&mut w, 6); let di = w.buildings[b].aux as usize;
+        w.stock[ST as usize] = 0; let max = w.deposits[di].max;
+        for _ in 0..400 { w.step(); }
+        assert_eq!(w.buildings[b].status, 0, "working"); assert!(w.deposits[di].rem < max, "it is being worked");
+        w.deposits[di].rem = 1; w.stock[ST as usize] = 0;
+        for _ in 0..200 { w.step(); }
+        let dep = w.deposits[di]; assert!(dep.asleep && dep.rem * 100 < dep.max * terrain::WAKE_PCT && dep.max > 0, "dormant but still on the map");
+        assert_eq!(w.buildings[b].status, 7, "the building says its deposit is dormant");
+        let made = w.stock[ST as usize]; for _ in 0..100 { w.step(); } assert_eq!(w.stock[ST as usize], made, "nothing is produced");
+        let bd = w.building_deposit(b as u32); assert_eq!(bd[3], 1.0); assert_eq!(bd[2] as i32, dep.max);
+        // a day at a time: 2% of the maximum, awake from 15%
+        let mut days = 0;
+        while w.deposits[di].asleep && days < 40 { let t = w.tick; while w.tick / DAY == t / DAY { w.step(); } days += 1; w.stock[ST as usize] = 0; }
+        let need = (max * terrain::WAKE_PCT + 99) / 100; assert!(w.deposits[di].rem >= need, "woke at the threshold");
+        assert!((7..=9).contains(&days), "2% a day to 15% takes 8 days, took {days}");
+        for _ in 0..300 { w.step(); } assert!(w.stock[ST as usize] > 0, "working again");
+        assert_eq!(w.buildings[b].status, 0);
+    }
+
+    #[test]
+    fn a_cleared_deposit_never_regrows_and_a_worked_one_regrows_slower() {
+        let mut w = rich(); let b = mine(&mut w, 7); let di = w.buildings[b].aux as usize;
+        let other = (0..w.deposits.len()).find(|&i| i != di && w.deposits[i].max > 0).unwrap();
+        w.deposits[other].rem = 0; w.deposits[other].max = 0;   // cleared
+        w.deposits[di].rem = w.deposits[di].max / 2;
+        let idle = (0..w.deposits.len()).find(|&i| i != di && i != other && w.deposits[i].max > 0).unwrap(); w.deposits[idle].rem = w.deposits[idle].max / 2;
+        for _ in 0..(3 * DAY) { w.step(); }
+        assert_eq!(w.deposits[other].rem, 0, "cleared stays cleared");
+        assert!(w.deposits[idle].rem > w.deposits[idle].max / 2, "an idle deposit recovers");
+        let mut d = w.deposits[idle]; d.rem = 0; d.asleep = true; let mut e = d;
+        d.grow(false); e.grow(true); assert!(d.rem > e.rem, "nobody working it: faster");
+    }
+
+    #[test]
+    fn dormancy_and_regrowth_replay_the_same_and_change_the_hash() {
+        let run = || { let mut w = rich(); let b = mine(&mut w, 6); let di = w.buildings[b].aux as usize; w.deposits[di].rem = 40; for _ in 0..(12 * DAY) { w.step(); w.stock[W as usize] = 30000; } (w.state_hash(), w.deposits[di].rem, w.deposits[di].asleep) };
+        let (a, b) = (run(), run()); assert_eq!(a, b, "two replicas agree after dormancy and regrowth");
+        let mut w = rich(); let h = w.state_hash_parts()[3]; w.deposits[0].asleep = !w.deposits[0].asleep; assert_ne!(w.state_hash_parts()[3], h, "the deposits section sees the dormant flag");
     }
 }
 

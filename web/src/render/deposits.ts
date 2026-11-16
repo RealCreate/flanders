@@ -22,6 +22,8 @@ const oreMats = [
   new THREE.MeshStandardMaterial({ color: 0xffd23a, roughness: 0.25, metalness: 0.9, emissive: 0x9a6a00, emissiveIntensity: 0.9, flatShading: true }),
 ];
 
+const dormantMat = new THREE.MeshStandardMaterial({ color: 0x8a8782, roughness: 1, flatShading: true });   // dried up
+
 export class Deposits {
   group = new THREE.Group();
   private groups: THREE.Group[] = [];
@@ -117,18 +119,31 @@ export class Deposits {
   }
 
   /** Shrink deposits as they are mined out. */
-  sync(flat: Float32Array) {
+  sync(flat: Float32Array, asleep?: Uint8Array) {
     let moved = false;
     for (let i = 0; i < this.groups.length; i++) {
       if (flat[i * 5 + 1] !== this.flat[i * 5 + 1] || flat[i * 5 + 2] !== this.flat[i * 5 + 2]) {   // the model village moves deposits to where its mines need them
         this.flat[i * 5 + 1] = flat[i * 5 + 1]; this.flat[i * 5 + 2] = flat[i * 5 + 2]; this.groups[i].position.x = flat[i * 5 + 1]; this.groups[i].position.z = flat[i * 5 + 2]; moved = true; if (this.worked.has(i)) this.release(i);
       }
       const rem = flat[i * 5 + 3], max = flat[i * 5 + 4], f = max > 0 ? rem / max : 0, g = this.groups[i];
-      g.scale.setScalar(rem <= 0 ? 0.2 : 0.55 + 0.45 * f);
+      const dormant = asleep?.[i] === 1;
+      g.scale.setScalar(dormant ? 0.45 + 0.15 * Math.min(1, f / 0.15) : 0.55 + 0.45 * f);
+      if (!!g.userData.dormant !== dormant) this.setDormant(i, dormant);
       const gone = max <= 0;   // cleared by the villagers
       if (!!g.userData.gone !== gone) { g.userData.gone = gone; g.visible = !gone && !g.userData.sub; }
     }
     if (moved) this.refit();
+  }
+
+  /** A dormant deposit is drawn dried up: grey rock, no ore sparkle; it comes back to life when it wakes. */
+  private setDormant(d: number, on: boolean) {
+    const g = this.groups[d]; g.userData.dormant = on;
+    if (this.worked.has(d)) this.release(d);   // (the worked tint is put back by the next attach, over the right material)
+    for (const p of this.parts) {
+      if (p.g !== g) continue;
+      if (on) { p.rock.userData.live = p.rock.material; p.rock.material = dormantMat; } else if (p.rock.userData.live) { p.rock.material = p.rock.userData.live; p.rock.userData.live = undefined; }
+      for (const c of p.ore) c.o.visible = !on;
+    }
   }
 
   get count() { return this.groups.length; }
