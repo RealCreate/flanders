@@ -493,12 +493,27 @@ impl World {
         }
         cand.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
         cand.dedup_by(|p, q| p.1 == q.1 && p.2 == q.2);
-        // the cleanest roads first: every link that has a way keeping all of its room clear (level 0), then those that squeeze past (level 1)
-        for level in 0u8..2 {
+        // the cleanest roads first: every link that has a way keeping all of its room clear (level 0), then those that squeeze past (level 1). A road that would cross one already laid, or that
+        // would make a fourth or fifth road end at the same door, waits for the second pass (strict = false), so the roads do not tangle: a crossing is only made where it cannot be helped.
+        let cross = |a: &[(f32, f32)], b: &[(f32, f32)]| -> bool {
+            let ccw = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
+            let near = |p: (f32, f32), q: (f32, f32)| (p.0 - q.0).hypot(p.1 - q.1) < 2.5;
+            a.windows(2).any(|s| b.windows(2).any(|t| {
+                if near(s[0], t[0]) || near(s[0], t[1]) || near(s[1], t[0]) || near(s[1], t[1]) { return false; }
+                ccw(s[0], s[1], t[0]) * ccw(s[0], s[1], t[1]) < 0.0 && ccw(t[0], t[1], s[0]) * ccw(t[0], t[1], s[1]) < 0.0
+            }))
+        };
+        let bbox = |r: &[(f32, f32)]| r.iter().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |b, p| (b.0.min(p.0), b.1.min(p.1), b.2.max(p.0), b.3.max(p.1)));
+        let mut laid0: Vec<((f32, f32, f32, f32), Vec<(f32, f32)>)> = vec![]; let mut deg0 = vec![0u32; n];
+        for (level, strict) in [(0u8, true), (1, true), (0, false), (1, false)] {
             for &(_, a, b) in &cand {
                 let (ra, rb) = (find(&mut comp, a), find(&mut comp, b));
                 if ra == rb { continue; }
-                if self.route_for(&mut memo, &net, &ctx, base_stamp, ends[b], ends[a], level).is_some() { chosen.push((ends[b], ends[a], level)); comp[ra] = rb; }
+                if strict && (deg0[ends[a]] >= 4 || deg0[ends[b]] >= 4) { continue; }
+                let Some(r) = self.route_for(&mut memo, &net, &ctx, base_stamp, ends[b], ends[a], level) else { continue };
+                let bb = bbox(&r);
+                if strict && laid0.iter().any(|l| l.0 .0 <= bb.2 + 2.5 && l.0 .2 >= bb.0 - 2.5 && l.0 .1 <= bb.3 + 2.5 && l.0 .3 >= bb.1 - 2.5 && cross(&r, &l.1)) { continue; }
+                chosen.push((ends[b], ends[a], level)); comp[ra] = rb; laid0.push((bb, r)); deg0[ends[a]] += 1; deg0[ends[b]] += 1;
             }
         }
         // whatever is still cut off from the town hall is chained to it by the nearest walkable link, however far, one part at a time (only water and walls keep a building apart)
@@ -524,18 +539,10 @@ impl World {
         let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
         for &(i, j, _) in &chosen { adj[i].push(j); adj[j].push(i); }
         let mut laid: Vec<Vec<(f32, f32)>> = chosen.iter().filter_map(|&(i, j, l)| memo.get(&(i, j, l)).and_then(|c| c.clone())).collect();
-        let cross = |a: &[(f32, f32)], b: &[(f32, f32)]| -> bool {
-            let ccw = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
-            let near = |p: (f32, f32), q: (f32, f32)| (p.0 - q.0).hypot(p.1 - q.1) < 2.5;
-            a.windows(2).any(|s| b.windows(2).any(|t| {
-                if near(s[0], t[0]) || near(s[0], t[1]) || near(s[1], t[0]) || near(s[1], t[1]) { return false; }
-                ccw(s[0], s[1], t[0]) * ccw(s[0], s[1], t[1]) < 0.0 && ccw(t[0], t[1], s[0]) * ccw(t[0], t[1], s[1]) < 0.0
-            }))
-        };
         for &(d, a, b) in &cand {
             if d > 44.0 { break; }
             let (i, j) = (ends[b], ends[a]);   // the later building is the child
-            if adj[i].contains(&j) || adj[i].len() >= 5 || adj[j].len() >= 5 { continue; }
+            if adj[i].contains(&j) || adj[i].len() >= 3 || adj[j].len() >= 3 { continue; }
             // how many roads lead from one to the other through the roads laid so far
             let mut hops = vec![u32::MAX; n]; hops[j] = 0; let mut q = std::collections::VecDeque::from([j]);
             while let Some(x) = q.pop_front() { for &y in &adj[x] { if hops[y] == u32::MAX { hops[y] = hops[x] + 1; q.push_back(y); } } }
@@ -543,7 +550,7 @@ impl World {
             let Some(r) = self.route_for(&mut memo, &net, &ctx, base_stamp, i, j, 0) else { continue };   // (only the clean kind of road closes a loop)
             let len: f32 = r.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
             let (pi, pj) = (&self.buildings[i], &self.buildings[j]);
-            if len > 1.4 * (pi.x - pj.x).hypot(pi.y - pj.y) + 6.0 || laid.iter().any(|l| cross(&r, l)) { continue; }
+            if len > 1.3 * (pi.x - pj.x).hypot(pi.y - pj.y) + 4.0 || laid.iter().any(|l| cross(&r, l)) { continue; }
             chosen.push((i, j, 0)); adj[i].push(j); adj[j].push(i); laid.push(r);
         }
         chosen.sort();
@@ -1094,7 +1101,15 @@ impl World {
             if !(code == 0 || code == -6) { continue; }
             // the way through must be free on both sides of the post: the road has to run on from both ends of its gate
             let (wx, wy) = doors::to_world(rot as u8, (0.0, 1.0));
-            if [-5.0f32, -3.5, 0.0, 3.5, 5.0].iter().all(|&t| net.ok_at(sx + wx * t, sy + wy * t)) { return vec![cx, cy, rot as f32]; }
+            if ![-5.0f32, -3.5, 0.0, 3.5, 5.0].iter().all(|&t| net.ok_at(sx + wx * t, sy + wy * t)) { continue; }
+            // and the hut must not stand on the short road from somebody's door
+            let (hx, hy) = doors::to_world(rot as u8, (2.4, -0.2)); let (hx, hy) = (sx + hx, sy + hy);
+            let on_door = self.roads.iter().zip(&self.road_links).any(|(r, l)| {
+                if l.0 != l.1 { return false; }
+                let (dx, dy) = (r[3] - r[0], r[4] - r[1]); let l2 = (dx * dx + dy * dy).max(1e-6); let t = (((hx - r[0]) * dx + (hy - r[1]) * dy) / l2).clamp(0.0, 1.0);
+                (hx - (r[0] + dx * t)).hypot(hy - (r[1] + dy * t)) < 2.6
+            });
+            if !on_door { return vec![cx, cy, rot as f32]; }
         }
         vec![]
     }

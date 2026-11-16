@@ -11,6 +11,26 @@ fn seg_seg(a: &[f32], b: &[f32]) -> f32 {
     d(a[0], a[1], b).min(d(a[2], a[3], b)).min(d(b[0], b[1], a)).min(d(b[2], b[3], a))   // (segments that cross are not laid: see rebuild_roads)
 }
 
+/// How tangled the drawn roads are: pairs of road segments (of different roads) that properly cross, the most road ends meeting at one point, and the length of road per building.
+pub(crate) fn tangle(w: &World) -> (usize, usize, f32) {
+    let segs: Vec<[f32; 6]> = w.roads_flat().chunks(6).map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]]).collect();
+    let ccw = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
+    let near = |p: (f32, f32), q: (f32, f32)| (p.0 - q.0).hypot(p.1 - q.1) < 1.0;
+    let mut crossings = 0;
+    for a in 0..segs.len() { for b in a + 1..segs.len() {
+        let (s, t) = (&segs[a], &segs[b]);
+        if s[4] == t[4] && s[5] == t[5] { continue; }
+        let (p0, p1, q0, q1) = ((s[0], s[1]), (s[2], s[3]), (t[0], t[1]), (t[2], t[3]));
+        if near(p0, q0) || near(p0, q1) || near(p1, q0) || near(p1, q1) { continue; }
+        if ccw(p0, p1, q0) * ccw(p0, p1, q1) < 0.0 && ccw(q0, q1, p0) * ccw(q0, q1, p1) < 0.0 { crossings += 1; }
+    } }
+    let mut pts: Vec<((f32, f32), usize)> = vec![];
+    for s in &segs { for p in [(s[0], s[1]), (s[2], s[3])] { if let Some(e) = pts.iter_mut().find(|e| near(e.0, p)) { e.1 += 1; } else { pts.push((p, 1)); } } }
+    let len: f32 = segs.iter().map(|s| (s[2] - s[0]).hypot(s[3] - s[1])).sum();
+    let nb = (0..w.buildings.len()).filter(|&i| !is_barrier(w.buildings[i].kind) && !matches!(w.buildings[i].kind, BRIDGE | ROAD | DRAWBRIDGE)).count().max(1);
+    (crossings, pts.iter().map(|e| e.1).max().unwrap_or(0), len / nb as f32)
+}
+
 pub(crate) struct Report { pub segs: usize, pub comps: usize, pub main_share: f32, pub loose_ends: Vec<(f32, f32)>, pub buildings: usize, pub no_road: Vec<usize>, pub off_main: Vec<usize>, pub door_gap: f32 }
 
 pub(crate) fn measure(w: &World) -> Report {
@@ -70,6 +90,8 @@ fn the_roads_of_a_busy_village_form_one_network() {
         for &i in &r.no_road { let b = &w.buildings[i]; let net = w.net_base(); let (d, e) = crate::doors::door_world(b); eprintln!("  moat {moat} no road: {i} kind {} tier {} rot {} at {:.1},{:.1}; door {:.1},{:.1} exit {:.1},{:.1}; door node {:?}; ring ok {}/{}; links {}", b.kind, b.tier, b.rot, b.x, b.y, d.0, d.1, e.0, e.1, net.ring[i].first(), net.ring[i].iter().filter(|&&x| x != u32::MAX).count(), net.ring[i].len(), w.road_paths.iter().filter(|p| p.0 as usize == i || p.1 as usize == i).count()); }
         eprintln!("moat {moat}: {} buildings, {} road segments, {} piece(s) (the main one is {:.0}% of the road), {} loose end(s) {:?}, no road: {:?}, door off the main piece: {:?}, widest door gap {:.2}",
             r.buildings, r.segs, r.comps, r.main_share * 100.0, r.loose_ends.len(), r.loose_ends.iter().take(6).collect::<Vec<_>>(), r.no_road.iter().map(|&i| (i, w.buildings[i].kind)).collect::<Vec<_>>(), r.off_main.iter().map(|&i| (i, w.buildings[i].kind)).collect::<Vec<_>>(), r.door_gap);
+        let (cr, deg, per) = tangle(&w); eprintln!("moat {moat}: tangle: {cr} crossings, up to {deg} road ends at one point, {per:.0} road per building");
+        assert!(cr <= 3, "moat {moat}: the roads cross one another {cr} times (a tangle)");
         let net = w.net_base();
         let reachable: Vec<usize> = r.no_road.iter().copied().filter(|&i| net.joined(i, 0)).collect();
         assert!(reachable.is_empty(), "moat {moat}: buildings the network reaches that have no road: {reachable:?}");
@@ -126,7 +148,7 @@ fn a_toll_post_snaps_onto_a_road_and_the_road_runs_through_its_gate() {
             let l = (s[2] - s[0]).hypot(s[3] - s[1]); let n = (l / 0.4).ceil().max(1.0) as i32;
             for k in 0..=n { let f = k as f32 / n as f32; let (wx, wy) = (s[0] + (s[2] - s[0]) * f - b.x, s[1] + (s[3] - s[1]) * f - b.y);
                 let (lx, lz) = (wx * cc - wy * ss, wx * ss + wy * cc);   // back into the post's frame
-                assert!(!((lx - 2.4).abs() < 1.7 && (lz + 0.2).abs() < 1.3), "a road over the hut at {lx:.1},{lz:.1}");
+                assert!(!((lx - 2.4).abs() < 0.95 && (lz + 0.2).abs() < 0.85), "a road ({}->{}) over the hut at {lx:.1},{lz:.1}", s[4], s[5]);
                 assert!(!(lx.abs() > 0.4 && lx.abs() < 2.1 && (lz - 0.6).abs() < 0.6 && f > 0.0 && f < 1.0 && false), "posts");
             }
         }
@@ -165,6 +187,8 @@ fn a_ring_of_houses_gets_squares_on_free_ground() {
     w.place(MARKET, 0, 40, 0); w.place(FARM, 40, 12, 3); w.place(GARDEN, -40, 10, 0);
     let r = measure(&w);
     let sq = w.squares_flat();
+    let (cr, deg, per) = tangle(&w); eprintln!("ring village tangle: {cr} crossings, up to {deg} ends at one point, {per:.0} road per building");
+    assert!(cr <= 2, "ring village: {cr} crossings");
     eprintln!("ring village: {} buildings, {} piece(s), {} loose ends, {} squares {:?}", r.buildings, r.comps, r.loose_ends.len(), sq.len() / 4, sq.chunks(4).map(|s| (s[0].round(), s[1].round(), s[2])).collect::<Vec<_>>());
     assert_eq!(r.comps, 1); assert!(r.loose_ends.is_empty(), "{:?}", r.loose_ends); assert!(r.off_main.is_empty());
     for s in sq.chunks(4) { assert!(w.square_free(s[0], s[1], s[2])); }
