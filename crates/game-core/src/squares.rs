@@ -14,7 +14,7 @@ impl World {
     pub(crate) fn squares_inner(&self) -> Vec<[f32; 4]> {
         // the nodes of the drawn road graph: the ends of its segments, the ones within a unit of each other being one place
         let mut nodes: Vec<((f32, f32), u32)> = vec![];
-        for (s, l) in self.roads.iter().zip(&self.road_links) {
+        for (s, _l) in self.roads.iter().zip(&self.road_links) {
             for p in [(s[0], s[1]), (s[3], s[4])] {
                 if let Some(n) = nodes.iter_mut().find(|n| (n.0 .0 - p.0).hypot(n.0 .1 - p.1) < 1.0) { n.1 += 1; } else { nodes.push((p, 1)); }
             }

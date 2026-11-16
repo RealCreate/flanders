@@ -55,13 +55,13 @@ pub fn exit_local(kind: u8, tier: u8) -> (f32, f32) {
 }
 
 /// The door of a building in the world, and the point where its road leaves the plot (both absolute).
-pub fn door_world(b: &Building) -> ((f32, f32), (f32, f32)) {
+pub(crate) fn door_world(b: &Building) -> ((f32, f32), (f32, f32)) {
     let (d, e) = (to_world(b.rot, door_local(b.kind, b.tier).0), to_world(b.rot, exit_local(b.kind, b.tier)));
     ((b.x + d.0, b.y + d.1), (b.x + e.0, b.y + e.1))
 }
 
 /// The angle (from the building's middle) at which the ring of path round it starts: the node of the ring at the door's exit point, so that every road of the building leaves from there.
-pub fn exit_angle(b: &Building) -> f32 { let e = to_world(b.rot, exit_local(b.kind, b.tier)); e.1.atan2(e.0) }
+pub(crate) fn exit_angle(b: &Building) -> f32 { let e = to_world(b.rot, exit_local(b.kind, b.tier)); e.1.atan2(e.0) }
 
 #[wasm_bindgen]
 /// A building's door for the client's models: [door x, door z, facing x, facing z, exit x, exit z] in the model's own frame.
