@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
-import { HighlightState, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL } from './stockhighlight';
+import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL } from './stockhighlight';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
@@ -1370,8 +1370,12 @@ function showUpgradeOutline(on: boolean) {
 const hlState = new HighlightState(), goState = new HighlightState(), hlRings: SelectionMark[] = [], HL_MAX = 96;
 let hlRes: number[] = [], hlSign = 0, hlPinUntil = 0, hlShown = 0;
 const hlOn = () => hlState.active !== null || performance.now() < hlPinUntil;
+/** `sign` 1 = what makes the resources, -1 = what uses them, 2 = both. */
 function stockSummary(res: number[], sign: number) {
-  const w = lv.world, flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS), src = mergeSources(res.map(r => stockSources(flow, r, sign)));
+  const w = lv.world, flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS);
+  const side = (sg: number) => mergeSources(res.map(r => addCatalogKinds(stockSources(flow, r, sg), defs, r, sg)));
+  const src = side(sign === 2 ? 1 : sign);
+  if (sign === 2) { const b = side(-1); src.kinds.push(...b.kinds.filter(k => !src.kinds.some(x => x.kind === k.kind))); }
   const stocks = w.stocks(), afford = new Map<number, boolean>();
   const can = (kind: number, tier: number) => {
     const key = kind * 32 + tier; let ok = afford.get(key);

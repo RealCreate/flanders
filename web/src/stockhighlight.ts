@@ -27,6 +27,15 @@ export function stockSources(d: FlowData | undefined, res: number, sign: number)
   return out;
 }
 
+/** Add the kinds the catalogue says make (`sign` > 0) or use a resource, even when the ledger has not seen them work yet (a new farm, a kiln waiting for wood). Rate 0 until the ledger knows. */
+export function addCatalogKinds(src: Source, defs: ArrayLike<{ inputs: [number, number][]; outputs: [number, number][] }>, res: number, sign: number): Source {
+  for (let k = 0; k < defs.length; k++) {
+    const list = sign > 0 ? defs[k].outputs : defs[k].inputs;
+    if (list.some(([r]) => r === res) && !src.kinds.some(x => x.kind === k)) src.kinds.push({ kind: k, perDay: 0 });
+  }
+  return src;
+}
+
 /** Several resources as one (the Food pill): the same kind or category counts once, with its rates added. */
 export function mergeSources(list: Source[]): Source {
   const kinds = new Map<number, number>(), extras = new Map<string, number>();
