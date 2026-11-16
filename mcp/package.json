@@ -1,6 +1,6 @@
 {
   "name": "flanders-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Headless MCP server for Flanders: an AI agent plays the real game core in-process, with no browser and no UI, in very few tokens",

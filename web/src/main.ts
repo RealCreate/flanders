@@ -883,7 +883,7 @@ async function startGame(name: string, username: string) {
   rig.focus(o.x, o.z, 75); rig.snap();
   await warmUp();
   PART_NAMES = state_hash_part_names().split(','); LEDGER_EXTRAS = ledger_extra_names().split(',');
-  try { myRules = rules_fingerprint(seedBig); } catch { /* without a fingerprint other players cannot tell our build */ }
+  try { myRules = rules_fingerprint(seedBig); ui.setRules(myRules); } catch { /* without a fingerprint other players cannot tell our build */ }
   if (saved && (saved.v !== SYNC_PROTOCOL || saved.rules !== myRules)) console.warn(`This village was last saved by another build (${saved.v ?? 'unknown'}/${saved.rules ?? 'unknown'}); its history is replayed with the rules of this one (${SYNC_PROTOCOL}/${myRules}).`);
   ui.setTab('build');
   ui.hint('Choose a building on the right, then click the ground. Start with houses and a farm.');
@@ -1345,6 +1345,11 @@ function updateSelection() {
         <div class="btnrow" style="flex-wrap:wrap">${[['Always sow', 0], ['Fallow', 1], ['Rotate', 2]].map(([t, m]) => `<button class="pbtn ${mode === m ? 'on' : ''}" data-act="field:${m}">${mode === m ? '● ' : ''}${t}</button>`).join('')}</div>
         <p class="muted">Sowing every season wears the soil down and the harvest shrinks (to half at worst). A fallow field makes no grain but recovers. <b>Rotate</b> rests the field by itself when the soil is worn and sows it again when it is restored.${soil < 60 && mode === 0 ? ' <b>This soil is tired: try rotating.</b>' : ''}</p></div>`;
     }
+  }
+  if (kind === 42) {   // a smokehouse smokes fish or meat
+    const sm = w.smoke_mode(selectedIdx);
+    if (sm >= 0) html += `<div><h3>What it smokes</h3><div class="btnrow" style="flex-wrap:wrap">${[['Fish', 0], ['Meat', 1]].map(([t, m]) => `<button class="pbtn ${sm === m ? 'on' : ''}" data-act="field:${m}">${sm === m ? '● ' : ''}${t}</button>`).join('')}</div>
+      <p class="muted">Set to fish it smokes raw fish into smoked fish; set to meat it smokes the hunters' meat into smoked meat. Either needs a little wood.</p></div>`;
   }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.cycle) {

@@ -15,7 +15,9 @@ pub const TL: u8 = 11; // tools
 pub const FI: u8 = 12; // raw fish
 pub const SF: u8 = 13; // smoked fish (food: eaten before grain)
 pub const BD: u8 = 14; // bread (food: baked from grain)
-pub const N_RES: usize = 15;
+pub const ME: u8 = 15; // game meat (food: from the hunter's lodge)
+pub const SM: u8 = 16; // smoked meat (food: smoked in a smokehouse set to meat)
+pub const N_RES: usize = 17;
 
 pub type Amount = (u8, i32);
 
@@ -100,7 +102,7 @@ pub static DEFS: [Def; 44] = [
     Def { name: "Town Hall", cat: 5, r: 6.0, weight: 6, cost: &[], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 8, max_slope: 9.0, pad: true, desc: "The heart of your settlement. Upgrade it into a manor, keep and castle." },
     Def { name: "Well", cat: 5, r: 2.0, weight: 1, cost: &[(ST, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Clean water makes plague outbreaks rarer." },
     Def { name: "Chapel", cat: 5, r: 4.0, weight: 2, cost: &[(ST, 30), (PL, 10)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Prayer and healing. Greatly reduces plague. Grows into a cathedral." },
-    Def { name: "Hunter's Lodge", cat: 1, r: 3.6, weight: 2, cost: &[(W, 25), (PL, 5)], jobs: 2, inputs: &[], outputs: &[(GR, 6)], cycle: 10, req: 2, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "Hunters stalk deer and boar in the forest and bring back venison. Needs forest nearby." },
+    Def { name: "Hunter's Lodge", cat: 1, r: 3.6, weight: 2, cost: &[(W, 25), (PL, 5)], jobs: 2, inputs: &[], outputs: &[(ME, 5)], cycle: 10, req: 2, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "Hunters stalk deer and boar in the forest and bring back meat. Needs forest nearby. Meat feeds the village, or can be smoked in a smokehouse." },
     Def { name: "Barracks", cat: 4, r: 5.0, weight: 4, cost: &[(PL, 25), (ST, 30), (TL, 2)], jobs: 2, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Trains spearmen, archers, swordsmen, knights and catapults. Upgrade it to train better troops." },
     Def { name: "Builders' Yard", cat: 5, r: 4.5, weight: 2, cost: &[(PL, 20), (ST, 10), (TL, 2)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Carpenters and masons who repair damaged buildings and rebuild ruins on their own, using your stores." },
     Def { name: "Spiked Logs", cat: 4, r: 1.8, weight: 1, cost: &[(W, 3)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.6, pad: true, desc: "The simplest barrier: a row of sharpened logs. Drag the wall pen to draw a long fence quickly." },

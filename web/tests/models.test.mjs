@@ -57,3 +57,16 @@ test('the watermill footing ends before the wheel starts, at every tier', async 
     assert.ok(fb.max.y < 0.5 && wb.min.y < 0, `tier ${tier}: the wheel dips below the footing's level`);
   }
 });
+
+// The fishing hut: its stone footing ends at 1.5 from the middle at most, the core stands the hut HUT_FOOT (3.8) from the bank, and the jetty carries on over the water.
+test('the fishing hut footing stays well short of the bank, at every tier', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) {
+    const g = B.buildModel(41, tier, 0x2f5fa8, 1, 0, undefined, false); g.updateMatrixWorld(true);
+    const foot = g.getObjectByName('footing');
+    assert.ok(foot, `tier ${tier}: footing is named`);
+    const fb = new THREE.Box3().setFromObject(foot);
+    assert.ok(fb.max.x <= 1.5 + 1e-3, `tier ${tier}: the footing ends at ${fb.max.x}, short of the bank (3.8 out)`);
+    assert.ok(Math.abs(fb.max.z) <= 1.45 + 1e-3 && Math.abs(fb.min.z) <= 1.45 + 1e-3, `tier ${tier}: the footing's sides stay within 1.45`);
+  }
+});

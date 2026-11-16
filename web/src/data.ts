@@ -26,6 +26,8 @@ export const RES = [
   { key: 'fish', name: 'Fish', icon: 'fish', hint: 'Landed by fishing huts. Eaten raw it fills little: smoke it for more.' },
   { key: 'smokedfish', name: 'Smoked fish', icon: 'smokedfish', hint: 'Smoked in a smokehouse. Cooked food fills half as much again as raw.' },
   { key: 'bread', name: 'Bread', icon: 'bread', hint: 'Baked from grain in a bakery. Cooked food fills half as much again as raw.' },
+  { key: 'meat', name: 'Meat', icon: 'meat', hint: 'Brought in by hunters. Feeds the village, or smoke it for more.' },
+  { key: 'smokedmeat', name: 'Smoked meat', icon: 'smokedmeat', hint: 'Meat smoked in a smokehouse set to meat. Cooked food fills half as much again as raw.' },
 ] as const;
 
 export const CATS = [{ name: 'Housing', icon: CAT_ICON_NAMES[0] }, { name: 'Food', icon: CAT_ICON_NAMES[1] }, { name: 'Gathering', icon: CAT_ICON_NAMES[2] }, { name: 'Industry', icon: CAT_ICON_NAMES[3] }, { name: 'Defence', icon: CAT_ICON_NAMES[4] }, { name: 'Civic', icon: CAT_ICON_NAMES[5] }, { name: 'Land', icon: CAT_ICON_NAMES[6] }];
