@@ -7,7 +7,7 @@ use game_core::World;
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
-    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
+    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32), Restart,
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -34,6 +34,7 @@ fn apply(w: &mut World, c: &C) {
         C::Rel(t, d) => { w.rel_add(*t, *d); }
         C::Journey(k, t, a, d) => { w.journey_start(*k, *t, *a, *d); }
         C::Caravan(r, a, t, d, e) => { w.caravan_send(*r, *a, *t, *d, *e); }
+        C::Restart => w.restart(),
     }
 }
 
@@ -301,4 +302,39 @@ fn market_buys_replay_identically() {
     let (a, changes) = run(false); let (b, _) = run(true);
     assert_eq!(a, b, "a copy that looks around every tick must still match");
     assert!(changes > 10, "the buys and the daily refills changed the stock section ({changes} different values)");
+}
+
+/// A restart in the middle of a long, busy history: the owner lived it in one world, a replica gets the same commands (the restart live, between two ticks), and a newcomer replays the
+/// whole log in one go with other habits. All three agree tick by tick, and the new epoch is exactly a fresh village (the hashes are those of a session that never saw the old one).
+#[test]
+fn a_restart_in_the_middle_of_a_history_replays_identically() {
+    game_core::warm_navigation(1337);
+    let (log1, hashes1, _) = session(1337, 0, 0, 800, Rng(0x1234_5678_9ABC), true);
+    let (log2, hashes2, _) = session(1337, 0, 0, 600, Rng(0x0BAD_CAFE_5EED), false);   // the life after the restart: the clock starts again at 0
+    // the owner: lives the first epoch, restarts, lives the second in the same world
+    let mut owner = World::new(1337, 0, 0); let mut i = 0;
+    for t in 0..hashes1.len() as u64 { while i < log1.len() && log1[i].0 <= owner.tick() { apply(&mut owner, &log1[i].1); i += 1; } owner.step(); assert_eq!(owner.state_hash(), hashes1[t as usize]); }
+    let (mut after, mut j) = (vec![], 0);
+    apply(&mut owner, &C::Restart);
+    assert_eq!(owner.tick(), 0);
+    assert_eq!(owner.state_hash(), World::new(1337, 0, 0).state_hash(), "right after the restart the village is a new one");
+    for _ in 0..hashes2.len() { while j < log2.len() && log2[j].0 <= owner.tick() { apply(&mut owner, &log2[j].1); j += 1; } owner.step(); after.push(owner.state_hash()); }
+    assert_eq!(after, hashes2, "the second epoch plays exactly like a village that never had a first one");
+    // a newcomer replays the whole log: epoch one, the restart, epoch two (with a look at everything every tick)
+    let mut whole: Vec<(u64, C)> = log1.clone(); whole.push((hashes1.len() as u64, C::Restart));
+    let mut w = World::new(1337, 0, 0); let (mut k, mut at) = (0usize, vec![]);
+    let mut life = 0;   // 0: first epoch, 1: second
+    let mut ticks_left_in_epoch = hashes1.len();
+    loop {
+        if life == 0 {
+            while k < whole.len() - 1 && whole[k].0 <= w.tick() { apply(&mut w, &whole[k].1); k += 1; }
+            if ticks_left_in_epoch == 0 { apply(&mut w, &C::Restart); life = 1; k = 0; continue; }
+            w.step(); look(&mut w); ticks_left_in_epoch -= 1;
+        } else {
+            while k < log2.len() && log2[k].0 <= w.tick() { apply(&mut w, &log2[k].1); k += 1; }
+            if at.len() == hashes2.len() { break; }
+            w.step(); look(&mut w); at.push(w.state_hash());
+        }
+    }
+    assert_eq!(at, hashes2, "a newcomer replaying both epochs ends in the same second life");
 }

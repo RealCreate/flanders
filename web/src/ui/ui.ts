@@ -12,6 +12,8 @@ const bi = (name: string, size = 16) => icon(name, size, { mono: true });
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
 import { mountFlagDesigner, paintFlag } from './flagdesigner';
 import { mountSettings } from './settingsui';
+import { mountRestart, type RestartHooks } from './restartui';
+import { downloadBackup } from '../backup';
 import { loadFlag, saveFlag } from '../flag';
 import { versionLabel } from '../version';
 import { renderNotes } from '../releasenotes';
@@ -33,6 +35,8 @@ export const WORLDS = ['flanders', 'brabant', 'hainaut', 'limburg', 'ardennes', 
 const worldOptions = (cur: string) => [...new Set([...WORLDS, cur])].map(w => `<option value="${esc(w)}" ${w === cur ? 'selected' : ''}>${esc(w.charAt(0).toUpperCase() + w.slice(1))}</option>`).join('') + '<option value="__custom">Custom…</option>';
 
 export interface Handlers {
+  /** Start the village again (see restart.ts): what the dialog shows, doing it, and bringing the archived village back. */
+  restartInfo: RestartHooks['info']; restartRun: RestartHooks['run']; restartRestore: RestartHooks['restore'];
   start(world: string, name: string): void;
   select(kind: number | null): void;
   act(name: string): void;
@@ -235,6 +239,9 @@ export class UI {
     <div id="display-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="display">Done</button></div></div>
 </div>
+<div class="overlay" id="restart" hidden style="z-index:39">
+  <div class="sheet wide"></div>
+</div>
 <div class="overlay" id="confirm" hidden style="z-index:40">
   <div class="sheet"><h2 id="confirm-title">Are you sure?</h2><p id="confirm-text"></p>
     <div class="btnrow"><button class="pbtn" id="confirm-no">Cancel</button><button class="pbtn primary" id="confirm-yes">Yes</button></div></div>
@@ -323,7 +330,8 @@ export class UI {
     this.initTitleTips();
     $('sub').onclick = () => { this.modal('winter', true); if (this.lastHud) this.renderWinter(this.lastHud); };
     $('btn-help').onclick = () => this.modal('help', true);
-    $('btn-display').onclick = () => this.modal('display', true);
+    const restart = mountRestart($('restart'), { info: () => this.h.restartInfo(), run: () => this.h.restartRun(), restore: () => this.h.restartRestore(), backup: () => downloadBackup(), toast: (t, k) => this.toast(t, k) });
+    $('btn-display').onclick = () => { this.modal('display', true); void restart.drawSection($('restart-section')); };
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
     $('flow-body').onclick = e => {   // "Show on map": close the breakdown and look at the next building of that kind

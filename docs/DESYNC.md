@@ -92,6 +92,12 @@ played by this build's core. Any change that makes a log play out differently ch
 are not judged, and get one calm toast. Saved villages record both; a village saved by another build logs a warning when loaded (the history is replayed with the rules of the build that loads it).
 Both fields are checked in `validate.ts` (`sanitizeBuild`, `sanitizeHash`); the room id did not change, so builds still meet (and say so).
 
+## Restarts (epochs)
+
+A village can be started again from nothing by its owner: a signed `restart` command that begins a new **epoch** of its history. Commands and hash messages carry the epoch (`e`), a copy judges
+hashes only inside the epoch it knows (a newer epoch is a missing command, an older one is stale), commands of an epoch that is over are dropped, and a checkpoint belongs to one epoch. The protocol
+is in `docs/RESTART.md`; `SYNC_PROTOCOL` is 3 for it (the rules fingerprint did not change).
+
 ## Waterwheel placement
 
 No new state. The waterwheel's snap to the bank (`waterwheel_snap`) is computed on the clicking client only and the *result* travels in the `place` command (x, y, rot), like the drawbridge's; `place` itself refuses

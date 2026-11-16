@@ -170,6 +170,8 @@ pub const CH_WINTER: u8 = 3;
 const CHOICE_DAYS: u64 = 2;
 /// Ticks in a day, days in a season (the interface uses the same numbers).
 pub const DAY: u64 = 240;
+/// Famine: while the stores cannot feed everyone, about this many per mille of the villagers die each day (2% a day: half the village in a month, never a villager every few seconds).
+const HUNGER_PER_MILLE_DAY: u64 = 20;
 /// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
 fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
      matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE) }
@@ -453,6 +455,15 @@ impl World {
         w.reveal(x, y, 110.0);
         w.after_change();
         w
+    }
+
+    /// Start the village again from nothing: the world becomes exactly what `World::new` makes for this seed and site (the clock back at 0, the starting stock and town hall, every
+    /// building, road, ditch, levelled patch, felled tree, grove, deposit, soldier, army, treaty, relation, caravan, battle, plague, ruin and crater gone). Only the site and the
+    /// village's flag (`style`, the player's identity on the map) are kept. Played from a command log it is the first command of a new epoch (see docs/RESTART.md).
+    pub fn restart(&mut self) {
+        let style = self.style;
+        *self = World::new(self.seed, self.ox, self.oy);
+        self.style = style;
     }
 
     /// Lift the fog in a circle.
@@ -1326,7 +1337,9 @@ impl World {
             let hap = self.happiness();
             if self.population < cap_pop && self.rng.range(if hap >= 70 { 4 } else if hap < 30 { 8 } else { 5 }) == 0 { self.arrive(1); }
         } else {
-            if self.population > 2 && self.rng.range(3) == 0 {
+            // famine takes a share of the village a day (about `HUNGER_PER_MILLE_DAY` per mille of the villagers), not a villager every few seconds
+            let one_in = ((1000 * DAY) / (HUNGER_PER_MILLE_DAY * (self.population as u64).max(1))).max(1) as u32;
+            if self.population > 2 && self.rng.range(one_in) == 0 {
                 self.kill(1, DIED_HUNGER, 0);
                 self.push_event(EV_STARVE, 1, 0);
             }
@@ -2325,6 +2338,8 @@ const FARM_PAD_BLEND: f32 = 4.6;
 const FARM_PAD_REACH: f32 = 22.0;
 
 #[cfg(test)]
+mod restart_tests;
+#[cfg(test)]
 mod lend_tests;
 #[cfg(test)]
 mod winter_tests;
@@ -3202,6 +3217,19 @@ mod family_tests {
         let full = |i: usize| w.buildings[i].staff >= DEFS[w.buildings[i].kind as usize].jobs;
         assert!(full(f) && full(c), "the farm and the woodcutter are fully staffed first (eff first {}, rest {})", w.eff_first, w.eff_rest);
         assert!(w.eff_first >= w.eff_rest, "{} vs {}", w.eff_first, w.eff_rest);
+    }
+
+    #[test]
+    fn famine_takes_a_few_percent_a_day_not_a_villager_every_few_seconds() {
+        let mut w = farm_world(); w.population = 60; w.children = 0; w.elders = 0; w.stock = [0; N_RES];
+        let mut worst_day = 0;
+        for _day in 0..10 {
+            let before = w.died[DIED_HUNGER];
+            for _ in 0..(DAY as usize) { w.step(); w.stock = [0; N_RES]; w.population = w.population.max(20); }
+            worst_day = worst_day.max(w.died[DIED_HUNGER] - before);
+        }
+        assert!(w.died[DIED_HUNGER] >= 1, "a starving village does lose people");
+        assert!(worst_day <= 8, "famine takes a few percent of the village a day, not more than 8 of 60: {worst_day}");
     }
 
     #[test]
