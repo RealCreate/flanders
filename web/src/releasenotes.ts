@@ -6,6 +6,7 @@ export const RELEASES: Release[] = [
   {
     version: '0.2.0', date: '2026-11-16', title: 'Bosses, bridges and a proper food economy',
     added: [
+      'Hover the rate of a resource in the top bar to light up the buildings behind it: rings on every building that makes it (+) or uses it (−), green when working, orange when held up (no workers, short of materials, store full) and gold when it can be upgraded right now. The tooltip lists each kind with its count, tiers, upgrades possible and why some stand idle; click the rate to look at each building in turn. The breakdown panel has the same list with a Show on map button.',
       'Bosses: the Warlord and the Ogre of the Marches, with lairs in the wild to find and clear.',
       'Fishing hut, smokehouse and bakery. The smokehouse smokes fish or meat; the hunter\'s lodge now brings in meat.',
       'Food mix: your people eat grain, fish, bread, meat and their smoked versions together, shown as one Food pill in the top bar.',
