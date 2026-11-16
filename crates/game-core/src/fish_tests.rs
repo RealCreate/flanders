@@ -3,7 +3,7 @@ use super::*;
 
 fn put(w: &mut World, kind: u8, x: f32, y: f32) -> usize {
     let pad_h = w.base(x, y);
-    w.buildings.push(Building { kind, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 1, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
+    w.buildings.push(Building { kind, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 1, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
     w.buildings.len() - 1
 }
 fn moat_world() -> World {

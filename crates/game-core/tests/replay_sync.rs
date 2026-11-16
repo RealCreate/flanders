@@ -7,7 +7,7 @@ use game_core::World;
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
-    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32), Restart,
+    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32), Restart, Workers(u32, i32),
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -35,6 +35,7 @@ fn apply(w: &mut World, c: &C) {
         C::Journey(k, t, a, d) => { w.journey_start(*k, *t, *a, *d); }
         C::Caravan(r, a, t, d, e) => { w.caravan_send(*r, *a, *t, *d, *e); }
         C::Restart => w.restart(),
+        C::Workers(i, n) => { w.set_workers(*i, *n); }
     }
 }
 
@@ -83,6 +84,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
                 26 | 27 => C::Journey(rng.below(6) as u8, rng.range(5, 8), 20, rng.range(20, 400) as f32),
                 28 => C::Caravan(rng.range(0, 3) as u8, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
                 29..=31 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(6, 40) as f32; let n = rng.range(2, 6); C::Road((0..n).flat_map(|i| { let a = ang + i as f32 * 0.25; let rr = r + i as f32 * 6.0; [(a.cos() * rr) as i32, (a.sin() * rr) as i32] }).collect()) }   // a curved road, laid outwards
+                32 => C::Workers(rng.below(n) as u32, rng.range(-2, 5)),   // some of these are out of range on purpose
                 _ => C::Raid(rng.below(628) as f32 / 100.0, [3, 2, 1, 0, 0], 7),
             };
             issue(&mut w, &mut log, c);

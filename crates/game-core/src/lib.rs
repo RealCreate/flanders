@@ -62,7 +62,13 @@ struct Building {
     opts: u16,      // optional design upgrades chosen for this building (bit per option, see catalog::OPTIONS)
     fert: u16,      // farms: soil fertility in hundredths of a percent (FERT_MAX = rich soil). Sowing wears it down, a fallow field recovers
     mode: u8,       // farms: 0 always sow, 1 fallow (rest the field), 2 rotate (rest when worn, sow again when restored), 3 rotating and resting right now
+    #[serde(default = "auto_target")]
+    target: i16,    // workers the player wants here: -1 auto (shares what is left by the usual rule), 0 paused, n a set number (see `set_workers`)
+    #[serde(default = "full_eff")]
+    beff: u32,      // derived in `staffing`: how fully this building is staffed, in percent (what its production speed follows)
 }
+fn auto_target() -> i16 { -1 }
+fn full_eff() -> u32 { 100 }
 
 pub(crate) const DB_UP: u8 = 5;
 pub(crate) const DB_LENT: u8 = 6;
@@ -450,7 +456,7 @@ impl World {
         w.stock[GD as usize] = 30;
         let (x, y) = (ox as f32, oy as f32);
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
+        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
         w.neutral_done = vec![false; terrain::neutrals(seed).len()];
         w.reveal(x, y, 110.0);
         w.after_change();
@@ -649,19 +655,32 @@ impl World {
         self.children = self.children.min(self.population); self.elders = self.elders.min(self.population - self.children);
         let workers = (self.adults().saturating_sub(self.sick)) * 7 / 10 * if self.tick < self.quarantine_until { 7 } else { 10 } / 10;
         self.eff = if self.jobs == 0 { 100 } else { (workers * 100 / self.jobs).min(100) };
-        // the hands go to food and wood first: those workplaces are staffed before anything else, and the rest share what is left
-        let first_jobs: u32 = self.buildings.iter().filter(|b| staffed_first(b.kind)).map(|b| DEFS[b.kind as usize].jobs * (b.tier as u32 + 1)).sum();
-        self.eff_first = if first_jobs == 0 { 100 } else { (workers * 100 / first_jobs).min(100) };
-        let left_hands = workers.saturating_sub(first_jobs * self.eff_first / 100); let rest_jobs = self.jobs - first_jobs;
+        // buildings the player gave a set number of workers are filled first (scaled down together when the hands do not suffice), the rest share what is left:
+        // food and wood first, then everything else
+        let mj = |b: &Building| DEFS[b.kind as usize].jobs * (b.tier as u32 + 1);
+        let want: Vec<u32> = self.buildings.iter().map(|b| if b.target >= 0 { (b.target as u32).min(mj(b)) } else { 0 }).collect();
+        let manual: u32 = want.iter().sum();
+        let mut given = want.clone();
+        if manual > workers {   // proportional, the rounding leftovers going to the earliest buildings
+            for g in given.iter_mut() { *g = (*g as u64 * workers as u64 / manual as u64) as u32; }
+            let mut spare = workers - given.iter().sum::<u32>();
+            for (g, w) in given.iter_mut().zip(&want) { if spare == 0 { break; } if *g < *w { *g += 1; spare -= 1; } }
+        }
+        let left_workers = workers.saturating_sub(manual);
+        let auto_first: u32 = self.buildings.iter().filter(|b| b.target < 0 && staffed_first(b.kind)).map(mj).sum();
+        let auto_jobs: u32 = self.buildings.iter().filter(|b| b.target < 0).map(mj).sum();
+        self.eff_first = if auto_first == 0 { 100 } else { (left_workers * 100 / auto_first).min(100) };
+        let left_hands = left_workers.saturating_sub(auto_first * self.eff_first / 100); let rest_jobs = auto_jobs - auto_first;
         self.eff_rest = if rest_jobs == 0 { 100 } else { (left_hands * 100 / rest_jobs).min(100) };
         let cap = self.capacity();
         let housed = self.population.min(cap);
         let mut left = housed;
         let (eff_first, eff_rest) = (self.eff_first, self.eff_rest);
-        for b in self.buildings.iter_mut() {
+        for (i, b) in self.buildings.iter_mut().enumerate() {
             let d = &DEFS[b.kind as usize];
-            let eff = if staffed_first(b.kind) { eff_first } else { eff_rest };
-            b.staff = (d.jobs * (b.tier as u32 + 1) * eff + 50) / 100;
+            let max = d.jobs * (b.tier as u32 + 1);
+            if b.target >= 0 { b.staff = given[i]; b.beff = if max == 0 { 100 } else { given[i] * 100 / max }; }
+            else { let eff = if staffed_first(b.kind) { eff_first } else { eff_rest }; b.staff = (max * eff + 50) / 100; b.beff = eff; }
             let c = d.housing * (b.tier as u32 + 1);
             let r = if cap == 0 { 0 } else { (c * housed / cap).min(left) };
             b.residents = r;
@@ -927,7 +946,7 @@ impl World {
         let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg, true).map_or(-1, |i| i as i32) } else { -1 };
         let mut status = if d.cycle > 0 { 1 } else { 4 };
         if kind == ROAD { let t = tgts.unwrap_or_else(|| self.road_tgts_near(x, y)); status = if self.road_piece_attached(x, y, &t) { 4 } else { 2 }; self.road_conn.push(roadline::RoadConn { x, y, to: t }); }
-        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
+        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
         if is_edit(kind) { self.terrain_ver += 1; }   // the ground changed: everything standing on it must be re-fitted
         if kind == DRAWBRIDGE {   // clear a way through the trees on the far side so a path can run out from the gate
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
@@ -1115,7 +1134,7 @@ impl World {
         let (ux, uy) = (a.cos(), a.sin()); let (ha, hb) = (self.height_at(cx - ux * l / 2.0, cy - uy * l / 2.0), self.height_at(cx + ux * l / 2.0, cy + uy * l / 2.0));
         let deg = ((a.to_degrees().round() as i32) % 360 + 360) % 360; let aux = deg + 360 * ((l * 10.0).round() as i32);
         let rot = ((((ux).atan2(uy) / std::f32::consts::FRAC_PI_4).round() as i32 % 8) + 8) % 8;
-        self.buildings.push(Building { kind: BRIDGE, tier: 0, x: cx, y: cy, rot: rot as u8, pad_h: (ha + hb) / 2.0, progress: 0, status: 4, aux, staff: 0, residents: 0, hp: battle::max_hp(BRIDGE, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
+        self.buildings.push(Building { kind: BRIDGE, tier: 0, x: cx, y: cy, rot: rot as u8, pad_h: (ha + hb) / 2.0, progress: 0, status: 4, aux, staff: 0, residents: 0, hp: battle::max_hp(BRIDGE, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
         self.after_change();
         (self.buildings.len() - 1) as i32
     }
@@ -1280,7 +1299,7 @@ impl World {
             let ob = self.buildings[i].opts;
             let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } }
                 else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
-            let mut p = self.buildings[i].progress + (if staffed_first(kind) { self.eff_first } else { self.eff_rest }) * boost as u32 / 100;
+            let mut p = self.buildings[i].progress + self.buildings[i].beff * boost as u32 / 100;
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
@@ -1672,7 +1691,7 @@ impl World {
         let ports: Vec<usize> = (0..self.buildings.len()).filter(|&i| self.buildings[i].kind == PORT && self.buildings[i].staff > 0).collect();
         for pi in ports {
             let tier = self.buildings[pi].tier as i32;
-            self.buildings[pi].progress += self.eff_rest;
+            self.buildings[pi].progress += self.buildings[pi].beff;
             if self.buildings[pi].progress < 3000 { continue; }
             self.buildings[pi].progress -= 3000;
             let mult = (4 + 5 * tier) / 4;
@@ -1803,7 +1822,7 @@ impl World {
         if d.req != 1 || b.aux < 0 { return vec![]; }
         let Some(dep) = self.deposits.get(b.aux as usize) else { return vec![] };
         let mult = 4 + 5 * b.tier as i32; let out: i32 = d.outputs.iter().map(|&(_, n)| ((n * mult + 2) / 4).max(n)).sum();
-        let eff = if staffed_first(b.kind) { self.eff_first } else { self.eff_rest } as f32 / 100.0;
+        let eff = b.beff as f32 / 100.0;
         vec![b.aux as f32, dep.rem as f32, dep.max as f32, dep.asleep as u8 as f32, out as f32 * DAY as f32 / d.cycle as f32 * eff]
     }
     /// Once a day every deposit regrows a little, faster when no working building stands at it; one used up and dormant wakes at `WAKE_PCT` of its maximum. Cleared deposits (`max == 0`) stay gone.
@@ -2206,6 +2225,27 @@ impl World {
     pub fn sick(&self) -> u32 { self.sick }
     pub fn efficiency(&self) -> u32 { self.eff }
 
+    /// Set how many workers the building at `idx` should have: -1 auto (the usual shares), 0 paused, up to its jobs (a better building employs more). 0 ok, -1 no such building or it employs nobody, -2 out of range.
+    pub fn set_workers(&mut self, idx: u32, n: i32) -> i32 {
+        let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
+        let max = DEFS[b.kind as usize].jobs * (b.tier as u32 + 1);
+        if max == 0 { return -1; }
+        if n < -1 || n > max as i32 { return -2; }
+        b.target = n as i16; self.staffing(); 0
+    }
+    /// Per building, in the order of `buildings_flat`, five numbers: kind, most workers it can employ, how many the player wants (-1 auto), how many it has, 1 when it is scaled back below what was wanted.
+    pub fn staffing_flat(&self) -> Vec<i32> {
+        self.buildings.iter().flat_map(|b| { let max = DEFS[b.kind as usize].jobs * (b.tier as u32 + 1); let want = if b.target >= 0 { (b.target as u32).min(max) } else { max };
+            [b.kind as i32, max as i32, if b.target >= 0 { want as i32 } else { -1 }, b.staff as i32, (b.staff < want && b.target >= 0) as i32] }).collect()
+    }
+    /// The workforce in numbers: adults, workers (70% of the healthy adults, fewer in quarantine), children, elders, sick, jobs, workers placed, workers idle (placed nowhere), efficiency, workers promised by hand.
+    pub fn staffing_totals(&self) -> Vec<u32> {
+        let workers = (self.adults().saturating_sub(self.sick)) * 7 / 10 * if self.tick < self.quarantine_until { 7 } else { 10 } / 10;
+        let placed: u32 = self.buildings.iter().map(|b| b.staff).sum();
+        let promised: u32 = self.buildings.iter().filter(|b| b.target >= 0).map(|b| (b.target as u32).min(DEFS[b.kind as usize].jobs * (b.tier as u32 + 1))).sum();
+        vec![self.adults(), workers, self.children, self.elders, self.sick, self.jobs, placed, workers.saturating_sub(placed), self.eff, promised]
+    }
+
     /// How content the villagers are, 0..100: gardens, parks, chapels, markets, courts and wells lift it; hunger, plague, overcrowding and idle hands drag it down.
     /// Happy villages grow faster and pay more tax (x0.5 .. x1.5); unhappy ones grow slowly and pay little.
     pub fn happiness(&self) -> u32 {
@@ -2266,7 +2306,7 @@ impl World {
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
                 for b in &self.buildings {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
-                    mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
+                    mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64); mix(b.target as i64 as u64);
                     if matches!(b.kind, DRAWBRIDGE | GATE) { mix(b.status as u64); }
                 }
                 for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
@@ -2350,6 +2390,8 @@ mod market_tests;
 
 #[cfg(test)]
 mod fish_tests;
+#[cfg(test)]
+mod workers_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2686,7 +2728,7 @@ mod tests {
 
     fn put(w: &mut World, kind: u8, x: f32, y: f32, rot: u8) {
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
+        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
     }
 
     #[test]

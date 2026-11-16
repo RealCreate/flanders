@@ -1,9 +1,10 @@
 import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
-import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, type BuildingDef } from '../data';
+import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, tierName, type BuildingDef } from '../data';
 import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
+import { group, workNote, verdict, understaffed, kindOutputs, FILTERS, SORTS, type WorkRow, type WorkTotals, type Filter, type Sort } from '../workview';
 
 /** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
 const FOOD_KEYS = ['grain', 'fish', 'smokedfish', 'bread', 'meat', 'smokedmeat'];
@@ -63,12 +64,20 @@ export interface Handlers {
   toggleMute(): void;
   muster(units: number[]): void;
   detAction(action: string, id: number): void;
+  /** Set how many workers a building should have (-1 auto, 0 paused). */
+  setWorkers(idx: number, n: number): void;
+  /** Bulk changes from the work overview: 'auto' every building, 'auto:K' / 'pause:K' every building of kind K. */
+  workAll(action: string): void;
+  /** Centre the camera on a building and select it. */
+  goBuilding(idx: number): void;
 }
 
 export interface Hud {
   tick: number; stocks: number[]; rates: number[]; flow?: FlowData; kinds?: number[]; food?: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
   radius: number; buildings: number; storage: number;
   vitals?: number[]; beds?: number; devotion?: number;
+  /** Everybody's work, only filled while the work overview is open. */
+  work?: { rows: WorkRow[]; totals: WorkTotals };
   winter?: number[];   // the core's winter_numbers()
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
 }
@@ -120,7 +129,7 @@ export class UI {
     <span class="pill" id="v-army" title="Soldiers in your army"><span class="ic">${icon('army', 16)}</span><b>0</b></span>
     <span class="pill" id="v-sick" title="Villagers sick with plague"><span class="ic">${icon('plague', 16)}</span><b>0</b></span>
     <span class="pill" id="v-joy" title="Happiness: gardens, parks, chapels, markets and courts lift it; hunger, plague and overcrowding lower it. Happy villages grow faster and pay more tax."><span class="ic">${icon('happy', 16)}</span><b>50</b></span>
-    <span class="pill" id="v-work" title="Workforce efficiency: jobs vs. available workers"><span class="ic">${icon('work', 16)}</span><b>100%</b></span>
+    <span class="pill" id="v-work" title="Workforce efficiency: jobs vs. available workers. Click for the work overview, where you can assign villagers."><span class="ic">${icon('work', 16)}</span><b>100%</b></span>
   </div>
   <div class="tools">
   <div class="speed" id="speed">
@@ -277,6 +286,10 @@ export class UI {
   <div class="sheet flowsheet"><h2 id="flow-title"></h2><div id="flow-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="flow">Close</button></div></div>
 </div>
+<div class="overlay clear" id="work" hidden>
+  <div class="sheet flowsheet worksheet"><h2 id="work-title">${icon('work', 26)} Work</h2><div id="work-body"></div>
+    <div class="btnrow"><button class="pbtn primary" data-close="work">Close</button></div></div>
+</div>
 <div class="overlay clear" id="winter" hidden>
   <div class="sheet flowsheet"><h2 id="winter-title"></h2><div id="winter-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="winter">Close</button></div></div>
@@ -334,6 +347,12 @@ export class UI {
     $('btn-display').onclick = () => { this.modal('display', true); void restart.drawSection($('restart-section')); };
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
+    $('v-work').onclick = () => this.openWork();
+    $('work-body').onclick = e => this.workClick(e); $('work-body').onchange = e => this.workChange(e);
+    for (const id of ['work-body', 'pane-sel']) $(id).addEventListener('pointerdown', e => { if ((e.target as HTMLElement).matches?.('input[type=range]')) this.sliding = true; });
+    addEventListener('pointerup', () => { setTimeout(() => (this.sliding = false), 0); });
+    $('pane-sel').oninput = e => { const t = e.target as HTMLInputElement; if (t.dataset.wk !== undefined) { const o = t.parentElement?.querySelector('.wkval'); if (o) o.textContent = t.value; } };
+    $('pane-sel').addEventListener('change', e => { const t = e.target as HTMLInputElement; if (t.dataset.wk !== undefined) this.h.act(`wk:set:${t.value}`); });
     $('flow-body').onclick = e => {   // "Show on map": close the breakdown and look at the next building of that kind
       const b = (e.target as HTMLElement).closest<HTMLElement>('[data-show]'); if (!b) return;
       const [res, sign, kind] = b.dataset.show!.split(':').map(Number);
@@ -620,6 +639,52 @@ export class UI {
     if (!(e.target as HTMLElement).closest('.d, b')) return false;
     this.h.stockGo(this.pillRes(i), this.pillSign(i)); return true;
   }
+  private sliding = false;
+  private workFilter: Filter = 'all'; private workSort: Sort = 'kind';
+  /** True while the work overview is showing (the game then hands it the workers every update). */
+  get workOpen() { return !$('work').hidden; }
+  openWork() { this.modal('work', true); this.h.act('wk:refresh'); }
+  private workClick(e: Event) {
+    const t = e.target as HTMLElement;
+    const f = t.closest<HTMLElement>('[data-wf]'); if (f) { this.workFilter = f.dataset.wf as Filter; if (this.lastHud) this.renderWork(this.lastHud); return; }
+    const s = t.closest<HTMLElement>('[data-ws]'); if (s) { this.workSort = s.dataset.ws as Sort; if (this.lastHud) this.renderWork(this.lastHud); return; }
+    const a = t.closest<HTMLButtonElement>('[data-wa]'); if (a && !a.disabled) { this.h.workAll(a.dataset.wa!); return; }
+    const b = t.closest<HTMLButtonElement>('[data-wset]'); if (b && !b.disabled) { const [i, n] = b.dataset.wset!.split(':').map(Number); this.h.setWorkers(i, n); return; }
+    const g = t.closest<HTMLElement>('[data-wgo]'); if (g && !t.closest('button, input')) { this.modal('work', false); this.h.goBuilding(Number(g.dataset.wgo)); }
+  }
+  private workChange(e: Event) { const t = e.target as HTMLInputElement; if (t.dataset.wslide !== undefined) this.h.setWorkers(Number(t.dataset.wslide), Number(t.value)); }
+  /** The work overview: every workplace by kind with who works there, the totals of the village's hands, and the controls to assign them. */
+  private renderWork(h: Hud) {
+    if (!h.work || this.sliding) return;
+    const { rows, totals: t } = h.work, flow = h.flow;
+    const producesOf = (k: number) => (defs[k]?.cycle ?? 0) > 0;
+    const groups = group(rows, this.workFilter, this.workSort, producesOf);
+    const chips = (list: { id: string; label: string }[], cur: string, attr: string) => list.map(c => `<button class="pbtn chip ${c.id === cur ? 'on' : ''}" data-${attr}="${c.id}">${c.label}</button>`).join('');
+    const stat = (n: number | string, label: string, tip = '') => `<div class="stat" title="${esc(tip)}"><b>${n}</b><span>${label}</span></div>`;
+    const housekeeping = Math.max(0, t.adults - t.sick - t.workers);
+    let html = `<div class="stats">${stat(t.adults, 'Adults')}${stat(t.workers, 'Workers', 'Seven in ten healthy adults work (fewer under quarantine)')}${stat(t.jobs, 'Jobs')}${stat(t.placed, 'At work')}${stat(t.idle, 'Idle workers')}${stat(t.jobs ? `${t.eff}%` : '–', 'Efficiency')}</div>
+      <p class="muted">Not working: ${t.children} children, ${t.elders} elders, ${t.sick} sick and ${housekeeping} adults who keep house. ${esc(workNote(t))}</p>
+      <div class="btnrow wrap"><button class="pbtn" data-wa="auto" title="Hand every building back to automatic staffing">Auto-assign all</button></div>
+      <div class="btnrow wrap chips">${chips(FILTERS, this.workFilter, 'wf')}</div><div class="btnrow wrap chips">${chips(SORTS, this.workSort, 'ws')}</div>`;
+    if (!groups.length) html += `<p class="muted">${rows.length ? 'Nothing matches that filter.' : 'No workplaces yet.'}</p>`;
+    for (const g of groups) {
+      const out = flow ? kindOutputs(flow.lines, flow.covered, g.kind) : [];
+      const outs = out.length ? out.map(([r, n]) => `${resIcon(r, 14)} +${n}/day`).join(' ') : '';
+      const nm = esc(defs[g.kind]?.name ?? '?');
+      html += `<h3 class="workh">${kindIcon(g.kind, 18)} ${nm} <span class="muted">× ${g.rows.length} · ${g.staff}/${g.max} workers${outs ? ` · ${outs}` : ''}</span></h3>
+        <div class="btnrow wrap workacts"><button class="pbtn" data-wa="auto:${g.kind}">Auto</button><button class="pbtn" data-wa="pause:${g.kind}" ${g.paused === g.rows.length ? 'disabled' : ''} title="Pause every ${nm}: nobody works there">Pause all</button></div>`;
+      for (const r of g.rows) {
+        const v = verdict(r, producesOf(r.kind)), wanted = r.want < 0 ? r.max : Math.min(r.want, r.max);
+        html += `<div class="workrow ${understaffed(r) ? 'short' : ''} ${v === 'paused' ? 'paused' : ''}" data-wgo="${r.idx}" title="Click to look at it on the map">
+          <span class="wn">${esc(tierName(r.kind, r.tier) ?? nm)}</span>
+          <span class="wc"><button class="pbtn" data-wset="${r.idx}:${Math.max(0, wanted - 1)}" ${wanted <= 0 ? 'disabled' : ''} aria-label="Fewer workers">−</button><input type="range" min="0" max="${r.max}" value="${wanted}" data-wslide="${r.idx}" aria-label="Workers"><button class="pbtn" data-wset="${r.idx}:${Math.min(r.max, wanted + 1)}" ${wanted >= r.max ? 'disabled' : ''} aria-label="More workers">+</button>
+          <button class="pbtn ${r.want < 0 ? 'on' : ''}" data-wset="${r.idx}:-1" title="Let the village decide">Auto</button></span>
+          <span class="wt"><b>${r.staff}</b> / ${wanted}${r.want < 0 ? '' : ` of ${r.max}`}${r.scaled ? ' <span class="neg" title="Not enough workers: scaled back">▾</span>' : ''}</span>
+          <span class="ws ${v === 'working' ? 'ok' : 'bad'}">${v}</span></div>`;
+      }
+    }
+    const body = $('work-body'), keep = body.parentElement!.scrollTop; body.innerHTML = html; body.parentElement!.scrollTop = keep;
+  }
   private flowOpen = CLOSED; private lastHud: Hud | null = null;
   /** The breakdown of one resource: what makes it and what uses it, per day (from the core's ledger of the last day). */
   openFlow(i: number) { this.flowOpen = i; this.modal('flow', true); if (this.lastHud) this.renderFlow(this.lastHud); }
@@ -690,6 +755,7 @@ export class UI {
       if (!$('winter').hidden) this.renderWinter(h);
     }
     this.lastHud = h; if (this.flowOpen >= 0 && !$('flow').hidden) this.renderFlow(h);
+    if (!$('work').hidden) this.renderWork(h);
     if (h.food) {
       const t = foodTotals(h.stocks, h.rates, h.food), p = this.pills[RES.length], left = daysLeft(t.meals, t.rate);
       p.querySelector('b')!.textContent = String(Math.floor(t.meals));
@@ -802,6 +868,7 @@ export class UI {
   setSelectedPane(html: string | null) {
     const tab = $('tab-sel');
     if (html === null) { tab.hidden = true; if (this.tab === 'sel') this.setTab('build'); if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); } return; }
+    if (this.sliding) return;   // a slider is being dragged: do not pull it from under the pointer
     $('pane-sel').innerHTML = html; tab.hidden = false;
   }
   showSelectedTab() { if (this.pref.ledger && !this.tempOpen) { this.tempOpen = true; this.applyPanels(); } this.setTab('sel'); }

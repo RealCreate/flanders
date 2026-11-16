@@ -84,6 +84,7 @@ fn no_command_panics_on_hostile_arguments() {
                 39 => { w.forest_spot(r.f(), r.f(), r.f(), r.f()); }
                 40 => { w.set_field_mode(r.u(), r.b()); }
                 41 => { let _ = w.field_info(r.u()); }
+                43 => { w.set_workers(r.u(), r.i()); let _ = w.staffing_flat(); let _ = w.staffing_totals(); }
                 42 => { w.level_ground(r.i(), r.i(), r.i()); let _ = w.level_check(r.i(), r.i(), r.i()); let _ = w.level_target(r.i(), r.i(), r.i()); }
                 _ => { let n = r.pick(&[1, 2, 5]); for _ in 0..n { w.step(); } }
             }
