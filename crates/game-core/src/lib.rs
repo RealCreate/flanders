@@ -473,8 +473,9 @@ impl World {
         self.road_links.clear();
         self.road_paths.clear();
         let n = self.buildings.len();
-        let ends: Vec<usize> = (0..n).filter(|&i| i == 0 || !(is_barrier(self.buildings[i].kind) || self.buildings[i].kind == BRIDGE) || (self.buildings[i].kind == DRAWBRIDGE && !self.drawn_up(&self.buildings[i]))).collect();   // (a lowered drawbridge is joined by road like a building)
+        let mut ends: Vec<usize> = (0..n).filter(|&i| i == 0 || !(is_barrier(self.buildings[i].kind) || self.buildings[i].kind == BRIDGE) || self.buildings[i].kind == GATE || (self.buildings[i].kind == DRAWBRIDGE && !self.drawn_up(&self.buildings[i]))).collect();   // (a lowered drawbridge is joined by road like a building; so is a gate, which the road runs through)
         let net = self.net_base();
+        ends.retain(|&i| self.buildings[i].kind != GATE || net.ring.get(i).map_or(false, |r| r.iter().any(|&q| q != u32::MAX)));   // (a gate with its doors shut has no way through)
         let ctx = self.road_ctx();
         let base_stamp = self.net_stamp();
         let mut memo: Memo = Default::default();
@@ -556,7 +557,7 @@ impl World {
         chosen.sort();
         for (i, j, l) in chosen { if let Some(Some(pts)) = memo.get(&(i, j, l)).cloned() { self.lay_road(i, j, pts); } }
         // a toll post's gate is a way through: each end of it is joined to the nearest building that can be reached on its own side, so that the road runs through it and on
-        let tolls: Vec<usize> = ends.iter().copied().filter(|&i| self.buildings[i].kind == TOLL).collect();
+        let tolls: Vec<usize> = ends.iter().copied().filter(|&i| matches!(self.buildings[i].kind, TOLL | GATE)).collect();
         for i in tolls {
             let Some(r) = net.ring.get(i).cloned() else { continue };
             for &e in r.iter() {
@@ -564,10 +565,10 @@ impl World {
                 let at = net.nodes[e as usize];
                 let touched = self.road_paths.iter().any(|(c, p, pts)| (*c as usize == i && pts.first() == Some(&at)) || (*p as usize == i && pts.last() == Some(&at)));
                 if touched { continue; }
-                let mut near: Vec<(f32, usize)> = ends.iter().copied().filter(|&j| j != i && self.buildings[j].kind != TOLL && net.joined(i, j)).map(|j| ((self.buildings[j].x - at.0).hypot(self.buildings[j].y - at.1), j)).collect();
+                let mut near: Vec<(f32, usize)> = ends.iter().copied().filter(|&j| j != i && !matches!(self.buildings[j].kind, TOLL | GATE) && net.joined(i, j)).map(|j| { let d = (self.buildings[j].x - at.0).hypot(self.buildings[j].y - at.1); (if self.buildings[j].kind == DRAWBRIDGE && d < 45.0 { d - 1000.0 } else { d }, j) }).collect();   // (a gate's end joins the drawbridge first)
                 near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
                 'find: for (d, j) in near.into_iter().take(4) {
-                    if d > 80.0 { break; }
+                    if d > 80.0 { continue; }
                     for level in 0u8..3 { if let Some(pts) = self.road_route_node(&net, &ctx, e, j, level) { self.lay_road(i, j, pts); break 'find; } }
                 }
             }
@@ -579,7 +580,7 @@ impl World {
         for i in 0..n {
             if !has_road[i] { continue; }
             if self.buildings[i].kind == ROAD || net.ring.get(i).map_or(true, |r| r.is_empty()) { continue; }
-            if self.buildings[i].kind == TOLL {   // no door: the road runs through the gate, from one end of it to the other
+            if matches!(self.buildings[i].kind, TOLL | GATE) {   // no door: the road runs through the gate, from one end of it to the other
                 let v: Vec<(f32, f32)> = net.ring[i].iter().filter(|&&n| n != u32::MAX).map(|&n| net.nodes[n as usize]).collect();
                 if v.len() == 2 { let h = self.buildings[i].pad_h; self.roads.push([v[0].0, v[0].1, h, v[1].0, v[1].1, h]); self.road_links.push((i as u32, i as u32)); }
                 continue;

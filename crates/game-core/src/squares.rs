@@ -14,12 +14,12 @@ impl World {
     pub(crate) fn squares_inner(&self) -> Vec<[f32; 4]> {
         // the nodes of the drawn road graph: the ends of its segments, the ones within a unit of each other being one place
         let mut nodes: Vec<((f32, f32), u32)> = vec![];
-        for (s, l) in self.roads.iter().zip(&self.road_links) {
+        for s in self.roads.iter() {
             for p in [(s[0], s[1]), (s[3], s[4])] {
                 if let Some(n) = nodes.iter_mut().find(|n| (n.0 .0 - p.0).hypot(n.0 .1 - p.1) < 1.0) { n.1 += 1; } else { nodes.push((p, 1)); }
             }
         }
-        let junctions: Vec<(f32, f32)> = nodes.iter().filter(|n| n.1 >= 3).map(|n| n.0).collect();
+        let junctions: Vec<(f32, f32)> = nodes.iter().filter(|n| n.1 >= 2).map(|n| n.0).collect();
         // clusters of junctions
         let m = junctions.len();
         let mut comp: Vec<usize> = (0..m).collect();
@@ -30,7 +30,6 @@ impl World {
         let net = self.net_base();
         let mut cands: Vec<(usize, [f32; 4])> = vec![];
         for g in groups.values() {
-            if g.len() < 3 { continue; }
             let (mx, my) = (g.iter().map(|p| p.0).sum::<f32>() / g.len() as f32, g.iter().map(|p| p.1).sum::<f32>() / g.len() as f32);
             // the roomiest spot about the middle of the junctions (the junctions themselves sit on the edge of the buildings' yards: the square is the open ground between them)
             let (mut cx, mut cy, mut room) = (mx, my, net.clearance(mx, my));
@@ -40,6 +39,13 @@ impl World {
             } }
             let spread = g.iter().map(|p| (p.0 - cx).hypot(p.1 - cy)).fold(0.0f32, f32::max);
             // as large as the junctions need, as the free ground allows (the network keeps clear of buildings, fields, walls and water)
+            // a square wants three roads close by (the roads of the buildings count too): distinct roads with an end or a corner within reach of it
+            let reach = (spread + 1.6).clamp(MIN_R, MAX_R) + 3.5;
+            let mut roads: Vec<(u32, u32)> = vec![];
+            for (sg, l) in self.roads.iter().zip(&self.road_links) {
+                if [(sg[0], sg[1]), (sg[3], sg[4])].iter().any(|p| (p.0 - cx).hypot(p.1 - cy) < reach) && !roads.contains(l) { roads.push(*l); }
+            }
+            if roads.len() < 3 { continue; }
             let r = (spread + 1.6).clamp(MIN_R, MAX_R).min(net.clearance(cx, cy) - MARGIN);
             if r < MIN_R || !self.square_free(cx, cy, r) { if std::env::var("SQ_DEBUG").is_ok() { eprintln!("  cluster of {} at {mx:.0},{my:.0}: best room {room:.1} at {cx:.0},{cy:.0}, r {r:.1}", g.len()); } continue; }
             let kind = ((cx.to_bits() ^ cy.to_bits().rotate_left(11)) % 3) as f32;

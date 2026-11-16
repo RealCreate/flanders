@@ -63,15 +63,23 @@ export class Paths {
       if (last && last.child === child && last.parent === parent && Math.hypot(last.pts[last.pts.length - 2] - ax, last.pts[last.pts.length - 1] - az) < 0.05) { last.pts.push(bx, bz); last.room[last.room.length - 1] = Math.min(last.room[last.room.length - 1], ca); last.room.push(cb); }
       else lines.push({ pts: [ax, az, bx, bz], room: [ca, cb], child, parent });
     }
+    // Road pieces laid by hand (kind 37) that stand near one another are joined by a ribbon each, so a row of them is one continuous road and not a string of separate patches.
+    const pieces: number[] = [];
+    for (let i = 0; i < buildings.length; i += S) if (buildings[i] === 37) pieces.push(i);
+    for (let a = 0; a < pieces.length; a++) for (let b = a + 1; b < pieces.length; b++) {
+      const [ia, ib] = [pieces[a], pieces[b]], d = Math.hypot(buildings[ia + 2] - buildings[ib + 2], buildings[ia + 3] - buildings[ib + 3]);
+      if (d < 7.5) lines.push({ pts: [buildings[ia + 2], buildings[ia + 3], buildings[ib + 2], buildings[ib + 3]], room: [6, 6], child: ib / S, parent: ia / S });
+    }
     // A road already starts and ends on the ring of path round its building (the doorstep), so it is drawn from end to end. Only where a road ends away from a building (a piece of road, kind 37)
     // a round patch fills the join.
-    const half = hallTier >= 2 ? 1.45 : 1.15, EDGE = 1.3, discs = new Map<string, [number, number]>();
+    const half = hallTier >= 2 ? 1.45 : 1.15, EDGE = 1.3, discs = new Map<string, [number, number]>(), ends = new Map<string, [number, number, number]>();
     lines.forEach((ln, li) => {
       const kc = buildings[ln.child * S], kp = buildings[ln.parent * S];
       const P = rounded(ln.pts, 3.2, ln.room.map(r => Math.max(0, r - half * 0.5)));
       let total = 0; for (let k = 2; k < P.length; k += 2) total += Math.hypot(P[k] - P[k - 2], P[k + 1] - P[k - 1]);
       const t0 = 0, t1 = total;
       if (t1 <= t0 + 0.5) return;
+      for (const [ex, ez] of [[P[0], P[1]], [P[P.length - 2], P[P.length - 1]]]) { const k = Math.round(ex / 1.2) + ':' + Math.round(ez / 1.2), e = ends.get(k); if (e) e[2]++; else ends.set(k, [ex, ez, 1]); }
       if (kc === 37) discs.set(Math.round(P[0] / 0.8) + ':' + Math.round(P[1] / 0.8), [P[0], P[1]]);
       if (kp === 37) discs.set(Math.round(P[P.length - 2] / 0.8) + ':' + Math.round(P[P.length - 1] / 0.8), [P[P.length - 2], P[P.length - 1]]);
       // the free room along the road (by the share of its length), to narrow the ribbon where it is squeezed
@@ -94,7 +102,8 @@ export class Paths {
         prev = row;
       }
     });
-    // junction patches
+    // junction patches: wherever two or more roads end at one spot (a doorstep, a fork) a round patch fills the wedge the square-cut ends of the ribbons leave
+    for (const [k, e] of ends) if (e[2] >= 2) discs.set('j' + k, [e[0], e[1]]);
     rb = -1e6; rs = 0.5; rp = 1;
     for (const [dx, dz] of discs.values()) {
       const c = vert(dx, dz, 0.95, 0.5, 0.5), n = 14, R = half * EDGE, first = pos.length / 3;
