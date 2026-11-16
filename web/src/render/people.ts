@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
 import { HAT, TOOL, type Crowd, type Draw } from './crowd';
+import { door_info } from '../wasm/game_core.js';
 
 const S = 10;
 const MAX = 260;
@@ -115,12 +116,13 @@ export class People {
     this.wells = this.bld.filter(b => b.kind === 16).map(b => ({ x: b.x, z: b.z }));
     this.link.clear();
     for (let o = 0; o < paths.length;) { const c = paths[o], p = paths[o + 1], m = paths[o + 2], pts: [number, number][] = []; for (let k = 0; k < m; k++) pts.push([paths[o + 3 + 2 * k], paths[o + 4 + 2 * k]]); this.parent[c] = p; this.link.set(c, pts); o += 3 + 2 * m; }
-    // the side of each building its paths leave from: where people stand when they arrive. (A random spot all round the building could be on the far side of a wall that stands beside it.)
+    // the side of each building its stub path leaves from (the node at the edge of its plot): where people stand when they arrive. (A random spot all round the building could be on the far side of a wall that stands beside it.)
     this.doorAngle.clear();
-    for (const [c, pts] of this.link) {
-      const p = this.parent[c], B = this.bld[c], P = this.bld[p];
-      if (B && pts.length >= 2 && !this.doorAngle.has(c)) { const q = Math.hypot(pts[0][0] - B.x, pts[0][1] - B.z) > 1 ? pts[0] : pts[1]; this.doorAngle.set(c, Math.atan2(q[1] - B.z, q[0] - B.x)); }   // (a path starts at the doorstep ring, or at the middle of a piece of road)
-      if (P && pts.length >= 2) { const e = pts[pts.length - 1], q = Math.hypot(e[0] - P.x, e[1] - P.z) > 1 ? e : pts[pts.length - 2]; if (!this.doorAngle.has(p)) this.doorAngle.set(p, Math.atan2(q[1] - P.z, q[0] - P.x)); }
+    for (let i = 0; i < n; i++) {
+      const kind = buildings[i * S], tier = buildings[i * S + 1], rot = buildings[i * S + 4];
+      if (kind === 2 || kind === 21 || kind === 22 || kind === 23 || kind === 24 || kind === 32 || kind === 33 || kind === 34 || kind === 36 || kind === 37 || kind === 38 || kind === 44) continue;
+      const d = door_info(kind, tier), th = (rot & 7) * Math.PI / 4, c = Math.cos(th), sn = Math.sin(th), ex = d[4], ez = d[5];
+      this.doorAngle.set(i, Math.atan2(-ex * sn + ez * c, ex * c + ez * sn));
     }
 
     const homes: number[] = [], works: number[] = [];
@@ -207,7 +209,7 @@ export class People {
     if (from === to || !this.bld[from] || !this.bld[to]) return [this.spot(to, 1)];
     const ca = this.chain(from), cb = this.chain(to), setB = new Set(cb);
     const lca = ca.find(x => setB.has(x));
-    if (lca === undefined) return [fromPos.clone()];   // no path joins them (a house behind a moat with no drawbridge): nobody wades through
+    if (lca === undefined) return [fromPos.clone(), this.spot(to, 1)];   // nothing links them: straight across the open ground (the caller turns it back if it would wade: a house behind a moat with no drawbridge)
     const nodes = [...ca.slice(0, ca.indexOf(lca) + 1), ...cb.slice(0, cb.indexOf(lca)).reverse()];
     const out: THREE.Vector2[] = [fromPos.clone()];
     const door = (b: number, dx: number, dz: number, extra = 1.0) => { const r = this.radii[this.bld[b].kind] + extra, l = Math.hypot(dx, dz) || 1; return new THREE.Vector2(this.bld[b].x + (dx / l) * r, this.bld[b].z + (dz / l) * r); };

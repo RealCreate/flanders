@@ -7,7 +7,7 @@ use game_core::World;
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
-    Buy(u8, i32), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
+    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -30,6 +30,7 @@ fn apply(w: &mut World, c: &C) {
         C::Defend(id) => { w.det_defend(*id); }
         C::Choose(o) => { w.choose(*o); }
         C::Buy(r, n) => { w.buy(*r, *n); }
+        C::Road(v) => { w.lay_road(v); }
         C::Rel(t, d) => { w.rel_add(*t, *d); }
         C::Journey(k, t, a, d) => { w.journey_start(*k, *t, *a, *d); }
         C::Caravan(r, a, t, d, e) => { w.caravan_send(*r, *a, *t, *d, *e); }
@@ -45,7 +46,7 @@ impl Rng {
 
 /// Everything a client's renderer asks the core every tick. These calls fill the core's caches (paths, overlays) at moments of the host's choosing.
 fn look(w: &mut World) -> usize {
-    let mut n = w.det_flat().len() + w.buildings_flat().len() + w.roads_flat().len() + w.road_paths_flat().len() + w.felled_flat().len() + w.bridges_flat().len();
+    let mut n = w.det_flat().len() + w.buildings_flat().len() + w.roads_flat().len() + w.road_lines_flat().len() + w.felled_flat().len() + w.bridges_flat().len();
     n += w.journeys_flat().len() + w.link_points(400.0, 0.0).len() + w.take_arrivals().len() + w.take_delivered().len();
     let f = w.det_flat(); for o in (0..f.len()).step_by(16) { n += w.det_path(f[o] as u32).len(); }
     n + w.net_route(-30.0, -30.0, 60.0, 40.0).len() + w.walk_route(10.0, 10.0, -50.0, 80.0).len()
@@ -61,7 +62,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if t % 25 == 0 { issue(&mut w, &mut log, C::Cheat(3, 0, 0)); }   // keep the store full: the test is about replay, not about the economy
         if t % 6 == 0 {
             let n = w.building_count().max(1) as u64;
-            let c = match rng.below(30) {
+            let c = match rng.below(34) {
                 0..=5 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(10, 70) as f32; C::Place([0u8, 1, 4, 28, 19, 18, 1, 25, 2, 3][rng.below(10) as usize], (ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.below(8) as u8) }
                 6 => C::Upgrade(rng.below(n) as u32),
                 7 => C::Demolish(rng.below(n) as u32 + 1),
@@ -80,6 +81,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
                 24 | 25 => C::Rel(rng.range(5, 8), rng.range(10, 40)),
                 26 | 27 => C::Journey(rng.below(6) as u8, rng.range(5, 8), 20, rng.range(20, 400) as f32),
                 28 => C::Caravan(rng.range(0, 3) as u8, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
+                29..=31 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(6, 40) as f32; let n = rng.range(2, 6); C::Road((0..n).flat_map(|i| { let a = ang + i as f32 * 0.25; let rr = r + i as f32 * 6.0; [(a.cos() * rr) as i32, (a.sin() * rr) as i32] }).collect()) }   // a curved road, laid outwards
                 _ => C::Raid(rng.below(628) as f32 / 100.0, [3, 2, 1, 0, 0], 7),
             };
             issue(&mut w, &mut log, c);
@@ -88,8 +90,8 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if watch { let _ = look(&mut w); }
         hashes.push(w.state_hash());
     }
-    if std::env::var("STATS").is_ok() { eprintln!("seed {seed}: {} commands, {} buildings, {} felled, {} armies, {} road paths, pop {}", log.len(), w.building_count(), w.felled_flat().len() / 3, w.det_flat().len() / 16, w.road_paths_flat().len(), w.population()); }
-    (log, hashes, w.road_paths_flat())
+    if std::env::var("STATS").is_ok() { eprintln!("seed {seed}: {} commands, {} buildings, {} felled, {} armies, {} road paths, pop {}", log.len(), w.building_count(), w.felled_flat().len() / 3, w.det_flat().len() / 16, w.road_lines_flat().len(), w.population()); }
+    (log, hashes, w.road_lines_flat())
 }
 
 /// Replay `log` into a fresh world; `habit` runs after every tick (the host doing whatever it does); returns the first tick whose hash differs from `want`.
@@ -100,9 +102,9 @@ fn replay_roads(seed: u64, ox: i32, oy: i32, log: &[(u64, C)], want: &[u64], hab
     for t in 0..want.len() as u64 {
         while i < log.len() && log[i].0 <= w.tick() { apply(&mut w, &log[i].1); i += 1; }
         w.step(); habit(&mut w, t);
-        if w.state_hash() != want[t as usize] { return (Some((t as usize + 1, i)), w.road_paths_flat()); }
+        if w.state_hash() != want[t as usize] { return (Some((t as usize + 1, i)), w.road_lines_flat()); }
     }
-    (None, w.road_paths_flat())
+    (None, w.road_lines_flat())
 }
 
 fn check(seed: u64, ox: i32, oy: i32, ticks: u64) {

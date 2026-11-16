@@ -15,11 +15,6 @@ const RC: f32 = 1.0;
 pub const ROAD_COST: f32 = 0.55;
 /// How fast one walks a road compared to open ground.
 pub const ROAD_SPEED: f32 = 1.35;
-/// How much room a road keeps clear on each side of its centre line: the half width of the ribbon that is drawn solid. Roads are only routed over stretches of the network that keep this far
-/// from the solid part of a building, its fields and beds, a wall and the water's edge.
-pub const ROAD_HALF: f32 = 1.15;
-/// The least room a road may be squeezed to when there is no way that gives it all of `ROAD_HALF` (the drawing narrows the ribbon to fit).
-pub const ROAD_TIGHT: f32 = 0.6;
 const LINK_RANGE: f32 = 12.0;
 const MAX_CELLS: i32 = 100_000;
 
@@ -101,9 +96,6 @@ pub fn field_distance(b: &Building, x: f32, y: f32) -> f32 {
     field_rects(b.kind, b.tier).iter().map(|r| ((lx - r.0).abs() - r.2).max(0.0).hypot(((lz - r.1).abs() - r.3).max(0.0))).fold(1e9f32, f32::min)
 }
 
-/// What a road has to keep clear of, worked out once for all the roads of a village: the solid parts of the buildings, their fields, the runs of wall, and a memory of the stretches already judged.
-pub(crate) struct RoadCtx { segs: Vec<crate::wallnet::Seg>, solids: Vec<usize>, memo: std::cell::RefCell<std::collections::HashMap<(u32, u32, bool), bool>> }
-
 impl Net {
     fn empty() -> Net { Net { x0: 0.0, y0: 0.0, nx: 0, ny: 0, ok: vec![], nodes: vec![], ring: vec![], adj: vec![], comp: vec![] } }
 
@@ -123,60 +115,12 @@ impl Net {
         })
     }
 
-    /// Mark the edge between two nodes as a road (it is made one when it is not yet an edge: a road's own corners can be joined by a straight stretch that the links did not make).
-    fn mark_road(&mut self, a: u32, b: u32) {
-        if let Some(e) = self.adj[a as usize].iter_mut().find(|e| e.0 == b) { e.2 = true; } else { self.link(a, b, true); return; }
-        if let Some(e) = self.adj[b as usize].iter_mut().find(|e| e.0 == a) { e.2 = true; }
-    }
-
-    /// The cheapest way over the network (the same costs the walkers use) from any of the nodes `from` to any of the nodes `to`, as the chain of nodes.
-    pub fn shortest(&self, from: &[u32], to: &[u32], usable: &dyn Fn(u32, u32) -> bool) -> Option<Vec<u32>> {
-        let n = self.nodes.len();
-        let mut goal = vec![false; n]; for &t in to { goal[t as usize] = true; }
-        let mut dist = vec![f32::MAX; n]; let mut prev = vec![u32::MAX; n]; let mut heap = BinaryHeap::new();
-        for &s in from { if dist[s as usize] > 0.0 { dist[s as usize] = 0.0; heap.push(Q { f: 0.0, i: s }); } }
-        while let Some(Q { f, i }) = heap.pop() {
-            if f > dist[i as usize] { continue; }
-            if goal[i as usize] {
-                let mut chain = vec![i]; let mut c = i; while prev[c as usize] != u32::MAX { c = prev[c as usize]; chain.push(c); }
-                chain.reverse(); return Some(chain);
-            }
-            for &(t, l, road) in &self.adj[i as usize] {
-                let nd = f + l * if road { ROAD_COST } else { 1.0 };
-                if nd < dist[t as usize] && usable(i, t) { dist[t as usize] = nd; prev[t as usize] = i; heap.push(Q { f: nd, i: t }); }
-            }
-        }
-        None
-    }
-
-    /// How much free room there is round a point: the distance to the nearest ground the network does not allow (a building and its yard, a field, a wall, water), at most 6.
-    pub fn clearance(&self, x: f32, y: f32) -> f32 {
-        const MAXC: f32 = 6.0;
-        let (ci, cj) = (((x - self.x0) / RC).floor() as i32, ((y - self.y0) / RC).floor() as i32);
-        let r = (MAXC / RC).ceil() as i32 + 1;
-        let mut best = MAXC;
-        for j in (cj - r).max(0)..=(cj + r).min(self.ny - 1) { for i in (ci - r).max(0)..=(ci + r).min(self.nx - 1) {
-            if self.ok[(j * self.nx + i) as usize] { continue; }
-            let (cx, cy) = (self.x0 + (i as f32 + 0.5) * RC, self.y0 + (j as f32 + 0.5) * RC);
-            best = best.min((cx - x).abs().max((cy - y).abs()) - 0.5 * RC);   // (a cell blocks the whole of its square)
-        } }
-        best.max(0.0)
-    }
-
     /// The node of building `i`'s ring that its roads start from: the one at the door's exit point, or when that stands on ground that is not walkable (a neighbour's yard), the nearest
     /// walkable one round the ring, a few steps along it at most.
     pub fn door_node(&self, i: usize) -> Option<u32> {
         let r = self.ring.get(i)?; let k = r.len() as i32; if k == 0 { return None; }
         for d in 0..=3.min(k / 2) { for s in [d, -d] { let id = r[((s % k) + k) as usize % k as usize]; if id != u32::MAX { return Some(id); } } }
         None
-    }
-
-    /// Can one walk from building `a` to building `b` over the network at all (is some node of the ring of one in the same piece as some node of the other's)?
-    pub fn joined(&self, a: usize, b: usize) -> bool {
-        let (ra, rb) = (self.ring.get(a), self.ring.get(b));
-        let (Some(ra), Some(rb)) = (ra, rb) else { return false };
-        if ra.is_empty() || rb.is_empty() { return true; }   // (a building without a ring, a lowered drawbridge, is joined at its middle: the route decides)
-        ra.iter().filter(|&&n| n != u32::MAX).any(|&n| rb.iter().any(|&m| m != u32::MAX && self.comp[n as usize] == self.comp[m as usize]))
     }
 
     fn add(&mut self, x: f32, y: f32) -> u32 { self.nodes.push((x, y)); self.adj.push(vec![]); (self.nodes.len() - 1) as u32 }
@@ -239,7 +183,8 @@ impl World {
     pub(crate) fn net_stamp(&self) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
-        for b in &self.buildings { mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64); mix(b.rot as u64); mix(b.aux as u64); if matches!(b.kind, DRAWBRIDGE | GATE) { mix(b.status as u64); } }
+        for b in &self.buildings { mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64); mix(b.rot as u64); mix(b.aux as u64); if matches!(b.kind, DRAWBRIDGE | GATE | ROAD) { mix(b.status as u64); } }
+        for c in &self.road_conn { mix(c.x.to_bits() as u64); mix(c.y.to_bits() as u64); for t in &c.to { mix(t.x.to_bits() as u64); mix(t.y.to_bits() as u64); mix(t.k as u64); } }
         for l in &self.levels { for v in l { mix(v.to_bits() as u64); } }
         for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
         mix(self.battle.is_some() as u64); mix(self.terrain_ver as u64);
@@ -258,7 +203,7 @@ impl World {
         h
     }
 
-    /// The path network without the roads marked on it (rebuilt only when the village changed): the roads themselves are routed over this.
+    /// The path network (rebuilt only when the village changed).
     pub(crate) fn net_base(&self) -> std::rc::Rc<Net> {
         let stamp = self.net_stamp();
         if let Some((s, n)) = &*self.net_base.borrow() { if *s == stamp { return n.clone(); } }
@@ -267,115 +212,8 @@ impl World {
         n
     }
 
-    /// The path network that people and soldiers walk: the base network with the village's roads marked on it (the edges of the routes that are drawn as dirt roads are cheap to walk).
-    pub(crate) fn net(&self) -> std::rc::Rc<Net> {
-        let stamp = self.net_stamp() ^ self.road_sig.rotate_left(17) ^ 0x9e3779b97f4a7c15;
-        if let Some((s, n)) = &*self.net_cache.borrow() { if *s == stamp { return n.clone(); } }
-        let base = self.net_base();
-        let mut n = (*base).clone();
-        let id: BTreeMap<(u32, u32), u32> = n.nodes.iter().enumerate().map(|(i, p)| ((p.0.to_bits(), p.1.to_bits()), i as u32)).collect();
-        for (_, _, pts) in &self.road_paths {
-            let ids: Vec<Option<u32>> = pts.iter().map(|p| id.get(&(p.0.to_bits(), p.1.to_bits())).copied()).collect();
-            for w in ids.windows(2) { if let (Some(a), Some(b)) = (w[0], w[1]) { n.mark_road(a, b); } }
-        }
-        let n = std::rc::Rc::new(n);
-        *self.net_cache.borrow_mut() = Some((stamp, n.clone()));
-        n
-    }
-
-    /// What the roads of this village must keep clear of.
-    pub(crate) fn road_ctx(&self) -> RoadCtx {
-        let solids = (0..self.buildings.len()).filter(|&i| !matches!(self.buildings[i].kind, WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE)).collect();
-        RoadCtx { segs: self.wall_lines().0, solids, memo: Default::default() }
-    }
-
-    /// Is the point clear for the ribbon of a road: `half` from the solid part of every building in `near`, from its fields, from the runs of wall in `segs`, and on ground the network
-    /// allows (dry, or a deck) at both edges of the ribbon?
-    fn road_point_free(&self, net: &Net, near: &[usize], segs: &[&crate::wallnet::Seg], x: f32, y: f32, dir: (f32, f32), half: f32) -> bool {
-        for &i in near {
-            let b = &self.buildings[i];
-            if b.kind == TOLL {   // a toll post is driven through: only its hut and its two posts are in the way, the gate between them is the road
-                for (lx, lz, r) in [(2.4f32, -0.2f32, 1.25f32), (-1.25, 0.0, 0.3), (1.25, 0.0, 0.3)] { let (dx, dy) = crate::doors::to_world(b.rot, (lx, lz)); if (x - b.x - dx).hypot(y - b.y - dy) < r + half { return false; } }
-                continue;
-            }
-            if (x - b.x).hypot(y - b.y) < crate::solid_radius(b.kind, b.tier) + half { return false; }
-            if field_distance(b, x, y) < half { return false; }
-        }
-        for sg in segs {
-            let (dx, dy) = (sg.bx - sg.ax, sg.by - sg.ay); let l2 = (dx * dx + dy * dy).max(1e-6);
-            let t = (((x - sg.ax) * dx + (y - sg.ay) * dy) / l2).clamp(0.0, 1.0);
-            if (x - (sg.ax + dx * t)).hypot(y - (sg.ay + dy * t)) < sg.r + half { return false; }
-        }
-        let (nx, ny) = (-dir.1 * half, dir.0 * half);
-        net.ok_at(x + nx, y + ny) && net.ok_at(x - nx, y - ny)
-    }
-
-    /// Does the straight stretch between two points keep clear all along its length for a road (with `half` room each side)?
-    fn road_seg_free(&self, net: &Net, ctx: &RoadCtx, pa: (f32, f32), pb: (f32, f32), half: f32) -> bool {
-        let (x0, x1, y0, y1) = (pa.0.min(pb.0) - half, pa.0.max(pb.0) + half, pa.1.min(pb.1) - half, pa.1.max(pb.1) + half);
-        // only what is near this stretch matters: sort it out once, not at every point
-        let near: Vec<usize> = ctx.solids.iter().copied().filter(|&i| { let b = &self.buildings[i]; let r = ring_radius(b.kind, b.tier) + half; b.x + r >= x0 && b.x - r <= x1 && b.y + r >= y0 && b.y - r <= y1 }).collect();
-        let segs: Vec<&crate::wallnet::Seg> = ctx.segs.iter().filter(|s| s.ax.max(s.bx) + s.r + half >= x0 && s.ax.min(s.bx) - s.r - half <= x1 && s.ay.max(s.by) + s.r + half >= y0 && s.ay.min(s.by) - s.r - half <= y1).collect();
-        let l = (pb.0 - pa.0).hypot(pb.1 - pa.1); let st = (l / 0.6).ceil().max(1.0) as i32;
-        let dir = if l > 1e-4 { ((pb.0 - pa.0) / l, (pb.1 - pa.1) / l) } else { (1.0, 0.0) };
-        (0..=st).all(|q| { let t = q as f32 / st as f32; self.road_point_free(net, &near, &segs, pa.0 + (pb.0 - pa.0) * t, pa.1 + (pb.1 - pa.1) * t, dir, half) })
-    }
-
-    /// Does the network edge between two nodes keep clear all along its length for a road?
-    fn road_edge_free(&self, net: &Net, ctx: &RoadCtx, a: u32, b: u32, tight: bool) -> bool {
-        let half = if tight { ROAD_TIGHT } else { ROAD_HALF };
-        let key = (a.min(b), a.max(b), tight);
-        if let Some(&v) = ctx.memo.borrow().get(&key) { return v; }
-        let v = self.road_seg_free(net, ctx, net.nodes[a as usize], net.nodes[b as usize], half);
-        ctx.memo.borrow_mut().insert(key, v);
-        v
-    }
-
-    /// The route of the road between two buildings over the base network `net`: from the doorstep ring of the first to the doorstep ring of the second, as points. It keeps to the stretches
-    /// of the network where the ribbon has room (level 0: all of `ROAD_HALF`; level 1: at least `ROAD_TIGHT`; level 2: the plain cheapest route over the network, for a building that has no such way). A building without a ring (a piece of road) is joined at its own middle.
-    /// None when the network does not join them.
-    pub(crate) fn road_route(&self, net: &Net, ctx: &RoadCtx, ia: usize, ib: usize, level: u8) -> Option<Vec<(f32, f32)>> {
-        self.road_route_from(net, ctx, ia, ib, level, false, None).or_else(|| if level >= 2 { self.road_route_from(net, ctx, ia, ib, level, true, None) } else { None })
-    }
-
-    /// The route of a road that starts at the node `node` (an end of a toll post's gate) and runs to building `ib`.
-    pub(crate) fn road_route_node(&self, net: &Net, ctx: &RoadCtx, node: u32, ib: usize, level: u8) -> Option<Vec<(f32, f32)>> {
-        self.road_route_from(net, ctx, ib, ib, level, false, Some(node))
-    }
-
-    fn road_route_from(&self, net: &Net, ctx: &RoadCtx, ia: usize, ib: usize, level: u8, whole_ring: bool, start: Option<u32>) -> Option<Vec<(f32, f32)>> {
-        let ends = |i: usize| -> (Vec<u32>, Option<(f32, f32)>) {
-            let b = &self.buildings[i];
-            let ring: Vec<u32> = net.ring.get(i).map(|r| r.iter().copied().filter(|&id| id != u32::MAX).collect()).unwrap_or_default();
-            // a road starts and ends at the building's door node (the first node of its ring, where the door's own short road leaves the plot), so all the roads of a building meet there and
-            // the network is one piece; only a building whose door node stands on ground that is not walkable, or that the network cannot join from there, uses the rest of its ring
-            if !ring.is_empty() { return (match net.door_node(i) { Some(d) if !whole_ring && b.kind != TOLL && b.kind != GATE => vec![d], _ => ring }, None); }
-            (net.reach((b.x, b.y)).into_iter().map(|c| c.0).collect(), Some((b.x, b.y)))
-        };
-        let ((mut from, fa), (to, fb)) = (ends(ia), ends(ib));
-        if let Some(n) = start { from = vec![n]; }
-        if from.is_empty() || to.is_empty() { return None; }
-        let chain = net.shortest(&from, &to, &|a, b| level >= 2 || self.road_edge_free(net, ctx, a, b, level == 1))?;
-        let mut pts: Vec<(f32, f32)> = vec![];
-        if let Some(p) = fa { pts.push(p); }
-        pts.extend(chain.iter().map(|&i| net.nodes[i as usize]));
-        if let Some(p) = fb { pts.push(p); }
-        pts.dedup();
-        if pts.len() < 2 { return None; }
-        // pull the road taut: from each point on to the farthest one that it can run straight to with all the room it needs, so a road does not wind from node to node round the rings of the
-        // buildings on its way, but runs as straight as the ground allows
-        if level < 2 && pts.len() > 2 {
-            let half = if level == 1 { ROAD_TIGHT } else { ROAD_HALF };
-            let mut out = vec![pts[0]]; let mut i = 0usize;
-            while i < pts.len() - 1 {
-                let mut j = (pts.len() - 1).min(i + 14);
-                while j > i + 1 && !self.road_seg_free(net, ctx, pts[i], pts[j], half) { j -= 1; }
-                out.push(pts[j]); i = j;
-            }
-            pts = out;
-        }
-        Some(pts)
-    }
+    /// The path network that people and soldiers walk (the roads the player laid are edges of it: cheap to walk, see `build_net`).
+    pub(crate) fn net(&self) -> std::rc::Rc<Net> { self.net_base() }
 
     pub(crate) fn build_net(&self) -> Net {
         if self.buildings.is_empty() { return Net::empty(); }
@@ -440,6 +278,7 @@ impl World {
                 TOLL => {   // only the hut and the two posts of the gate stand in the way: the road runs between the posts, through the middle of the building
                     for (lx, lz, r) in [(2.4f32, -0.2f32, 1.6f32), (-1.25, 0.6, 0.55), (1.25, 0.6, 0.55)] { let (dx, dy) = crate::doors::to_world(q.rot, (lx, lz)); mark(&mut blocked, q.x + dx, q.y + dy, r); }
                 }
+                PLAZA => mark(&mut blocked, q.x, q.y, if q.opts & 4 != 0 { 1.3 } else { 0.4 }),   // a square is open ground (only its fountain is in the way)
                 _ => mark(&mut blocked, q.x, q.y, net_radius(q)),
             }
         }
@@ -493,8 +332,12 @@ impl World {
                 }
                 continue;
             }
-            if b.kind == ROAD {   // a piece of road is one node, at its middle (it is walked over, not round); pieces next to each other are joined as road
-                if net.ok_at(b.x, b.y) { let id = net.add(b.x, b.y); ring[i].push(id); road_pre.push(id); }
+            if b.kind == ROAD { continue; }   // (the roads the player laid are nodes of the network too: see below)
+            if b.kind == PLAZA {   // a square is walked across: its four nodes (one on each side) are joined to the next side round
+                let np = crate::roadline::nodes_of(b);
+                let ids: Vec<u32> = np.iter().map(|&(px, py)| if net.ok_at(px, py) { let id = net.add(px, py); road_pre.push(id); id } else { u32::MAX }).collect();
+                for k in 0..4 { let (a, c) = (ids[k], ids[(k + 1) % 4]); if a != u32::MAX && c != u32::MAX && net.clear(net.nodes[a as usize], net.nodes[c as usize], 0.0) { net.link(a, c, true); } }
+                ring[i] = ids;
                 continue;
             }
             if matches!(b.kind, WALL | FENCE | MOAT | RIVER | RAISE | LOWER | BRIDGE) { continue; }
@@ -526,7 +369,24 @@ impl World {
                 if a != u32::MAX && c != u32::MAX && net.clear(net.nodes[a as usize], net.nodes[c as usize], 0.0) { net.link(a, c, false); }
             }
         }
-        // (the roads are not part of this network: they are routed over it, see `road_route`, and marked on it afterwards, see `net`)
+        // the roads the player laid: a node at every point of the curve (the pieces and the samples between them), joined as road edges, so people and soldiers prefer them; the end of a road
+        // that runs into a building's node is joined to the ring node there (the end of the building's stub), and into a square to its node on that side
+        let mut at: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        for e in self.road_edges() {
+            let mut prev = u32::MAX;
+            let last = e.pts.len() - 1;
+            for (k, &(px, py)) in e.pts.iter().enumerate() {
+                let key = (px.to_bits(), py.to_bits());
+                let mut id = at.get(&key).copied().unwrap_or(u32::MAX);
+                if k == last && self.buildings[e.b].kind != ROAD {   // the node of the building it runs into
+                    let nodes = crate::roadline::nodes_of(&self.buildings[e.b]);
+                    let which = nodes.iter().position(|q| q.0.to_bits() == px.to_bits() && q.1.to_bits() == py.to_bits());
+                    id = match (self.buildings[e.b].kind, which) { (PLAZA, Some(w)) => ring[e.b].get(w).copied().unwrap_or(u32::MAX), _ => net.door_node(e.b).unwrap_or(u32::MAX) };
+                } else if id == u32::MAX && net.ok_at(px, py) { id = net.add(px, py); at.insert(key, id); road_pre.push(id); }
+                if prev != u32::MAX && id != u32::MAX && prev != id && net.clear(net.nodes[prev as usize], net.nodes[id as usize], 0.0) { net.link(prev, id, true); }
+                prev = id;
+            }
+        }
         let mut shared: BTreeMap<(i32, i32), u32> = BTreeMap::new();
         let mut road_node = vec![];   // nodes that belong to a road
         // the paths chained out to other villages: their points are nodes too (they were found over open ground, so they need no check against the village's own grid)

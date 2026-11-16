@@ -18,6 +18,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
     case 'flatten': w.flatten(c.x ?? 60); break;
     case 'batch': w.place_batch(Int32Array.from(c.units ?? [])); break;   // [kind, dx, dy, rot] per piece, rebuilt once
+    case 'road': w.lay_road(Int32Array.from(c.units ?? [])); break;   // [dx, dy] per point of a road the player drew: pieces joined into one curve, the ends snapped onto nodes
     case 'visit': w.visit_neutral(c.idx!); break;
     case 'hero': w.hero_hire(); break;
     case 'field': w.set_field_mode(c.idx!, c.kind ?? 0); break;

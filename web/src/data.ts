@@ -38,7 +38,7 @@ export const KIND_ICON = KIND_ICON_NAMES;
 /** Kinds without a levelled pad under them (walls, fences, gates, drawbridges, moats). */
 export const NOPAD = new Set([2, 21, 22, 23, 24, 32, 33, 34, 37, 38]);
 /** Kinds the wall pen can draw in one stroke, and the distance between the pieces it lays. */
-export const PEN_SPACING: Record<number, number> = { 0: 7, 1: 14, 30: 7.2, 37: 4, 2: 6, 21: 4, 24: 4, 32: 4, 33: 4, 34: 4 };
+export const PEN_SPACING: Record<number, number> = { 0: 7, 1: 14, 30: 7.2, 2: 6, 21: 4, 24: 4, 32: 4, 33: 4, 34: 4 };
 
 const GENERIC_TIERS = ['Rustic', 'Timber', 'Stone', 'Fortified'];
 export const TIER_NAMES: Record<number, string[]> = {
@@ -51,7 +51,7 @@ export const TIER_NAMES: Record<number, string[]> = {
   19: ['Drill Yard', 'Garrison', 'Barracks', 'Fortress'],
   20: ["Carpenter's Shed", "Builders' Yard", "Masons' Lodge", 'Guild Hall'],
   25: ['Storehouse', 'Warehouse', 'Stone Warehouse', 'Great Warehouse'], 26: ['Motte Tower', 'Stone Keep', 'Great Keep', 'Citadel'], 27: ['Moot Hall', 'Courthouse', 'Assize Hall', 'Royal Court'], 28: ['Market Stalls', 'Market Square', 'Market Hall', 'Grand Market'], 29: ['Mill Wheel', 'Watermill', 'Stone Mill', 'Great Mill'], 30: ['Kitchen Garden', 'Herb Garden', 'Walled Garden', 'Pleasure Garden'], 31: ['Green', 'Park', 'Gardens', 'Royal Park'], 32: ['River'], 33: ['Raised Ground'], 34: ['Lowered Ground'],
-  35: ['Landing Stage', 'Harbour', 'Port', 'Great Port'], 36: ['Toll Post', 'Toll House', 'Toll Gate', 'Customs House'], 37: ['Dirt Road'], 38: ['Footbridge', 'Timber Bridge', 'Stone Bridge', 'Great Bridge'],
+  35: ['Landing Stage', 'Harbour', 'Port', 'Great Port'], 36: ['Toll Post', 'Toll House', 'Toll Gate', 'Customs House'], 37: ['Dirt Road'], 44: ['Plaza'], 38: ['Footbridge', 'Timber Bridge', 'Stone Bridge', 'Great Bridge'],
   39: ['Infirmary', 'Hospice', 'Hospital', 'Great Hospital'], 40: ['Burial Ground', 'Graveyard', 'Cemetery', 'Great Necropolis'],
   41: ['Fishing Hut', "Fisher's Cottage", 'Fishing Wharf', 'Fishery'], 42: ['Smokehouse', 'Smokery', 'Great Smokery', 'Fish Hall'], 43: ['Bakery', 'Bakehouse', 'Great Bakehouse', 'Royal Bakery'],
   21: ['Spiked Logs'], 22: ['Wooden Gate', 'Timber Gate', 'Stone Gatehouse', 'Fortified Gatehouse'], 23: ['Drawbridge'], 24: ['Moat'],
@@ -64,7 +64,7 @@ export const PLACE_ERRORS: Record<number, string> = {
   [-1]: 'Unknown building', [-2]: 'Outside your village border — build more to grow it', [-3]: 'Something is in the way',
   [-4]: 'Too close to water', [-5]: 'Ground is too steep', [-6]: 'Not enough resources', [-7]: 'Needs a nearby ore or stone deposit',
   [-8]: 'Needs a forest nearby', [-9]: 'Cannot build that', [-18]: 'No water to bridge here — click closer to a moat, river or lake', [-19]: 'Too wide for a footbridge: bridges of better tiers span more',
-  [-16]: 'Needs water beside it: a river, lake or moat', [-20]: 'A gate must stand in a wall: click a wall piece',
+  [-16]: 'Needs water beside it: a river, lake or moat', [-20]: 'A gate must stand in a wall: click a wall piece', [-21]: 'That stretch of road is too long: put a point in between',
   [-17]: 'An ore or stone deposit is in the way', [-14]: 'It is burning — put the fire out first', [-102]: 'Not enough archers in the barracks', [-103]: 'The tower is full', [-104]: 'Not during a battle', [-15]: 'Nothing to repair',
   [-11]: 'Build a barracks first', [-12]: 'Your barracks is too basic for that unit — upgrade it', [-13]: 'Not enough villagers to recruit',
 };
