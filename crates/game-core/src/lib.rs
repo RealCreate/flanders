@@ -457,6 +457,15 @@ impl World {
         w
     }
 
+    /// Start the village again from nothing: the world becomes exactly what `World::new` makes for this seed and site (the clock back at 0, the starting stock and town hall, every
+    /// building, road, ditch, levelled patch, felled tree, grove, deposit, soldier, army, treaty, relation, caravan, battle, plague, ruin and crater gone). Only the site and the
+    /// village's flag (`style`, the player's identity on the map) are kept. Played from a command log it is the first command of a new epoch (see docs/RESTART.md).
+    pub fn restart(&mut self) {
+        let style = self.style;
+        *self = World::new(self.seed, self.ox, self.oy);
+        self.style = style;
+    }
+
     /// Lift the fog in a circle.
     pub(crate) fn reveal(&mut self, x: f32, y: f32, r: f32) {
         let (i0, i1) = ((((x - r) + HALF_F) / FOG_CELL).floor() as i32, (((x + r) + HALF_F) / FOG_CELL).floor() as i32);
@@ -2328,6 +2337,8 @@ const FARM_PAD_BLEND: f32 = 4.6;
 /// No field of a farm of any tier lies farther than this from its middle (plus the blend).
 const FARM_PAD_REACH: f32 = 22.0;
 
+#[cfg(test)]
+mod restart_tests;
 #[cfg(test)]
 mod lend_tests;
 #[cfg(test)]

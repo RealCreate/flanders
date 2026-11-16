@@ -65,7 +65,9 @@ import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
 import { roleOf, actionsFor, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
-import { cleanName, parseCmd } from './net/validate';
+import { cleanName, parseCmd, Sequence } from './net/validate';
+import { restartCmd, rebaseLog, restartBlocker, validArchive, type Archive, type Facts } from './restart';
+import { saveKept, loadKept, deleteKept } from './checkpoint';
 import { Village, type Shared } from './village';
 import { PathLine, STATE_TEXT } from './render/field';
 
@@ -91,6 +93,7 @@ const DEBUG_HOOKS = import.meta.env.DEV || ['localhost', '127.0.0.1', '[::1]'].i
 const NAMES = ['Aldric', 'Beatrix', 'Cedric', 'Dunstan', 'Eleanor', 'Fulk', 'Godric', 'Hawise', 'Isolde', 'Jocelin', 'Leofric', 'Matilda', 'Osric', 'Rowena', 'Wulfric'];
 
 const ui: UI = new UI({
+  restartInfo: () => restartInfo(), restartRun: () => restartVillage(), restartRestore: () => restoreArchivedVillage(),
   start: (w, n) => startGame(w, n),
   select: k => selectKind(k === selectedKind ? null : k),
   act: a => onAct(a),
@@ -186,6 +189,8 @@ const myLog: Signed[] = [];
 let cmdN = 0, sendChain: Promise<void> = Promise.resolve(), saveTimer = 0;
 /** How many commands of our history other players replay, and whether we have used testing tools (their effects cannot be replayed). Both go out with every hash so copies can tell what to expect. */
 let sharedCount = 0, usedTools = false, myRules = '';
+/** How many times this village was restarted (the epoch of the history we hold: see restart.ts) and when the last time was (wall clock, for the cooldown). */
+let myEpoch = 0, lastRestartAt: number | null = null, restarting = false;
 const isTool = (op: string) => op === 'cheat' || op === 'flatten' || op === 'demo';
 /** What the saved history looks like to the others. */
 const countShared = (log: { cmd: Cmd }[]) => { let n = 0; for (const e of log) if (isTool(e.cmd.op)) usedTools = true; else n++; return n; };
@@ -203,7 +208,7 @@ function checkpoint(force = false) {
   const now = performance.now();
   if (!force && now - lastCheckpointAt < 45_000) return;
   lastCheckpointAt = now;
-  try { const bytes = lv.world.snapshot(); saveCheckpoint(checkpointKey(), { meta: { rules: myRules, v: SYNC_PROTOCOL, site: mySite, cmds: myLog.length, lastCmd: myLog[myLog.length - 1].cmd, tick: Number(lv.world.tick()), savedAt: Date.now(), hash: String(lv.world.state_hash()), sum: checksum(bytes) }, bytes }); } catch (e) { console.warn('Could not write a checkpoint.', e); }
+  try { const bytes = lv.world.snapshot(); saveCheckpoint(checkpointKey(), { meta: { rules: myRules, v: SYNC_PROTOCOL, site: mySite, epoch: myEpoch, cmds: myLog.length, lastCmd: myLog[myLog.length - 1].cmd, tick: Number(lv.world.tick()), savedAt: Date.now(), hash: String(lv.world.state_hash()), sum: checksum(bytes) }, bytes }); } catch (e) { console.warn('Could not write a checkpoint.', e); }
 }
 // maps made by older generators are gone: their saved villages would not fit the new terrain, so they are removed
 try { for (const k of Object.keys(localStorage)) if (k.startsWith('flanders:save:') && !k.startsWith(`flanders:save:v${MAP_VERSION}:`)) localStorage.removeItem(k); } catch { /* storage blocked */ }
@@ -211,7 +216,7 @@ try { for (const k of Object.keys(localStorage)) if (k.startsWith('flanders:save
 /** Record a command that was already applied to your own village: sign it, save it and tell everyone. */
 async function commit(cmd: Omit<Cmd, 'tick' | 'n'>) {
   if (replay?.target === lv) return;   // watching your own history: the village on screen is a replay, not the game
-  const full: Cmd = { ...cmd, tick: Number(lv.world.tick()), n: cmdN++ };
+  const full: Cmd = { ...cmd, tick: Number(lv.world.tick()), n: cmdN++, ...(myEpoch > 0 ? { e: myEpoch } : {}) };
   if (isTool(cmd.op)) usedTools = true; else sharedCount++;
   const signing = identity.sign(full);
   commitsInFlight++;
@@ -222,10 +227,11 @@ async function commit(cmd: Omit<Cmd, 'tick' | 'n'>) {
 function save() {
   if (replay?.target === lv) return;   // the village on screen is a replay: never write it over the real save
   clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => {
-    if (resetting) return;
-    try { localStorage.setItem(saveKey(), JSON.stringify({ site: mySite, name: myName, log: myLog, savedAt: Date.now(), tick: Number(lv.world.tick()), v: SYNC_PROTOCOL, rules: myRules })); } catch { /* storage full or blocked */ }
-  }, 400);
+  saveTimer = window.setTimeout(writeSave, 400);
+}
+function writeSave() {
+  if (resetting) return;
+  try { localStorage.setItem(saveKey(), JSON.stringify({ site: mySite, name: myName, log: myLog, savedAt: Date.now(), tick: Number(lv.world.tick()), v: SYNC_PROTOCOL, rules: myRules, epoch: myEpoch, restartedAt: lastRestartAt })); } catch { /* storage full or blocked */ }
 }
 
 const siteOrigin = (i: number) => ({ x: Math.round(sites[i].x), z: Math.round(sites[i].z) });
@@ -274,7 +280,7 @@ async function loadReplica(r: Rival, cmds: Cmd[]) {
     for (const c of r.log.slice(n)) { stepTo(w, c.tick); applyCmd(w, c); }   // (commands that arrived while it was replaying)
     r.loading = false;
     r.village.setWorld(w); r.tick = Number(w.tick()); r.broken = false; r.forked = false; r.liar = false;
-    r.track.reset(r.log.map(c => c.op)); if (r.versionOk && r.state === 'ok' && r.sync !== 'in sync ✓') r.sync = 'syncing…';
+    r.track.reset(r.log.map(c => c.op), Sequence.epochOf(r.log)); if (r.versionOk && r.state === 'ok' && r.sync !== 'in sync ✓') r.sync = 'syncing…';
     refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
   } catch (e) { if (r.loadSeq === seq) r.loading = false; quarantine(r, e); }
 }
@@ -390,6 +396,7 @@ function connect() {
     },
     onCmd: (peerId, c) => {
       const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || r.broken) return;
+      if (c.op === 'restart') { onRivalRestart(r, c); return; }
       if (r.log.length < 60000) r.log.push(c);
       if (replay?.target === r.village || r.loading) return;   // (while a copy is being rebuilt the new command waits in the log: the rebuilt copy plays it last)
       try {
@@ -438,6 +445,104 @@ function updateGoals() {
   const c = countsOf(lv.world, rivals.size);
   ui.setGoals(GOALS.map(g => ({ text: g.text, detail: g.detail, done: g.ok(c) })));
   tutorial.update(c);
+}
+
+// ---------- restart: start the village again (the protocol is in docs/RESTART.md, the rules in restart.ts) ----------
+const archiveKey = () => saveKey() + ':archive';
+const soldiersOf = (w: World) => Array.from(w.army()).reduce((a, n) => a + n, 0);
+
+/** What the restart dialog needs to know about the village as it stands. */
+function restartFacts(): Facts {
+  const w = lv.world, f = w.buildings_flat(); let edits = 0;
+  for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 24 || k === 32 || k === 33 || k === 34) edits++; }
+  return {
+    replaying: replay?.target === lv, busy: commitsInFlight > 0 || restarting, battle: w.battle_active(),
+    armiesAway: w.det_flat().length > 0 || Array.from(w.away()).some(n => n > 0),
+    lastRestartAt, now: Date.now(),
+    days: Math.floor(Number(w.tick()) / DAY_TICKS) + 1, buildings: w.building_count(), population: w.population(), soldiers: soldiersOf(w), terrainEdits: edits + (w.felled_flat().length > 0 ? 1 : 0),
+  };
+}
+
+async function restartInfo() {
+  const a = validArchive(await loadKept(archiveKey()));
+  return { facts: restartFacts(), name: myName, archive: a ? { archivedAt: a.archivedAt, days: a.days, buildings: a.buildings } : null };
+}
+
+/** Put the screen back in step with a village that was just replaced from the inside (the same world object, a new life). */
+function showFreshVillage() {
+  const o = siteOrigin(mySite);
+  showWorld(lv, lv.world, true);
+  deposits.sync(lv.world.deposits_flat(), lv.world.deposits_asleep()); deposits.attach(lv.world.buildings_flat());
+  selectedIdx = null; selectedDet = null; selectedRuin = null; selectKind(null); attackTargets.clear(); lentBridges = new Set();
+  updateSelection(); updateHud(); updateGoals(); refreshAll();
+  rig.focus(o.x, o.z, 75);
+  for (const r of rivals.values()) chainTo(r);   // the invisible roads to the other villages went with the old village
+}
+
+/** The player pressed the red button. Resolves to null when the village has started again, or to what stopped it (nothing has changed then). */
+async function restartVillage(): Promise<string | null> {
+  const why = restartBlocker(restartFacts()); if (why) return why;
+  restarting = true;
+  try {
+    await sendChain;
+    if (commitsInFlight > 0) return 'Your village is still saving. Try again in a moment.';
+    const w = lv.world, now = Date.now();
+    // 1. keep the village that is about to go (one life: it replaces the one kept before). If it cannot be kept, nothing is done.
+    const arch: Archive = { format: 'flanders-archive', version: 1, epoch: myEpoch, log: myLog.slice(), site: mySite, name: myName, savedAt: now, tick: Number(w.tick()), archivedAt: now, days: Math.floor(Number(w.tick()) / DAY_TICKS) + 1, buildings: w.building_count(), v: SYNC_PROTOCOL, rules: myRules };
+    if (!(await saveKept(archiveKey(), arch))) return 'This browser would not keep a copy of your village (storage is full or blocked), so nothing was changed. Download a backup file first, or free some space.';
+    // 2. the first command of the new epoch, signed; after this nothing can fail
+    const epoch = myEpoch + 1, cmd = restartCmd(epoch), signed = await identity.sign(cmd);
+    clearTimeout(saveTimer);
+    myLog.length = 0; myLog.push(signed); cmdN = 1; sharedCount = 1; usedTools = false; myEpoch = epoch; lastRestartAt = now;
+    applyCmd(w, cmd);   // the core starts the village again (World::restart)
+    writeSave(); await deleteCheckpoint(checkpointKey());   // the checkpoint belonged to the old epoch
+    room?.broadcastCmd(signed); room?.announce();
+    showFreshVillage();
+    tutorial.start(0); updateGoals();
+    ui.toast('Your village was pulled down. A new one begins on the same ground.', 'good');
+    ui.log('You started the village again.', 'info', 0);
+    return null;
+  } finally { restarting = false; }
+}
+
+/** Bring back the village the last restart archived: it becomes the new epoch (re-signed with a fresh number), the village you have now is lost. */
+async function restoreArchivedVillage(): Promise<string | null> {
+  if (restarting) return 'Wait a moment.';
+  const a = validArchive(await loadKept(archiveKey())); if (!a) return 'There is no archived village to bring back.';
+  const why = restartBlocker({ ...restartFacts(), lastRestartAt: null }); if (why) return why;
+  if (a.site !== mySite) return 'The archived village stood somewhere else on the map and cannot be brought back here.';
+  if (!(await ui.confirm(`This brings back the village you pulled down (day ${a.days}, ${a.buildings} buildings). The village you have now is lost, and cannot be brought back. Other players see it replaced.`, 'Bring it back', 'Bring back the old village?'))) return 'Nothing was changed.';
+  restarting = true;
+  try {
+    await sendChain;
+    const old = validSavedLog(a.log).map(x => x.cmd);
+    if (!old.length) return 'The archived history is damaged.';
+    const cmds = rebaseLog(old, myEpoch + 1), signed: Signed[] = [];
+    for (const c of cmds) signed.push(await identity.sign(c));
+    // build it first, so that a village that cannot be played never replaces the one we have
+    const o = siteOrigin(mySite), w = new World(seedBig, o.x, o.z);
+    const res = await replayInSlices(w, cmds, applyCmd, a.tick, {});
+    if (!res.ok) return 'The archived village could not be rebuilt.';
+    clearTimeout(saveTimer);
+    myEpoch += 1; myLog.length = 0; myLog.push(...signed); cmdN = cmds.length; sharedCount = countShared(cmds.map(cmd => ({ cmd }))); lastRestartAt = null;
+    lv.setWorld(w);
+    writeSave(); await deleteCheckpoint(checkpointKey()); await deleteKept(archiveKey());
+    room?.broadcastCmd(signed[0]); room?.announce(); room?.pushLog();
+    showFreshVillage();
+    ui.toast('The old village is back.', 'good');
+    return null;
+  } finally { restarting = false; }
+}
+
+/** Another player started their village again: our copy of it becomes a new village too, and what we had agreed with the old one is over. */
+function onRivalRestart(r: Rival, c: Cmd) {
+  ui.toast(`${r.name} pulled their village down and started again.`, 'info');
+  r.forked = false; r.liar = false;
+  void loadReplica(r, [c]).then(() => { terrain.resetPads(); refreshAll(); forestDirtyFlag = true; rebuildForest(true); updatePeers(); });
+  const tag = tagOf(r.key);
+  for (const kind of [0, 1, 2]) if (lv.world.has_treaty(tag, kind)) { lv.world.treaty_end(tag, kind); commit({ op: 'treaty', idx: tag, kind, y: 0 }); }
+  attackTargets.forEach((k, id) => { if (k === r.key) attackTargets.delete(id); });
+  updateHud();
 }
 
 // ---------- testing tools ----------
@@ -905,7 +1010,7 @@ async function startGame(name: string, username: string) {
   await warmNavigationInSlices(warm_navigation_step, seedBig, { onProgress: f => ui.progress(50 + Math.round(f * 9), 'Mapping the roads…') });
   ui.progress(60, 'Gathering your villagers…'); await nextFrame();
   // your village: restore from the last visit, or found a new one
-  let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number; v?: number; rules?: string } | null = null;
+  let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number; v?: number; rules?: string; epoch?: number; restartedAt?: number | null } | null = null;
   try { saved = JSON.parse(localStorage.getItem(saveKey()) ?? 'null'); } catch { /* ignore */ }
   mySite = saved && saved.site < sites.length ? saved.site : 0;
   try { myRules = rules_fingerprint(seedBig); ui.setRules(myRules); } catch { /* without a fingerprint other players cannot tell our build */ }
@@ -915,13 +1020,14 @@ async function startGame(name: string, username: string) {
   if (saved) {
     const entries = validSavedLog(saved.log);
     for (const s of entries) { myLog.push(s.signed); cmdN = Math.max(cmdN, s.cmd.n + 1); }
+    myEpoch = entries.length ? entries[0].cmd.e ?? 0 : 0; lastRestartAt = typeof saved.restartedAt === 'number' ? saved.restartedAt : null;
     sharedCount = countShared(entries);
     away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
     // the whole history, then the ticks that passed while you were away, a few milliseconds at a time behind the loading screen
     const prog = (f: number) => ui.progress(60 + Math.round(f * 8), `Gathering your villagers… ${Math.round(f * 100)}%`);
     // a checkpoint of the world (if it belongs to this very history) saves replaying most of it
     let from = 0; const cp = await loadCheckpoint(checkpointKey());
-    const restored = cp && cp.meta.tick <= saved.tick ? resumeFromCheckpoint(cp, { rules: myRules, v: SYNC_PROTOCOL, site: mySite }, entries.map(e => ({ cmd: e.signed.cmd, tick: e.cmd.tick })), world_restore) : null;
+    const restored = cp && cp.meta.tick <= saved.tick ? resumeFromCheckpoint(cp, { rules: myRules, v: SYNC_PROTOCOL, site: mySite, epoch: myEpoch }, entries.map(e => ({ cmd: e.signed.cmd, tick: e.cmd.tick })), world_restore) : null;
     if (restored && cp) { w.free(); w = restored; from = cp.meta.cmds; console.info(`Resumed from a checkpoint at tick ${cp.meta.tick} (${from} of ${entries.length} commands already in it).`); }
     else if (cp) { console.info('The saved checkpoint does not belong to this history or is damaged: replaying the whole history.'); void deleteCheckpoint(checkpointKey()); }
     const rep = await replayInSlices(w, entries.slice(from).map(e => e.cmd), applyCmd, saved.tick, { onProgress: prog });
@@ -1231,7 +1337,7 @@ function stepLocal() {
   if (t % 4 === 0) updateGoals();
   { const l = newlyLent(w.buildings_flat(), lentBridges); lentBridges = l.now; if (l.fresh.length) ui.toast('Lowering the drawbridge for the army', 'info', 'drawbridge'); }
   pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
-  if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools });
+  if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools, e: myEpoch });
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
   if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();

@@ -178,6 +178,7 @@ export const ICONS: Record<string, S> = {
   warn: P('M12 3 L22 20 H2Z', FL2) + L('M12 9 V14', K, 1.8) + C(12, 17, 1, K),
   banner: L('M5 2 V22', K, 1.6) + P('M5 3 H20 V14 L12.5 11 L5 14Z', RD) + C(12.5, 7, 1.6, GD),
   hero: P('M3 18 L5 7 L9 12 L12 5 L15 12 L19 7 L21 18Z', GD) + R(3, 18, 18, 3, GD2),
+  restart: P('M3 21 V14 L6 11 V15 L9 10 V21Z M14 21 V15 L17 12 V21Z', ST) + L('M3 21 H22', K, 1.2) + L('M20 9 A7 7 0 1 0 12 3', RD, 2) + P('M9.5 0.5 L14.5 3 L10.5 6.5Z', RD),
   ruin: P('M3 21 V13 L6 10 V14 L9 8 V21Z M13 21 V11 L16 14 V9 L21 12 V21Z', ST) + L('M3 21 H22', K, 1.2),
   castle: R(4, 9, 16, 12, ST) + crenels([4, 10, 16], 5, 4, 4, ST) + P('M10 21 V16 Q12 13 14 16 V21Z', K),
   abbey: R(5, 10, 14, 11, PA2) + P('M4 10 L12 4 L20 10Z', ST2) + L('M12 0.8 V4 M10.6 2.2 H13.4', K, 1.3) + P('M10 21 V16 Q12 13 14 16 V21Z', WD2),

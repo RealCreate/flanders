@@ -51,6 +51,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'retreat': if (c.tag) w.battle_retreat(c.tag); break;   // (the attacker's own call has no `tag`: it is only a request, which the defender's village carries out and records with the tag)
     case 'reinforce': if (c.tag) w.battle_reinforce(c.tag, Uint32Array.from(c.units ?? [])); break;
     case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
+    case 'restart': w.restart(); break;   // the village starts again from nothing (the first command of a new epoch: see restart.ts)
     case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;
     default: break; // 'refuse' has no effect on the issuer's own world
   }
@@ -62,11 +63,14 @@ export const stepTo = (w: World, t: number) => { let n = 0; while (w.tick() < Bi
 /** The saved history of your own village, read back carefully: a damaged or edited save must not crash the game. Testing-tool commands are your own and stay. */
 export function validSavedLog(log: unknown): { signed: Signed; cmd: Cmd }[] {
   if (!Array.isArray(log)) return [];
-  const out: { signed: Signed; cmd: Cmd }[] = []; let n = -1, t = 0;
+  const out: { signed: Signed; cmd: Cmd }[] = []; let n = -1, t = 0, epoch = 0;
   for (const s of log.slice(0, 60000)) {
     if (!s || typeof s.cmd !== 'string' || typeof s.sig !== 'string') break;
     const cmd = parseCmd(s.cmd, true) as Cmd | null;
-    if (!cmd || cmd.n <= n || cmd.tick < t) break;
+    if (!cmd || cmd.n <= n && out.length || cmd.tick < t) break;
+    // a history is one epoch (see restart.ts): epoch 0 has no restart command, a later one starts with its own and nothing of another epoch follows
+    if (!out.length) epoch = cmd.e ?? 0;
+    if ((cmd.e ?? 0) !== epoch || (cmd.op === 'restart') !== (!out.length && epoch > 0)) break;
     n = cmd.n; t = cmd.tick; out.push({ signed: { cmd: s.cmd, sig: s.sig }, cmd });
   }
   return out;

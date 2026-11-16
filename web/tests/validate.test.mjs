@@ -9,7 +9,7 @@ test('a normal command passes and comes back with only known fields', () => {
   const c = ok({ op: 'place', kind: 3, x: -12, y: 40, rot: 2, evil: '<script>' });
   assert.deepEqual(c, { op: 'place', tick: 5, n: 1, kind: 3, x: -12, y: 40, rot: 2 });
 });
-test('every op the client sends is accepted', () => { for (const op of PEER_OPS) assert.ok(ok(op === 'level' ? { op, x: 0, y: 0, kind: 8 } : { op }), op); });
+test('every op the client sends is accepted', () => { for (const op of PEER_OPS) assert.ok(ok(op === 'level' ? { op, x: 0, y: 0, kind: 8 } : op === 'restart' ? { op, e: 1, tick: 0, n: 0 } : { op }), op); });
 test('testing tools are refused from the network but can be recognised', () => {
   assert.equal(ok({ op: 'cheat', kind: 0, x: 1, y: 1000 }), null);
   assert.equal(ok({ op: 'flatten', x: 200 }), null);
