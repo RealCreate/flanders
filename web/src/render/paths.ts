@@ -46,6 +46,7 @@ export class Paths {
   update(buildings: Float32Array, roadLines: ArrayLike<number>, radii: number[], born: ArrayLike<number> = []) {
     void born;
     const pos: number[] = [], col: number[] = [], uv: number[] = [], idx: number[] = [], rd: number[] = [];
+    let tint = false;   // (declared before `vert`, which reads it: a `let` used before its line is a ReferenceError)
     let rb = -1e6, rs = 0, rp = 0;   // the road the next vertices belong to: birth tick, distance from the village end (0..1), paveable
     const hallTier = buildings[1] ?? 0, kindOfRoad = roadMaterialFor(hallTier);
     if (kindOfRoad !== this.material) { this.material = kindOfRoad; this.mat.map = this.textures[kindOfRoad]; }   // every road changes at once
@@ -60,7 +61,7 @@ export class Paths {
     for (let k = 0; k < rm.x.length; k++) { rb = rm.born[k]; rs = rm.along[k]; rp = rm.pave[k]; vert(rm.x[k], rm.z[k], rm.a[k], rm.u[k], rm.v[k]); }
     for (const i of rm.idx) idx.push(base0 + i);
     rb = -1e6; rs = 0; rp = 0;
-    const roadIdx = idx.length; let tint = false;
+    const roadIdx = idx.length;
     // aprons under buildings (and the plaza under the hall)
     for (let i = 0; i < buildings.length; i += S) {
       const kind = buildings[i], x = buildings[i + 2], z = buildings[i + 3];
