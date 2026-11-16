@@ -50,8 +50,9 @@ export class Terrain {
   private col: THREE.BufferAttribute;
   private nor: THREE.BufferAttribute;
 
-  constructor(seed: bigint) {
-    const raw = terrain_grid(seed, -HALF, -HALF, NV, NV, STEP);
+  /** `rawHeights` is the core's height grid when the caller already built it a slice at a time (see loader.ts); otherwise it is built here in one go. */
+  constructor(seed: bigint, rawHeights?: Float32Array) {
+    const raw = rawHeights ?? terrain_grid(seed, -HALF, -HALF, NV, NV, STEP);
     this.base = new Float32Array(NV * NV);
     this.heights = new Float32Array(NV * NV);
     for (let j = 0; j < NV; j++) for (let i = 0; i < NV; i++) {

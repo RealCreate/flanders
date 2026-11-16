@@ -225,10 +225,13 @@ fn neutrals_uncached(seed: u64) -> Vec<(u8, f32, f32)> {
 pub fn base_height(seed: u64, x: f32, y: f32) -> f32 { base_height_s(seed, &sites(seed), x, y) }
 
 /// Row-major grid of nx*ny heights starting at (x0,y0) with spacing `step`.
-pub fn grid(seed: u64, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> {
+pub fn grid(seed: u64, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> { grid_rows(seed, x0, y0, nx, step, 0, ny) }
+
+/// Rows `j0..j1` of `grid` (the same numbers, whatever the slicing), so a big grid can be built a few rows at a time.
+pub fn grid_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> {
     let s = sites(seed);
-    let mut out = Vec::with_capacity((nx * ny) as usize);
-    for j in 0..ny {
+    let mut out = Vec::with_capacity(((j1 - j0) * nx) as usize);
+    for j in j0..j1 {
         for i in 0..nx {
             out.push(base_height_s(seed, &s, x0 + i as f32 * step, y0 + j as f32 * step));
         }
@@ -259,11 +262,19 @@ pub fn tree_density(seed: u64, x: f32, y: f32, h: f32, slope: f32, sites: &[(f32
 
 /// Trees in a rectangle: [x, y, type, scale, rotation] per tree (type 0 = conifer, 1 = oak, 2 = birch).
 pub fn trees(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> {
-    let s = sites(seed);
-    let cell = 2.6f32;
-    let mut out = vec![];
+    let cell = TREE_CELL;
     let (cx0, cx1) = ((x0 / cell).floor() as i32, (x1 / cell).ceil() as i32);
     let (cy0, cy1) = ((y0 / cell).floor() as i32, (y1 / cell).ceil() as i32);
+    trees_cells(seed, cx0, cx1, cy0, cy1)
+}
+
+pub const TREE_CELL: f32 = 2.6;
+
+/// The trees of the cells `cx0..cx1` by `cy0..cy1` (cell indices, not coordinates), so the whole map can be done a strip of rows at a time.
+pub fn trees_cells(seed: u64, cx0: i32, cx1: i32, cy0: i32, cy1: i32) -> Vec<f32> {
+    let s = sites(seed);
+    let cell = TREE_CELL;
+    let mut out = vec![];
     for cy in cy0..cy1 {
         for cx in cx0..cx1 {
             let x = (cx as f32 + h01(seed ^ 0xA1, cx, cy)) * cell;

@@ -140,8 +140,9 @@ export class Forest {
   private grid = new Map<number, number[]>();
   private static key(cx: number, cz: number) { return (cx + 200) * 1000 + (cz + 200); }
 
-  constructor(seed: bigint, private terrain: Terrain) {
-    const raw = trees_in(seed, -HALF, -HALF, HALF, HALF);
+  /** `rawTrees` is the core's list of trees when the caller already built it a slice at a time (see loader.ts); otherwise it is built here in one go. */
+  constructor(seed: bigint, private terrain: Terrain, rawTrees?: Float32Array) {
+    const raw = rawTrees ?? trees_in(seed, -HALF, -HALF, HALF, HALF);
     const tiles = new Map<string, number>(); // "type:tx:tz" -> mesh index
     const counts: number[] = [], keys: string[] = [];
     for (let i = 0; i < raw.length; i += 5) {
