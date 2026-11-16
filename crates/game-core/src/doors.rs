@@ -26,7 +26,7 @@ pub fn door_local(kind: u8, tier: u8) -> ((f32, f32), (f32, f32)) {
         COURTHOUSE => ((0.0, 2.5), fwd),
         WATERWHEEL => ((0.0, 1.8), fwd),
         PORT => ((-1.5, 1.0), fwd),
-        TOLL => ((1.8, 0.7), fwd),
+        TOLL => ((1.5, -0.2), (-1.0, 0.0)),                               // the keeper's door looks onto the road that runs through the gate
         FISHING_HUT => ((-0.6, 1.3), fwd),
         SMOKEHOUSE => (([0.6, 0.8, 0.9, 1.0][t], 1.5), fwd),
         BAKERY => (([-0.8, -0.9, -1.1, -1.2][t], 1.4), fwd),
@@ -39,7 +39,7 @@ pub fn door_local(kind: u8, tier: u8) -> ((f32, f32), (f32, f32)) {
 
 /// The turn of a building as (cos, sin): a model point (x, z) lands at (x cos + z sin, -x sin + z cos) from its middle.
 fn turn(rot: u8) -> (f32, f32) { let th = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; (th.cos(), th.sin()) }
-fn to_world(rot: u8, p: (f32, f32)) -> (f32, f32) { let (c, s) = turn(rot); (p.0 * c + p.1 * s, -p.0 * s + p.1 * c) }
+pub(crate) fn to_world(rot: u8, p: (f32, f32)) -> (f32, f32) { let (c, s) = turn(rot); (p.0 * c + p.1 * s, -p.0 * s + p.1 * c) }
 
 /// Where the door's road leaves the plot: the point on the circle of the building's ring (`pathnet::ring_radius`, beyond its footprint and all its fields) that the road reaches by
 /// running straight from the door along the way the door faces, in the model's frame. A door that faces away from the circle's inside (never happens for the table) falls back to the

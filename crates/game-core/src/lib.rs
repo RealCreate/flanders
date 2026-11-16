@@ -524,6 +524,23 @@ impl World {
         }
         chosen.sort();
         for (i, j, l) in chosen { if let Some(Some(pts)) = memo.get(&(i, j, l)).cloned() { self.lay_road(i, j, pts); } }
+        // a toll post's gate is a way through: each end of it is joined to the nearest building that can be reached on its own side, so that the road runs through it and on
+        let tolls: Vec<usize> = ends.iter().copied().filter(|&i| self.buildings[i].kind == TOLL).collect();
+        for i in tolls {
+            let Some(r) = net.ring.get(i).cloned() else { continue };
+            for &e in r.iter() {
+                if e == u32::MAX { continue; }
+                let at = net.nodes[e as usize];
+                let touched = self.road_paths.iter().any(|(c, p, pts)| (*c as usize == i && pts.first() == Some(&at)) || (*p as usize == i && pts.last() == Some(&at)));
+                if touched { continue; }
+                let mut near: Vec<(f32, usize)> = ends.iter().copied().filter(|&j| j != i && self.buildings[j].kind != TOLL && net.joined(i, j)).map(|j| ((self.buildings[j].x - at.0).hypot(self.buildings[j].y - at.1), j)).collect();
+                near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
+                'find: for (d, j) in near.into_iter().take(4) {
+                    if d > 80.0 { break; }
+                    for level in 0u8..3 { if let Some(pts) = self.road_route_node(&net, &ctx, e, j, level) { self.lay_road(i, j, pts); break 'find; } }
+                }
+            }
+        }
         // the door's own short road: from the real door of every building that has a road to the point where it leaves the plot, which is the node every road of the building starts from.
         // (child == parent marks it; it is part of the building's design, and a building without a road has none, or it would be a stub of its own)
         let mut has_road = vec![false; n];
@@ -531,6 +548,11 @@ impl World {
         for i in 0..n {
             if !has_road[i] { continue; }
             if self.buildings[i].kind == ROAD || net.ring.get(i).map_or(true, |r| r.is_empty()) { continue; }
+            if self.buildings[i].kind == TOLL {   // no door: the road runs through the gate, from one end of it to the other
+                let v: Vec<(f32, f32)> = net.ring[i].iter().filter(|&&n| n != u32::MAX).map(|&n| net.nodes[n as usize]).collect();
+                if v.len() == 2 { let h = self.buildings[i].pad_h; self.roads.push([v[0].0, v[0].1, h, v[1].0, v[1].1, h]); self.road_links.push((i as u32, i as u32)); }
+                continue;
+            }
             let (door, exit) = doors::door_world(&self.buildings[i]);
             let h = self.buildings[i].pad_h;
             // where the roads of this building actually start (normally the door node; a building whose door node is blocked, or that had to use its whole ring, starts them elsewhere on it)
@@ -1023,6 +1045,34 @@ impl World {
         if nx * (qx - self.ox as f32) + ny * (qy - self.oy as f32) < 0.0 { nx = -nx; ny = -ny; }
         let rot = Self::drawbridge_turn(nx, ny);
         vec![qx.round() - self.ox as f32, qy.round() - self.oy as f32, rot as f32]
+    }
+
+    /// Where a toll post clicked at (dx, dy) goes: pulled onto the nearest road and turned so that the road runs through its gate, along the axis between its two posts.
+    /// [x, y, turn] relative to the origin (the turn in 45-degree steps, as `place` takes it), or nothing when no road is near (within 14) or there is no room for the post along it.
+    pub fn toll_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (px, py) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        let mut best: Option<(f32, f32, f32, f32, f32)> = None;   // distance, x, y, direction x, direction y
+        for (s, l) in self.roads.iter().zip(&self.road_links) {
+            if l.0 == l.1 { continue; }   // (the short roads of the doors are not the village's roads)
+            let (sx, sy) = (s[3] - s[0], s[4] - s[1]); let sl = sx.hypot(sy); if sl < 0.3 { continue; }
+            let t = (((px - s[0]) * sx + (py - s[1]) * sy) / (sl * sl)).clamp(0.0, 1.0);
+            let (qx, qy) = (s[0] + sx * t, s[1] + sy * t); let d = (qx - px).hypot(qy - py);
+            if d <= 14.0 && best.map_or(true, |b| d < b.0 - 0.01) { best = Some((d, qx, qy, sx / sl, sy / sl)); }
+        }
+        let Some((_, qx, qy, ux, uy)) = best else { return vec![] };
+        let rot = Self::drawbridge_turn(ux, uy);
+        let net = self.net_base();
+        // the post may need to slide along the road a little to find room
+        for t in [0.0f32, 1.5, -1.5, 3.0, -3.0, 4.5, -4.5, 6.0, -6.0] {
+            let (sx, sy) = ((qx + ux * t).round(), (qy + uy * t).round());
+            let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
+            let code = self.can_place(TOLL, cx as i32, cy as i32);
+            if !(code == 0 || code == -6) { continue; }
+            // the way through must be free on both sides of the post: the road has to run on from both ends of its gate
+            let (wx, wy) = doors::to_world(rot as u8, (0.0, 1.0));
+            if [-5.0f32, -3.5, 0.0, 3.5, 5.0].iter().all(|&t| net.ok_at(sx + wx * t, sy + wy * t)) { return vec![cx, cy, rot as f32]; }
+        }
+        vec![]
     }
 
     // ---------- bridges ----------

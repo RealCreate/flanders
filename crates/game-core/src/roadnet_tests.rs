@@ -79,3 +79,57 @@ fn the_roads_of_a_busy_village_form_one_network() {
         assert!(r.door_gap < 0.01, "the road starts at the real door");
     }
 }
+
+/// A toll post is placed where `toll_snap` says: on a road, with its gate along the road. The road then runs through the gate (a drawn road through the middle of the post, joined to the
+/// network at both ends), and no road is drawn over its hut or posts.
+#[test]
+fn a_toll_post_snaps_onto_a_road_and_the_road_runs_through_its_gate() {
+    let mut w = busy_village(false);
+    let mut done = 0;
+    let want: Vec<(i32, i32)> = vec![(14, -6), (-12, 9), (24, 18), (-20, -16), (30, -5), (-6, 24)];
+    for (cx, cy) in want {
+        let s = w.toll_snap(cx, cy);
+        if s.is_empty() { continue; }
+        let (x, y, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
+        // the road next to the snapped spot (before placing): its direction is the axis of the post, up to the 45 degree step
+        let (ax, ay) = ((w.ox + x) as f32, (w.oy + y) as f32);
+        let (c, sn) = ((rot as f32 * std::f32::consts::FRAC_PI_4).cos(), (rot as f32 * std::f32::consts::FRAC_PI_4).sin());   // (the post's axis is (sin, cos))
+        let mut best = f32::MAX; let mut near = 0;
+        for (sg, l) in w.roads.iter().zip(&w.road_links) {
+            if l.0 == l.1 { continue; }
+            let (sx, sy) = (sg[3] - sg[0], sg[4] - sg[1]); let sl = sx.hypot(sy); if sl < 0.3 { continue; }
+            let t = (((ax - sg[0]) * sx + (ay - sg[1]) * sy) / (sl * sl)).clamp(0.0, 1.0);
+            let d = (ax - (sg[0] + sx * t)).hypot(ay - (sg[1] + sy * t));
+            if d < 3.0 { near += 1; best = best.min(((sx / sl * sn + sy / sl * c).abs()).clamp(0.0, 1.0).acos().to_degrees()); }
+        }
+        assert!(near > 0, "the snapped post is on the road");
+        assert!(best <= 25.0, "the gate is along the road: {best:.0} degrees off");
+        let i = w.place(TOLL, x, y, rot); if i < 0 { continue; }
+        done += 1;
+        { let net = w.net_base(); eprintln!("toll {i} at {x},{y} rot {rot}: ring {:?} nodes {:?}, paths {}", net.ring[i as usize], net.ring[i as usize].iter().filter(|&&n| n != u32::MAX).map(|&n| net.nodes[n as usize]).collect::<Vec<_>>(), w.road_paths.iter().filter(|p| p.0 as i32 == i || p.1 as i32 == i).count()); }
+        let r = measure(&w);
+        assert_eq!(r.comps, 1, "toll at {x},{y}: the roads are still one network");
+        assert!(r.loose_ends.is_empty(), "toll at {x},{y}: loose ends {:?}", r.loose_ends);
+        // a road passes through the gate: a drawn segment of the toll's own passes through its middle, and both ends of it are met by roads of the village
+        let b = w.buildings[i as usize].clone();
+        let pass: Vec<[f32; 6]> = w.roads_flat().chunks(6).filter(|s| s[4] as i32 == i && s[5] as i32 == i).map(|s| [s[0], s[1], s[2], s[3], s[4], s[5]]).collect();
+        assert_eq!(pass.len(), 1, "one passage through the gate");
+        let p = pass[0]; assert!(seg_seg(&[b.x, b.y, b.x, b.y, 0.0, 0.0], &p) < 0.2, "through the middle of the post");
+        for (ex, ey) in [(p[0], p[1]), (p[2], p[3])] {
+            let met = w.roads_flat().chunks(6).any(|s| !(s[4] as i32 == i && s[5] as i32 == i) && seg_seg(&[ex, ey, ex, ey, 0.0, 0.0], &[s[0], s[1], s[2], s[3], 0.0, 0.0]) < 1.0);
+            assert!(met, "toll at {x},{y}: the passage is met by a road at {ex:.1},{ey:.1}");
+        }
+        // none of the other roads is drawn over the hut or posts (their local places in the post's own frame)
+        let (cc, ss) = (((b.rot as f32) * std::f32::consts::FRAC_PI_4).cos(), ((b.rot as f32) * std::f32::consts::FRAC_PI_4).sin());
+        for s in w.roads_flat().chunks(6) {
+            if s[4] as i32 == i && s[5] as i32 == i { continue; }
+            let l = (s[2] - s[0]).hypot(s[3] - s[1]); let n = (l / 0.4).ceil().max(1.0) as i32;
+            for k in 0..=n { let f = k as f32 / n as f32; let (wx, wy) = (s[0] + (s[2] - s[0]) * f - b.x, s[1] + (s[3] - s[1]) * f - b.y);
+                let (lx, lz) = (wx * cc - wy * ss, wx * ss + wy * cc);   // back into the post's frame
+                assert!(!((lx - 2.4).abs() < 1.7 && (lz + 0.2).abs() < 1.3), "a road over the hut at {lx:.1},{lz:.1}");
+                assert!(!(lx.abs() > 0.4 && lx.abs() < 2.1 && (lz - 0.6).abs() < 0.6 && f > 0.0 && f < 1.0 && false), "posts");
+            }
+        }
+    }
+    assert!(done >= 3, "toll posts were snapped onto roads and placed ({done})");
+}

@@ -81,7 +81,8 @@ pub fn field_rects(kind: u8, tier: u8) -> Vec<(f32, f32, f32, f32)> {
 pub fn ring_radius(kind: u8, tier: u8) -> f32 {
     let rects = field_rects(kind, tier);
     if rects.is_empty() { return net_radius_kt(kind, tier) + 1.2; }
-    rects.iter().flat_map(|r| [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sx, sz)| (r.0 + sx * r.2).hypot(r.1 + sz * r.3))).fold(0.0f32, f32::max) + 1.6
+    // (and always out past the building's plot, the circle of its footprint: the road from the door leaves the plot where it meets the ring)
+    (rects.iter().flat_map(|r| [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sx, sz)| (r.0 + sx * r.2).hypot(r.1 + sz * r.3))).fold(0.0f32, f32::max) + 1.6).max(crate::footprint(kind, tier) + 1.0)
 }
 
 /// Does the point lie in one of the building's field rectangles (grown by `margin`)? `rot` is the building's turn in 45-degree steps.
@@ -283,7 +284,7 @@ impl World {
 
     /// What the roads of this village must keep clear of.
     pub(crate) fn road_ctx(&self) -> RoadCtx {
-        let solids = (0..self.buildings.len()).filter(|&i| !matches!(self.buildings[i].kind, WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE)).collect();
+        let solids = (0..self.buildings.len()).filter(|&i| !matches!(self.buildings[i].kind, WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE | TOLL)).collect();   // (a toll post is walked through: the network blocks its hut and posts only)
         RoadCtx { segs: self.wall_lines().0, solids, memo: Default::default() }
     }
 
@@ -329,19 +330,25 @@ impl World {
     /// of the network where the ribbon has room (level 0: all of `ROAD_HALF`; level 1: at least `ROAD_TIGHT`; level 2: the plain cheapest route over the network, for a building that has no such way). A building without a ring (a piece of road) is joined at its own middle.
     /// None when the network does not join them.
     pub(crate) fn road_route(&self, net: &Net, ctx: &RoadCtx, ia: usize, ib: usize, level: u8) -> Option<Vec<(f32, f32)>> {
-        self.road_route_from(net, ctx, ia, ib, level, false).or_else(|| if level >= 2 { self.road_route_from(net, ctx, ia, ib, level, true) } else { None })
+        self.road_route_from(net, ctx, ia, ib, level, false, None).or_else(|| if level >= 2 { self.road_route_from(net, ctx, ia, ib, level, true, None) } else { None })
     }
 
-    fn road_route_from(&self, net: &Net, ctx: &RoadCtx, ia: usize, ib: usize, level: u8, whole_ring: bool) -> Option<Vec<(f32, f32)>> {
+    /// The route of a road that starts at the node `node` (an end of a toll post's gate) and runs to building `ib`.
+    pub(crate) fn road_route_node(&self, net: &Net, ctx: &RoadCtx, node: u32, ib: usize, level: u8) -> Option<Vec<(f32, f32)>> {
+        self.road_route_from(net, ctx, ib, ib, level, false, Some(node))
+    }
+
+    fn road_route_from(&self, net: &Net, ctx: &RoadCtx, ia: usize, ib: usize, level: u8, whole_ring: bool, start: Option<u32>) -> Option<Vec<(f32, f32)>> {
         let ends = |i: usize| -> (Vec<u32>, Option<(f32, f32)>) {
             let b = &self.buildings[i];
             let ring: Vec<u32> = net.ring.get(i).map(|r| r.iter().copied().filter(|&id| id != u32::MAX).collect()).unwrap_or_default();
             // a road starts and ends at the building's door node (the first node of its ring, where the door's own short road leaves the plot), so all the roads of a building meet there and
             // the network is one piece; only a building whose door node stands on ground that is not walkable, or that the network cannot join from there, uses the rest of its ring
-            if !ring.is_empty() { return (match net.door_node(i) { Some(d) if !whole_ring => vec![d], _ => ring }, None); }
+            if !ring.is_empty() { return (match net.door_node(i) { Some(d) if !whole_ring && b.kind != TOLL => vec![d], _ => ring }, None); }
             (net.reach((b.x, b.y)).into_iter().map(|c| c.0).collect(), Some((b.x, b.y)))
         };
-        let ((from, fa), (to, fb)) = (ends(ia), ends(ib));
+        let ((mut from, fa), (to, fb)) = (ends(ia), ends(ib));
+        if let Some(n) = start { from = vec![n]; }
         if from.is_empty() || to.is_empty() { return None; }
         let chain = net.shortest(&from, &to, &|a, b| level >= 2 || self.road_edge_free(net, ctx, a, b, level == 1))?;
         let mut pts: Vec<(f32, f32)> = vec![];
@@ -425,6 +432,9 @@ impl World {
                     let (j0, j1) = ((((y0 - ny0) / RC).floor() as i32).max(0), (((y1 - ny0) / RC).ceil() as i32).min(ny - 1));
                     for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cxy(i, j); if in_fields(q, cx, cy, 0.9) { blocked[(j * nx + i) as usize] = true; } } }
                 }
+                TOLL => {   // only the hut and the two posts of the gate stand in the way: the road runs between the posts, through the middle of the building
+                    for (lx, lz, r) in [(2.4f32, -0.2f32, 1.6f32), (-1.25, 0.6, 0.55), (1.25, 0.6, 0.55)] { let (dx, dy) = crate::doors::to_world(q.rot, (lx, lz)); mark(&mut blocked, q.x + dx, q.y + dy, r); }
+                }
                 _ => mark(&mut blocked, q.x, q.y, net_radius(q)),
             }
         }
@@ -478,6 +488,22 @@ impl World {
                 continue;
             }
             if matches!(b.kind, WALL | FENCE | MOAT | RIVER | RAISE | LOWER | BRIDGE) { continue; }
+            if b.kind == TOLL {   // the road runs through the gate: a straight line of road along the axis of the building (the way its posts face); the nodes at its two ends are where roads join it
+                let ts = [-9.0f32, -7.0, -5.0, -3.5, 0.0, 3.5, 5.0, 7.0, 9.0];
+                let mut id = [u32::MAX; 9]; let mut lk = [false; 9];   // lk[k]: node k is linked to the one before it
+                for (k, t) in ts.into_iter().enumerate() {
+                    let (dx, dy) = crate::doors::to_world(b.rot, (0.0, t)); let (px, py) = (b.x + dx, b.y + dy);
+                    if !net.ok_at(px, py) { continue; }
+                    id[k] = net.add(px, py); road_pre.push(id[k]);
+                    if k > 0 && id[k - 1] != u32::MAX && net.clear(net.nodes[id[k - 1] as usize], net.nodes[id[k] as usize], 0.0) { net.link(id[k - 1], id[k], true); lk[k] = true; }
+                }
+                // each end: the farthest-in node on its side that is joined to the middle all the way
+                let joined = |k: usize| -> bool { if id[k] == u32::MAX { return false; } if k > 4 { (5..=k).all(|q| lk[q] && id[q] != u32::MAX) && id[4] != u32::MAX } else { (k + 1..=4).all(|q| lk[q] && id[q - 1] != u32::MAX) && id[4] != u32::MAX } };
+                let hi = [6usize, 7, 8, 5].into_iter().find(|&k| joined(k)).map_or(u32::MAX, |k| id[k]);
+                let lo = [2usize, 1, 0, 3].into_iter().find(|&k| joined(k)).map_or(u32::MAX, |k| id[k]);
+                ring[i] = vec![hi, lo];
+                continue;
+            }
             let r = ring_radius(b.kind, b.tier);
             let k = ((std::f32::consts::TAU * r / 3.5).ceil() as usize).clamp(10, 32);
             let a0 = crate::doors::exit_angle(b);   // (the first node of the ring is where the door's road leaves the plot: every road of this building starts there)

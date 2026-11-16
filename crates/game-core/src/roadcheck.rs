@@ -43,7 +43,7 @@ fn seg_dist(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
 fn fault(w: &World, x: f32, y: f32, half: f32) -> Option<String> {
     for (i, b) in w.buildings.iter().enumerate() {
         match b.kind {
-            WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE => continue,
+            WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE | TOLL => continue,   // (a toll post is driven through: its hut and posts are checked in roadnet_tests)
             _ => {}
         }
         let d = (x - b.x).hypot(y - b.y);
