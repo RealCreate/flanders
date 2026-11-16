@@ -18,6 +18,9 @@ export function parseRoadLines(flat: ArrayLike<number>): RoadLine[] {
 export interface Mesh { x: number[]; z: number[]; a: number[]; u: number[]; v: number[]; born: number[]; along: number[]; pave: number[]; idx: number[] }
 export const newMesh = (): Mesh => ({ x: [], z: [], a: [], u: [], v: [], born: [], along: [], pave: [], idx: [] });
 
+/** The birth tick of a road that is there from the first frame. */
+export const INSTANT = -1e6;
+
 /** How far beyond the solid half width the soft edge of a ribbon reaches. */
 export const EDGE = 1.3;
 /** The widest a mitre may stretch a ribbon at a sharp corner. */
@@ -106,7 +109,10 @@ export function addDisc(m: Mesh, x: number, z: number, half: number, born = -1e6
 export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
   const m = newMesh(), lines = joinLines(parseRoadLines(flat));
   const ends = new Map<string, [number, number, number, number]>();   // place -> x, z, how many ends, earliest birth
-  lines.forEach((l, li) => {
+  lines.forEach((l0, li) => {
+    let l = l0;
+    // a road the player laid shows at once, in full (only a building's stub grows in with the building)
+    if (l.kind === 1) l = { ...l, born: INSTANT };
     addRibbon(m, l, half, li);
     const stub = l.kind === 0;
     for (const e of stub ? [1] : [0, 1]) {

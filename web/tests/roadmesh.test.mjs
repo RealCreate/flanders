@@ -1,7 +1,7 @@
 // The mesh of the roads (src/render/roadmesh.ts): ribbons along curves, joins where roads meet, patches at the ends. No NaN, no broken indices, a width that holds along a bend.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRoadMesh, joinLines, parseRoadLines, addRibbon, newMesh, EDGE } from '../src/render/roadmesh.ts';
+import { INSTANT, buildRoadMesh, joinLines, parseRoadLines, addRibbon, newMesh, EDGE } from '../src/render/roadmesh.ts';
 import { curve, subdivide, length } from '../src/roadtool.ts';
 
 const flat = lines => lines.flatMap(l => [l.kind, l.born ?? 0, l.pts.length / 2, ...l.pts]);
@@ -60,4 +60,11 @@ test('degenerate lines (a point, doubled points, nothing) do not break the mesh'
   const m = buildRoadMesh(flat([{ kind: 1, born: 0, pts: [3, 3, 3, 3] }, { kind: 1, born: 0, pts: [0, 0, 0, 0, 0, 0, 4, 0] }]), 1.15);
   sane(m);
   sane(buildRoadMesh([], 1.15));
+});
+
+test('a road the player laid shows at once, a stub still grows in with its building', () => {
+  const m = buildRoadMesh(flat([{ kind: 1, born: 5000, pts: [0, 0, 10, 0, 20, 4] }]), 1.15);
+  assert.ok(m.born.length > 0 && m.born.every(b => b === INSTANT), 'every vertex of a laid road is there from the first frame');
+  const s = buildRoadMesh(flat([{ kind: 0, born: 5000, pts: [0, 0, 3, 0] }]), 1.15);
+  assert.ok(s.born.every(b => b === 5000), 'a stub is born with its building');
 });

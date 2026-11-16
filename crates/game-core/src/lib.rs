@@ -494,7 +494,7 @@ impl World {
             let b = &self.buildings[i];
             if !roadline::has_stub(b.kind) { continue; }
             let (door, exit) = doors::door_world(b);
-            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 { self.roads.push([door.0, door.1, b.pad_h, exit.0, exit.1, b.pad_h]); self.road_links.push((i as u32, i as u32)); }
+            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 && self.leg_is_dry(door, exit) { self.roads.push([door.0, door.1, b.pad_h, exit.0, exit.1, b.pad_h]); self.road_links.push((i as u32, i as u32)); }
         }
         for e in self.road_edges() {
             let (ha, hb) = (self.buildings[e.a].pad_h, self.buildings[e.b].pad_h);
@@ -546,7 +546,7 @@ impl World {
     }
 
     /// Is a straight leg of a route over dry, ordinary ground (not water and not a drawbridge deck)?
-    fn leg_is_dry(&self, a: (f32, f32), b: (f32, f32)) -> bool {
+    pub(crate) fn leg_is_dry(&self, a: (f32, f32), b: (f32, f32)) -> bool {
         let l = (b.0 - a.0).hypot(b.1 - a.1); let st = (l / 1.5).ceil().max(1.0) as i32;
         (0..=st).all(|q| { let t = q as f32 / st as f32; let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t); self.height_ground(x, y) >= 0.2 && !self.on_deck(x, y) })
     }

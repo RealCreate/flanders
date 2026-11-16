@@ -329,3 +329,44 @@ fn grading_does_not_fill_in_water() {
     let _ = w.lay_road(&[8, 6, 14, 10, 18, 10, 24, 6]);
     for (p, b) in spots.iter().zip(&bed) { assert!(w.height_at(p.0, p.1) <= b + 0.05, "the bed at {p:?} was raised: {b} to {}", w.height_at(p.0, p.1)); }
 }
+
+/// Number of drawn lines of the client list (stride varies: counted by walking it).
+fn line_count(w: &World) -> usize { let f = w.road_lines_flat(); let (mut o, mut n) = (0, 0); while o + 2 < f.len() { o += 3 + 2 * f[o + 2] as usize; n += 1; } n }
+
+/// A road that runs over a river is drawn (and graded) only on the dry banks: no drawn line has a leg through water, so no ribbon lies across the water or under a bridge.
+#[test]
+fn a_road_is_not_drawn_across_water() {
+    let mut w = rich();
+    // a river of pieces across the way, from north to south
+    let mut put = 0; for k in -12..=12 { if w.place(RIVER, 22, k * 2, 0) > 0 { put += 1; } }
+    assert!(put >= 7, "{put} river pieces");
+    assert!(w.height_at(w.ox as f32 + 22.0, w.oy as f32) < 0.0, "water there");
+    assert_eq!(w.lay_road(&[12, 0, 18, 0, 26, 0, 32, 0]), 0, "a road laid over the river");
+    let f = w.road_lines_flat(); let (mut o, mut kind1) = (0, 0);
+    while o + 2 < f.len() {
+        let n = f[o + 2] as usize; let pts: Vec<(f32, f32)> = (0..n).map(|k| (f[o + 3 + 2 * k], f[o + 4 + 2 * k])).collect();
+        if f[o] == 1.0 { kind1 += 1; }
+        for p in pts.windows(2) { assert!(w.leg_is_dry(p[0], p[1]), "a drawn leg {p:?} is not dry"); }
+        o += 3 + 2 * n;
+    }
+    assert!(kind1 >= 2, "the road is in two parts, one on each bank ({kind1})");
+    for (s, _) in w.roads.iter().zip(&w.road_links) { for t in 0..=4 { let f = t as f32 / 4.0; assert!(w.height_at(s[0] + (s[3] - s[0]) * f, s[1] + (s[4] - s[1]) * f) > 0.0, "graded over water"); } }
+}
+
+/// A road laid, extended or taken away shows in the list of drawn lines at once (the client redraws from it the moment the command is applied).
+#[test]
+fn the_drawn_lines_change_the_moment_a_road_is_laid_or_taken_away() {
+    let mut w = rich();
+    let (n0, v0) = (line_count(&w), w.terrain_version());
+    let before = w.buildings.len();
+    assert_eq!(w.lay_road(&[8, 20, 14, 22, 20, 20]), 0);
+    assert!(line_count(&w) > n0, "the new road is in the list at once");
+    let n1 = line_count(&w);
+    assert_eq!(w.lay_road(&[20, 20, 26, 24, 32, 22]), 0);
+    assert!(line_count(&w) >= n1 && w.road_lines_flat().len() > 0, "extended");
+    let len_ext = w.road_lines_flat().len();
+    let piece = (before..w.buildings.len()).find(|&i| w.buildings[i].kind == ROAD).unwrap();
+    assert!(w.demolish(piece as u32));
+    assert!(w.road_lines_flat().len() != len_ext, "a piece taken away changes the list at once");
+    let _ = v0;
+}
