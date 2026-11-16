@@ -93,3 +93,15 @@ test('the fishing hut design options stay on the land side, off the jetty', asyn
       if (!opt) return; const bb = new THREE.Box3().setFromObject(o); assert.ok(bb.max.x <= landX + 0.13, `tier ${tier} seed ${seed} option ${bit}: a part reaches x ${bb.max.x}, past the land (${landX})`); });
   }
 });
+
+test('the watermill\'s stone-footing option lies under the house only, clear of the wheel', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) for (const opts of [8, 15]) {
+    const g = B.buildModel(29, tier, 0x2f5fa8, 1, opts, undefined, false); g.updateMatrixWorld(true);
+    const foot = g.getObjectByName('optfooting'), wheel = g.getObjectByName('wheel');
+    assert.ok(foot && wheel, `tier ${tier} options ${opts}: footing option and wheel exist`);
+    const fb = new THREE.Box3().setFromObject(foot), wb = new THREE.Box3().setFromObject(wheel);
+    assert.ok(fb.max.x <= 3.2 + 1e-3 && wb.min.x - fb.max.x >= 1.0, `tier ${tier} options ${opts}: footing ends at ${fb.max.x}, the wheel starts at ${wb.min.x}`);
+    g.traverse(o => { if (o.isMesh && o !== foot && !(() => { let q = o; while (q && q !== wheel) q = q.parent; return !!q; })() && o.material?.color?.getHex?.() === foot.material.color.getHex() && o.geometry.type === 'BoxGeometry') { const bb = new THREE.Box3().setFromObject(o); if (bb.max.y - bb.min.y < 0.5 && bb.max.y <= 0.45) assert.ok(bb.max.x <= 3.2 + 1e-3 || bb.min.x > wb.max.x, `tier ${tier}: a stone slab runs to ${bb.max.x}`); } });
+  }
+});
