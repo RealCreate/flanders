@@ -10,7 +10,7 @@ mod march;
 mod military;
 mod pathnet;
 pub mod doors;
-mod squares;
+mod roadline;
 mod plague;
 mod wallnet;
 #[cfg(test)]
@@ -18,7 +18,7 @@ mod roadcheck;
 #[cfg(test)]
 mod farmcheck;
 #[cfg(test)]
-mod roadnet_tests;
+mod roadtests;
 #[cfg(test)]
 mod snapshot_tests;
 mod terrain;
@@ -87,7 +87,6 @@ pub(crate) fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 
 pub(crate) struct Perks { pub housing: i32, pub happy: i32, pub banner_pct: i32, pub train_pct: u32, pub militia: u32, pub woodsheds: i32, pub doves: i32 }
 
 /// Walls, fences, gates and moat pieces are not on the village path network.
-fn is_barrier(kind: u8) -> bool { matches!(kind, WALL | FENCE | GATE) || is_edit(kind) }
 /// No order may point further than this from the map's centre (the map is about 2400 units across).
 const MAP_LIMIT: f32 = 1500.0;
 /// No standing army can hold more soldiers of one kind than this (the testing tool stops at the same number).
@@ -277,9 +276,8 @@ pub struct World {
     ledger: ledger::Ledger,       // where each resource came from and went to over the last day (derived display data: never read by the rules, never hashed)
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
-    road_links: Vec<(u32, u32)>,  // (child, parent) building indices for each segment
-    road_paths: Vec<(u32, u32, Vec<(f32, f32)>)>,   // full walkable route of each link, child doorstep to parent doorstep (crosses drawbridges)
-    #[serde(skip)] road_cache: std::collections::HashMap<(u32, u32), (u64, Option<Vec<(f32, f32)>>)>,   // routes already found over the path network, valid while the network's stamp is the same
+    road_links: Vec<(u32, u32)>,  // what each segment belongs to: (i, i) the stub of building i, (piece, target) a stretch of a road the player laid (derived)
+    road_conn: Vec<roadline::RoadConn>,   // how each road piece the player laid is joined to what it runs to (see roadline.rs; part of the state)
     road_sig: u64,                // a fingerprint of the roads as they stand (derived: the network with the roads marked on it, and the overlays, are rebuilt when it changes)
     army: [u32; NK],
     queue: [u32; NK],
@@ -299,7 +297,6 @@ pub struct World {
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
     links: Vec<Vec<(f32, f32)>>,   // invisible paths chained from this city out to other villages' cities (set by `link_village`; part of the state)
     #[serde(skip)] ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
-    #[serde(skip)] net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network with the roads marked on it (derived; rebuilt when the village or its roads change)
     #[serde(skip)] ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
     #[serde(skip)] height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
     #[serde(skip)] net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
@@ -311,7 +308,7 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD1";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD2";
 
 /// Rebuild a world from `World::snapshot` bytes. None when the bytes are not a snapshot of this layout (damaged, or made by another build).
 #[wasm_bindgen]
@@ -401,8 +398,6 @@ pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
     }
 }
 
-type Memo = std::collections::HashMap<(usize, usize, u8), Option<Vec<(f32, f32)>>>;
-
 #[wasm_bindgen]
 impl World {
     /// The whole state of the village as bytes (the caches are not in it: they are rebuilt on demand). `world_restore` turns it back into the same world, to the last bit.
@@ -417,8 +412,8 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -485,180 +480,36 @@ impl World {
 
     fn base(&self, x: f32, y: f32) -> f32 { terrain::base_height_s(self.seed, &self.sites, x, y) }
 
-    /// Link every building to the nearest earlier one it can walk to. The way is a route over the invisible path network (the one villagers and soldiers walk, without the road marks: the
-    /// roads are made of it), from the doorstep ring of one building to the doorstep ring of the other. So a road bends round every building, field, wall and moat the way a walker does and never
-    /// crosses one. A building the network does not join to an earlier one (cut off by water) gets no road.
+    /// The graded roads of the village, rebuilt from what stands: the short stub of every building (from its door to the node at the edge of its plot) and the roads the player laid
+    /// (chains of road pieces, see roadline.rs). Nothing is laid automatically: a building with no road to it still has its stub, and people walk over open ground to it.
     fn rebuild_roads(&mut self) {
         self.roads.clear();
         self.road_links.clear();
-        self.road_paths.clear();
-        let n = self.buildings.len();
-        let mut ends: Vec<usize> = (0..n).filter(|&i| i == 0 || !(is_barrier(self.buildings[i].kind) || self.buildings[i].kind == BRIDGE) || self.buildings[i].kind == GATE || (self.buildings[i].kind == DRAWBRIDGE && !self.drawn_up(&self.buildings[i]))).collect();   // (a lowered drawbridge is joined by road like a building; so is a gate, which the road runs through)
-        let net = self.net_base();
-        ends.retain(|&i| self.buildings[i].kind != GATE || net.ring.get(i).map_or(false, |r| r.iter().any(|&q| q != u32::MAX)));   // (a gate with its doors shut has no way through)
-        let ctx = self.road_ctx();
-        let base_stamp = self.net_stamp();
-        let mut memo: Memo = Default::default();
-        let m = ends.len();
-        let dist = |w: &World, a: usize, b: usize| ((w.buildings[ends[a]].x - w.buildings[ends[b]].x).powi(2) + (w.buildings[ends[a]].y - w.buildings[ends[b]].y).powi(2)).sqrt();
-        fn find(c: &mut [usize], x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } let mut y = x; while c[y] != r { let nx = c[y]; c[y] = r; y = nx; } r }
-        let mut comp: Vec<usize> = (0..m).collect();
-        let mut chosen: Vec<(usize, usize, u8)> = vec![];
-        // The roads form a tree over the buildings, built shortest link first (so every building is joined to its nearest neighbours and no two roads run side by side to the same place):
-        // each building offers its few nearest neighbours, and a link is laid when it joins two parts that are not yet joined and there is a walkable route.
-        let mut cand: Vec<(f32, usize, usize)> = vec![];
-        for a in 0..m {
-            let mut near: Vec<(f32, usize)> = (0..m).filter(|&b| b != a).map(|b| (dist(self, a, b) * if a == 0 || b == 0 { 0.8 } else { 1.0 }, b)).filter(|c| c.0 < 80.0).collect();
-            near.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)));
-            for &(d, b) in near.iter().take(5) { cand.push((d, a.min(b), a.max(b))); }
+        self.sync_road_conn();
+        for i in 0..self.buildings.len() {
+            let b = &self.buildings[i];
+            if !roadline::has_stub(b.kind) { continue; }
+            let (door, exit) = doors::door_world(b);
+            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 { self.roads.push([door.0, door.1, b.pad_h, exit.0, exit.1, b.pad_h]); self.road_links.push((i as u32, i as u32)); }
         }
-        cand.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
-        cand.dedup_by(|p, q| p.1 == q.1 && p.2 == q.2);
-        // the cleanest roads first: every link that has a way keeping all of its room clear (level 0), then those that squeeze past (level 1). A road that would cross one already laid, or that
-        // would make a fourth or fifth road end at the same door, waits for the second pass (strict = false), so the roads do not tangle: a crossing is only made where it cannot be helped.
-        let cross = |a: &[(f32, f32)], b: &[(f32, f32)]| -> bool {
-            let ccw = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
-            let near = |p: (f32, f32), q: (f32, f32)| (p.0 - q.0).hypot(p.1 - q.1) < 2.5;
-            a.windows(2).any(|s| b.windows(2).any(|t| {
-                if near(s[0], t[0]) || near(s[0], t[1]) || near(s[1], t[0]) || near(s[1], t[1]) { return false; }
-                ccw(s[0], s[1], t[0]) * ccw(s[0], s[1], t[1]) < 0.0 && ccw(t[0], t[1], s[0]) * ccw(t[0], t[1], s[1]) < 0.0
-            }))
-        };
-        let bbox = |r: &[(f32, f32)]| r.iter().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |b, p| (b.0.min(p.0), b.1.min(p.1), b.2.max(p.0), b.3.max(p.1)));
-        let mut laid0: Vec<((f32, f32, f32, f32), Vec<(f32, f32)>)> = vec![]; let mut deg0 = vec![0u32; n];
-        for (level, strict) in [(0u8, true), (1, true), (0, false), (1, false)] {
-            for &(_, a, b) in &cand {
-                let (ra, rb) = (find(&mut comp, a), find(&mut comp, b));
-                if ra == rb { continue; }
-                if strict && (deg0[ends[a]] >= 4 || deg0[ends[b]] >= 4) { continue; }
-                let Some(r) = self.route_for(&mut memo, &net, &ctx, base_stamp, ends[b], ends[a], level) else { continue };
-                let bb = bbox(&r);
-                if strict && laid0.iter().any(|l| l.0 .0 <= bb.2 + 2.5 && l.0 .2 >= bb.0 - 2.5 && l.0 .1 <= bb.3 + 2.5 && l.0 .3 >= bb.1 - 2.5 && cross(&r, &l.1)) { continue; }
-                chosen.push((ends[b], ends[a], level)); comp[ra] = rb; laid0.push((bb, r)); deg0[ends[a]] += 1; deg0[ends[b]] += 1;
-            }
-        }
-        // whatever is still cut off from the town hall is chained to it by the nearest walkable link, however far, one part at a time (only water and walls keep a building apart)
-        let mut tried = 0;
-        'chain: for level in 0u8..3 {
-            for _round in 0..64 {
-                let main = find(&mut comp, 0);
-                let mut far: Vec<(f32, usize, usize)> = vec![];
-                for a in 0..m { if find(&mut comp, a) == main { continue; } for b in 0..m { if find(&mut comp, b) != main { continue; } let d = dist(self, a, b); if d < 220.0 && net.joined(ends[a], ends[b]) { far.push((d, a, b)); } } }
-                if far.is_empty() { break 'chain; }
-                far.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
-                let mut joined = false;
-                for &(_, a, b) in far.iter().take(10) {
-                    tried += 1;
-                    let (i, j) = (ends[a].max(ends[b]), ends[a].min(ends[b]));
-                    if self.route_for(&mut memo, &net, &ctx, base_stamp, i, j, level).is_some() { chosen.push((i, j, level)); let ra = find(&mut comp, a); comp[ra] = main; joined = true; break; }
+        for e in self.road_edges() {
+            let (ha, hb) = (self.buildings[e.a].pad_h, self.buildings[e.b].pad_h);
+            let total: f32 = e.pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
+            let mut run = 0.0f32;
+            for w in e.pts.windows(2) {
+                let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+                if self.leg_is_dry(w[0], w[1]) {
+                    let (t0, t1) = (run / total, (run + l) / total);
+                    self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
+                    self.road_links.push((e.a as u32, e.b as u32));
                 }
-                if !joined || tried > 150 { break; }
+                run += l;
             }
         }
-        // buildings that stand near each other are joined into blocks: a direct road between two neighbours that the tree only reaches the long way round (3 roads or more about)
-        // closes a loop, so the roads there form squares and no awkward gap is left. It is only laid where it crosses none of the roads already laid.
-        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
-        for &(i, j, _) in &chosen { adj[i].push(j); adj[j].push(i); }
-        let mut laid: Vec<Vec<(f32, f32)>> = chosen.iter().filter_map(|&(i, j, l)| memo.get(&(i, j, l)).and_then(|c| c.clone())).collect();
-        for &(d, a, b) in &cand {
-            if d > 44.0 { break; }
-            let (i, j) = (ends[b], ends[a]);   // the later building is the child
-            if adj[i].contains(&j) || adj[i].len() >= 3 || adj[j].len() >= 3 { continue; }
-            // how many roads lead from one to the other through the roads laid so far
-            let mut hops = vec![u32::MAX; n]; hops[j] = 0; let mut q = std::collections::VecDeque::from([j]);
-            while let Some(x) = q.pop_front() { for &y in &adj[x] { if hops[y] == u32::MAX { hops[y] = hops[x] + 1; q.push_back(y); } } }
-            if hops[i] < 3 { continue; }
-            let Some(r) = self.route_for(&mut memo, &net, &ctx, base_stamp, i, j, 0) else { continue };   // (only the clean kind of road closes a loop)
-            let len: f32 = r.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
-            let (pi, pj) = (&self.buildings[i], &self.buildings[j]);
-            if len > 1.3 * (pi.x - pj.x).hypot(pi.y - pj.y) + 4.0 || laid.iter().any(|l| cross(&r, l)) { continue; }
-            chosen.push((i, j, 0)); adj[i].push(j); adj[j].push(i); laid.push(r);
-        }
-        chosen.sort();
-        for (i, j, l) in chosen { if let Some(Some(pts)) = memo.get(&(i, j, l)).cloned() { self.lay_road(i, j, pts); } }
-        // a toll post's gate is a way through: each end of it is joined to the nearest building that can be reached on its own side, so that the road runs through it and on
-        let tolls: Vec<usize> = ends.iter().copied().filter(|&i| matches!(self.buildings[i].kind, TOLL | GATE)).collect();
-        for i in tolls {
-            let Some(r) = net.ring.get(i).cloned() else { continue };
-            for &e in r.iter() {
-                if e == u32::MAX { continue; }
-                let at = net.nodes[e as usize];
-                let touched = self.road_paths.iter().any(|(c, p, pts)| (*c as usize == i && pts.first() == Some(&at)) || (*p as usize == i && pts.last() == Some(&at)));
-                if touched { continue; }
-                let mut near: Vec<(f32, usize)> = ends.iter().copied().filter(|&j| j != i && !matches!(self.buildings[j].kind, TOLL | GATE) && net.joined(i, j)).map(|j| { let d = (self.buildings[j].x - at.0).hypot(self.buildings[j].y - at.1); (if self.buildings[j].kind == DRAWBRIDGE && d < 45.0 { d - 1000.0 } else { d }, j) }).collect();   // (a gate's end joins the drawbridge first)
-                near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
-                'find: for (d, j) in near.into_iter().take(4) {
-                    if d > 80.0 { continue; }
-                    for level in 0u8..3 { if let Some(pts) = self.road_route_node(&net, &ctx, e, j, level) { self.lay_road(i, j, pts); break 'find; } }
-                }
-            }
-        }
-        // the door's own short road: from the real door of every building that has a road to the point where it leaves the plot, which is the node every road of the building starts from.
-        // (child == parent marks it; it is part of the building's design, and a building without a road has none, or it would be a stub of its own)
-        let mut has_road = vec![false; n];
-        for (c, p, _) in &self.road_paths { has_road[*c as usize] = true; has_road[*p as usize] = true; }
-        for i in 0..n {
-            if !has_road[i] { continue; }
-            if self.buildings[i].kind == ROAD || net.ring.get(i).map_or(true, |r| r.is_empty()) { continue; }
-            if matches!(self.buildings[i].kind, TOLL | GATE) {   // no door: the road runs through the gate, from one end of it to the other
-                let v: Vec<(f32, f32)> = net.ring[i].iter().filter(|&&n| n != u32::MAX).map(|&n| net.nodes[n as usize]).collect();
-                if v.len() == 2 { let h = self.buildings[i].pad_h; self.roads.push([v[0].0, v[0].1, h, v[1].0, v[1].1, h]); self.road_links.push((i as u32, i as u32)); }
-                continue;
-            }
-            let (door, exit) = doors::door_world(&self.buildings[i]);
-            let h = self.buildings[i].pad_h;
-            // where the roads of this building actually start (normally the door node; a building whose door node is blocked, or that had to use its whole ring, starts them elsewhere on it)
-            let mut at_pts: Vec<(f32, f32)> = vec![];
-            for (c, p, pts) in &self.road_paths {
-                if *c as usize == i { if let Some(q) = pts.first() { at_pts.push(*q); } }
-                if *p as usize == i { if let Some(q) = pts.last() { at_pts.push(*q); } }
-            }
-            at_pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
-            at_pts.dedup();
-            // (the door's road runs to the point where it leaves the plot; from there to each place a road of the building starts, along the ring)
-            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 { self.roads.push([door.0, door.1, h, exit.0, exit.1, h]); self.road_links.push((i as u32, i as u32)); }
-            for q in at_pts {
-                if (q.0 - exit.0).hypot(q.1 - exit.1) < 0.3 { continue; }
-                self.roads.push([exit.0, exit.1, h, q.0, q.1, h]); self.road_links.push((i as u32, i as u32));
-            }
-        }
-        // drop cache entries that point at buildings which no longer exist
-        if self.road_cache.len() > 4 * n + 64 { self.road_cache.retain(|k, _| (k.0 as usize) < n && (k.1 as usize) < n); }
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
-        for (c, p, pts) in &self.road_paths { mix(*c as u64); mix(*p as u64); for q in pts { mix(q.0.to_bits() as u64); mix(q.1.to_bits() as u64); } }
+        for r in &self.roads { for v in r { mix(v.to_bits() as u64); } }
         self.road_sig = h;
-    }
-
-    /// The road route between two buildings (`i` the later one) at a level (0: keeping all of the road's room clear, 1: squeezed, 2: the plain cheapest way over the network), found once per
-    /// rebuild; level 0 is kept between rebuilds until something round the two changes.
-    fn route_for(&mut self, memo: &mut Memo, net: &pathnet::Net, ctx: &pathnet::RoadCtx, base_stamp: u64, i: usize, j: usize, level: u8) -> Option<Vec<(f32, f32)>> {
-        if let Some(r) = memo.get(&(i, j, level)) { return r.clone(); }
-        let r = if level == 0 {
-            let key = (i as u32, j as u32);
-            let stamp = self.route_stamp(base_stamp, i, j);
-            match self.road_cache.get(&key) { Some((h, r)) if *h == stamp => r.clone(), _ => { let r = self.road_route(net, ctx, i, j, 0); self.road_cache.insert(key, (stamp, r.clone())); r } }
-        } else { self.road_route(net, ctx, i, j, level) };
-        memo.insert((i, j, level), r.clone());
-        r
-    }
-
-    /// Lay the road from building `i` (the later one) to `j` along `pts`.
-    fn lay_road(&mut self, i: usize, j: usize, pts: Vec<(f32, f32)>) {
-        // graded segments: only the stretches over dry ground (a road across a moat or river must never fill it in)
-        let (ha, hb) = (self.buildings[i].pad_h, self.buildings[j].pad_h);
-        let total: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
-        let mut run = 0.0f32;
-        for w in pts.windows(2) {
-            let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
-            if self.leg_is_dry(w[0], w[1]) {
-                let (t0, t1) = (run / total, (run + l) / total);
-                self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
-                self.road_links.push((i as u32, j as u32));
-            }
-            run += l;
-        }
-        self.road_paths.push((i as u32, j as u32, pts));
     }
 
     /// Is a straight leg of a route over dry, ordinary ground (not water and not a drawbridge deck)?
@@ -676,17 +527,6 @@ impl World {
             let (dx, dy) = (x - b.x, y - b.y); let along = dx * sx + dy * sy; let across = dx * sy - dy * sx;
             along.abs() <= 7.4 && across.abs() <= 1.9
         })
-    }
-
-    /// A fingerprint of everything that could change the route between two buildings: the stamp of the path network they are routed over (it covers what stands, the levelled ground, craters,
-    /// the state of gates and drawbridges, whether a battle is on, the terrain version and the chained paths out to other villages: `net_stamp`), and the two buildings themselves.
-    /// A route over the network depends on nothing else: felled trees and soldiers' bridges are not part of the network, and the roads themselves are made from it, not the other way round.
-    fn route_stamp(&self, base: u64, i: usize, j: usize) -> u64 {
-        let (a, b) = (&self.buildings[i], &self.buildings[j]);
-        let mut h: u64 = base;
-        let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
-        mix(i as u64); mix(j as u64); mix(a.x.to_bits() as u64); mix(a.y.to_bits() as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
-        h
     }
 
     /// Recompute derived data after the building list or tiers changed.
@@ -888,18 +728,20 @@ impl World {
         match b.kind {
             TOWN_HALL => self.build_radius() as f32,
             k if is_edit(k) => 0.0,
-            ROAD => 6.0,
+            ROAD => if b.status == 4 { roadline::ROAD_CLAIM } else { 0.0 },   // only a piece that is joined to the village's land (see `sync_road_conn`) claims any
             BRIDGE => 7.0,
             WALL | FENCE | GATE | DRAWBRIDGE => 5.0,
             k => 10.0 + 2.5 * ((DEFS[k as usize].weight * (b.tier as u32 + 1)) as f32).sqrt(),
         }
     }
     /// Is this spot inside the village's land: near the town hall, or near something built on its edge (never farther than TERRITORY_MAX from the hall)?
-    pub fn in_territory(&self, x: f32, y: f32) -> bool {
+    pub fn in_territory(&self, x: f32, y: f32) -> bool { self.in_territory_by(x, y, true) }
+    /// `in_territory`, with the claims of road pieces counted or not (a road piece is joined to the land when it stands in land that is not its own doing, or runs to a building).
+    pub(crate) fn in_territory_by(&self, x: f32, y: f32, roads: bool) -> bool {
         let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
         let dh = ((x - hx).powi(2) + (y - hy).powi(2)).sqrt();
         if dh > TERRITORY_MAX { return false; }
-        self.buildings.iter().any(|b| { let c = self.claim(b); c > 0.0 && (x - b.x).abs() <= c && (y - b.y).abs() <= c && ((x - b.x).powi(2) + (y - b.y).powi(2)) <= c * c })
+        self.buildings.iter().any(|b| { if !roads && b.kind == ROAD { return false; } let c = self.claim(b); c > 0.0 && (x - b.x).abs() <= c && (y - b.y).abs() <= c && ((x - b.x).powi(2) + (y - b.y).powi(2)) <= c * c })
     }
     /// The land the village holds, as discs [x, y, radius]: the hall's circle and a patch round every building. The border is the outline of their union.
     pub fn territory_flat(&self) -> Vec<f32> {
@@ -910,11 +752,17 @@ impl World {
     /// 0 = ok, otherwise: -1 bad kind, -2 outside radius, -3 overlaps, -4 water, -5 too steep,
     /// -6 cannot afford, -7 needs deposit, -8 needs forest, -9 not buildable (town hall)
     pub fn can_place(&self, kind: u8, dx: i32, dy: i32) -> i32 {
-        let Some(d) = DEFS.get(kind as usize) else { return -1 };
+        if DEFS.get(kind as usize).is_none() { return -1 };
         if kind == TOWN_HALL { return -9; }
         if kind == BRIDGE { return self.bridge_check(dx, dy, 0).0; }
-        let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
-        if !self.in_territory(x, y) { return -2; }
+        self.can_place_xy(kind, (self.ox + dx) as f32, (self.oy + dy) as f32)
+    }
+
+    /// `can_place` at a world position (road pieces snapped onto a node are not on the whole-number grid).
+    pub(crate) fn can_place_xy(&self, kind: u8, x: f32, y: f32) -> i32 {
+        let Some(d) = DEFS.get(kind as usize) else { return -1 };
+        if kind == TOWN_HALL { return -9; }
+        if kind == ROAD { if !self.road_in_reach(x, y) { return -2; } } else if !self.in_territory(x, y) { return -2; }
         if kind == GATE && !self.buildings.iter().any(|b| b.kind == WALL && (b.x - x).hypot(b.y - y) <= 9.0) { return -20; }   // a gate only ever stands in a wall
         for b in &self.buildings {
             let _bd = &DEFS[b.kind as usize];
@@ -979,11 +827,16 @@ impl World {
     /// Place a building at coordinates relative to the village origin. Returns index or the negative `can_place` code.
     pub fn place(&mut self, kind: u8, dx: i32, dy: i32, rot: u8) -> i32 {
         if kind == BRIDGE { return self.place_bridge(dx, dy); }
-        let code = self.can_place(kind, dx, dy);
-        if code != 0 { return code; }
-        if matches!(kind, WATERWHEEL | FISHING_HUT) && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
-        let d = &DEFS[kind as usize];
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        self.place_at(kind, x, y, rot, None)
+    }
+
+    /// `place` at a world position; a road piece also takes what it is joined to (a piece placed without them is joined to the nearest piece or node in reach, see `road_tgts_near`).
+    pub(crate) fn place_at(&mut self, kind: u8, x: f32, y: f32, rot: u8, tgts: Option<[roadline::Tgt; 2]>) -> i32 {
+        let code = self.can_place_xy(kind, x, y);
+        if code != 0 { return code; }
+        if matches!(kind, WATERWHEEL | FISHING_HUT) && !self.wheel_in_water(x, y, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
+        let d = &DEFS[kind as usize];
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
         let fr = d.r * 0.8;
         let samples = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
@@ -1000,7 +853,8 @@ impl World {
             pad_h = match gate { Some((d, h)) if d < 30.0 => h, _ => bank(sx, sy).max(bank(-sx, -sy)).max(0.8) };
         }
         let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg).map_or(-1, |i| i as i32) } else { -1 };
-        let status = if d.cycle > 0 { 1 } else { 4 };
+        let mut status = if d.cycle > 0 { 1 } else { 4 };
+        if kind == ROAD { let t = tgts.unwrap_or_else(|| self.road_tgts_near(x, y)); status = if self.road_piece_attached(x, y, &t) { 4 } else { 2 }; self.road_conn.push(roadline::RoadConn { x, y, to: t }); }
         self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
         if is_edit(kind) { self.terrain_ver += 1; }   // the ground changed: everything standing on it must be re-fitted
         if kind == DRAWBRIDGE {   // clear a way through the trees on the far side so a path can run out from the gate
@@ -1827,17 +1681,6 @@ impl World {
         self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| [s[0], s[1], s[3], s[4], id(l.0), id(l.1)]).collect()
     }
 
-    /// How much free room each end of each road segment has (two numbers per segment of `roads_flat`, in the same order: at its start and at its end): the distance from the point to the
-    /// nearest ground that is not walkable (a building and its yard, a field, a wall, water), at most 6. The drawing rounds the corners of a road by no more than this lets it.
-    pub fn road_clear_flat(&self) -> Vec<f32> {
-        let net = self.net_base();
-        // (a door's own road runs inside the building's plot, which the network keeps clear of: it has all the room it needs)
-        self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| if l.0 == l.1 { [6.0, 6.0] } else { [net.clearance(s[0], s[1]), net.clearance(s[3], s[4])] }).collect()
-    }
-
-    /// The squares of the village, [x, y, radius, kind] for each (stride 4; see squares.rs): where several roads meet closely, a paved plaza with benches. Worked out from the roads, never stored.
-    pub fn squares_flat(&self) -> Vec<f32> { self.squares_inner().into_iter().flatten().collect() }
-
     /// The path network as [n, e, x, y (n times), a, b, road (e times)] (see pathnet.rs).
     pub fn net_flat(&self) -> Vec<f32> { self.net_flat_inner() }
     /// A route over the path network: [complete (1 or 0), x, y, x, y, ...], or empty when the network does not help (villagers walk it).
@@ -1862,13 +1705,6 @@ impl World {
 
     /// A walking route over the invisible lines (the grid of the world plus the village's paths), for villagers: [1, x, y, x, y, ...], or empty when there is no dry way.
     pub fn walk_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.walk_route_inner(sx, sy, gx, gy) }
-
-    /// Walkable routes between linked buildings: [child, parent, n, x0, y0, x1, y1, ...] repeated. Unlike `roads_flat` these include the crossings of drawbridges.
-    pub fn road_paths_flat(&self) -> Vec<f32> {
-        let mut v = vec![];
-        for (c, p, pts) in &self.road_paths { v.extend_from_slice(&[*c as f32, *p as f32, pts.len() as f32]); for q in pts { v.extend_from_slice(&[q.0, q.1]); } }
-        v
-    }
 
     /// Flat [kind, x, y, remaining, max, ...] (stride 5).
     pub fn deposits_flat(&self) -> Vec<f32> {
@@ -2311,6 +2147,7 @@ impl World {
                     if matches!(b.kind, DRAWBRIDGE | GATE) { mix(b.status as u64); }
                 }
                 for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
+                for c in &self.road_conn { mix(c.x.to_bits() as u64); mix(c.y.to_bits() as u64); for t in &c.to { mix(t.x.to_bits() as u64); mix(t.y.to_bits() as u64); mix(t.k as u64); } }   // how the roads the player laid are joined
             }),
             part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
@@ -2463,19 +2300,19 @@ mod tests {
     #[test]
     fn paths_connect_buildings_and_grade_terrain() {
         let mut w = World::new(1337, 0, 0);
+        w.stock = [3000; N_RES];
         w.place(HOUSE, 16, 0, 0);
         w.place(HOUSE, 28, 4, 0);
         let r = w.roads_flat();
-        let links: Vec<&[f32]> = r.chunks(6).filter(|s| s[4] != s[5]).collect();
-        assert!(links.len() >= 2, "two buildings, each linked");
-        assert_eq!(r.chunks(6).filter(|s| s[4] == s[5]).map(|s| s[4] as i32).collect::<std::collections::BTreeSet<_>>().len(), 3, "and the hall and the two houses each have the road from their door");
-        assert_eq!(links[0][5], 0.0, "first house links to the town hall");
-        // the middle of the path is graded to the line between the endpoint pads
+        assert!(r.chunks(6).all(|s| s[4] == s[5]), "nothing is laid by itself: only the stubs of the buildings");
+        assert_eq!(r.chunks(6).map(|s| s[4] as i32).collect::<std::collections::BTreeSet<_>>().len(), 3, "the hall and the two houses each have the path from their door");
+        // a road laid by hand from the hall's node to the first house's node is graded to the line between the pads
+        let (n0, n1) = (w.road_nodes_flat()[..2].to_vec(), w.road_nodes_flat()[4..6].to_vec());
+        assert_eq!(w.lay_road(&[n0[0] as i32 - w.ox, n0[1] as i32 - w.oy, 5, 7, 10, 7, n1[0] as i32 - w.ox, n1[1] as i32 - w.oy]), 0);
         let f = w.buildings_flat();
         let (a, b) = (f[10 + 5], f[0 + 5]);
         let mid = w.height_at(8.0, 0.0);
         assert!(mid >= a.min(b) - 0.8 && mid <= a.max(b) + 0.8, "path height {mid} between {a} and {b}");
-        // pads stay exactly flat even after paths were added
         let h = &DEFS[HOUSE as usize];
         for (px, py) in [(0.0, 0.0), (h.r, 0.0), (0.0, h.r)] { assert!((w.height_at(16.0 + px, py) - f[10 + 5]).abs() < 0.01); }
     }
@@ -3073,21 +2910,12 @@ mod road_tests {
     }
 
     #[test]
-    fn every_building_is_chained_to_the_hall_by_roads() {
+    fn every_building_is_joined_to_the_hall_over_the_path_network() {
         let mut w = rich(); w.deposits.clear();
         let mut placed = 0;
         for (x, y) in [(16, 0), (28, 4), (22, 12), (40, -6), (-18, 8), (-30, 20), (-12, -20), (6, -26), (50, 30), (-60, -10), (70, -40), (30, 18), (33, 21)] { if w.place(HOUSE, x, y, 0) >= 0 { placed += 1; } }
         assert!(placed >= 8, "placed {placed}");
-        let n = w.buildings.len();
-        let mut comp: Vec<usize> = (0..n).collect();
-        fn find(c: &mut Vec<usize>, x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } r }
-        let mut links = 0;
-        for (c, p, _) in &w.road_paths { let (a, b) = (find(&mut comp, *c as usize), find(&mut comp, *p as usize)); if a != b { comp[a] = b; } links += 1; }
-        let h = find(&mut comp, 0);
-        for i in 0..n { assert_eq!(find(&mut comp, i), h, "building {i} is not chained to the hall"); }
-        assert!(links >= n - 1 && links <= n * 2, "links {links} for {n} buildings");
-        let mut seen = std::collections::HashSet::new();
-        for (c, p, _) in &w.road_paths { assert!(seen.insert((*c, *p)), "the same road twice"); }
+        for i in 0..w.buildings.len() { assert!(w.linked_to_hall(i), "building {i} is not joined to the hall over the path network"); }
     }
 
     #[test]
@@ -3096,7 +2924,7 @@ mod road_tests {
         ring(&mut w, 20.0, 44, MOAT);
         let outside = [(0, 36), (6, 38), (-8, 40), (12, 36), (-14, 36)].into_iter().map(|(x, y)| w.place(HOUSE, x, y, 0)).find(|&i| i >= 0).unwrap_or(-1);
         assert!(outside >= 0, "house outside the moat: {outside}");
-        let has_link = |w: &World, child: u32| { let v = w.road_paths_flat(); let mut i = 0; let mut found = false; while i < v.len() { let n = v[i + 2] as usize; if v[i] as u32 == child || v[i + 1] as u32 == child { found = true; } i += 3 + 2 * n; } found };
+        let has_link = |w: &World, child: u32| w.linked_to_hall(child as usize);
         assert!(!has_link(&w, outside as u32), "a house behind an unbroken moat gets no path at all");
         // no drawn segment may lie in water
         for s in w.roads_flat().chunks(6) { for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f); assert!(w.height_at(x, y) > 0.1, "path in water at {x},{y}"); } }
@@ -3856,31 +3684,6 @@ mod road_piece_tests {
     fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w }
 
     #[test]
-    fn road_pieces_link_into_the_path_network_like_the_automatic_roads() {
-        let mut w = rich(); let before = w.roads_flat().len();
-        let pieces: Vec<i32> = (0..8).map(|k| w.place(ROAD, 14 + k * 4, 6, 0)).collect();
-        assert!(pieces.iter().all(|&i| i >= 0), "the road can be laid: {pieces:?}");
-        assert!(w.roads_flat().len() >= before + 6 * 6, "each piece is joined to its neighbour by a stretch of path");
-        // the chain ends at the hall: every piece has a walkable route
-        let v = w.road_paths_flat(); let mut linked = std::collections::HashSet::new(); let mut i = 0;
-        while i < v.len() { linked.insert(v[i] as i32); i += 3 + 2 * v[i + 2] as usize; }
-        for &p in &pieces { assert!(linked.contains(&p), "piece {p} has a route"); }
-    }
-
-    #[test]
-    fn a_house_beyond_the_road_joins_it_and_roads_do_not_block_the_way() {
-        let mut w = rich();
-        for k in 0..6 { w.place(ROAD, 16 + k * 4, 4, 0); }
-        let h = w.place(HOUSE, 36, 12, 0); assert!(h >= 0);
-        let v = w.road_paths_flat(); let mut i = 0; let mut found = false;
-        while i < v.len() { if v[i] as i32 == h { found = true; } i += 3 + 2 * v[i + 2] as usize; }
-        assert!(found, "the house is connected through the road pieces");
-        // a field army walks straight over a road (nothing blocks it)
-        w.army = [10, 0, 0, 0, 0, 0]; let id = w.det_form(&[10, 0, 0, 0, 0, 0]); assert!(id > 0);
-        assert_eq!(w.det_march(id, 40.0, 4.0, false, 0.0, 0.0), 0, "a route over the road exists");
-    }
-
-    #[test]
     fn roads_are_cheap_cannot_go_in_water_and_are_not_raid_targets() {
         let mut w = rich(); let wood = w.stocks()[W as usize]; w.place(ROAD, 14, 4, 0);
         assert_eq!(w.stocks()[W as usize], wood - 1, "one wood a piece");
@@ -3964,7 +3767,7 @@ mod bridge_tests {
     fn people_and_armies_cross_a_bridge_and_so_do_raiders() {
         let mut w = with_moat();
         let out = w.place(HOUSE, 32, 0, 0); assert!(out >= 0, "a house outside the moat");
-        let has_link = |w: &World, c: i32| { let v = w.road_paths_flat(); let mut i = 0; let mut f = false; while i < v.len() { if v[i] as i32 == c { f = true; } i += 3 + 2 * v[i + 2] as usize; } f };
+        let has_link = |w: &World, c: i32| w.linked_to_hall(c as usize);
         assert!(!has_link(&w, out), "behind the moat with no way over: no path");
         let b = w.place(BRIDGE, 26, 0, 0); assert!(b >= 0, "bridge {b}");
         assert!(has_link(&w, out), "over the bridge the house is joined to the village");
@@ -4331,12 +4134,13 @@ mod pathnet_tests {
 
     #[test]
     fn the_network_has_roads_and_a_ring_round_every_building_and_stays_clear_of_them() {
-        let w = village(); let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize);
+        let mut w = village(); let nodes = w.road_nodes_flat(); assert_eq!(w.lay_road(&[nodes[0] as i32 - w.ox, nodes[1] as i32 - w.oy, 5, 8, 9, 8, nodes[4] as i32 - w.ox, nodes[5] as i32 - w.oy]), 0);
+        let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize);
         assert!(n > 40 && e > n, "nodes {n}, edges {e}");
         let ed = edges(&w); assert!(ed.iter().any(|e| e.2), "road edges"); assert!(ed.iter().any(|e| !e.2), "ring and link edges");
-        for k in 0..n { let (x, y) = (v[2 + 2 * k], v[3 + 2 * k]); for b in &w.buildings { assert!((b.x - x).hypot(b.y - y) > footprint(b.kind, b.tier) * 0.9, "node ({x:.1},{y:.1}) inside a {}", DEFS[b.kind as usize].name); } }
+        for k in 0..n { let (x, y) = (v[2 + 2 * k], v[3 + 2 * k]); for b in w.buildings.iter().filter(|b| b.kind != ROAD) { assert!((b.x - x).hypot(b.y - y) > footprint(b.kind, b.tier) * 0.9, "node ({x:.1},{y:.1}) inside a {}", DEFS[b.kind as usize].name); } }
         // every edge is walkable: never through a building's footprint
-        for (a, b, _) in ed { let (pa, pb) = ((v[2 + 2 * a], v[3 + 2 * a]), (v[2 + 2 * b], v[3 + 2 * b])); for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f); for q in &w.buildings { assert!((q.x - x).hypot(q.y - y) > footprint(q.kind, q.tier) * 0.9, "edge crosses a {}", DEFS[q.kind as usize].name); } } }
+        for (a, b, _) in ed { let (pa, pb) = ((v[2 + 2 * a], v[3 + 2 * a]), (v[2 + 2 * b], v[3 + 2 * b])); for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f); for q in w.buildings.iter().filter(|q| q.kind != ROAD) { assert!((q.x - x).hypot(q.y - y) > footprint(q.kind, q.tier) * 0.9, "edge crosses a {}", DEFS[q.kind as usize].name); } } }
     }
 
     #[test]

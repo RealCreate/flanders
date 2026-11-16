@@ -16,7 +16,7 @@ fn play_on(w: &mut World) {
 fn same_world(a: &World, b: &World, what: &str) {
     assert_eq!(a.state_hash(), b.state_hash(), "{what}: state hash");
     assert_eq!(a.roads_flat(), b.roads_flat(), "{what}: roads");
-    assert_eq!(a.road_paths_flat(), b.road_paths_flat(), "{what}: road paths");
+    assert_eq!(a.road_lines_flat(), b.road_lines_flat(), "{what}: road lines");
     assert!(a.snapshot() == b.snapshot(), "{what}: written out again, the bytes differ");
 }
 

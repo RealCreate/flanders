@@ -1,9 +1,5 @@
-//! Do the drawn roads keep to the free ground that the invisible path network keeps to? A busy village (farms turned every way, gardens, parks, markets, houses, walls with a gate, a moat with a
-//! drawbridge) is built, and every drawn road segment is sampled along its length, with the width of its ribbon, against the solid part of every building, the fields and beds, the runs of wall, and water.
+//! A busy village for the tests (farms turned every way, gardens, parks, markets, houses, walls with a gate, a moat with a drawbridge).
 use super::*;
-
-/// Half the width of the ribbon that is drawn solid (web/src/render/paths.ts: 1.15, 1.45 once the hall is a castle, but never more than the room the road has). The soft edge beyond it fades out.
-const RIBBON_HALF: f32 = 1.15;
 
 fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w }
 
@@ -32,94 +28,4 @@ pub(crate) fn busy_village(with_moat: bool) -> World {
     }
     w
 }
-
-fn seg_dist(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1); let l2 = (dx * dx + dy * dy).max(1e-6);
-    let t = (((px - a.0) * dx + (py - a.1) * dy) / l2).clamp(0.0, 1.0);
-    (px - (a.0 + dx * t)).hypot(py - (a.1 + dy * t))
-}
-
-/// What is wrong with a road point: its ribbon (a disc of `half` round the centre line) touches the solid part of a building, a field or bed, a wall, or water. None if it is clear.
-fn fault(w: &World, x: f32, y: f32, half: f32) -> Option<String> {
-    for (i, b) in w.buildings.iter().enumerate() {
-        match b.kind {
-            WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE | TOLL => continue,   // (a toll post is driven through: its hut and posts are checked in roadnet_tests)
-            _ => {}
-        }
-        let d = (x - b.x).hypot(y - b.y);
-        if d < solid_radius(b.kind, b.tier) + half { return Some(format!("inside the solid part of building {i} (kind {}, tier {}): {d:.2} from its middle", b.kind, b.tier)); }
-        if pathnet::field_distance(b, x, y) < half { return Some(format!("in the fields of building {i} (kind {}, tier {}, rot {})", b.kind, b.tier, b.rot)); }
-    }
-    let (segs, _) = w.wall_lines();
-    for s in &segs { let d = seg_dist(x, y, (s.ax, s.ay), (s.bx, s.by)); if d < s.r + half { return Some(format!("{d:.2} from a wall (it is {:.1} thick)", s.r)); } }
-    // water, over the whole width of the ribbon
-    for (ox, oy) in [(0.0f32, 0.0f32), (half, 0.0), (-half, 0.0), (0.0, half), (0.0, -half)] {
-        let (px, py) = (x + ox, y + oy);
-        if w.height_ground(px, py) < 0.2 && !w.on_deck(px, py) { return Some(format!("in the water at {px:.1},{py:.1}")); }
-    }
-    None
-}
-
-fn faults(w: &World, half: f32) -> (usize, usize, Vec<String>) {
-    let (mut samples, mut bad, mut msgs) = (0usize, 0usize, vec![]);
-    for s in w.roads_flat().chunks(6) {
-        if s[4] == s[5] { continue; }   // a door's own short road runs inside its building's plot, from the door out
-        let l = (s[2] - s[0]).hypot(s[3] - s[1]); let n = (l / 0.5).ceil().max(1.0) as i32;
-        for k in 0..=n {
-            let f = k as f32 / n as f32; let (x, y) = (s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f);
-            samples += 1;
-            if let Some(m) = fault(w, x, y, half) { bad += 1; if msgs.len() < 8 { msgs.push(format!("road {}->{} at {x:.1},{y:.1}: {m}", s[4], s[5])); } }
-        }
-    }
-    (samples, bad, msgs)
-}
-
-fn road_length(w: &World) -> f32 { w.roads_flat().chunks(6).filter(|s| s[4] != s[5]).map(|s| (s[2] - s[0]).hypot(s[3] - s[1])).sum() }
-
-/// Every road sample (with its ribbon) is on free ground, whether or not the village has a moat. A road that has no way with all its width squeezes through with `ROAD_TIGHT`
-/// (the drawing narrows the ribbon there); that may happen on a few samples of a crowded village, never on many.
-#[test]
-fn drawn_roads_never_touch_a_building_a_field_a_wall_or_water() {
-    for moat in [false, true] {
-        let w = busy_village(moat);
-        let (samples, bad_tight, msgs_tight) = faults(&w, pathnet::ROAD_TIGHT);
-        let (_, bad, msgs) = faults(&w, RIBBON_HALF);
-        eprintln!("moat {moat}: {} buildings, {} road pieces, {samples} samples, {bad} without the full ribbon room, {bad_tight} touching, length {:.0}", w.buildings.len(), w.roads_flat().len() / 6, road_length(&w));
-        for m in &msgs { eprintln!("  {m}"); }
-        assert!(samples > 150, "the village has roads ({samples} samples)");
-        assert_eq!(bad_tight, 0, "{bad_tight} road samples touch an obstacle, e.g. {msgs_tight:?}");
-        assert!(bad * 20 <= samples, "{bad} of {samples} road samples are squeezed, e.g. {msgs:?}");
-    }
-}
-
-/// The new roads are not absurdly longer than the old ones, and every building the old finder could link still has a road to its parent.
-#[test]
-fn roads_over_the_network_are_not_absurdly_long_and_reach_every_building() {
-    for moat in [false, true] {
-        let w = busy_village(moat);
-        let (mut old_len, mut linked, mut old_linked) = (0.0f32, 0usize, 0usize);
-        let have: std::collections::HashSet<u32> = w.road_paths.iter().flat_map(|p| [p.0, p.1]).collect();
-        let mut seen: std::collections::HashSet<u32> = Default::default();
-        for (c, p, pts) in &w.road_paths {
-            if !seen.insert(*c) { continue; }
-            if let Some(o) = w.route_local(*c as usize, *p as usize) { old_linked += 1; old_len += o.windows(2).map(|q| (q[1].0 - q[0].0).hypot(q[1].1 - q[0].1)).sum::<f32>(); linked += 1; let _ = pts; }
-        }
-        let new_len: f32 = w.road_paths.iter().filter(|p| seen.contains(&p.0)).map(|p| p.2.windows(2).map(|q| (q[1].0 - q[0].0).hypot(q[1].1 - q[0].1)).sum::<f32>()).sum();
-        let straight: f32 = w.road_paths.iter().filter(|p| seen.contains(&p.0)).map(|p| (w.buildings[p.0 as usize].x - w.buildings[p.1 as usize].x).hypot(w.buildings[p.0 as usize].y - w.buildings[p.1 as usize].y)).sum();
-        eprintln!("moat {moat}: {linked} links, old finder {old_len:.0} over the same pairs, network {new_len:.0} (straight between the middles {straight:.0}), {} buildings with a road", have.len());
-        // (every road now starts and ends at the door of its building, which a walker would round the building to reach, so the roads are longer than the free-form ones, but a village of doors on one network)
-        assert!(new_len < old_len * 2.3 + 40.0, "roads over the network: {new_len:.0} against {old_len:.0}");
-        // every building that the old finder could reach from some earlier one has a road
-        let ends: Vec<usize> = (0..w.buildings.len()).filter(|&i| i == 0 || !(is_barrier(w.buildings[i].kind) || matches!(w.buildings[i].kind, DRAWBRIDGE | BRIDGE))).collect();
-        let mut missing = vec![];
-        for (pos, &i) in ends.iter().enumerate().skip(1) {
-            if have.contains(&(i as u32)) { continue; }
-            let could = ends[..pos].iter().any(|&j| (w.buildings[j].x - w.buildings[i].x).hypot(w.buildings[j].y - w.buildings[i].y) < 80.0 && w.route_local(i, j).is_some());
-            if could { missing.push((i, w.buildings[i].kind, w.buildings[i].x, w.buildings[i].y)); }
-        }
-        assert!(missing.len() <= 1 + have.len() / 20, "buildings without a road that the old finder reached: {missing:?}");
-        eprintln!("moat {moat}: missing {missing:?}; old linked {old_linked}");
-    }
-}
-
 

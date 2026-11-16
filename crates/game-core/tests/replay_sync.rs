@@ -45,7 +45,7 @@ impl Rng {
 
 /// Everything a client's renderer asks the core every tick. These calls fill the core's caches (paths, overlays) at moments of the host's choosing.
 fn look(w: &mut World) -> usize {
-    let mut n = w.det_flat().len() + w.buildings_flat().len() + w.roads_flat().len() + w.road_paths_flat().len() + w.felled_flat().len() + w.bridges_flat().len();
+    let mut n = w.det_flat().len() + w.buildings_flat().len() + w.roads_flat().len() + w.road_lines_flat().len() + w.felled_flat().len() + w.bridges_flat().len();
     n += w.journeys_flat().len() + w.link_points(400.0, 0.0).len() + w.take_arrivals().len() + w.take_delivered().len();
     let f = w.det_flat(); for o in (0..f.len()).step_by(16) { n += w.det_path(f[o] as u32).len(); }
     n + w.net_route(-30.0, -30.0, 60.0, 40.0).len() + w.walk_route(10.0, 10.0, -50.0, 80.0).len()
@@ -88,8 +88,8 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if watch { let _ = look(&mut w); }
         hashes.push(w.state_hash());
     }
-    if std::env::var("STATS").is_ok() { eprintln!("seed {seed}: {} commands, {} buildings, {} felled, {} armies, {} road paths, pop {}", log.len(), w.building_count(), w.felled_flat().len() / 3, w.det_flat().len() / 16, w.road_paths_flat().len(), w.population()); }
-    (log, hashes, w.road_paths_flat())
+    if std::env::var("STATS").is_ok() { eprintln!("seed {seed}: {} commands, {} buildings, {} felled, {} armies, {} road paths, pop {}", log.len(), w.building_count(), w.felled_flat().len() / 3, w.det_flat().len() / 16, w.road_lines_flat().len(), w.population()); }
+    (log, hashes, w.road_lines_flat())
 }
 
 /// Replay `log` into a fresh world; `habit` runs after every tick (the host doing whatever it does); returns the first tick whose hash differs from `want`.
@@ -100,9 +100,9 @@ fn replay_roads(seed: u64, ox: i32, oy: i32, log: &[(u64, C)], want: &[u64], hab
     for t in 0..want.len() as u64 {
         while i < log.len() && log[i].0 <= w.tick() { apply(&mut w, &log[i].1); i += 1; }
         w.step(); habit(&mut w, t);
-        if w.state_hash() != want[t as usize] { return (Some((t as usize + 1, i)), w.road_paths_flat()); }
+        if w.state_hash() != want[t as usize] { return (Some((t as usize + 1, i)), w.road_lines_flat()); }
     }
-    (None, w.road_paths_flat())
+    (None, w.road_lines_flat())
 }
 
 fn check(seed: u64, ox: i32, oy: i32, ticks: u64) {
