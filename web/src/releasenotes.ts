@@ -25,6 +25,8 @@ export const RELEASES: Release[] = [
       'Roads are laid by you now: click the points of a road and it runs in a smooth curve through them. The automatic roads between buildings are gone (they caused too many tangles); the invisible paths people and soldiers walk are unchanged, and they prefer the roads you lay.',
       'Every building has its own short path from its door to a node at the edge of its plot; a road you lay snaps onto it. Roads that join the village widen the land you may build on and may lead out beyond its edge (within a limit).',
       'The rules fingerprint changed: villages on this version only sync with players on the same version. Old roads that were laid automatically simply disappear; road pieces you laid yourself stay and are joined to their neighbours.',
+      'Roads are dirt tracks, dark and clearly visible against the grass, while your castle is in its first tiers, and cobbled stone from tier 2; every road in the village changes when the castle is upgraded.',
+      'The ground is graded under every road: it follows the land smoothly, is level across its width and never climbs steeper than a walkable slope, eased into the hillside on each side, and it never fills in a river or moat beside it.',
       'Trade and diplomacy journeys between villages are shown as processions walking the road.',
       'Hand-drawn icons replace the emoji, including new resource icons and a redrawn charcoal burner.',
       'Raids come about once a week instead of more often.',

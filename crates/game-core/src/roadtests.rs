@@ -252,3 +252,80 @@ fn road_pieces_placed_one_at_a_time_join_into_a_road() {
     assert!(w.road_edges().len() >= 5, "each piece is joined to its neighbour");
     assert!(w.roads_flat().len() >= 6 * 5 * 3, "and graded");
 }
+
+/// Villages on several seeds (so on several kinds of ground), each with a hall, houses on different sides and roads (straight and curved) laid to them.
+fn graded_villages() -> Vec<World> {
+    let mut out = vec![];
+    for seed in [1337u64, 7, 99, 2024, 31337, 5] {
+        let mut w = World::new(seed, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        let hall = nodes_of(&w.buildings[0])[0]; let mut laid = 0;
+        for (k, (x, y)) in [(30, 6), (-6, 34), (-33, -5)].into_iter().enumerate() {
+            let h = w.place(HOUSE, x, y, 0); if h <= 0 { continue; }
+            let to = nodes_of(&w.buildings[h as usize])[0];
+            if w.lay_road(&pts_between(&w, hall, to, if k == 1 { 5.0 } else { 0.0 })) == 0 { laid += 1; }
+        }
+        if laid > 0 { out.push(w); }
+    }
+    assert!(out.len() >= 3, "{} villages with roads", out.len());
+    out
+}
+
+/// Across a road's width the ground is as high as its centreline (the road is graded flat across, with no cross slope), on straight and curved roads, on whatever slope they run over.
+#[test]
+fn the_ground_across_a_road_is_as_high_as_its_middle() {
+    let (mut checked, mut worst) = (0, 0.0f32);
+    for w in graded_villages() { for (s, l) in w.roads.iter().zip(&w.road_links) {
+        if l.0 == l.1 { continue; }
+        let (mx, my) = ((s[0] + s[3]) / 2.0, (s[1] + s[4]) / 2.0);
+        if w.buildings.iter().any(|b| b.kind != ROAD && (b.x - mx).hypot(b.y - my) < 13.0 + if b.kind == TOWN_HALL { 6.0 } else { 0.0 }) { continue; }   // (near a building the pad takes over)
+        let len = (s[3] - s[0]).hypot(s[4] - s[1]); if len < 0.2 { continue; }
+        let (nx, ny) = (-(s[4] - s[1]) / len, (s[3] - s[0]) / len);
+        let mid = (s[2] + s[5]) / 2.0;
+        for off in [-2.0f32, -1.0, 0.0, 1.0, 2.0] {
+            let h = w.height_at(mx + nx * off, my + ny * off);
+            worst = worst.max((h - mid).abs()); checked += 1;
+            assert!((h - mid).abs() < 0.12, "ground {h} at {off} off the road, the middle is {mid} (at {mx},{my})");
+        }
+    } }
+    assert!(checked >= 30, "{checked} points checked");
+    println!("worst cross difference {worst}");
+}
+
+/// A road climbs no steeper than a walkable slope, and it follows the land: on a hill it rises and falls, it is not a straight line between the pads.
+#[test]
+fn a_road_never_climbs_steeper_than_the_limit() {
+    let (mut worst, mut lo, mut hi) = (0.0f32, f32::MAX, f32::MIN);
+    for w in graded_villages() { for (s, l) in w.roads.iter().zip(&w.road_links) {
+        if l.0 == l.1 { continue; }
+        let len = (s[3] - s[0]).hypot(s[4] - s[1]); if len < 0.05 { continue; }
+        worst = worst.max((s[5] - s[2]).abs() / len); lo = lo.min(s[2]); hi = hi.max(s[2]);
+    } }
+    println!("steepest {worst}, heights {lo}..{hi}");
+    assert!(worst <= ROAD_MAX_SLOPE + 0.02, "steepest stretch {worst}");
+}
+
+/// The grading is derived from the state alone: the same on a world rebuilt from a snapshot and on one that replays the same commands.
+#[test]
+fn the_grading_is_the_same_after_a_replay_and_a_restore() {
+    let a = graded_villages().remove(0); let b = graded_villages().remove(0);
+    assert_eq!(a.roads.len(), b.roads.len());
+    for (x, y) in a.roads.iter().zip(&b.roads) { for k in 0..6 { assert_eq!(x[k].to_bits(), y[k].to_bits(), "replayed roads agree"); } }
+    let c = world_restore(&a.snapshot()).expect("restores");
+    assert_eq!(c.roads.len(), a.roads.len());
+    for (x, y) in a.roads.iter().zip(&c.roads) { for k in 0..6 { assert_eq!(x[k].to_bits(), y[k].to_bits(), "restored roads agree"); } }
+    for k in 0..60 { let (x, y) = (a.ox as f32 + k as f32 * 1.3 - 20.0, a.oy as f32 + (k * 7 % 40) as f32 - 20.0); assert_eq!(a.height_at(x, y).to_bits(), c.height_at(x, y).to_bits()); }
+    assert_eq!(a.state_hash(), c.state_hash(), "the hash is the same: the grading is not part of it");
+}
+
+/// A road beside a river does not fill it in: the bed under the water stays where it was.
+#[test]
+fn grading_does_not_fill_in_water() {
+    let mut w = rich();
+    let mut put = 0; let mut spots = vec![];
+    for k in 0..8 { let (x, y) = (14 + k * 2, 16); if w.place(RIVER, x, y, 0) > 0 { put += 1; spots.push((w.ox as f32 + x as f32, w.oy as f32 + y as f32)); } }
+    assert!(put >= 4, "{put} river pieces placed");
+    let bed: Vec<f32> = spots.iter().map(|p| w.height_at(p.0, p.1)).collect();
+    assert!(bed.iter().all(|&h| h < 0.0), "the river is under water");
+    let _ = w.lay_road(&[8, 6, 14, 10, 18, 10, 24, 6]);
+    for (p, b) in spots.iter().zip(&bed) { assert!(w.height_at(p.0, p.1) <= b + 0.05, "the bed at {p:?} was raised: {b} to {}", w.height_at(p.0, p.1)); }
+}

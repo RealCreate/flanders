@@ -99,8 +99,12 @@ pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank ru
 const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
 const RIVER_BED: f32 = -2.0; // a river is shallower than a moat, but holds real water  // depth of the bottom
-const ROAD_INNER: f32 = 1.5; // fully graded half-width of a path
-const ROAD_OUTER: f32 = 4.4; // terrain blends back to the natural slope by here
+const ROAD_INNER: f32 = 2.1; // fully graded half-width of a path (as wide as the ribbon drawn on it, soft edge included: no cross slope under a road)
+const ROAD_OUTER: f32 = 5.2; // terrain blends back to the natural slope by here (the shoulder)
+/// The steepest a road may climb: height gained per unit of road.
+pub(crate) const ROAD_MAX_SLOPE: f32 = 0.4;
+/// A road follows the ground smoothed over this far along it.
+const ROAD_SMOOTH: f32 = 4.5;
 
 const RADIUS_CAP: f32 = 110.0;
 /// The farthest from the town hall anything can be built, however far the territory has crept outwards.
@@ -494,22 +498,51 @@ impl World {
         }
         for e in self.road_edges() {
             let (ha, hb) = (self.buildings[e.a].pad_h, self.buildings[e.b].pad_h);
-            let total: f32 = e.pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
-            let mut run = 0.0f32;
-            for w in e.pts.windows(2) {
-                let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+            let hs = self.grade_line(&e.pts, ha, hb);
+            for (k, w) in e.pts.windows(2).enumerate() {
                 if self.leg_is_dry(w[0], w[1]) {
-                    let (t0, t1) = (run / total, (run + l) / total);
-                    self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
+                    self.roads.push([w[0].0, w[0].1, hs[k], w[1].0, w[1].1, hs[k + 1]]);
                     self.road_links.push((e.a as u32, e.b as u32));
                 }
-                run += l;
             }
         }
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
         for r in &self.roads { for v in r { mix(v.to_bits() as u64); } }
         self.road_sig = h;
+    }
+
+    /// The height of a road's centreline at each of its points: the ground it runs over, smoothed along the road (so it neither cuts into every hump nor floats over every dip),
+    /// eased to the heights of the pads at its two ends, and never steeper than `ROAD_MAX_SLOPE`. Pure function of the village's state (the same on every replica).
+    pub(crate) fn grade_line(&self, pts: &[(f32, f32)], ha: f32, hb: f32) -> Vec<f32> {
+        let n = pts.len();
+        if n == 0 { return vec![]; }
+        let mut s = vec![0.0f32; n];   // distance along the road
+        for k in 1..n { s[k] = s[k - 1] + (pts[k].0 - pts[k - 1].0).hypot(pts[k].1 - pts[k - 1].1); }
+        let total = s[n - 1];
+        let raw: Vec<f32> = pts.iter().map(|p| self.height_ground(p.0, p.1).max(0.25)).collect();
+        let mut h = vec![0.0f32; n];
+        for k in 0..n {
+            let (mut sum, mut cnt) = (0.0f32, 0.0f32);
+            let (mut j0, mut j1) = (k, k);
+            while j0 > 0 && s[k] - s[j0 - 1] <= ROAD_SMOOTH { j0 -= 1; }
+            while j1 + 1 < n && s[j1 + 1] - s[k] <= ROAD_SMOOTH { j1 += 1; }
+            for j in j0..=j1 { sum += raw[j]; cnt += 1.0; }
+            h[k] = sum / cnt;
+        }
+        // pin the ends to the pads: the difference is spread over the first and last stretch
+        let ease = (total * 0.5).min(9.0).max(0.01);
+        let (da, db) = (ha - h[0], hb - h[n - 1]);
+        for k in 0..n {
+            let (fa, fb) = (1.0 - smoothstep(0.0, ease, s[k]), 1.0 - smoothstep(0.0, ease, total - s[k]));
+            h[k] += da * fa + db * fb;
+        }
+        // a walkable slope: forward from the start, then back from the end (each end stays on its pad)
+        for k in 1..n { let m = ROAD_MAX_SLOPE * (s[k] - s[k - 1]); h[k] = h[k].clamp(h[k - 1] - m, h[k - 1] + m); }
+        h[n - 1] = hb;
+        for k in (0..n - 1).rev() { let m = ROAD_MAX_SLOPE * (s[k + 1] - s[k]); h[k] = h[k].clamp(h[k + 1] - m, h[k + 1] + m); }
+        h[0] = ha;
+        h
     }
 
     /// Is a straight leg of a route over dry, ordinary ground (not water and not a drawbridge deck)?
@@ -677,7 +710,7 @@ impl World {
             let t = (((x - s[0]) * dx + (y - s[1]) * dy) / len2).clamp(0.0, 1.0);
             let (cx, cy) = (s[0] + dx * t, s[1] + dy * t);
             let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-            if d < ROAD_OUTER { h = lerp(h, lerp(s[2], s[5], t), 1.0 - smoothstep(ROAD_INNER, ROAD_OUTER, d)); }
+            if d < ROAD_OUTER { h = lerp(h, lerp(s[2], s[5], t), (1.0 - smoothstep(ROAD_INNER, ROAD_OUTER, d)) * smoothstep(-0.6, 0.0, h)); }   // (only dry ground is graded: a river or moat beside a road is never filled in)
         }
         for b in &self.buildings {
             let d = &DEFS[b.kind as usize];
