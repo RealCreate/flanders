@@ -19,8 +19,10 @@ export const RELEASES: Release[] = [
       'Out-of-sync detection and repair: when a copy of another player\'s village drifts, the game notices and repairs it by itself.',
       'Rules fingerprint and build marker (see the home page and The shared world panel) so players can check they run the same version.',
       'This version number and the release notes page.',
+      'Restart village (Display settings, at the bottom): pulls your whole village down and starts again from nothing on the same ground: buildings, roads, terrain changes (raised, lowered and levelled ground, moats, felled trees), deposits, stock, people, army, treaties and the day count. A confirmation sheet lists exactly what is lost and asks you to type your village\'s name; you can download a backup first, and the old village is kept once in this browser so you can bring it back. Other players see your village start again. Refused during a battle or while armies are out.',
     ],
     changed: [
+      'The sync protocol is now version 3 (commands and hashes carry the epoch of your village\'s history, which a restart starts anew): players on older builds see "different game version" until they reload. The rules fingerprint is unchanged.',
       'Winter is gentler: farms make 55% grain (85% with haystacks) instead of 25%, the village burns about a third less firewood, the town hall hearth keeps it warm while any wood is left, and the cold now takes unhappiness first, nobody for the first 3 cold days (5 with a staffed hospital), then a daily chance that grows. Fishing, hunting and smoked food are untouched by winter.',
       'New Winter panel (click the season in the top bar, or hover it): exactly what winter does, firewood per day and days left at the present size, and a warning toast a season ahead.',
       'The rules fingerprint changed again for the winter rules: villages on this version only sync with players on the same version.',
