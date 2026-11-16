@@ -18,6 +18,7 @@ import { drawbridgeDeckHeight } from './render/ringheight';
 import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
 import { auditModel, setNightLight } from './render/buildings';
+import { subdivide, curve, type Pt } from './roadtool';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
 import { Terrain, HALF, STEP, NV } from './render/terrain';
@@ -120,6 +121,7 @@ let penPreview!: PenPreview;
 let moatWidth = 0;   // 0..7: how broad the moat you dig is (the R key changes it)
 let penStart: { x: number; z: number } | null = null;   // the wall pen: where the stroke began
 let penShape: Shape = 'line';                            // what the pen draws: a line, a path of corners, or a ready-made figure
+let roadPts: P[] = [], roadLastClick = 0;                  // the road tool: the points clicked so far
 let penPath: P[] = [];                                   // the corners clicked so far in path mode
 let penLastClick = 0;                                    // when the last corner was clicked (a quick second click finishes the path)
 let tunnels!: Tunnels;
@@ -1208,7 +1210,7 @@ function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r =>
 
 // ---------- selection & placement ----------
 function selectKind(k: number | null) {
-  selectedKind = k; ui.markSelected(k); penReset(); drawPenBar();
+  selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); lv?.nodes.setActive(k === 37);
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
   terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false;
   if (k !== null) {
@@ -1227,6 +1229,7 @@ function scaled(a: [number, number][], tier: number): [number, number][] { retur
 function placeHint(k: number) {
   if (k === 24) return `Moat ${(1 + 0.13 * moatWidth).toFixed(1)}× wide — press R to make it thinner or broader · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Alt = any angle · Esc cancels`;
   if (PEN_SPACING[k]) return `${defs[k].name} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · hold Alt for any angle · Esc cancels`;
+  if (k === 37) return 'Road — click the points of the road: it runs in a smooth curve through them · its ends snap onto nodes (the rings at the edge of a building, the four sides of a plaza) and onto other roads · double-click or Enter to build · right-click takes the last point back · Esc cancels';
   if (k === 22) return 'Gate — click a wall piece to turn it into a gate · Esc cancels';
   if (k === 23) return 'Drawbridge — place it across a moat · R rotates · Esc cancels';
   return `${defs[k].name} — click to place · R rotates · Esc cancels`;
@@ -1568,7 +1571,51 @@ function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: nu
   return { dx: Math.round(nx + ux * off - lv.ox), dy: Math.round(nz + uz * off - lv.oz), rot: ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8 };
 }
 
+/** Where a road point clicked at (x, z) goes: onto the node or piece of road within reach, or where it was clicked. */
+function roadPoint(x: number, z: number): { x: number; z: number; snapped: boolean } {
+  const sn = lv.world.road_snap(Math.round(x - lv.ox), Math.round(z - lv.oz));
+  return sn.length ? { x: lv.ox + sn[0], z: lv.oz + sn[1], snapped: true } : { x, z, snapped: false };
+}
+function roadReset() { roadPts = []; roadSnapped = [false, false]; if (typeof penPreview !== 'undefined') penPreview?.clear(); lv?.nodes.highlight(null); }
+let roadSnapped: [boolean, boolean] = [false, false];   // whether the first and the last point clicked snapped onto something
+/** Show the road the clicks and the pointer would make: a post at every piece (green where it can go, red where not) and the curve through them. */
+function roadPreview(hover: { x: number; z: number; snapped: boolean } | null) {
+  const w = lv.world, ctrl: Pt[] = [...roadPts]; if (hover) ctrl.push(hover);
+  if (!ctrl.length) { penPreview.clear(); return; }
+  const pieces = subdivide(ctrl), line = curve(pieces), stocks = Array.from(w.stocks());
+  const snappedAt = (i: number) => (i === 0 && roadSnapped[0]) || (hover?.snapped && i === pieces.length - 1);
+  let bad = 0; const posts = pieces.map((q, i) => { const ok = snappedAt(i) || w.road_can(Math.round(q.x - lv.ox), Math.round(q.z - lv.oz)) === 0; if (!ok) bad++; return { x: q.x, z: q.z, ok }; });
+  penPreview.set(posts, line);
+  const wood = Math.max(0, pieces.length - (roadSnapped[0] ? 1 : 0) - (hover?.snapped ? 1 : 0));
+  ui.hint(ctrl.length < 2 ? placeHint(37) : `Road: ${pieces.length} points, ${wood} wood${stocks[0] < wood ? ' — not enough wood' : ''}${bad ? ` · ${bad} of the points cannot be laid (outside your land, in water or in the way)` : ''} · double-click or Enter to build`, bad > 0 || stocks[0] < wood);
+}
+function roadHover(e: { clientX: number; clientY: number }) {
+  if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false;
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) { lv.nodes.highlight(null); return; }
+  const p = roadPoint(hit.x, hit.z); lv.nodes.highlight(p.snapped ? p : null); roadPreview(p);
+}
+/** Click: add a point. A click on a node or a road ends it (when there is a start), a quick second click on the same point ends it too. */
+function roadClick(hx: number, hz: number) {
+  const p = roadPoint(hx, hz), now = performance.now(), last = roadPts[roadPts.length - 1];
+  if (!roadPts.length) { roadPts.push({ x: p.x, z: p.z }); roadSnapped = [p.snapped, false]; roadLastClick = now; roadPreview(null); return; }
+  if (last && now - roadLastClick < 350 && Math.hypot(p.x - last.x, p.z - last.z) < 4) { roadCommit(); return; }
+  roadPts.push({ x: p.x, z: p.z }); roadLastClick = now;
+  if (p.snapped && roadPts.length >= 2) { roadSnapped[1] = true; roadCommit(); return; }
+  roadPreview(null);
+}
+function roadCommit() {
+  const picked = [...roadPts]; roadPts = [];
+  if (picked.length < 2) { roadReset(); return; }
+  const pts = subdivide(picked); if (pts.length > 64) { ui.toast('That road is too long for one go: lay it in stretches.', 'bad'); roadReset(); return; }
+  const flat = pts.flatMap(q => [Math.round(q.x - lv.ox), Math.round(q.z - lv.oz)]), before = lv.world.building_count();
+  const code = lv.world.lay_road(Int32Array.from(flat)), made = lv.world.building_count() - before;
+  if (made > 0) { commit({ op: 'road', units: flat }); afterLocalChange(); sound.place(2); updateHud(); ui.toast(code < 0 ? `${made} points of the road laid — ${PLACE_ERRORS[code] ?? 'then something was in the way'}.` : 'Road laid.', code < 0 ? 'info' : 'good'); }
+  else { ui.toast(PLACE_ERRORS[code] ?? 'Nothing could be laid there.', 'bad'); sound.error(); }
+  roadReset(); lv.nodes.setActive(selectedKind === 37);
+}
+
 function updateGhost(e: { clientX: number; clientY: number }) {
+  if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
   if (!hit) { ghost.visible = false; return; }
@@ -1660,6 +1707,7 @@ function bindInput() {
       if (moved > 8) { const h = terrain.pick(pointerRay(e).ray), o = h ? penOutline(a, { x: h.x, z: h.z }, e.altKey) : null; if (o) penCommit(selectedKind, o); ghostCode = 99; previewKey = ''; ui.hint(placeHint(selectedKind)); return; }
       if (isFigure(penShape)) { ui.hint('Press and drag to draw the figure', true); return; }
     }
+    if (selectedKind === 37 && moved <= 5) { const h = terrain.pick(pointerRay(e).ray); if (h) roadClick(h.x, h.z); return; }
     if (selectedKind !== null && PEN_SPACING[selectedKind] && penShape === 'path' && moved <= 5) {   // a click adds a corner; a quick second click, or a click on the first corner, builds
       const h = terrain.pick(pointerRay(e).ray); if (!h) return;
       const p = { x: h.x, z: h.z }, now = performance.now(), last = penPath[penPath.length - 1];
@@ -1705,6 +1753,7 @@ function bindInput() {
   // right click without dragging: send the selected army there
   cv.addEventListener('pointerup', e => {
     if (e.button !== 2 || rig.moved) return;
+    if (selectedKind === 37 && roadPts.length) { roadPts.pop(); if (roadPts.length === 0) roadSnapped = [false, false]; roadHover(e); return; }   // right-click takes the last road point back
     if (selectedKind !== null) { selectKind(null); return; }                // right-click puts the building down again
     if (multiDets.length) {                                                 // armies selected: send them there, spread out a little
       const hit = terrain.pick(pointerRay(e).ray);
@@ -1721,9 +1770,9 @@ function bindInput() {
     const n = digitOf(e);
     if (n !== null) { const kind = ui.hotkeyKind(n - 1); if (kind !== null) { ui.setTab('build'); selectKind(kind); } return; }
     switch (keys.actionOf(e)) {
-      case 'penFinish': if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) { e.preventDefault(); penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); } break;
-      case 'penUndo': if (penShape === 'path' && penPath.length) { e.preventDefault(); penPath.pop(); if (!penPath.length) penPreview.clear(); } break;
-      case 'cancel': if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
+      case 'penFinish': if (selectedKind === 37 && roadPts.length >= 2) { e.preventDefault(); roadCommit(); break; } if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) { e.preventDefault(); penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); } break;
+      case 'penUndo': if (selectedKind === 37 && roadPts.length) { e.preventDefault(); roadPts.pop(); roadPreview(null); break; } if (penShape === 'path' && penPath.length) { e.preventDefault(); penPath.pop(); if (!penPath.length) penPreview.clear(); } break;
+      case 'cancel': if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
       case 'rotateBuilding': rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; break;
       case 'deposits': toggleResources(); break;
       case 'pause': e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); break;

@@ -888,6 +888,18 @@ const toll: Model = b => {
 
 /** The ghost shown while placing a bridge (the real bridge is drawn by spans.ts): ten units of deck with posts, stretched to the real length. */
 /** The ghost of a road piece: a patch of beaten earth. */
+/** A plaza: a paved square with a node on each of its four sides (a post on either hand of each) where roads join it, and a medallion in the middle. Its benches, trees, fountain and lanterns are options. */
+const plaza: Model = b => {
+  const m = M(), paving = new THREE.MeshStandardMaterial({ color: 0xb9b2a0, roughness: 1 }), slab = new THREE.MeshStandardMaterial({ color: 0xcfc8b4, roughness: 1 });
+  b.box(10.2, 0.12, 10.2, m.stone, 0, 0, 0);                               // the kerb all round
+  b.box(9.6, 0.16, 9.6, paving, 0, 0, 0);
+  b.box(2.6, 0.2, 9.6, slab, 0, 0, 0); b.box(9.6, 0.2, 2.6, slab, 0, 0, 0);   // the cross of lighter slabs between the nodes
+  b.cyl(1.2, 1.2, 0.24, m.stone, 0, 0, 0, 24); b.cyl(0.9, 0.9, 0.28, slab, 0, 0, 0, 24);   // the medallion
+  for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {   // the node of this side: a low post on either hand, where the road comes in
+    const px = x ? x * 5.3 : 0, pz = z ? z * 5.3 : 0, sx = x ? 0 : 1.5, sz = z ? 1.5 : 0;
+    for (const s of [-1, 1]) { b.box(0.5, 0.7, 0.5, m.stone, px + sx * s, 0, pz + sz * s); b.box(0.62, 0.12, 0.62, m.darkstone, px + sx * s, 0.7, pz + sz * s); }
+  }
+};
 const roadPiece: Model = b => { b.box(2.2, 0.12, 2.2, M().mud, 0, 0.02, 0); };
 
 const bridgeGhost: Model = b => {
@@ -1022,7 +1034,7 @@ const bakery: Model = b => {
   if (t >= 2) b.box(W + 0.6, 0.2, 0.5, m.timber, 0, h + 0.1, D / 2 + 0.3);   // an awning over the counter
   if (t >= 3) b.flag(-W / 2 + 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery];
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,
@@ -1283,6 +1295,14 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(2)) { const leaf = new THREE.MeshStandardMaterial({ color: 0x23472a, roughness: 0.95 }); for (let i = 0; i < 2; i++) { const p = spot(2.0, 2.0, 3.4); if (p) { b.cyl(0.2, 0.3, 1.6, m.log, p[0], 0, p[1], 7); b.cone(1.0, 3.0, leaf, p[0], 0.9, p[1], 9); } } }
       if (has(3)) { const p = spot(2.4, 1.8, 1.8); if (p) { b.box(2.2, 1.2, 1.6, m.darkstone, p[0], 0, p[1]); b.gable(2.4, 1.8, 0.7, m.slate, p[0], 1.2, p[1], 0.2); b.box(0.7, 0.9, 0.1, m.door, p[0], 0, p[1] + 0.84); }
       }
+      break;
+    }
+    case 44: { // plaza: benches, trees, a fountain, lanterns (at fixed places, clear of the roads that come in at the middle of each side)
+      const leaf = new THREE.MeshStandardMaterial({ color: 0x4a8a38, roughness: 0.95 });
+      if (has(0)) for (const [x, z, r] of [[0, 4.3, 0], [0, -4.3, Math.PI], [4.3, 0, Math.PI / 2], [-4.3, 0, -Math.PI / 2]] as const) for (const o of [-2.6, 2.6]) { const px = x ? x : o, pz = z ? z : o; const bn = b.box(1.4, 0.12, 0.45, m.wood, px, 0.4, pz); bn.rotation.y = r; const bk = b.box(1.4, 0.4, 0.08, m.wood, px + (x ? Math.sign(x) * 0.2 : 0), 0.5, pz + (z ? Math.sign(z) * 0.2 : 0)); bk.rotation.y = r; b.box(0.12, 0.4, 0.12, m.stone, px, 0, pz); }
+      if (has(1)) for (const sx of [-1, 1]) for (const sz of [-1, 1]) { b.cyl(0.2, 0.28, 1.8, m.log, sx * 3.9, 0, sz * 3.9, 7); b.sphere(1.3, leaf, sx * 3.9, 2.4, sz * 3.9); }
+      if (has(2)) { b.cyl(1.7, 1.8, 0.45, m.stone, 0, 0.3, 0, 20); b.cyl(1.45, 1.45, 0.12, new THREE.MeshStandardMaterial({ color: 0x4a8ab0, roughness: 0.15 }), 0, 0.7, 0, 20); b.cyl(0.18, 0.24, 1.4, m.stone, 0, 0.7, 0, 8); b.sphere(0.34, m.stone, 0, 2.2, 0); }   // (it stands on the medallion, not through it)
+      if (has(3)) for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const s of [-1, 1]) { const px = x ? x * 5.3 : s * 1.5, pz = z ? z * 5.3 : s * 1.5; b.cyl(0.05, 0.06, 1.5, m.darkwood, px, 0.8, pz, 6); b.box(0.24, 0.3, 0.24, m.glow, px, 2.3, pz); b.pyramid(0.34, 0.34, 0.2, m.iron, px, 2.6, pz); }
       break;
     }
     default: for (let bit = 0; bit < 4; bit++) if (has(bit)) generic(bit);

@@ -10,7 +10,7 @@ const B = await loadBuildings();
 const THREE = await import('three');
 test.after(() => closeModels());
 
-const NO_DOOR_BOX = new Set([2, 21, 22, 23, 24, 32, 33, 34, 37, 38]);   // walls, fences, gates, bridges, moats and earthworks have no door
+const NO_DOOR_BOX = new Set([2, 21, 22, 23, 24, 32, 33, 34, 37, 38, 44]);   // walls, fences, gates, bridges, moats, earthworks and the plaza (which has nodes, not a door) have no door
 
 /** The door boxes of a model: the centre (x, z) of each box of the door material that is tall enough to be a door. */
 function doorsOf(kind, tier) {

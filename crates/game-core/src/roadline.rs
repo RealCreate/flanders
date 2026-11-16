@@ -11,6 +11,7 @@
 //! `ROAD_CLAIM` round itself, so buildings may be put up beside a joined road. Never farther than `TERRITORY_MAX` from the hall.
 use super::*;
 use std::collections::BTreeMap;
+use wasm_bindgen::prelude::*;
 
 /// A road end this close to a node (or to a piece of another road) snaps onto it.
 pub const SNAP: f32 = 4.0;
@@ -53,6 +54,7 @@ pub(crate) fn nodes_of(b: &Building) -> Vec<(f32, f32)> {
 
 fn same(a: f32, b: f32) -> bool { a.to_bits() == b.to_bits() }
 
+#[wasm_bindgen]
 impl World {
     fn building_at(&self, x: f32, y: f32) -> Option<usize> { self.buildings.iter().position(|b| same(b.x, x) && same(b.y, y)) }
 
