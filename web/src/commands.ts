@@ -16,6 +16,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'garrison': w.garrison_set(c.idx!, c.kind ?? 0); break;
     case 'bridge': w.drawbridge_set(c.idx!, (c.kind ?? 0) === 1); break;
     case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
+    case 'level': w.level_ground(c.x!, c.y!, c.kind ?? 0); break;   // x, y the middle, kind the radius: levels the ground to the land round it
     case 'flatten': w.flatten(c.x ?? 60); break;
     case 'batch': w.place_batch(Int32Array.from(c.units ?? [])); break;   // [kind, dx, dy, rot] per piece, rebuilt once
     case 'road': w.lay_road(Int32Array.from(c.units ?? [])); break;   // [dx, dy] per point of a road the player drew: pieces joined into one curve, the ends snapped onto nodes

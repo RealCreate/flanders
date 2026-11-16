@@ -11,6 +11,7 @@ mod military;
 mod pathnet;
 pub mod doors;
 mod roadline;
+mod flatten;
 mod plague;
 mod wallnet;
 #[cfg(test)]
@@ -19,6 +20,8 @@ mod roadcheck;
 mod farmcheck;
 #[cfg(test)]
 mod roadtests;
+#[cfg(test)]
+mod flatten_tests;
 #[cfg(test)]
 mod snapshot_tests;
 mod terrain;
@@ -279,6 +282,7 @@ pub struct World {
     meal_credit: i32,             // quarter meals left over from the last item eaten (an item can fill more than was needed)
     ledger: ledger::Ledger,       // where each resource came from and went to over the last day (derived display data: never read by the rules, never hashed)
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
+    flats: Vec<[f32; 4]>,         // [x, y, radius, height] patches the player levelled (see flatten.rs): applied after ditches and earthworks, so nothing dug there shows
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
     road_links: Vec<(u32, u32)>,  // what each segment belongs to: (i, i) the stub of building i, (piece, target) a stretch of a road the player laid (derived)
     road_conn: Vec<roadline::RoadConn>,   // how each road piece the player laid is joined to what it runs to (see roadline.rs; part of the state)
@@ -416,7 +420,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -689,6 +693,12 @@ impl World {
             }
             if fm > 0.0 && h > MOAT_BED { h += (MOAT_BED - h) * fm.min(1.0); }
             if fr > 0.0 && h > RIVER_BED { h += (RIVER_BED - h) * fr.min(1.0); }
+        }
+        for f in &self.flats {   // ground the player levelled: after the ditches and earthworks, so it hides whatever was dug there
+            let (dx, dy) = (x - f[0], y - f[1]); let reach = f[2] + flatten::FLAT_SHOULDER;
+            if dx.abs() > reach || dy.abs() > reach { continue; }
+            let d = (dx * dx + dy * dy).sqrt();
+            if d < reach { h = lerp(h, f[3], 1.0 - smoothstep(f[2], reach, d)); }
         }
         // the earth at each end of a drawbridge is levelled to the deck, in a strip that runs on from the deck's ends (after the ditch is dug, so the water stays between them):
         // the deck meets the ground flush, with no step and no slope to climb
@@ -1995,7 +2005,7 @@ impl World {
             }
             8 => {   // reset the terrain: remove rivers, moats and earthworks, fill the craters and clear the scorch marks
                 self.buildings.retain(|b| !is_edit(b.kind));
-                self.craters.clear(); self.scorch.clear(); self.ruins.clear(); self.levels.clear(); self.terrain_ver += 1; self.map_ver += 1;
+                self.craters.clear(); self.scorch.clear(); self.ruins.clear(); self.levels.clear(); self.flats.clear(); self.terrain_ver += 1; self.map_ver += 1;
                 self.after_change(); true
             }
             _ => false,
@@ -2193,7 +2203,7 @@ impl World {
             part(&|mix| {   // the land the soldiers and the builders changed
                 for f in &self.felled { for v in f { mix(v.to_bits() as u64); } } mix(self.groves.len() as u64);
                 for b in &self.bridges { for v in b { mix(v.to_bits() as u64); } }
-                for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
+                for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for l in &self.flats { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
             part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8); mix(bt.lair as i64 as u64); } }),

@@ -186,6 +186,7 @@ impl World {
         for b in &self.buildings { mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64); mix(b.rot as u64); mix(b.aux as u64); if matches!(b.kind, DRAWBRIDGE | GATE | ROAD) { mix(b.status as u64); } }
         for c in &self.road_conn { mix(c.x.to_bits() as u64); mix(c.y.to_bits() as u64); for t in &c.to { mix(t.x.to_bits() as u64); mix(t.y.to_bits() as u64); mix(t.k as u64); } }
         for l in &self.levels { for v in l { mix(v.to_bits() as u64); } }
+        for l in &self.flats { for v in l { mix(v.to_bits() as u64); } }
         for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
         mix(self.battle.is_some() as u64); mix(self.terrain_ver as u64);
         for pl in &self.links { mix(pl.len() as u64); for q in pl { mix(q.0.to_bits() as u64); mix(q.1.to_bits() as u64); } }
@@ -197,6 +198,7 @@ impl World {
         let mut h: u64 = 0xcbf29ce484222325 ^ self.seed;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
         for l in &self.levels { for v in l { mix(v.to_bits() as u64); } }
+        for l in &self.flats { for v in l { mix(v.to_bits() as u64); } }
         for c in &self.craters { for v in c { mix(v.to_bits() as u64); } }
         mix(self.terrain_ver as u64);
         for b in self.buildings.iter().filter(|b| is_edit(b.kind) || b.kind == DRAWBRIDGE) { mix(b.kind as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64); mix(b.rot as u64); mix(b.aux as u64); mix(b.pad_h.to_bits() as u64); }

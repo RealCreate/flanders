@@ -13,6 +13,7 @@ export const RELEASES: Release[] = [
       'Market stock: buy basic goods for gold at the market; the stalls are refilled every day.',
       'Town hall backup supplies of wood and grain, so a village that runs dry can recover.',
       'Soldiers\' bridges: design a bridge for your army from bank to bank.',
+      'Level Ground tool (Land category): levels a round patch of ground to the land just outside it, so a pit that raising could not fill is mended and a bump is cut away. Any ditch or earthworks inside the patch is taken away with it. Costs wood and stone; refused where a building stands in the patch or the ground round it is water.',
       'Plaza: a paved square with a connection node on each of its four sides, and design options (benches, trees, a fountain, lanterns).',
       'Out-of-sync detection and repair: when a copy of another player\'s village drifts, the game notices and repairs it by itself.',
       'Rules fingerprint and build marker (see the home page and The shared world panel) so players can check they run the same version.',

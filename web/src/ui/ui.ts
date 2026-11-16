@@ -1,7 +1,7 @@
 import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
-import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, type BuildingDef } from '../data';
+import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, type BuildingDef } from '../data';
 import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
 
@@ -298,7 +298,7 @@ export class UI {
       const c = (e.target as HTMLElement).dataset.c; if (c === undefined) return;
       this.filter = Number(c);
       $('cats').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', (x as HTMLElement).dataset.c === c));
-      this.cards.forEach((el, id) => { el.hidden = this.filter >= 0 && defs[id].cat !== this.filter; });
+      this.cards.forEach((el, id) => { el.hidden = this.filter >= 0 && (defs[id]?.cat ?? CATS.length - 1) !== this.filter; });
     };
     $('speed').onclick = e => { const s = (e.target as HTMLElement).dataset.s; if (s !== undefined) this.h.speed(Number(s)); };
     { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
@@ -519,6 +519,20 @@ export class UI {
       c.onclick = () => this.h.select(d.id);
       el.appendChild(c); this.cards.set(d.id, c);
     });
+    // the level-ground tool sits last, with the other tools of the Land category
+    const lc = document.createElement('div');
+    lc.className = 'card'; lc.dataset.id = String(LEVEL_TOOL);
+    lc.innerHTML = `<div class="ico">${icon('levelground', 30)}</div><div><div class="nm"><span>Level Ground</span></div>
+      <div class="ds">Levels a round patch of ground to the land just outside it: fills pits and cuts bumps, and takes away any ditch or earthworks inside. R changes the size. Buildings in the patch must already stand at that height.</div><div class="cost level-cost"></div></div>`;
+    lc.onclick = () => this.h.select(LEVEL_TOOL);
+    el.appendChild(lc); this.cards.set(LEVEL_TOOL, lc);
+  }
+
+  /** The cost line of the level-ground card for the patch size now chosen: flat [resource, amount, ...]. */
+  setLevelCost(flat: number[]) {
+    const c = this.cards.get(LEVEL_TOOL)?.querySelector('.cost'); if (!c) return;
+    const parts: string[] = []; for (let i = 0; i + 1 < flat.length; i += 2) parts.push(`<span data-r="${flat[i]}" data-n="${flat[i + 1]}">${resIcon(flat[i])} ${flat[i + 1]}</span>`);
+    c.innerHTML = parts.join('');
   }
 
   private buildUnits() {
