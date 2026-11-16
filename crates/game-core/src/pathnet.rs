@@ -175,6 +175,7 @@ impl Net {
     pub fn joined(&self, a: usize, b: usize) -> bool {
         let (ra, rb) = (self.ring.get(a), self.ring.get(b));
         let (Some(ra), Some(rb)) = (ra, rb) else { return false };
+        if ra.is_empty() || rb.is_empty() { return true; }   // (a building without a ring, a lowered drawbridge, is joined at its middle: the route decides)
         ra.iter().filter(|&&n| n != u32::MAX).any(|&n| rb.iter().any(|&m| m != u32::MAX && self.comp[n as usize] == self.comp[m as usize]))
     }
 
@@ -348,7 +349,7 @@ impl World {
             let ring: Vec<u32> = net.ring.get(i).map(|r| r.iter().copied().filter(|&id| id != u32::MAX).collect()).unwrap_or_default();
             // a road starts and ends at the building's door node (the first node of its ring, where the door's own short road leaves the plot), so all the roads of a building meet there and
             // the network is one piece; only a building whose door node stands on ground that is not walkable, or that the network cannot join from there, uses the rest of its ring
-            if !ring.is_empty() { return (match net.door_node(i) { Some(d) if !whole_ring && b.kind != TOLL => vec![d], _ => ring }, None); }
+            if !ring.is_empty() { return (match net.door_node(i) { Some(d) if !whole_ring && b.kind != TOLL && b.kind != GATE => vec![d], _ => ring }, None); }
             (net.reach((b.x, b.y)).into_iter().map(|c| c.0).collect(), Some((b.x, b.y)))
         };
         let ((mut from, fa), (to, fb)) = (ends(ia), ends(ib));
@@ -465,14 +466,19 @@ impl World {
             if b.kind == GATE {   // the way through a wall: a straight line of nodes through the middle of the doorway, square to the wall (cut when the doors are shut)
                 let Some(d) = doors.iter().find(|d| d.b == i) else { continue };
                 let (nx, ny) = (-d.uy, d.ux);
-                let mut prev = u32::MAX;
-                for t in [-11.0f32, -7.5, -3.8, 0.0, 3.8, 7.5, 11.0] {
+                let ts = [-11.0f32, -7.5, -3.8, 0.0, 3.8, 7.5, 11.0];
+                let mut id = [u32::MAX; 7]; let mut lk = [false; 7];
+                for (k, t) in ts.into_iter().enumerate() {
                     let (px, py) = (b.x + nx * t, b.y + ny * t);
-                    if !net.ok_at(px, py) { prev = u32::MAX; continue; }
-                    let id = net.add(px, py); road_pre.push(id);
-                    if prev != u32::MAX && net.clear(net.nodes[prev as usize], net.nodes[id as usize], 0.0) { net.link(prev, id, true); }
-                    prev = id;
+                    if !net.ok_at(px, py) { continue; }
+                    id[k] = net.add(px, py); road_pre.push(id[k]);
+                    if k > 0 && id[k - 1] != u32::MAX && net.clear(net.nodes[id[k - 1] as usize], net.nodes[id[k] as usize], 0.0) { net.link(id[k - 1], id[k], true); lk[k] = true; }
                 }
+                // the two ends of the way through the gate, where the roads of the village join it (none while the doors are shut)
+                let joined = |k: usize| -> bool { if id[k] == u32::MAX || id[3] == u32::MAX { return false; } if k > 3 { (4..=k).all(|q| lk[q] && id[q] != u32::MAX) } else { (k + 1..=3).all(|q| lk[q] && id[q - 1] != u32::MAX) } };
+                let hi = [4usize, 5, 6].into_iter().find(|&k| joined(k)).map_or(u32::MAX, |k| id[k]);
+                let lo = [2usize, 1, 0].into_iter().find(|&k| joined(k)).map_or(u32::MAX, |k| id[k]);
+                ring[i] = vec![hi, lo];
                 continue;
             }
             if b.kind == DRAWBRIDGE {   // along the deck, which only exists while the bridge is down (a drawn-up bridge leaves water, which is not walkable)
