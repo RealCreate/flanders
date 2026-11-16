@@ -196,8 +196,24 @@ pub const WHEEL_FOOT: f32 = 3.2;
 /// The fishing hut stands this far from the bank (middle to bank): its footing (to 1.5 out) then ends well short of the water even where the bank runs oblique to the turn; its jetty carries on over the water.
 pub const HUT_FOOT: f32 = 3.8;
 pub const WHEEL_PAD_MAX: f32 = 0.7;
-/// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
-const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
+/// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a lean winter (see the WINTER_* numbers below).
+const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, WINTER_GRAIN];
+// ---- Winter: every number that decides how hard it is lives here (and `winter_numbers` hands them to the interface). Changing any of them changes the rules (the fingerprint says so). ----
+/// Grain a farm makes in winter, in percent of the usual; with haystacks beside the field.
+const WINTER_GRAIN: i32 = 55;
+const WINTER_GRAIN_HAYSTACKS: i32 = 85;
+/// Firewood: every `WINTER_BURN_EVERY` ticks the village burns one unit for each `WINTER_HEADS_PER_WOOD` villagers (rounded up). A woodshed saves one unit per `WINTER_SHED_SAVES` sheds, sharing halves it.
+const WINTER_BURN_EVERY: u64 = 10;
+const WINTER_HEADS_PER_WOOD: u32 = 14;
+const WINTER_SHED_SAVES: i32 = 6;
+/// The town hall's hearth: the village counts as warm while it can burn at least this much wood (or all it wants if that is less) in a burn, so it is never cold while any wood is left, only when the stock is really empty.
+const WINTER_HEARTH_WOOD: i32 = 1;
+/// A cold village first loses happiness (4 per cold day on top of 4, at most 12). Nobody dies of cold for the first `WINTER_COLD_GRACE` cold days (a staffed hospital adds `WINTER_HOSPITAL_GRACE`);
+/// after that each day brings a death with a chance of `WINTER_DEATH_STEP` percent for every cold day beyond the grace, at most `WINTER_DEATH_MAX`. Whoever it is, in proportion to the population.
+const WINTER_COLD_GRACE: u32 = 3;
+const WINTER_HOSPITAL_GRACE: u32 = 2;
+const WINTER_DEATH_STEP: u32 = 15;
+const WINTER_DEATH_MAX: u32 = 60;
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
 const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2, 2, 3];
 
@@ -272,6 +288,7 @@ pub struct World {
     delivered: Vec<[i32; 3]>, // the same, but only as a notice for the player's own client to pass on (drained by take_delivered, not part of the state)
     treaties: Vec<Treaty>,    // agreements with other villages
     warm: bool,    // false while winter fires are out for lack of wood
+    cold_days: u32, // days in a row the village has been cold (the cold only kills after a grace)
     eff: u32,
     /// How fully the food and wood workplaces are staffed, and everything else (derived in `staffing`: the hands go to food and wood first).
     eff_first: u32, eff_rest: u32,
@@ -419,7 +436,7 @@ impl World {
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
@@ -1256,7 +1273,7 @@ impl World {
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
             let soil = if kind == FARM { 500 + self.buildings[i].fert as i32 / 20 } else { 1000 };   // per mille: rich soil 100%, worn out 50%
-            let seasonal = if kind == FARM && season == 3 && ob & 2 != 0 { 45 } else { GRAIN_BY_SEASON[season as usize] };   // haystacks keep winter fields worth working
+            let seasonal = if kind == FARM && season == 3 && ob & 2 != 0 { WINTER_GRAIN_HAYSTACKS } else { GRAIN_BY_SEASON[season as usize] };   // haystacks keep winter fields worth working
             let yield_of = |r: u8, n: i32| { let q = scale(n); if r == GR { (q * seasonal * soil / 100_000).max(1) } else { q } };
             let mut status = self.buildings[i].status;
             while p >= need {
@@ -1518,14 +1535,23 @@ impl World {
     }
     pub fn married_to(&self, tag: i32) -> bool { self.married.contains(&tag) }
 
+    /// Firewood the village wants per burn (every `WINTER_BURN_EVERY` ticks) at its present size.
+    pub(crate) fn winter_need(&self) -> i32 {
+        ((self.population + WINTER_HEADS_PER_WOOD - 1) / WINTER_HEADS_PER_WOOD) as i32 / if self.tick < self.share_until { 2 } else { 1 } - self.perks().woodsheds / WINTER_SHED_SAVES
+    }
+    /// Chance in percent that the cold takes someone today, after `cold_days` cold days (0 within the grace).
+    fn cold_death_chance(&self) -> u32 {
+        let grace = WINTER_COLD_GRACE + if self.hospital_beds() > 0 { WINTER_HOSPITAL_GRACE } else { 0 };
+        (self.cold_days.saturating_sub(grace) * WINTER_DEATH_STEP).min(WINTER_DEATH_MAX)
+    }
     /// Fires in winter, and once a day the generations turn: children grow up, the old pass away, couples have babies.
     fn household_step(&mut self) {
-        // winter: every ten ticks the village burns firewood, a tenth of a unit a head
+        // winter: the village burns firewood (see WINTER_*); the town hall's hearth keeps it warm while there is wood for a good part of what it wants
         if self.season() == 3 {
-            if self.tick % 10 == 0 {
-                let need = (((self.population + 9) / 10) as i32 / if self.tick < self.share_until { 2 } else { 1 } - self.perks().woodsheds / 6).max(0);
-                let used = need.min(self.stock[W as usize]); let c = self.ledger.extra(ledger::EX_WINTER); self.ledger.note(c, W as usize, -used);
-                if self.stock[W as usize] >= need { self.stock[W as usize] -= need; self.warm = true; } else { self.stock[W as usize] = 0; self.warm = false; }
+            if self.tick % WINTER_BURN_EVERY == 0 {
+                let need = self.winter_need().max(0);
+                let used = need.min(self.stock[W as usize].max(0)); let c = self.ledger.extra(ledger::EX_WINTER); self.ledger.note(c, W as usize, -used);
+                self.stock[W as usize] -= used; self.warm = used >= need.min(WINTER_HEARTH_WOOD);
             }
         } else { self.warm = true; }
         if self.tick % DAY != 0 { return; }
@@ -1553,9 +1579,11 @@ impl World {
             else if self.season() == 3 && day % (SEASON_DAYS * 4) == SEASON_DAYS * 3 { self.offer(CH_WINTER); }
         }
         let take = |rng: &mut Rng, n: u32, per: u32| -> u32 { let mut k = n / per; if rng.range(per) < n % per { k += 1; } k.min(n) };
-        // freezing kills the old and the young first
-        if !self.warm && self.population > 3 && self.rng.range(3) == 0 {
-            self.kill(1, DIED_COLD, 2); self.push_event(EV_COLD, 1, 0);
+        // the cold: first only unhappiness, deaths after a few cold days and with a growing chance (see WINTER_COLD_GRACE)
+        if self.warm { self.cold_days = 0; } else {
+            self.cold_days += 1;
+            let chance = self.cold_death_chance();
+            if self.population > 3 && chance > 0 && self.rng.range(100) < chance { self.kill(1, DIED_COLD, 0); self.push_event(EV_COLD, 1, 0); }
         }
         let grown = take(&mut self.rng, self.children, 30); self.children -= grown;
         let adults = self.adults(); let aged = take(&mut self.rng, adults, 90); self.elders += aged;
@@ -2151,7 +2179,7 @@ impl World {
         if self.population > 0 { h -= (self.sick as i32 * 40) / self.population as i32; }
         if self.eff < 60 { h -= (60 - self.eff as i32) / 3; }
         if self.population > self.capacity() { h -= 10; }
-        if !self.warm { h -= 12; }
+        if !self.warm { h -= (4 + 4 * self.cold_days as i32).min(12); }
         h -= (self.unburied as i32 * 2).min(20);   // the dead lie unburied
         h += self.devotion / 10 + (2 * count(GRAVEYARD)).min(4) + (3 * self.buildings.iter().filter(|b| b.kind == HOSPITAL && b.staff > 0).count() as i32).min(6);
         h += self.perks().happy;
@@ -2164,6 +2192,21 @@ impl World {
     pub fn year(&self) -> u32 { (self.tick / DAY / SEASON_DAYS / 4) as u32 + 1 }
     /// Grain harvest now as a percentage of the usual (the season decides).
     pub fn grain_percent(&self) -> u32 { GRAIN_BY_SEASON[self.season() as usize] as u32 }
+    /// What winter means for this village right now, for the interface (read-only; every number comes from the rules above):
+    /// [0 grain %, 1 grain % with haystacks, 2 firewood burned per day at the present size (as if it were winter), 3 days of firewood left (x10; -1 when none is burned), 4 days cold in a row,
+    ///  5 warm (1/0), 6 cold days before anyone dies, 7 chance in percent that the cold takes someone today, 8 days until winter starts (0 in winter), 9 hospital beds, 10 woodsheds,
+    ///  11 hearth wood, 12 happiness lost to the cold now, 13 firewood in store, 14 days of winter left (0 outside winter), 15 firewood saved per day by woodsheds, 16 villagers per log, 17 death chance step %, 18 death chance cap %, 19 extra grace days with a hospital, 20 woodsheds that save one log per burn].
+    pub fn winter_numbers(&self) -> Vec<i32> {
+        let per_day = self.winter_need().max(0) * (DAY / WINTER_BURN_EVERY) as i32;
+        let left = if per_day > 0 { self.stock[W as usize].max(0) * 10 / per_day } else { -1 };
+        let into = (self.tick / DAY) % (SEASON_DAYS * 4); let winter = self.season() == 3;
+        let grace = WINTER_COLD_GRACE + if self.hospital_beds() > 0 { WINTER_HOSPITAL_GRACE } else { 0 };
+        let saved = (self.perks().woodsheds / WINTER_SHED_SAVES).min(((self.population + WINTER_HEADS_PER_WOOD - 1) / WINTER_HEADS_PER_WOOD) as i32) * (DAY / WINTER_BURN_EVERY) as i32;
+        vec![WINTER_GRAIN, WINTER_GRAIN_HAYSTACKS, per_day, left, self.cold_days as i32, self.warm as i32, grace as i32, if self.warm { 0 } else { self.cold_death_chance() as i32 },
+            if winter { 0 } else { ((SEASON_DAYS * 3 - into.min(SEASON_DAYS * 3)) as i32).max(0) }, self.hospital_beds() as i32, self.perks().woodsheds, WINTER_HEARTH_WOOD,
+            if self.warm { 0 } else { (4 + 4 * self.cold_days as i32).min(12) }, self.stock[W as usize], if winter { (SEASON_DAYS * 4 - into) as i32 } else { 0 }, saved,
+            WINTER_HEADS_PER_WOOD as i32, WINTER_DEATH_STEP as i32, WINTER_DEATH_MAX as i32, WINTER_HOSPITAL_GRACE as i32, WINTER_SHED_SAVES]
+    }
     /// Villagers of working age.
     pub fn adults(&self) -> u32 { self.population.saturating_sub(self.children + self.elders) }
     /// [children, adults, elders, couples]: the families behind the headcount.
@@ -2180,7 +2223,7 @@ impl World {
         let part = |f: &dyn Fn(&mut dyn FnMut(u64))| -> u64 { let mut h: u64 = 0xcbf29ce484222325 ^ self.seed; f(&mut |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); }); h };
         vec![
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
-                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
+                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.cold_days as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
             part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } mix(self.meal_credit as i64 as u64); for s in &self.market_sold { mix(*s as i64 as u64); } }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
@@ -2259,6 +2302,8 @@ const FARM_PAD_REACH: f32 = 22.0;
 
 #[cfg(test)]
 mod lend_tests;
+#[cfg(test)]
+mod winter_tests;
 #[cfg(test)]
 mod ledger_tests;
 #[cfg(test)]
@@ -3088,7 +3133,7 @@ mod family_tests {
         let mut w = farm_world();
         assert_eq!(w.season(), 0);
         w.tick = DAY * SEASON_DAYS * 2; assert_eq!(w.season(), 2); assert_eq!(w.grain_percent(), 150);
-        w.tick = DAY * SEASON_DAYS * 3; assert_eq!(w.season(), 3); assert_eq!(w.grain_percent(), 25);
+        w.tick = DAY * SEASON_DAYS * 3; assert_eq!(w.season(), 3); assert_eq!(w.grain_percent(), WINTER_GRAIN as u32);
         w.tick = DAY * SEASON_DAYS * 4; assert_eq!((w.season(), w.year()), (0, 2));
         // the same farm makes more grain in autumn than in winter
         let make = |tick: u64| { let mut w = farm_world(); let i = [(-20, 14), (20, 14), (30, -20), (-30, -20)].into_iter().map(|(x, y)| w.place(FARM, x, y, 0)).find(|&i| i >= 0).expect("a farm site"); w.tick = tick; w.stock[GR as usize] = 0; w.population = 40; w.staffing(); for _ in 0..40 { w.step(); w.stock[W as usize] = 3000; w.stock[GR as usize] = w.stock[GR as usize].min(500); } let _ = i; w.stock[GR as usize] };
