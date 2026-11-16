@@ -12,7 +12,7 @@ pub fn door_local(kind: u8, tier: u8) -> ((f32, f32), (f32, f32)) {
     let fwd = (0.0f32, 1.0f32);
     match kind {
         HOUSE => ([(0.8, 1.6), (-0.9, 1.7), (0.0, 1.8), (0.0, 2.0)][t], fwd),
-        FARM => ((-1.2, -0.9), fwd),                                      // the barn's door opens onto the field; the road runs on through the fields
+        FARM => ((-1.2, -4.15), (0.0, -1.0)),                             // the door is in the back wall of the barn, away from the fields: the road leaves behind the farm
         TOWER => ([(0.0, 1.0), (0.0, 2.0), (0.0, 2.1), (0.0, 2.5)][t], fwd),
         4 => ((0.0, 1.0), fwd),                                           // woodcutter
         11 => (if t == 0 { (2.0, 0.7) } else { (2.0, 0.65) }, fwd),       // charcoal burner (its hut door stands to one side)
