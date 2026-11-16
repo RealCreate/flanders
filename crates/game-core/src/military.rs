@@ -113,7 +113,7 @@ pub fn unit_stat(u: &Unit) -> Stat {
     Stat { hp: u.maxhp, dmg: b.dmg * dm, range: b.range, speed: b.speed * sp, cd: b.cd, armor: b.armor }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     pub side: u8, // 0 defenders, 1 attackers
     pub kind: u8,
@@ -152,7 +152,7 @@ impl Unit {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Battle {
     pub units: Vec<Unit>,
     pub t: f32,
@@ -180,5 +180,5 @@ pub struct Battle {
     pub bname: u8,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Wildfire { pub x: f32, pub y: f32, pub r: f32, pub life: f32, pub scorch: usize }

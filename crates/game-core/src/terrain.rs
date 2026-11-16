@@ -323,7 +323,7 @@ pub fn forest_near(seed: u64, x: f32, y: f32, rad: f32) -> f32 {
     sum / n
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Deposit { pub kind: u8, pub x: f32, pub y: f32, pub rem: i32, pub max: i32 }
 
 /// Deposit kinds: 0 stone, 1 clay, 2 iron ore, 3 gold ore.
