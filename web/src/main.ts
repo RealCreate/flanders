@@ -883,7 +883,7 @@ async function startGame(name: string, username: string) {
   rig.focus(o.x, o.z, 75); rig.snap();
   await warmUp();
   PART_NAMES = state_hash_part_names().split(','); LEDGER_EXTRAS = ledger_extra_names().split(',');
-  try { myRules = rules_fingerprint(seedBig); } catch { /* without a fingerprint other players cannot tell our build */ }
+  try { myRules = rules_fingerprint(seedBig); ui.setRules(myRules); } catch { /* without a fingerprint other players cannot tell our build */ }
   if (saved && (saved.v !== SYNC_PROTOCOL || saved.rules !== myRules)) console.warn(`This village was last saved by another build (${saved.v ?? 'unknown'}/${saved.rules ?? 'unknown'}); its history is replayed with the rules of this one (${SYNC_PROTOCOL}/${myRules}).`);
   ui.setTab('build');
   ui.hint('Choose a building on the right, then click the ground. Start with houses and a farm.');
