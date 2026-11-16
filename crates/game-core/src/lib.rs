@@ -1963,6 +1963,8 @@ impl World {
     /// Who is attacking: 0 bandits, otherwise the attacking player's tag.
     pub fn battle_tag(&self) -> i32 { self.battle.as_ref().map_or(0, |b| b.tag) }
     /// Direction the attackers came from, as an angle (atan2(dy, dx)) from the village centre; 0 when there is no battle.
+    /// Where the attackers formed up when the fight began: [x, y] in world coordinates, empty when there is no fight (or it is a lair fight, which has no raid line).
+    pub fn battle_spawn(&self) -> Vec<f32> { self.battle.as_ref().filter(|b| b.lair < 0).map_or(vec![], |b| b.spawn.to_vec()) }
     pub fn battle_angle(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.angle) }
     pub fn battle_time(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.t) }
     /// The boss in the fight: [boss (1 warlord, 2 ogre), name, hp, maxhp, phase, alive] or nothing.

@@ -184,7 +184,7 @@ impl World {
             }
         }
         let ladders = if atk[0] + atk[2] > 0 { ((atk[0] + atk[2]) / 4).max(1) } else { 0 };
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4 });
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4 });
         let fixed = self.bridge_points();
         if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);
@@ -836,7 +836,7 @@ impl World {
             units.push(Unit::new(1, kind as u8, nx + a.cos() * r, ny + a.sin() * r, face + std::f32::consts::PI)); j += 1;
         } }
         let n1 = units.len() as u32;
-        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8 });
+        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8 });
         self.det_join(di);
         self.push_event(EV_LAIR, ni as i32, 0);
         true

@@ -62,7 +62,7 @@ import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Ve
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
-import { roleOf, actionsFor, foeFocus, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
+import { roleOf, actionsFor, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd } from './net/validate';
 import { Village, type Shared } from './village';
@@ -1146,8 +1146,33 @@ function updateBossBar() {
 function lookAtAttackers(v: Village) {
   const w = v.world, lair = w.battle_lair();
   if (lair.length) { rig.focus(lair[0], lair[1], 55); return; }   // a lair fight is out in the country
-  const f = foeFocus(w.battle_angle(), v.ox, v.oz, w.build_radius());
+  const f = foeTarget(w.battle_units_flat(), w.battle_spawn(), w.battle_angle(), v.ox, v.oz, w.build_radius());   // where they stand now (they march on from where they formed up)
   rig.focus(f.x, f.z, 70);
+  trackFoe = { v, until: performance.now() + 5000 };   // and stay with them for a few seconds, unless the player takes the camera
+}
+
+/** The camera follows the attackers for a few seconds after a jump to them. Any move of the player's own (mouse, key, wheel) ends it. */
+let trackFoe: { v: Village; until: number } | null = null;
+for (const ev of ['pointerdown', 'keydown', 'wheel']) addEventListener(ev, () => { trackFoe = null; }, { capture: true, passive: true });
+function updateFoeTrack(now: number) {
+  if (!trackFoe) return;
+  if (now > trackFoe.until || !trackFoe.v.world.battle_active()) { trackFoe = null; return; }
+  const c = foeCentroid(trackFoe.v.world.battle_units_flat());
+  if (c) rig.focus(c.x, c.z);
+}
+
+/** An arrow at the edge of the screen that points to the attackers while they are out of sight (click it to go there). */
+let foeArrowEl: HTMLDivElement | null = null;
+function updateFoeArrow() {
+  let target: { v: Village; x: number; z: number } | null = null;
+  for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(v.world.battle_units_flat()); if (c) { target = { v, x: c.x, z: c.z }; break; } }
+  if (!target) { if (foeArrowEl) foeArrowEl.hidden = true; return; }
+  vtmp.set(target.x, terrain.heightAt(target.x, target.z), target.z).project(rig.cam);
+  const e = edgeArrow((vtmp.x * 0.5 + 0.5) * innerWidth, (-vtmp.y * 0.5 + 0.5) * innerHeight, innerWidth, innerHeight, vtmp.z > 1);
+  if (!foeArrowEl) { foeArrowEl = document.createElement('div'); foeArrowEl.id = 'foearrow'; foeArrowEl.title = 'The attackers are this way: click to look at them'; foeArrowEl.textContent = '➤'; document.body.appendChild(foeArrowEl); const v0 = target.v; foeArrowEl.onclick = () => lookAtAttackers(v0); }
+  foeArrowEl.onclick = () => lookAtAttackers(target!.v);
+  foeArrowEl.hidden = !e; if (!e) return;
+  foeArrowEl.style.left = e.x + 'px'; foeArrowEl.style.top = e.y + 'px'; foeArrowEl.style.transform = `translate(-50%, -50%) rotate(${e.angle}rad)`;
 }
 
 /** Field armies that are free to be sent to the fight (not already in it). */
@@ -2081,7 +2106,7 @@ function frame(now: number) {
   if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }
   perf.start('labels + minimap');
   updateHallLabels(all); updateJourneyLabels();
-  updateLabels(); updateBossBar();
+  updateLabels(); updateBossBar(); updateFoeTrack(now); updateFoeArrow();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {
     miniT = now;
@@ -2090,6 +2115,7 @@ function frame(now: number) {
     const mapV = (v: Village, color: string, name: string): MapVillage => { const f = v.world.buildings_flat(), b: MapVillage['buildings'] = []; for (let i = 0; i < f.length; i += 10) b.push({ x: f[i + 2], z: f[i + 3], r: shared.radii[f[i]], kind: f[i] }); return { x: v.ox, z: v.oz, r: v.radius, color, name, buildings: b }; };
     const villages = [mapV(lv, '#5f8fe0', myName), ...[...rivals.values()].map(r => mapV(r.village, '#e05f5f', r.name))];
     const armies = [lv, ...[...rivals.values()].map(r => r.village)].flatMap((v, k) => v.field.ids().map(id => ({ ...v.field.position(id)!, color: k ? '#ff8a7a' : '#8fb8ff' })));
+    for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(v.world.battle_units_flat()); if (c) armies.push({ x: c.x, z: c.z, color: '#ff2d1a' }); }   // the raiders, wherever they are
     const mo = { fog: lv.world.explored_flat(), neutrals: lv.world.neutrals_flat(), villages, armies, deposits: lv.world.deposits_flat(), showDeposits, view, target: { x: rig.target.x, z: rig.target.z } };
     minimap.draw(mo); if (ui.mapOpen()) bigMap.draw(mo);
   }

@@ -45,3 +45,20 @@ test('a drawbridge lent to an army is down even in a fight, and is announced onc
   r = newlyLent(flat, r.now); assert.deepEqual(r.fresh, [], 'not announced again while it stays down');
   r = newlyLent([...row(0, 4), ...row(23, 5), ...row(23, 7)], r.now); assert.deepEqual(r.fresh, [2]);
 });
+
+import { foeCentroid, foeTarget, edgeArrow } from '../src/defence.ts';
+test('the camera goes to where the attackers stand now, not where they began', () => {
+  const unit = (side, x, z, alive = 1) => [side, 0, x, z, 10, 10, alive, 0, 0, 0, 0, 0, 0, 0];
+  const flat = [...unit(1, 100, 40), ...unit(1, 110, 60), ...unit(1, 999, 999, 0), ...unit(0, -5, -5)];
+  const c = foeCentroid(flat); assert.equal(c.n, 2); assert.ok(Math.abs(c.x - 105) < 1e-9 && Math.abs(c.z - 50) < 1e-9, 'the dead and the defenders do not count');
+  const t = foeTarget(flat, [300, 300], 0.5, 0, 0, 30); assert.deepEqual(t, { x: 105, z: 50 });
+  assert.deepEqual(foeTarget([], [300, 310], 0.5, 0, 0, 30), { x: 300, z: 310 }, 'before any attackers exist: where they formed up');
+  const f = foeTarget([], [], 0, 10, 20, 30); assert.ok(Math.abs(f.x - 62) < 1e-9 && Math.abs(f.z - 20) < 1e-9, 'with nothing else: out along the raid angle');
+});
+test('an arrow at the screen edge points at what is off screen', () => {
+  assert.equal(edgeArrow(500, 300, 1000, 600), null);
+  const r = edgeArrow(2500, 300, 1000, 600); assert.ok(Math.abs(r.x - 964) < 1e-6 && Math.abs(r.y - 300) < 1e-6 && Math.abs(r.angle) < 1e-9);
+  const u = edgeArrow(500, -900, 1000, 600); assert.ok(u.y < 40 && Math.abs(u.angle + Math.PI / 2) < 1e-9);
+  const b = edgeArrow(500, 300, 1000, 600, true); assert.ok(b, 'behind the camera is always off screen');
+  for (const [x, y] of [[-300, -300], [1300, 900], [-50, 700]]) { const e = edgeArrow(x, y, 1000, 600); assert.ok(e.x >= 36 - 1e-6 && e.x <= 964 + 1e-6 && e.y >= 36 - 1e-6 && e.y <= 564 + 1e-6, 'stays inside the screen'); }
+});
