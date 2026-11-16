@@ -1502,6 +1502,7 @@ function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.client
 function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
   if (kind === 29 || kind === 41) { const s = kind === 29 ? lv.world.waterwheel_snap(dx, dy) : lv.world.fishing_hut_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a waterwheel stands on the bank with its wheel out over the water (the core checks it again)
   if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
+  if (kind === 36) { const s = lv.world.toll_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a toll post snaps onto the nearest road, its gate along it, so the road runs through the gate
   const d = defs[kind]; if (d.req !== 1) return null;
   const f = lv.world.deposits_flat(), px = lv.ox + dx, pz = lv.oz + dy;
   let best = -1, bd = 18 * 18;

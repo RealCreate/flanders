@@ -68,6 +68,7 @@ export class Paths {
     const half = hallTier >= 2 ? 1.45 : 1.15, EDGE = 1.3, discs = new Map<string, [number, number]>();
     lines.forEach((ln, li) => {
       const kc = buildings[ln.child * S], kp = buildings[ln.parent * S];
+      if (ln.child === ln.parent && kc === 1) return;   // a farm's own road runs through its fields: the model carries it (see the farm in buildings.ts)
       const P = rounded(ln.pts, 3.2, ln.room.map(r => Math.max(0, r - half * 0.5)));
       let total = 0; for (let k = 2; k < P.length; k += 2) total += Math.hypot(P[k] - P[k - 2], P[k + 1] - P[k - 1]);
       const t0 = 0, t1 = total;

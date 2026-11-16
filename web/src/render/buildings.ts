@@ -81,6 +81,7 @@ function makeMats() {
     ironPile: col(0x8a4a30, { roughness: 0.8 }),
     clay: col(0xb5693a, { roughness: 0.75 }),
     earth: col(0x4a3a2a, { roughness: 1 }),
+    lane: col(0xb59468, { roughness: 1 }),   // the dirt road through a farm's fields
     mound: col(0x5a4630, { roughness: 1 }),
     glow: col(0xff8a2a, { emissive: 0xff6a10, emissiveIntensity: 2.4 }),
     hay: col(0xd9b95a),
@@ -260,6 +261,8 @@ const wallMat = (t: number) => [M().wood, M().plaster, M().stone, M().stone][t];
 const roofMat = (t: number) => [M().thatch, M().tile, M().slate, M().slate][t];
 
 
+/** Where the road through a farm's fields meets the ring round its plot, by tier (z along the lane at x = -1.2): the exit of the core's door table. */
+export const FARM_LANE_END = [9.16, 13.36, 13.36, 16.2];
 const farm: Model = b => {
   const t = b.t, m = M();
   b.box(10.4, 0.1, 8.4, m.field, 0, 0.02, 1.4);
@@ -274,6 +277,10 @@ const farm: Model = b => {
     bl.position.set(-4.6, 4.2, 3.7); b.g.add(bl); b.spin.push(bl);
   }
   if (t === 3) b.flag(-1.2, 4.2, -2.6, 1.8);
+  // the farm's own road: from the barn door straight out through the fields to the circle that the farm's plot ends at (where the village's roads meet it: the core's door table, crates/game-core/src/doors.rs,
+  // puts the exit there, and tests/doors.test.mjs checks it). It lies on the crops, on a bank of earth that reaches down to the ground where the levelled land eases back into the slope.
+  const laneEnd = FARM_LANE_END[Math.min(3, t)];
+  b.box(1.9, 1.0, laneEnd + 0.9, m.lane, -1.2, -0.84, (laneEnd - 0.9) / 2);
   // a bigger farm works more fields: a second beside the first, a third below it and a fourth in the corner (the farm's footprint grows to make room)
   const crop = (c: number) => new THREE.MeshStandardMaterial({ color: c, roughness: 1 });
   const extra: [number, number, number, number, number][] = [[5.0, 8.4, 7.9, 1.4, 0xc9a43b], [10.4, 4.6, 0, 8.0, 0x6f9a3a], [5.0, 4.6, 7.9, 8.0, 0x8a6a3a]];
@@ -870,14 +877,20 @@ const port: Model = b => {
 };
 
 /** A toll post: a keeper's hut beside the road and a striped barrier pole across it; better tiers add a stone gatehouse and a flag. */
+// Toll post: the road runs through it. Two posts stand either side of the road (along the model's z axis; the core snaps the building onto a road so that this axis lies along it, see toll_snap),
+// a striped barrier arm is swung up over the road, and the toll keeper's hut stands beside it. The ground between the posts is left bare: the road is drawn through (crates/game-core/src/lib.rs).
 const toll: Model = b => {
   const t = b.t, m = M();
-  b.box(2.2, 1.9, 1.8, t >= 2 ? m.stone : m.wood, 1.8, 0.1, -0.2); b.gable(2.4, 2.0, 0.9, t >= 1 ? m.tile : m.thatch, 1.8, 2.0, -0.2, 0.25);
-  b.box(0.5, 1.0, 0.1, m.door, 1.8, 0.1, 0.72);
-  b.box(0.3, 1.5, 0.3, m.darkwood, -0.6, 0, 0.6); b.box(0.3, 1.5, 0.3, m.darkwood, 0.2, 0, 0.6);
-  for (let i = 0; i < 6; i++) b.box(0.6, 0.18, 0.18, i % 2 ? m.shutterRed : m.plaster, -0.6 + 0.1 + i * 0.12 - 0.3, 1.25, 0.6);
-  b.cyl(0.07, 0.07, 1.8, m.darkwood, -2.0, 0, 0.6, 6);
-  if (t >= 2) b.flag(2.9, 2.0, 0.5, 1.8);
+  b.box(1.8, 1.9, 1.6, t >= 2 ? m.stone : m.wood, 2.4, 0.1, -0.2); b.gable(2.0, 1.8, 0.9, t >= 1 ? m.tile : m.thatch, 2.4, 2.0, -0.2, 0.25);
+  b.box(0.1, 1.4, 0.5, m.door, 1.5, 0.1, -0.2);   // the keeper's door looks onto the road
+  for (const x of [-1.3, 1.3]) b.box(0.32, 1.7, 0.32, m.darkwood, x, 0, 0);
+  b.box(0.1, 0.5, 0.5, m.plaster, 1.3, 1.0, 0.2);   // the board with the tariff
+  // the barrier arm, swung up from the left post: striped red and white, with a counterweight behind the post
+  const ang = 0.7;
+  for (let i = 0; i < 6; i++) { const seg = b.box(0.5, 0.16, 0.16, i % 2 ? m.shutterRed : m.plaster, -1.3 + Math.cos(ang) * (0.3 + 0.5 * i), 1.45 + Math.sin(ang) * (0.3 + 0.5 * i), 0); seg.rotation.z = ang; }
+  b.box(0.35, 0.35, 0.35, m.stone, -1.3 - 0.35, 1.3, 0);
+  b.cyl(0.07, 0.07, 1.8, m.darkwood, 3.4, 0, 0.9, 6);
+  if (t >= 2) b.flag(3.4, 2.0, 0.9, 1.8);
 };
 
 /** The ghost shown while placing a bridge (the real bridge is drawn by spans.ts): ten units of deck with posts, stretched to the real length. */
