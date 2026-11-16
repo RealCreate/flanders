@@ -13,7 +13,7 @@ pub const EX_VILLAGERS: usize = 0; pub const EX_SOLDIERS: usize = 1; pub const E
 pub const EX_TAX: usize = 5; pub const EX_TITHE: usize = 6; pub const EX_TOLL: usize = 7; pub const EX_PORT: usize = 8; pub const EX_HARVEST: usize = 9;
 pub const EX_MERCHANTS: usize = 10; pub const EX_ORDERS: usize = 11; pub const EX_OTHER: usize = 12;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
     nk: usize,                         // number of building kinds: categories 0..nk are the kinds
     ncat: usize,

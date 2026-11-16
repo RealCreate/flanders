@@ -25,13 +25,13 @@ pub const S_HOME: u8 = 7;
 pub const S_FIGHT: u8 = 8;   // its soldiers are in the battle (see battle::det_join)
 
 /// A waypoint; `mode` describes the leg that ends here: 0 walk, 1 fell trees, 2 cross water.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Wp { pub x: f32, pub y: f32, pub mode: u8 }
 
 /// Knights, catapults and other riders and engines that travel apart from the foot soldiers of an army, each at their own pace and heading straight for the place the army was sent to.
 /// They look for their own way (roads and bridges first, as everybody does); where theirs would need felling or a crossing that only the soldiers can make, they keep to the army's route
 /// (`tied`) and wait at such a place until the soldiers have made it passable.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Grp {
     pub units: [u32; NK],
     pub x: f32, pub y: f32,
@@ -42,7 +42,7 @@ pub struct Grp {
     pub tied: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Det {
     pub id: u32,
     pub units: [u32; NK],
