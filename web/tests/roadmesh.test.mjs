@@ -68,3 +68,21 @@ test('a road the player laid shows at once, a stub still grows in with its build
   const s = buildRoadMesh(flat([{ kind: 0, born: 5000, pts: [0, 0, 3, 0] }]), 1.15);
   assert.ok(s.born.every(b => b === 5000), 'a stub is born with its building');
 });
+
+test('a building\'s stub is a narrow ribbon along the door-to-node segment: no wide patch under the building', () => {
+  for (const len of [0.8, 1.5, 3, 6]) for (const half of [1.15, 1.45]) for (const ang of [0, 0.4, 0.785, 1.57, 2.4, 3.9]) {
+    const ex = Math.cos(ang) * len, ez = Math.sin(ang) * len;
+    const m = buildRoadMesh(flat([{ kind: 0, born: 0, pts: [0, 0, ex, ez] }]), half);
+    sane(m);
+    // every vertex of the stub (ribbon and the round patch at its node) lies near the segment, within the soft edge of the ribbon
+    const reach = half * EDGE + 1e-6;
+    for (let i = 0; i < m.x.length; i++) {
+      const t = Math.max(0, Math.min(1, (m.x[i] * ex + m.z[i] * ez) / (len * len)));
+      assert.ok(Math.hypot(m.x[i] - ex * t, m.z[i] - ez * t) <= reach + 1e-6, `vertex ${i} strays ${Math.hypot(m.x[i] - ex * t, m.z[i] - ez * t)}`);
+    }
+    // and the area is bounded by the stub's length times its width, plus the patch at the node
+    let area = 0;
+    for (let i = 0; i < m.idx.length; i += 3) { const [a, b, c] = [m.idx[i], m.idx[i + 1], m.idx[i + 2]]; area += Math.abs((m.x[b] - m.x[a]) * (m.z[c] - m.z[a]) - (m.x[c] - m.x[a]) * (m.z[b] - m.z[a])) / 2; }
+    assert.ok(area <= len * 2 * half * EDGE * 1.6 + Math.PI * (half * EDGE) ** 2, `area ${area} for a stub ${len} long`);
+  }
+});

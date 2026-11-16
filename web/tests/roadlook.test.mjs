@@ -54,3 +54,9 @@ test('stone is a light grey paving that differs from both the grass and the dirt
   for (const g of GRASS_RGB) assert.ok(Math.hypot(s[0] - g[0], s[1] - g[1], s[2] - g[2]) > 40, 'not the grass');
   assert.ok(Math.abs(s[0] - s[2]) < 40, 'grey rather than brown');
 });
+
+test('the ground round a building is a faint plain earth tint, nowhere near the road\'s own look', async () => {
+  const { APRON_RGB, APRON_ALPHA } = await import('../src/render/roadlook.ts');
+  assert.ok(APRON_ALPHA <= 0.5, 'faint');
+  assert.ok(APRON_RGB.every(v => v > 0 && v <= 1));
+});
