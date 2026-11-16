@@ -16,7 +16,7 @@ impl World {
 fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w }
 
 fn bld(kind: u8, tier: u8, rot: u8, x: f32, y: f32) -> Building {
-    Building { kind, tier, x, y, rot, pad_h: 1.0, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: 1.0, burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 }
+    Building { kind, tier, x, y, rot, pad_h: 1.0, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: 1.0, burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 }
 }
 
 /// Points of a road between two places, as `lay_road` takes them (relative to the origin): the first and last at the places, a few between, bent sideways by `bend`.

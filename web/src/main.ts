@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
+import { parseRows, parseTotals, stepWant } from './workview';
 import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL } from './stockhighlight';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
@@ -101,6 +102,9 @@ const ui: UI = new UI({
   stockHover: (res, sign) => stockHover(res, sign),
   stockInfo: (res, sign) => stockInfo(res, sign),
   stockGo: (res, sign, kind) => stockGo(res, sign, kind),
+  setWorkers: (idx, n) => setWorkers(idx, n),
+  workAll: a => workAll(a),
+  goBuilding: i => { const f = lv.world.buildings_flat(); rig.focus(f[i * STRIDE + 2], f[i * STRIDE + 3]); selectBuilding(i); },
   speed: n => setSpeed(n),
   toggleResources: () => toggleResources(),
   muster: u => doMuster(u),
@@ -1174,6 +1178,7 @@ function updateHud() {
     joy: w.happiness(), eff: w.efficiency(), jobs: w.jobs(), radius: w.build_radius(), buildings: w.building_count(), storage: w.storage(),
     army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
     vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(), winter: Array.from(w.winter_numbers()),
+    work: ui.workOpen ? { rows: parseRows(w.staffing_flat(), f), totals: parseTotals(w.staffing_totals()) } : undefined,
   });
   ui.maxAttack(Array.from(w.army())); updateDets();
   { // the border follows what has been built; redrawn only when the land changed
@@ -1606,6 +1611,7 @@ function updateSelection() {
       <p class="muted">Set to fish it smokes raw fish into smoked fish; set to meat it smokes the hunters' meat into smoked meat. Either needs a little wood.</p></div>`;
   }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
+  if (d.jobs > 0) html += workersHtml(selectedIdx);
   if (d.cycle) {
     html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>${icon('worker', 20)} ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
       <div><div class="eyebrow">Production cycle</div><div class="bar"><i style="width:${pct}%"></i></div></div>${depositHtml(selectedIdx)}
@@ -1636,7 +1642,42 @@ function updateSelection() {
   ui.setSelectedPane(html);
 }
 
+/** Give a building a number of workers (-1 auto, 0 paused). Returns true when the core took it. */
+function setWorkers(idx: number, n: number, quiet = false): boolean {
+  if (lv.world.set_workers(idx, n) !== 0) return false;
+  commit({ op: 'workers', idx, kind: n });
+  if (!quiet) { sound.click(); afterLocalChange(); updateHud(); }
+  return true;
+}
+/** Bulk changes from the work overview: 'auto' every building, 'auto:K' or 'pause:K' every building of kind K. */
+function workAll(action: string) {
+  const [what, k] = action.split(':'), kind = k === undefined ? -1 : Number(k);
+  const sf = lv.world.staffing_flat(); let n = 0;
+  for (let i = 0; i * 5 + 4 < sf.length; i++) {
+    const max = sf[i * 5 + 1], bk = sf[i * 5]; if (max <= 0 || (kind >= 0 && bk !== kind)) continue;
+    const to = what === 'pause' ? 0 : -1; if (sf[i * 5 + 2] !== to && setWorkers(i, to, true)) n++;
+  }
+  if (n) { sound.click(); afterLocalChange(); updateHud(); }
+}
+/** The workers control of the selected building: assigned / wanted / max, a slider with + and − and Auto, and a note when the village is short of hands. */
+function workersHtml(idx: number): string {
+  const w = lv.world, sf = w.staffing_flat(), o = idx * 5, kind = sf[o], max = sf[o + 1], want = sf[o + 2], staff = sf[o + 3], scaled = sf[o + 4] === 1;
+  if (!(max > 0)) return '';
+  const t = parseTotals(w.staffing_totals()), shown = want < 0 ? max : Math.min(want, max);
+  const note = want === 0 ? 'Paused: nobody works here, so it makes nothing. Villagers go to other buildings.'
+    : scaled ? `The village has only ${t.workers} workers for the ${t.promised} you asked for by hand, so every building you set got fewer.`
+    : want < 0 && staff < max ? `Short of hands: the village has ${t.workers} workers for ${t.jobs} jobs.` : want < 0 ? 'Automatic: the village shares its workers out, food and wood first.' : 'Set by you; the rest of the workers are shared out by the village.';
+  return `<div><h3>Workers</h3><div class="stats"><div class="stat"><b>${icon('worker', 20)} ${staff} / ${shown}${want >= 0 ? ` <small>of ${max}</small>` : ''}</b><span>${want < 0 ? 'Auto' : want === 0 ? 'Paused' : 'Set by hand'}</span></div></div>
+    <div class="btnrow wkrow"><button class="pbtn" data-act="wk:-1" ${shown <= 0 ? 'disabled' : ''} aria-label="One worker fewer">−</button>
+      <span class="wkslide"><input type="range" min="0" max="${max}" value="${shown}" data-wk="1" aria-label="Workers"><b class="wkval">${shown}</b></span>
+      <button class="pbtn" data-act="wk:+1" ${shown >= max ? 'disabled' : ''} aria-label="One worker more">+</button></div>
+    <div class="btnrow wrap"><button class="pbtn ${want < 0 ? 'on' : ''}" data-act="wk:auto" title="Let the village decide again">Auto</button><button class="pbtn" data-act="wk:set:0">Pause</button><button class="pbtn" data-act="wk:kind" title="Give every ${esc(defs[kind].name)} this setting">Same for all ${esc(defs[kind].name)}</button></div>
+    <p class="muted ${scaled || (want < 0 && staff < max) ? 'neg' : ''}">${note} <button class="pbtn" data-act="wk:overview">Work overview</button></p></div>`;
+}
+
 function onAct(a: string) {
+  if (a === 'wk:refresh') { updateHud(); return; }
+  if (a === 'wk:overview') { ui.openWork(); return; }
   if (selectedRuin !== null) {
     if (a === 'deselect') { selectRuin(null); return; }
     if (a === 'rebuild') {
@@ -1647,6 +1688,15 @@ function onAct(a: string) {
     return;
   }
   if (selectedIdx === null) return;
+  if (a.startsWith('wk:')) {
+    const sf = lv.world.staffing_flat(), o = selectedIdx * 5, row = { max: sf[o + 1], want: sf[o + 2], staff: sf[o + 3] };
+    let n = row.want;
+    if (a === 'wk:auto') n = -1; else if (a === 'wk:-1') n = stepWant(row, -1); else if (a === 'wk:+1') n = stepWant(row, 1);
+    else if (a.startsWith('wk:set:')) n = Math.max(0, Math.min(row.max, Number(a.slice(7)) | 0));
+    else if (a === 'wk:kind') { let c = 0; for (let i = 0; i * 5 + 4 < sf.length; i++) if (sf[i * 5] === sf[o] && sf[i * 5 + 1] > 0 && i !== selectedIdx) { if (setWorkers(i, row.want < 0 ? -1 : Math.min(row.want, sf[i * 5 + 1]), true)) c++; } sound.click(); afterLocalChange(); updateHud(); ui.toast(`${c + 1} ${defs[sf[o]].name.toLowerCase()} buildings set alike.`, 'info'); return; }
+    if (n !== row.want) setWorkers(selectedIdx, n);
+    return;
+  }
   if (a === 'gar+' || a === 'gar-' || a === 'garfill' || a === 'garempty') {
     const cap = lv.world.garrison_cap(selectedIdx), cur = lv.world.garrison_flat()[selectedIdx] ?? 0, avail = lv.world.army()[1];
     const want = a === 'gar+' ? cur + 1 : a === 'gar-' ? Math.max(0, cur - 1) : a === 'garempty' ? 0 : Math.min(cap, cur + avail);

@@ -6,6 +6,7 @@ export const RELEASES: Release[] = [
   {
     version: '0.2.0', date: '2026-11-16', title: 'Bosses, bridges and a proper food economy',
     added: [
+      'Assign villagers yourself: in a building\'s panel, a slider with + and − and an Auto button sets how many workers it has (0 pauses it). Buildings you set are filled first, the rest share what is left. Click the workforce figure in the top bar for the work overview: every workplace by kind with its workers, status and output, filters for problems, "Auto-assign all" and "Pause all" per kind.',
       'Hover the rate of a resource in the top bar to light up the buildings behind it: rings on every building that makes it (+) or uses it (−), green when working, orange when held up (no workers, short of materials, store full) and gold when it can be upgraded right now. The tooltip lists each kind with its count, tiers, upgrades possible and why some stand idle; click the rate to look at each building in turn. The breakdown panel has the same list with a Show on map button.',
       'Bosses: the Warlord and the Ogre of the Marches, with lairs in the wild to find and clear.',
       'Fishing hut, smokehouse and bakery. The smokehouse smokes fish or meat; the hunter\'s lodge now brings in meat.',

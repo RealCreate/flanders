@@ -23,6 +23,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'visit': w.visit_neutral(c.idx!); break;
     case 'hero': w.hero_hire(); break;
     case 'field': w.set_field_mode(c.idx!, c.kind ?? 0); break;
+    case 'workers': w.set_workers(c.idx!, c.kind ?? -1); break;   // idx the building, kind the workers wanted (-1 auto, 0 paused)
     case 'style': w.set_style(c.kind ?? 0); break;
     case 'goods': break;   // a notice that a caravan arrived: the receiver acts on it (see onCmd), nothing to replay
     case 'accept': w.receive_goods(c.kind ?? 0, c.x ?? 0); break;
