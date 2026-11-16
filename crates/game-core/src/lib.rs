@@ -802,9 +802,9 @@ impl World {
             if (x - b.x).abs() > 24.0 || (y - b.y).abs() > 24.0 { continue; }
             let a = (b.rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();
-            if !(5.6..22.0).contains(&s) || c > 5.2 { continue; }
-            let w = smoothstep(5.6, 6.6, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
-            h = lerp(h, b.pad_h, w * smoothstep(-0.2, 0.6, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
+            if !(3.0..22.0).contains(&s) || c > 5.2 { continue; }
+            let w = smoothstep(3.0, 4.0, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
+            h = lerp(h, b.pad_h, w * smoothstep(-0.8, 0.0, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
         }
         if !built { return h; }
         for s in &self.roads {
@@ -4497,6 +4497,12 @@ mod pathnet_tests {
             assert!(b.pad_h > bed + 2.5, "rot {}: deck {} must lie well above the bed {}", b.rot, b.pad_h, bed);
             assert!(b.pad_h >= 0.7, "rot {}: the deck is above the water surface: {}", b.rot, b.pad_h);
             assert!(w.on_deck(b.x, b.y), "rot {}: soldiers walk on the deck", b.rot);
+            // the shore runs flush to both ends of the deck: dry ground under its last metres is at deck level (no gap, no step)
+            let ang = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (ang.sin(), ang.cos());
+            for sgn in [-1.0f32, 1.0] { for d in [6.0f32, 7.0, 9.0] {
+                let (px, py) = (b.x + sgn * sx * d, b.y + sgn * sy * d);
+                if w.base(px, py) > 0.6 { let g = w.height_ground(px, py); assert!((g - b.pad_h).abs() < 0.3, "rot {} end {sgn} at {d}: ground {g} vs deck {}", b.rot, b.pad_h); }
+            } }
         }
         assert!(seen.len() >= 2, "several rotations covered: {seen:?}");
     }
