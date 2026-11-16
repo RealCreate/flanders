@@ -1143,6 +1143,8 @@ interface OptionCtx { solid: THREE.Box3[]; all: THREE.Box3; cx: number; cz: numb
 /** Which slot of the base model an option takes the place of, and which options an option's look depends on (it is drawn again when one of them is switched). */
 const REPLACES: Record<number, Record<number, string>> = { 3: { 2: 'roof' } };
 const DEPENDS: Record<number, Record<number, number[]>> = { 3: { 0: [2] } };
+/** Where the fishing hut's land ends in its model frame (+x is towards the water): the jetty starts here, so nothing but the jetty goes past it. */
+const hutLandX = (tier: number) => (3.0 + tier * 0.3) / 2 - 0.45;
 function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const m = M(), { all, cx, cz, hw, hd, reach, seed } = c, solid = c.solid;
   const top = c.top;
@@ -1152,6 +1154,7 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       const a = seed * 0.83 + bit * 1.7 + k * 0.62, rad = Math.max(hw, hd) * 0.55 + k * 0.1;
       if (rad > reach * 1.25 + 2.2) break;
       const x = cx + Math.cos(a) * rad, z = cz + Math.sin(a) * rad, bb = new THREE.Box3(new THREE.Vector3(x - w / 2 - 0.12, y0, z - d / 2 - 0.12), new THREE.Vector3(x + w / 2 + 0.12, y0 + h, z + d / 2 + 0.12));
+      if (kind === 41 && x + w / 2 + 1.0 > hutLandX(c.tier)) continue;   // the fishing hut's extras stay on the land side, behind the jetty's start (never on the jetty or over the water)
       if (solid.some(s => s.intersectsBox(bb))) continue;
       solid.push(bb); return [x, z];
     }
@@ -1162,7 +1165,7 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const pole = (h: number) => { const p = spot(0.5, 0.5, h); if (p) b.flag(p[0], 0, p[1], h); };
   const lantern = () => { const p = spot(0.4, 0.4, 1.7); if (p) { b.cyl(0.05, 0.06, 1.5, m.darkwood, p[0], 0, p[1], 6); b.box(0.24, 0.3, 0.24, m.glow, p[0], 1.45, p[1]); b.pyramid(0.34, 0.34, 0.2, m.iron, p[0], 1.75, p[1]); } };
   const awning = () => { const p = spot(2.2, 1.5, 2.2); if (p) { b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] - 1.0, 0, p[1] - 0.6, 6); b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] + 1.0, 0, p[1] - 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] - 1.0, 0, p[1] + 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] + 1.0, 0, p[1] + 0.6, 6); const c = b.box(2.3, 0.07, 1.5, m.shutterRed, p[0], 1.95, p[1]); c.rotation.x = 0.12; } };
-  const footing = () => { b.box(hw * 2 + 0.5, 0.3, hd * 2 + 0.5, m.stone, cx, 0, cz); };
+  const footing = () => { if (kind === 41) { const W = 3.0 + c.tier * 0.3, back = -0.6 - (W + 0.7) / 2; b.box(hutLandX(c.tier) - back, 0.3, 2.6 + 0.7, m.stone, (hutLandX(c.tier) + back) / 2, 0, 0); return; } b.box(hw * 2 + 0.5, 0.3, hd * 2 + 0.5, m.stone, cx, 0, cz); };
   const ring = (rad: number, y: number, h: number, mat: THREE.Material, n = 16) => { for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; const p = b.box(2 * Math.PI * rad / n + 0.1, h, 0.35, mat, cx + Math.cos(a) * rad, y, cz + Math.sin(a) * rad); p.rotation.y = -a + Math.PI / 2; } };
   const generic = (bit: number) => { if (bit === 0) pole(2.8); else if (bit === 1) { lantern(); lantern(); } else if (bit === 2) awning(); else if (bit === 3) footing(); };
   const has = (n: number) => n === bit;
