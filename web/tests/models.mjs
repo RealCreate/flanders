@@ -11,3 +11,5 @@ export async function loadBuildings() {
   return server.ssrLoadModule('/src/render/buildings.ts');
 }
 export async function closeModels() { await server?.close(); server = undefined; }
+/** Any compiled module under src/, e.g. loadModule('/src/render/crowd.ts'). */
+export async function loadModule(path) { server ??= await createServer({ root: new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), logLevel: 'silent', server: { middlewareMode: true, hmr: false, watch: null }, appType: 'custom', optimizeDeps: { noDiscovery: true } }); return server.ssrLoadModule(path); }
