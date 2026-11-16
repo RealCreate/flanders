@@ -13,6 +13,8 @@ import { ACTIONS, keys, prettyKey, type Action } from '../keys';
 import { mountFlagDesigner, paintFlag } from './flagdesigner';
 import { mountSettings } from './settingsui';
 import { loadFlag, saveFlag } from '../flag';
+import { versionLabel } from '../version';
+import { renderNotes } from '../releasenotes';
 
 /** The keys bound to an action, as they are now (after any rebinding), e.g. "W / Z / ↑". */
 export const keyNames = (a: Action) => keys.binds[a].map(k => `<kbd>${prettyKey(k).toUpperCase()}</kbd>`).join(' ');
@@ -209,7 +211,12 @@ export class UI {
     <div class="btnrow"><button class="pbtn primary" id="found">Enter the world</button></div>
     <p class="muted">There is no game server: every player runs a copy of the game and your browsers connect to each other. Your village is saved in this browser and keeps growing while you are away.</p>
     <div class="btnrow"><button class="pbtn" id="home-keys-btn">${bi('keys')} Controls and keybindings</button><button class="pbtn" id="home-display-btn">${bi('gear')} Display settings</button></div>
+    <p class="muted tiny verline"><span id="home-version" title="The build you are running. The rules fingerprint to compare with other players is under The shared world, once you are in.">${esc(versionLabel())}</span> · <a href="#" id="home-notes-btn">Release notes</a></p>
   </div>
+</div>
+<div class="overlay" id="notes" hidden style="z-index:21">
+  <div class="sheet wide"><h2>Release notes</h2><p class="muted tiny">${esc(versionLabel())}</p><div id="notes-body">${renderNotes()}</div>
+    <div class="btnrow"><button class="pbtn primary" data-close="notes">Back</button></div></div>
 </div>
 <div class="overlay" id="flag-page" hidden style="z-index:21">
   <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. You can change it later from the Village tab.</p><div id="intro-flag"></div>
@@ -259,6 +266,7 @@ export class UI {
   <div class="sheet">
     <h2>The shared world</h2>
     <p class="muted">Everyone who enters world <b id="mp-world"></b> lives on the same map. Your browser connects directly to the other players — nothing is stored on a server, and commands are signed so nobody can forge your moves.</p>
+    <p class="muted tiny" id="mp-build" title="Players with a different rules fingerprint run different game rules and will see different villages for each other">${esc(versionLabel())}</p>
     <div class="netstat" id="net-status">Looking for other players…</div>
     <ul class="log" id="mp-peers"></ul>
     <div class="btnrow"><button class="pbtn" id="mp-copy">${bi('copy')} Copy invite link</button><button class="pbtn primary" data-close="mp">Close</button></div>
@@ -277,6 +285,7 @@ export class UI {
     const mini = $('flag-mini').querySelector('canvas') as HTMLCanvasElement; paintFlag(mini, loadFlag());
     mountFlagDesigner($('intro-flag'), loadFlag(), f => { saveFlag(f); paintFlag(mini, f); });
     $('flag-mini').onclick = () => { $('flag-page').hidden = false; }; $('flag-done').onclick = () => { $('flag-page').hidden = true; };
+    $('home-notes-btn').onclick = e => { e.preventDefault(); this.modal('notes', true); };
     $('home-keys-btn').onclick = () => this.modal('help', true); $('home-display-btn').onclick = () => this.modal('display', true);   // separate pages, also before the game starts
     // rebinding a key must work on the start page too, before the game's own key handler exists
     document.addEventListener('keydown', e => { this.captureKey(e); }, true);
@@ -451,6 +460,8 @@ export class UI {
     $('cheats').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
   }
 
+  /** Show the rules fingerprint (the hash other players compare) next to the build in The shared world and in the home page tooltip. */
+  setRules(fp: string) { const t = `${versionLabel()} · rules ${fp}`; $('mp-build').textContent = t; $('home-version').title = `Rules fingerprint ${fp}: players with the same one play by the same rules.`; }
   modal(id: string, show: boolean) { $(id).hidden = !show; }
 
   /** The game's own yes/no question (in place of the browser's confirm box). Resolves true on yes; Esc, the backdrop and Cancel mean no. */

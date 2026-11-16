@@ -1,0 +1,59 @@
+/** The release notes: the one place to edit when a version ships. Newest first. Add an entry at the top, bump `version` in web/package.json to match.
+ *  Items are plain text (escaped when shown). Keep them about what a player sees, not about code. */
+export interface Release { version: string; date: string; title: string; added: string[]; changed: string[]; fixed: string[] }
+
+export const RELEASES: Release[] = [
+  {
+    version: '0.2.0', date: '2026-11-16', title: 'Bosses, bridges and a proper food economy',
+    added: [
+      'Bosses: the Warlord and the Ogre of the Marches, with lairs in the wild to find and clear.',
+      'Fishing hut, smokehouse and bakery. The smokehouse smokes fish or meat; the hunter\'s lodge now brings in meat.',
+      'Food mix: your people eat grain, fish, bread, meat and their smoked versions together, shown as one Food pill in the top bar.',
+      'Resource ledger: click a resource to see what makes it and what uses it, with a steady per-day rate and the days of supply left.',
+      'Market stock: buy basic goods for gold at the market; the stalls are refilled every day.',
+      'Town hall backup supplies of wood and grain, so a village that runs dry can recover.',
+      'Soldiers\' bridges: design a bridge for your army from bank to bank.',
+      'Out-of-sync detection and repair: when a copy of another player\'s village drifts, the game notices and repairs it by itself.',
+      'Rules fingerprint and build marker (see the home page and The shared world panel) so players can check they run the same version.',
+      'This version number and the release notes page.',
+    ],
+    changed: [
+      'Armies cross water only by a bridge or a temporarily lowered drawbridge.',
+      'Combat overhaul: defending, raiders, siege engines, fire and rams all behave more distinctly.',
+      'Knights and siege engines march at their own pace.',
+      'Roads follow the invisible path network, are pulled taut and run straight wherever the ground allows; near neighbours get direct roads.',
+      'Trade and diplomacy journeys between villages are shown as processions walking the road.',
+      'Hand-drawn icons replace the emoji, including new resource icons and a redrawn charcoal burner.',
+      'Raids come about once a week instead of more often.',
+      'Staff go to food and wood workplaces first.',
+      'Plagues last longer.',
+    ],
+    fixed: [
+      'Waterwheels and watermills stand at the visible water level of a moat and sit on the bank, with the wheel dipping into the water.',
+      'Fishing hut, gold mine and iron mine footings no longer glitch against the bank or the door pad.',
+      'Drawbridges snap to face outward across the moat.',
+      'A black beam over olive branches and scrolls.',
+      'Jumping a moat, clicking mines, spires and upgrades that could only be added.',
+    ],
+  },
+  {
+    version: '0.1.0', date: '2026-11-14', title: 'The first playable world',
+    added: [
+      'A shared medieval world with no server: players\' browsers connect to each other, and a map link brings friends to the same world.',
+      'Villages with families, ages, seasons and winter firewood; markets, caravans and treaties; diplomacy, churches, hospitals and graveyards.',
+      'Armies, morale, heroes, hoardings that pour boiling oil, toll posts, scouts and fog of war.',
+      'Player-drawn roads and bridges, gates and tunnels, wall walks with stairs, and a flag designer.',
+      'Playable on GitHub Pages, straight in the browser.',
+    ],
+    changed: ['Better water with depth colour, shore foam and ripples, and a bigger map.', 'Much faster rendering.'],
+    fixed: ['Gate and hoarding fixes, and a checked population counter.'],
+  },
+];
+
+const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+
+/** The notes page body as HTML: one section per version, newest first, each with its New / Changed / Fixed groups (empty groups are left out). */
+export function renderNotes(releases: Release[] = RELEASES): string {
+  const group = (name: string, items: string[]) => items.length ? `<h4>${name}</h4><ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '';
+  return releases.map(r => `<section class="release"><h3>${esc(r.version)} <small>${esc(r.date)}</small></h3><p class="muted">${esc(r.title)}</p>${group('New', r.added)}${group('Changed', r.changed)}${group('Fixed', r.fixed)}</section>`).join('');
+}
