@@ -393,3 +393,7 @@ table.flowtab td.r { text-align: right; font-variant-numeric: tabular-nums; whit
 .verline { text-align: center; margin: 0; } .verline a { color: var(--gold); }
 #notes-body .release { margin: 0 0 14px; } #notes-body h3 small { font-family: var(--f-ui); font-size: 13px; color: var(--ink-soft); margin-left: 6px; letter-spacing: 0; }
 #notes-body h4 { font-family: var(--f-old); font-size: 15px; margin: 8px 0 2px; color: var(--gold); } #notes-body ul { margin: 0; padding-left: 20px; font-size: 14.5px; line-height: 1.45; }
+
+.brand .sub { cursor: pointer; }
+table.winter td { vertical-align: top; padding: 6px 4px; }
+table.winter td .muted { font-size: 13.5px; line-height: 1.35; margin-top: 2px; }

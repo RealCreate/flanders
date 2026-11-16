@@ -1062,7 +1062,7 @@ function updateHud() {
     tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, flow, kinds, food: Array.from(World.food_table()), pop: w.population(), cap: w.capacity(), sick: w.sick(),
     joy: w.happiness(), eff: w.efficiency(), jobs: w.jobs(), radius: w.build_radius(), buildings: w.building_count(), storage: w.storage(),
     army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
-    vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(),
+    vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(), winter: Array.from(w.winter_numbers()),
   });
   ui.maxAttack(Array.from(w.army())); updateDets();
   { // the border follows what has been built; redrawn only when the land changed
