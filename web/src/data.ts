@@ -35,6 +35,9 @@ export const CATS = [{ name: 'Housing', icon: CAT_ICON_NAMES[0] }, { name: 'Food
 /** Icon names (see ui/icons.ts) by building kind. */
 export const KIND_ICON = KIND_ICON_NAMES;
 
+/** The id of the level-ground tool in the build palette: not a building (it has no row in the game's table), a tool that levels a patch of ground (op `level`). */
+export const LEVEL_TOOL = 99;
+
 /** Kinds without a levelled pad under them (walls, fences, gates, drawbridges, moats). */
 export const NOPAD = new Set([2, 21, 22, 23, 24, 32, 33, 34, 37, 38]);
 /** Kinds the wall pen can draw in one stroke, and the distance between the pieces it lays. */
@@ -64,7 +67,7 @@ export const PLACE_ERRORS: Record<number, string> = {
   [-1]: 'Unknown building', [-2]: 'Outside your village border — build more to grow it', [-3]: 'Something is in the way',
   [-4]: 'Too close to water', [-5]: 'Ground is too steep', [-6]: 'Not enough resources', [-7]: 'Needs a nearby ore or stone deposit',
   [-8]: 'Needs a forest nearby', [-9]: 'Cannot build that', [-18]: 'No water to bridge here — click closer to a moat, river or lake', [-19]: 'Too wide for a footbridge: bridges of better tiers span more',
-  [-16]: 'Needs water beside it: a river, lake or moat', [-20]: 'A gate must stand in a wall: click a wall piece', [-21]: 'That stretch of road is too long: put a point in between',
+  [-16]: 'Needs water beside it: a river, lake or moat', [-20]: 'A gate must stand in a wall: click a wall piece', [-24]: 'A patch to level is 3 to 14 wide', [-25]: 'No dry ground round it to level to: the patch is in water', [-26]: 'A building stands in it: its footing would be left in the air', [-21]: 'That stretch of road is too long: put a point in between',
   [-17]: 'An ore or stone deposit is in the way', [-14]: 'It is burning — put the fire out first', [-102]: 'Not enough archers in the barracks', [-103]: 'The tower is full', [-104]: 'Not during a battle', [-15]: 'Nothing to repair',
   [-11]: 'Build a barracks first', [-12]: 'Your barracks is too basic for that unit — upgrade it', [-13]: 'Not enough villagers to recruit',
 };

@@ -3,7 +3,7 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {
@@ -11,6 +11,9 @@ export interface WireCmd {
   kind?: number; x?: number; y?: number; rot?: number; idx?: number; tag?: number; angle?: number; ax?: number; ay?: number;
   to?: string; from?: string; units?: number[]; loot?: number[];
 }
+
+/** The radii a patch of ground may be levelled to (the game core refuses any other). */
+export const LEVEL_RADIUS = { min: 3, max: 14 } as const;
 
 export const LIMITS = {
   /** A single signed message: a batch of 400 pieces is about 20 kB of JSON. */
@@ -55,6 +58,9 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
   const out: WireCmd = { op: r.op as PeerOp, tick: r.tick, n: r.n };   // (a testing op is only let through for your own saved history)
   for (const f of INT_FIELDS) if (r[f] !== undefined) { if (!isInt(r[f])) return null; out[f] = r[f] as number; }
   for (const f of FLOAT_FIELDS) if (r[f] !== undefined) { if (!isNum(r[f])) return null; out[f] = r[f] as number; }
+  if (r.op === 'level') {   // level the ground: x, y the middle (relative to the village origin), kind the radius
+    if (!(isInt(out.kind) && out.kind >= LEVEL_RADIUS.min && out.kind <= LEVEL_RADIUS.max) || !(isInt(out.x) && isInt(out.y)) || Math.abs(out.x) > 2000 || Math.abs(out.y) > 2000) return null;
+  }
   for (const f of ['to', 'from'] as const) if (r[f] !== undefined) { if (!isKey(r[f])) return null; out[f] = r[f] as string; }
   for (const f of ['units', 'loot'] as const) if (r[f] !== undefined) { const a = numbers(r[f]); if (!a) return null; out[f] = a; }
   return out;

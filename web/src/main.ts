@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon } from './ui/icons';
 import { parseLedger, steadyRate } from './flowrate';
-import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses } from './data';
+import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
@@ -19,6 +19,7 @@ import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
 import { auditModel, setNightLight } from './render/buildings';
 import { subdivide, curve, type Pt } from './roadtool';
+import { LEVEL_SIZES, DEFAULT_LEVEL_SIZE, nextLevelSize } from './leveltool';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
 import { Terrain, HALF, STEP, NV } from './render/terrain';
@@ -148,6 +149,7 @@ const byPeer = new Map<string, string>();   // peerId -> pub
 let sites: { x: number; z: number }[] = [];
 let mySite = 0, myName = 'Traveller';
 let perf!: Perf;
+let levelR = DEFAULT_LEVEL_SIZE, levelCode = 99;   // the level-ground tool: the radius of the patch and the last answer for it (to say it once)
 let selectedKind: number | null = null, rot = 0, ghost: THREE.Group | null = null, ghostCode = 99;
 let selectedIdx: number | null = null;
 let selRing!: SelectionMark, growRing!: SelectionMark; const blockRings: SelectionMark[] = [];
@@ -394,7 +396,7 @@ function connect() {
         if (!r.village.advanceTo(c.tick)) { startResync(r, 'a command far ahead of the copy'); return; }   // (never apply a command at the wrong tick)
         applyCmd(r.village.world, c); r.track.applied(c.op);
         if (c.op === 'style') r.village.syncFull();
-        if (c.op === 'place' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') refreshTerrain(r.village.world);
+        if (c.op === 'place' || c.op === 'level' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') refreshTerrain(r.village.world);
         r.village.syncFull(); r.village.afterTick(); r.tick = c.tick;
       } catch (e) { quarantine(r, e); return; }
       judged(r, r.track.recheck(r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));   // a hash that was waiting for this command can be judged now
@@ -1210,10 +1212,11 @@ function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r =>
 
 // ---------- selection & placement ----------
 function selectKind(k: number | null) {
-  selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); lv?.nodes.setActive(k === 37);
+  selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
   terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false;
-  if (k !== null) {
+  if (k === LEVEL_TOOL) { selectedIdx = null; updateSelection(); ui.setLevelCost(Array.from(World.level_cost_flat(levelR))); ui.hint(placeHint(k)); }
+  else if (k !== null) {
     selectedIdx = null; updateSelection();
     // the ghost is the real building (same textures and shape), tinted green or red, so what you see is what you get
     ghost = buildModel(k, 0, 0x2f5fa8, 0); ghost.visible = false;
@@ -1227,6 +1230,7 @@ function selectKind(k: number | null) {
 function scaled(a: [number, number][], tier: number): [number, number][] { return a.map(([r, n]) => [r, Math.max(n, Math.floor((n * (4 + 5 * tier) + 2) / 4))]); }
 
 function placeHint(k: number) {
+  if (k === LEVEL_TOOL) return `Level ground, ${levelR} wide — click to level the patch to the land round it: pits are filled, bumps cut, ditches and earthworks inside taken away · R changes the size · Esc cancels`;
   if (k === 24) return `Moat ${(1 + 0.13 * moatWidth).toFixed(1)}× wide — press R to make it thinner or broader · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Alt = any angle · Esc cancels`;
   if (PEN_SPACING[k]) return `${defs[k].name} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · hold Alt for any angle · Esc cancels`;
   if (k === 37) return 'Road — click the points of the road: it runs in a smooth curve through them · its ends snap onto nodes (the rings at the edge of a building, the four sides of a plaza) and onto other roads · double-click or Enter to build · right-click takes the last point back · Esc cancels';
@@ -1614,7 +1618,39 @@ function roadCommit() {
   roadReset(); lv.nodes.setActive(selectedKind === 37);
 }
 
+function setLevelRadius(r: number) { levelR = r; levelCode = 99; ui.setLevelCost(Array.from(World.level_cost_flat(r))); drawLevelBar(); ui.hint(placeHint(LEVEL_TOOL)); updateHud(); }
+/** The sizes of the level-ground tool, in a bar at the bottom like the pen shapes. */
+function drawLevelBar() {
+  let bar = document.getElementById('levelbar');
+  if (selectedKind !== LEVEL_TOOL) { bar?.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div'); bar.id = 'levelbar';
+    bar.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;display:flex;gap:4px;background:#1d150de6;border:1px solid #c9a24a;border-radius:8px;padding:5px 6px;box-shadow:0 4px 16px #0008';
+    bar.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-r]'); if (b) setLevelRadius(Number(b.dataset.r)); };
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = LEVEL_SIZES.map(r => `<button data-r="${r}" title="Level a patch ${r} wide" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${r === levelR ? '#ffe08a' : '#6d5a38'};background:${r === levelR ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon('levelground', 24, { mono: true })}</span><span style="font-size:10px">${r}</span></button>`).join('');
+}
+/** Hover with the level-ground tool: a ring at the height the patch would be levelled to, green when it can be done, red (with the reason) when not. */
+function levelHover(e: { clientX: number; clientY: number }) {
+  if (ghost) ghost.visible = false;
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) { ghostRing.visible = false; return; }
+  const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = w.level_check(dx, dy, levelR);
+  const h = code === 0 || code === -6 || code === -26 ? w.level_target(dx, dy, levelR) : w.height_at(hit.x, hit.z);
+  ghostRing.visible = true; ghostRing.position.set(lv.ox + dx, (h > -100 ? h : 0) + 0.14, lv.oz + dy); ghostRing.scale.setScalar(levelR); ghostRing.rotation.y = 0;
+  (ghostRing.material as THREE.MeshBasicMaterial).color.setHex(code === 0 ? 0x66ff88 : 0xff6655);
+  if (code !== levelCode) { levelCode = code; ui.hint(code === 0 ? placeHint(LEVEL_TOOL) : PLACE_ERRORS[code] ?? 'Cannot level here', code !== 0); }
+}
+/** Click with the level-ground tool. */
+function levelClick(e: { clientX: number; clientY: number }) {
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
+  const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = lv.world.level_ground(dx, dy, levelR);
+  if (code === 0) { commit({ op: 'level', x: dx, y: dy, kind: levelR }); levelCode = 99; afterLocalChange(); sound.place(3); ui.toast('The ground is levelled.', 'good'); levelHover(e); }
+  else { ui.hint(PLACE_ERRORS[code] ?? 'Cannot level here', true); ui.toast(PLACE_ERRORS[code] ?? 'Cannot level here', 'bad'); sound.error(); }
+}
+
 function updateGhost(e: { clientX: number; clientY: number }) {
+  if (selectedKind === LEVEL_TOOL) { levelHover(e); return; }
   if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
@@ -1707,6 +1743,7 @@ function bindInput() {
       if (moved > 8) { const h = terrain.pick(pointerRay(e).ray), o = h ? penOutline(a, { x: h.x, z: h.z }, e.altKey) : null; if (o) penCommit(selectedKind, o); ghostCode = 99; previewKey = ''; ui.hint(placeHint(selectedKind)); return; }
       if (isFigure(penShape)) { ui.hint('Press and drag to draw the figure', true); return; }
     }
+    if (selectedKind === LEVEL_TOOL && moved <= 5) { levelClick(e); return; }
     if (selectedKind === 37 && moved <= 5) { const h = terrain.pick(pointerRay(e).ray); if (h) roadClick(h.x, h.z); return; }
     if (selectedKind !== null && PEN_SPACING[selectedKind] && penShape === 'path' && moved <= 5) {   // a click adds a corner; a quick second click, or a click on the first corner, builds
       const h = terrain.pick(pointerRay(e).ray); if (!h) return;
@@ -1773,7 +1810,7 @@ function bindInput() {
       case 'penFinish': if (selectedKind === 37 && roadPts.length >= 2) { e.preventDefault(); roadCommit(); break; } if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) { e.preventDefault(); penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); } break;
       case 'penUndo': if (selectedKind === 37 && roadPts.length) { e.preventDefault(); roadPts.pop(); roadPreview(null); break; } if (penShape === 'path' && penPath.length) { e.preventDefault(); penPath.pop(); if (!penPath.length) penPreview.clear(); } break;
       case 'cancel': if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
-      case 'rotateBuilding': rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; break;
+      case 'rotateBuilding': if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); break; } rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; break;
       case 'deposits': toggleResources(); break;
       case 'pause': e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); break;
       case 'perf': e.preventDefault(); perf.toggle(); break;
