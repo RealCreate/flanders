@@ -133,3 +133,39 @@ fn a_toll_post_snaps_onto_a_road_and_the_road_runs_through_its_gate() {
     }
     assert!(done >= 3, "toll posts were snapped onto roads and placed ({done})");
 }
+
+/// Squares: where roads meet closely the village has a paved plaza. Every square lies on free ground (clear of buildings, fields, walls and water), has at least three road junctions
+/// round it, and no two squares overlap. They are derived: asking twice, or of a copy built the same way, gives the same squares.
+#[test]
+fn squares_form_where_roads_meet_and_stand_on_free_ground() {
+    let mut total = 0;
+    for moat in [false, true] {
+        let w = busy_village(moat);
+        let sq: Vec<f32> = w.squares_flat(); let n = sq.len() / 4; total += n;
+        eprintln!("moat {moat}: {n} squares {:?}", sq.chunks(4).map(|s| (s[0].round(), s[1].round(), (s[2] * 10.0).round() / 10.0)).collect::<Vec<_>>());
+        assert_eq!(sq, w.squares_flat(), "the same squares twice");
+        for (a, s) in sq.chunks(4).enumerate() {
+            assert!(s[2] >= crate::squares::MIN_R && s[2] <= crate::squares::MAX_R, "size {}", s[2]);
+            assert!(w.square_free(s[0], s[1], s[2]), "square {a} at {},{} is on free ground", s[0], s[1]);
+            // roads meet round it
+            let flat = w.roads_flat(); let mut ends = 0;
+            for r in flat.chunks(6) { for (px, py) in [(r[0], r[1]), (r[2], r[3])] { if (px - s[0]).hypot(py - s[1]) < s[2] + 7.5 { ends += 1; } } }
+            assert!(ends >= 9, "square {a}: {ends} road ends about it");
+            for (b, t) in sq.chunks(4).enumerate() { if b > a { assert!((s[0] - t[0]).hypot(s[1] - t[1]) > s[2] + t[2], "squares {a} and {b} overlap"); } }
+        }
+    }
+    assert!(total >= 1, "a busy village has a square ({total})");
+}
+
+/// A loose village of houses round a green gets squares where the roads gather, and they too are on free ground.
+#[test]
+fn a_ring_of_houses_gets_squares_on_free_ground() {
+    let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+    for (k, r) in [(10usize, 20.0f32), (14, 34.0)] { for i in 0..k { let a = i as f32 / k as f32 * std::f32::consts::TAU + r * 0.01; w.place(HOUSE, (a.cos() * r).round() as i32, (a.sin() * r).round() as i32, (i % 8) as u8); } }
+    w.place(MARKET, 0, 40, 0); w.place(FARM, 40, 12, 3); w.place(GARDEN, -40, 10, 0);
+    let r = measure(&w);
+    let sq = w.squares_flat();
+    eprintln!("ring village: {} buildings, {} piece(s), {} loose ends, {} squares {:?}", r.buildings, r.comps, r.loose_ends.len(), sq.len() / 4, sq.chunks(4).map(|s| (s[0].round(), s[1].round(), s[2])).collect::<Vec<_>>());
+    assert_eq!(r.comps, 1); assert!(r.loose_ends.is_empty(), "{:?}", r.loose_ends); assert!(r.off_main.is_empty());
+    for s in sq.chunks(4) { assert!(w.square_free(s[0], s[1], s[2])); }
+}

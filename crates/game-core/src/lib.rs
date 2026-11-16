@@ -10,6 +10,7 @@ mod march;
 mod military;
 mod pathnet;
 pub mod doors;
+mod squares;
 mod plague;
 mod wallnet;
 #[cfg(test)]
@@ -1773,6 +1774,9 @@ impl World {
         // (a door's own road runs inside the building's plot, which the network keeps clear of: it has all the room it needs)
         self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| if l.0 == l.1 { [6.0, 6.0] } else { [net.clearance(s[0], s[1]), net.clearance(s[3], s[4])] }).collect()
     }
+
+    /// The squares of the village, [x, y, radius, kind] for each (stride 4; see squares.rs): where several roads meet closely, a paved plaza with benches. Worked out from the roads, never stored.
+    pub fn squares_flat(&self) -> Vec<f32> { self.squares_inner().into_iter().flatten().collect() }
 
     /// The path network as [n, e, x, y (n times), a, b, road (e times)] (see pathnet.rs).
     pub fn net_flat(&self) -> Vec<f32> { self.net_flat_inner() }
