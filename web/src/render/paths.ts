@@ -32,10 +32,13 @@ export class Paths {
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform float uTick;\nvarying vec3 vRoad;').replace('#include <color_fragment>', `#include <color_fragment>
         float grow = clamp((uTick - vRoad.x) / 240.0, 0.0, 1.0);
         diffuseColor.a *= 1.0 - smoothstep(grow * 1.2 - 0.2, grow * 1.2, vRoad.y);
-        float pv = clamp((uTick - vRoad.x - 360.0) / 900.0, 0.0, 1.0) * vRoad.z;
+        float pv = clamp((uTick - vRoad.x - 360.0) / 900.0, 0.0, 1.0) * min(vRoad.z, 1.0);
         float paved = (1.0 - smoothstep(pv * 1.15 - 0.15, pv * 1.15, vRoad.y)) * step(0.001, pv);
         vec2 cu = vMapUv * 5.0; float cob = step(0.1, fract(cu.x)) * step(0.1, fract(cu.y + floor(cu.x) * 0.5));
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.64, 0.62, 0.58) * (0.78 + 0.22 * cob), paved * 0.92);`);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.64, 0.62, 0.58) * (0.78 + 0.22 * cob), paved * 0.92);
+        float plaza = step(1.5, vRoad.z);   // a square is stone paving from the first day (roads are paved slowly)
+        vec2 cp = vMapUv * 3.0; float slab = step(0.06, fract(cp.x + floor(cp.y) * 0.5)) * step(0.06, fract(cp.y));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.66, 0.64, 0.60) * (0.74 + 0.26 * slab), plaza * 0.97);`);
     };
     this.mat.customProgramCacheKey = () => 'paths' + this.mat.id;   // one program per village: each has its own clock uniform (see patchWater)
     this.tracks = new THREE.Mesh(new THREE.BufferGeometry(), this.mat);
@@ -111,7 +114,7 @@ export class Paths {
       for (let k = 0; k < n; k++) idx.push(c, first + k, first + (k + 1) % n);
     }
     // squares: the same ground as the roads (same texture, colour and paving), so the roads that run into one are not told apart from it
-    rb = -1e6; rs = 0.5; rp = 1;
+    rb = -1e6; rs = 0.5; rp = 2;
     for (let q = 0; q + 3 < squares.length; q += 4) {
       const cx = squares[q], cz = squares[q + 1], R = squares[q + 2], rings = 4, seg = 36, base = pos.length / 3;
       vert(cx, cz, 0.95, 0.5, 0.5);
