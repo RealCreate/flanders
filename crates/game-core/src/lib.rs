@@ -802,9 +802,9 @@ impl World {
             if (x - b.x).abs() > 24.0 || (y - b.y).abs() > 24.0 { continue; }
             let a = (b.rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();
-            if !(5.6..22.0).contains(&s) || c > 5.2 { continue; }
-            let w = smoothstep(5.6, 6.6, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
-            h = lerp(h, b.pad_h, w * smoothstep(-0.2, 0.6, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
+            if !(3.0..22.0).contains(&s) || c > 5.2 { continue; }
+            let w = smoothstep(3.0, 4.0, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
+            h = lerp(h, b.pad_h, w * smoothstep(-0.8, 0.0, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
         }
         if !built { return h; }
         for s in &self.roads {
@@ -4479,6 +4479,32 @@ mod pathnet_tests {
         let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
         assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
         let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
+    }
+
+    #[test]
+    fn a_drawbridge_over_a_moat_stands_at_deck_height_not_on_the_moat_bed() {
+        // the building's height (what the model, its pick volume and its selection ring are placed at) is the deck, well above the moat's floor, at every angle round the ring
+        let mut seen = std::collections::BTreeSet::new();
+        for k in 0..16 {
+            let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+            for i in 0..56 { let a = i as f32 / 56.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+            let a = k as f32 / 16.0 * std::f32::consts::TAU;
+            let s = w.drawbridge_snap((a.cos() * 18.0).round() as i32, (a.sin() * 18.0).round() as i32);
+            if s.len() != 3 { continue; }
+            let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); if br < 0 { continue; }
+            let b = &w.buildings[br as usize]; seen.insert(b.rot);
+            let bed = w.height_ground(b.x, b.y);   // the ditch's bed under the middle of the deck
+            assert!(b.pad_h > bed + 2.5, "rot {}: deck {} must lie well above the bed {}", b.rot, b.pad_h, bed);
+            assert!(b.pad_h >= 0.7, "rot {}: the deck is above the water surface: {}", b.rot, b.pad_h);
+            assert!(w.on_deck(b.x, b.y), "rot {}: soldiers walk on the deck", b.rot);
+            // the shore runs flush to both ends of the deck: dry ground under its last metres is at deck level (no gap, no step)
+            let ang = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (ang.sin(), ang.cos());
+            for sgn in [-1.0f32, 1.0] { for d in [6.0f32, 7.0, 9.0] {
+                let (px, py) = (b.x + sgn * sx * d, b.y + sgn * sy * d);
+                if w.base(px, py) > 0.6 { let g = w.height_ground(px, py); assert!((g - b.pad_h).abs() < 0.3, "rot {} end {sgn} at {d}: ground {g} vs deck {}", b.rot, b.pad_h); }
+            } }
+        }
+        assert!(seen.len() >= 2, "several rotations covered: {seen:?}");
     }
 
     #[test]

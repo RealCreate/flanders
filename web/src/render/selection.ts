@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Terrain } from './terrain';
 
 /** The mark under a selected building: a soft gold disc with a bright rim and four corner ticks, draped over the ground so it follows slopes instead of cutting through them. */
+import { ringHeight } from './ringheight';
 export class SelectionMark extends THREE.Mesh {
   private unit: Float32Array;
   constructor(private terrain: Terrain, color = 0xffffff) {
@@ -19,11 +20,11 @@ export class SelectionMark extends THREE.Mesh {
     this.renderOrder = 10; this.frustumCulled = false; this.visible = false;
   }
   /** Put the mark at (x, z) with this radius, laid on the ground. */
-  set(x: number, z: number, r: number) {
+  set(x: number, z: number, r: number, kind: number | null = null, padH = 0) {
     const pos = (this.geometry.attributes.position as THREE.BufferAttribute);
     for (let i = 0; i < pos.count; i++) {
       const ux = this.unit[i * 3], uy = this.unit[i * 3 + 1], wx = x + ux * r, wz = z + uy * r;   // the ring lies in XY: its y becomes the world z
-      pos.setXYZ(i, wx, this.terrain.heightAt(wx, wz) + 0.3, wz);
+      pos.setXYZ(i, wx, ringHeight(this.terrain.heightAt(wx, wz), kind, padH), wz);
     }
     pos.needsUpdate = true; this.geometry.computeBoundingSphere();
   }
