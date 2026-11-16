@@ -326,9 +326,27 @@ pub fn tunnels_flat(seed: u64) -> Vec<f32> { terrain::tunnels(seed).into_iter().
 #[wasm_bindgen]
 pub fn trees_in(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> { terrain::trees(seed, x0, y0, x1, y1) }
 
+/// Rows `j0..j1` of `terrain_grid` (the same numbers however the rows are cut), so the page can build a big grid a few rows at a time instead of freezing.
+#[wasm_bindgen]
+pub fn terrain_grid_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> { terrain::grid_rows(seed, x0, y0, nx, step, j0, j1) }
+
+/// How many rows of tree cells `trees_in` goes through for this area, and rows `r0..r1` of them (concatenated they are exactly `trees_in`).
+#[wasm_bindgen]
+pub fn trees_in_row_count(y0: f32, y1: f32) -> u32 { let c = terrain::TREE_CELL; ((y1 / c).ceil() as i32 - (y0 / c).floor() as i32).max(0) as u32 }
+#[wasm_bindgen]
+pub fn trees_in_rows(seed: u64, x0: f32, y0: f32, x1: f32, r0: u32, r1: u32) -> Vec<f32> {
+    let c = terrain::TREE_CELL; let cy0 = (y0 / c).floor() as i32;
+    terrain::trees_cells(seed, (x0 / c).floor() as i32, (x1 / c).ceil() as i32, cy0 + r0 as i32, cy0 + r1 as i32)
+}
+
 /// Build the army navigation grid now (about a second of work) instead of in the middle of play, when the first field army is formed. Call it behind the loading screen.
 #[wasm_bindgen]
 pub fn warm_navigation(seed: u64) { let _ = march::nav_static(seed); }
+
+/// The same as `warm_navigation`, a slice at a time: call it again and again (each call does about `rows` rows, a few milliseconds each) until it returns 1,
+/// letting the page breathe in between. Returns the progress, 0..1. The grid it ends with is identical to the one `warm_navigation` builds.
+#[wasm_bindgen]
+pub fn warm_navigation_step(seed: u64, rows: u32) -> f32 { march::nav_build_step(seed, rows) }
 
 #[wasm_bindgen]
 pub fn village_sites(seed: u64) -> Vec<f32> { terrain::sites(seed).into_iter().flat_map(|(x, y)| [x, y]).collect() }

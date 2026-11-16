@@ -69,42 +69,84 @@ pub struct NavStatic { h: Vec<f32>, slope: Vec<f32>, dens: Vec<u8>, tun: Vec<boo
 thread_local! { static NAV: RefCell<Option<(u64, Rc<NavStatic>)>> = const { RefCell::new(None) }; }
 
 pub fn nav_static(seed: u64) -> Rc<NavStatic> {
-    NAV.with(|c| {
-        if let Some((s, n)) = &*c.borrow() { if *s == seed { return n.clone(); } }
-        let n = NC as usize;
-        let h = terrain::grid(seed, ORG + CELL / 2.0, ORG + CELL / 2.0, NC as u32, NC as u32, CELL);
-        let mut slope = vec![0.0f32; n * n];
-        for j in 0..n { for i in 0..n {
-            let c = h[j * n + i];
-            let mut m = 0.0f32;
-            for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
-                let (a, b) = (i as i32 + di, j as i32 + dj);
-                if a >= 0 && b >= 0 && (a as usize) < n && (b as usize) < n { m = m.max((h[b as usize * n + a as usize] - c).abs() / CELL); }
-            }
-            slope[j * n + i] = m;
-        } }
-        let mut cnt = vec![0u8; n * n];
-        let t = terrain::trees(seed, ORG, ORG, -ORG, -ORG);
-        for k in (0..t.len()).step_by(5) {
-            let (ci, cj) = (((t[k] - ORG) / CELL) as i32, ((t[k + 1] - ORG) / CELL) as i32);
-            if ci >= 0 && cj >= 0 && ci < NC && cj < NC { let q = &mut cnt[cj as usize * n + ci as usize]; *q = q.saturating_add(1); }
+    if let Some(n) = nav_cached(seed) { return n; }
+    let n = NC as usize;
+    let h = terrain::grid(seed, ORG + CELL / 2.0, ORG + CELL / 2.0, NC as u32, NC as u32, CELL);
+    let mut cnt = vec![0u8; n * n];
+    count_trees(&mut cnt, &terrain::trees(seed, ORG, ORG, -ORG, -ORG));
+    nav_install(seed, h, cnt)
+}
+
+fn nav_cached(seed: u64) -> Option<Rc<NavStatic>> {
+    NAV.with(|c| match &*c.borrow() { Some((s, n)) if *s == seed => Some(n.clone()), _ => None })
+}
+
+fn count_trees(cnt: &mut [u8], t: &[f32]) {
+    let n = NC as usize;
+    for k in (0..t.len()).step_by(5) {
+        let (ci, cj) = (((t[k] - ORG) / CELL) as i32, ((t[k + 1] - ORG) / CELL) as i32);
+        if ci >= 0 && cj >= 0 && ci < NC && cj < NC { let q = &mut cnt[cj as usize * n + ci as usize]; *q = q.saturating_add(1); }
+    }
+}
+
+/// The cheap last part of the grid (slopes, forest density, tunnels) from the two expensive parts (heights and tree counts), cached for `seed`.
+fn nav_install(seed: u64, h: Vec<f32>, cnt: Vec<u8>) -> Rc<NavStatic> {
+    let n = NC as usize;
+    let mut slope = vec![0.0f32; n * n];
+    for j in 0..n { for i in 0..n {
+        let c = h[j * n + i];
+        let mut m = 0.0f32;
+        for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+            let (a, b) = (i as i32 + di, j as i32 + dj);
+            if a >= 0 && b >= 0 && (a as usize) < n && (b as usize) < n { m = m.max((h[b as usize * n + a as usize] - c).abs() / CELL); }
         }
-        let mut dens = vec![0u8; n * n];
-        for j in 0..n { for i in 0..n {
-            let mut s = 0u32;
-            for dj in -1i32..=1 { for di in -1i32..=1 { let (a, b) = (i as i32 + di, j as i32 + dj); if a >= 0 && b >= 0 && a < NC && b < NC { s += cnt[b as usize * n + a as usize] as u32; } } }
-            dens[j * n + i] = s.min(9) as u8;
-        } }
-        // tunnels bored through mountains: a corridor that is always passable, whatever the ground above it does
-        let mut tun = vec![false; n * n];
-        for t in terrain::tunnels(seed) {
-            let l = ((t[2] - t[0]).powi(2) + (t[3] - t[1]).powi(2)).sqrt(); let st = (l / 1.0).ceil() as i32;
-            for k in 0..=st { let f = k as f32 / st as f32; stamp(&mut tun, t[0] + (t[2] - t[0]) * f, t[1] + (t[3] - t[1]) * f, 3.6); }
-        }
-        let ns = Rc::new(NavStatic { h, slope, dens, tun });
-        *c.borrow_mut() = Some((seed, ns.clone()));
-        ns
-    })
+        slope[j * n + i] = m;
+    } }
+    let mut dens = vec![0u8; n * n];
+    for j in 0..n { for i in 0..n {
+        let mut s = 0u32;
+        for dj in -1i32..=1 { for di in -1i32..=1 { let (a, b) = (i as i32 + di, j as i32 + dj); if a >= 0 && b >= 0 && a < NC && b < NC { s += cnt[b as usize * n + a as usize] as u32; } } }
+        dens[j * n + i] = s.min(9) as u8;
+    } }
+    // tunnels bored through mountains: a corridor that is always passable, whatever the ground above it does
+    let mut tun = vec![false; n * n];
+    for t in terrain::tunnels(seed) {
+        let l = ((t[2] - t[0]).powi(2) + (t[3] - t[1]).powi(2)).sqrt(); let st = (l / 1.0).ceil() as i32;
+        for k in 0..=st { let f = k as f32 / st as f32; stamp(&mut tun, t[0] + (t[2] - t[0]) * f, t[1] + (t[3] - t[1]) * f, 3.6); }
+    }
+    let ns = Rc::new(NavStatic { h, slope, dens, tun });
+    NAV.with(|c| *c.borrow_mut() = Some((seed, ns.clone())));
+    ns
+}
+
+/// A navigation grid being built a slice at a time (so the page stays responsive): heights row by row, then tree counts strip by strip.
+struct NavBuild { seed: u64, h: Vec<f32>, cnt: Vec<u8>, rows: u32, strip: i32 }
+thread_local! { static NAV_BUILD: RefCell<Option<NavBuild>> = const { RefCell::new(None) }; }
+
+/// Do about `units` rows of the navigation grid of `seed`; returns how far it is (0..1, exactly 1 once the grid is ready). The result is the very grid
+/// `nav_static` builds in one go: the slices only decide when the work happens, never what comes out.
+pub fn nav_build_step(seed: u64, units: u32) -> f32 {
+    if nav_cached(seed).is_some() { NAV_BUILD.with(|b| *b.borrow_mut() = None); return 1.0; }
+    let n = NC as usize;
+    let (c0, c1) = ((ORG / terrain::TREE_CELL).floor() as i32, (-ORG / terrain::TREE_CELL).ceil() as i32);
+    let total = NC as u32 + (c1 - c0) as u32;
+    let mut b = NAV_BUILD.with(|b| b.borrow_mut().take()).filter(|b| b.seed == seed)
+        .unwrap_or(NavBuild { seed, h: Vec::with_capacity(n * n), cnt: vec![0u8; n * n], rows: 0, strip: c0 });
+    let mut left = units.max(1);
+    while left > 0 && b.rows < NC as u32 {
+        let k = left.min(NC as u32 - b.rows);
+        b.h.extend(terrain::grid_rows(seed, ORG + CELL / 2.0, ORG + CELL / 2.0, NC as u32, CELL, b.rows, b.rows + k));
+        b.rows += k; left -= k;
+    }
+    while left > 0 && b.strip < c1 {
+        let k = (left as i32).min(c1 - b.strip);
+        count_trees(&mut b.cnt, &terrain::trees_cells(seed, c0, c1, b.strip, b.strip + k));
+        b.strip += k; left -= k as u32;
+    }
+    if b.rows >= NC as u32 && b.strip >= c1 { nav_install(seed, b.h, b.cnt); return 1.0; }
+    let done = b.rows + (b.strip - c0) as u32;
+    NAV_BUILD.with(|x| *x.borrow_mut() = Some(b));
+    (done as f32 / total as f32).min(0.999)
 }
 
 impl NavStatic {
@@ -717,5 +759,45 @@ impl World {
         }
         if let Some(l) = out.last_mut() { *l = (b.x, b.y); }
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod nav_slices {
+    use super::*;
+
+    /// Building the grid a few rows at a time (so the page can breathe) must give exactly the grid built in one go, however it is cut.
+    #[test]
+    fn a_sliced_build_equals_the_blocking_build() {
+        let seed = 4242u64;
+        let mut calls = 0;
+        while nav_build_step(seed, 211) < 1.0 { calls += 1; assert!(calls < 100); }
+        assert!(calls >= 8, "it really was done in pieces ({calls})");
+        let a = nav_static(seed);
+        NAV.with(|c| *c.borrow_mut() = None);
+        let b = nav_static(seed);
+        assert!(!Rc::ptr_eq(&a, &b));
+        assert!(a.h == b.h && a.slope == b.slope && a.dens == b.dens && a.tun == b.tun);
+        // a different cut gives the same again
+        NAV.with(|c| *c.borrow_mut() = None);
+        while nav_build_step(seed, 977) < 1.0 {}
+        let c = nav_static(seed);
+        assert!(c.h == b.h && c.dens == b.dens);
+    }
+
+    /// The ground and the forest the page fetches a few rows at a time are exactly what the whole-map calls give.
+    #[test]
+    fn rows_of_the_ground_and_the_forest_join_up_exactly() {
+        let seed = 99u64;
+        let whole = terrain::grid(seed, -200.0, -200.0, 161, 161, 2.5);
+        let mut parts = vec![]; let mut j = 0;
+        while j < 161 { let k = (j + 7).min(161); parts.extend(terrain::grid_rows(seed, -200.0, -200.0, 161, 2.5, j, k)); j = k; }
+        assert!(whole == parts);
+        let all = terrain::trees(seed, -150.0, -150.0, 150.0, 150.0);
+        let c = terrain::TREE_CELL; let (cy0, cy1) = ((-150.0 / c).floor() as i32, (150.0 / c).ceil() as i32);
+        let (cx0, cx1) = ((-150.0 / c).floor() as i32, (150.0 / c).ceil() as i32);
+        let mut cut = vec![]; let mut y = cy0;
+        while y < cy1 { let k = (y + 5).min(cy1); cut.extend(terrain::trees_cells(seed, cx0, cx1, y, k)); y = k; }
+        assert!(!all.is_empty() && all == cut);
     }
 }

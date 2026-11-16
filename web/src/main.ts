@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
+import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon } from './ui/icons';
 import { parseLedger, steadyRate } from './flowrate';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses } from './data';
@@ -19,7 +19,7 @@ import { settings, onSettings, pixelRatio, type Settings } from './settings';
 import { auditModel, setNightLight } from './render/buildings';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
-import { Terrain } from './render/terrain';
+import { Terrain, HALF, STEP, NV } from './render/terrain';
 import { Atmosphere } from './render/sky';
 import { CameraRig } from './render/camera';
 import { Forest } from './render/trees';
@@ -45,6 +45,7 @@ import { territoryOutline } from './render/border';
 import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
 import { applyCmd, stepTo, validSavedLog } from './commands';
+import { replayInSlices, warmNavigationInSlices, collectInSlices } from './loader';
 import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
@@ -125,6 +126,7 @@ interface Rival {
   forked: boolean;                             // our own army fought in this copy (an away village): it no longer follows their history
   liar: boolean;                               // we corrected the loot they claimed, so this copy differs from theirs on purpose
   desyncs: number; resyncs: number; lastDiag: string; bigJumpAt: number; failedAt: number;
+  loadSeq?: number; loading?: boolean;         // a history is being replayed into a fresh copy in slices (newest wins); the old copy waits meanwhile
 }
 const tutorial = new Tutorial();
 tutorial.setKeys(a => { const b = keys.binds[a as Action]; return b && b.length ? b.slice(0, 2).map(k => prettyKey(k)).join(' / ') : a; });
@@ -228,16 +230,22 @@ function quarantine(r: Rival, e: unknown) {
 let PART_NAMES: string[] = [];
 
 /** Rebuild a copy from a history (theirs, as they sent it or as we kept it). */
-function loadReplica(r: Rival, cmds: Cmd[]) {
+async function loadReplica(r: Rival, cmds: Cmd[]) {
   r.log = cmds.slice();
   if (replay?.target === r.village) return;   // being watched: the replay shows their history; it is rebuilt from r.log when you leave
+  const seq = r.loadSeq = (r.loadSeq ?? 0) + 1, n = cmds.length;
+  r.loading = true;
   try {
     const o = siteOrigin(r.site), w = new World(seedBig, o.x, o.z);
-    for (const c of cmds) { stepTo(w, c.tick); applyCmd(w, c); }
+    // a long history is replayed a few milliseconds at a time: the game keeps running (and painting) while a copy is rebuilt
+    const res = await replayInSlices(w, cmds, applyCmd, 0, { cancelled: () => r.loadSeq !== seq || replay?.target === r.village });
+    if (!res.ok) { if (r.loadSeq === seq) r.loading = false; return; }
+    for (const c of r.log.slice(n)) { stepTo(w, c.tick); applyCmd(w, c); }   // (commands that arrived while it was replaying)
+    r.loading = false;
     r.village.setWorld(w); r.tick = Number(w.tick()); r.broken = false; r.forked = false; r.liar = false;
-    r.track.reset(cmds.map(c => c.op)); if (r.versionOk && r.state === 'ok' && r.sync !== 'in sync ✓') r.sync = 'syncing…';
+    r.track.reset(r.log.map(c => c.op)); if (r.versionOk && r.state === 'ok' && r.sync !== 'in sync ✓') r.sync = 'syncing…';
     refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
-  } catch (e) { quarantine(r, e); }
+  } catch (e) { if (r.loadSeq === seq) r.loading = false; quarantine(r, e); }
 }
 
 /** Bring a copy to a tick for a comparison. A stranger's hash must not be able to make us run a copy far ahead over and over, so big jumps are rationed. */
@@ -352,7 +360,7 @@ function connect() {
     onCmd: (peerId, c) => {
       const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || r.broken) return;
       if (r.log.length < 60000) r.log.push(c);
-      if (replay?.target === r.village) return;
+      if (replay?.target === r.village || r.loading) return;   // (while a copy is being rebuilt the new command waits in the log: the rebuilt copy plays it last)
       try {
         if (c.op === 'return') {   // check the attacker's claim against the battle as the defender's copy played it
           for (const o of rivals.values()) if (o !== r) o.village.advanceTo(c.tick);   // (your own village is live: it is already as far as it will get)
@@ -376,7 +384,7 @@ function connect() {
       if (c.to === identity.pub) onTrade(r, c);
     },
     onHash: (peerId, msg) => {
-      const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || r.broken || replay?.target === r.village) return;
+      const r = rivals.get(byPeer.get(peerId) ?? ''); if (!r || r.broken || r.loading || replay?.target === r.village) return;
       if (!r.versionOk || r.forked || r.liar) return;   // these copies differ from theirs for a known reason: there is nothing to judge
       judged(r, r.track.judge(msg, r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));
     },
@@ -828,12 +836,16 @@ async function startGame(name: string, username: string) {
   ui.progress(10, 'Painting the sky…'); await nextFrame();
   atmo = new Atmosphere(scene, renderer);
   ui.progress(22, 'Raising the mountains…'); await nextFrame();
-  terrain = new Terrain(seedBig);
+  // the core's heights and trees are the heavy part of the ground and the forest: fetched a few rows at a time so the page keeps painting
+  const heights = await collectInSlices(NV, (a, b) => terrain_grid_rows(seedBig, -HALF, -HALF, NV, STEP, a, b), 4, { onProgress: f => ui.progress(22 + Math.round(f * 8), 'Raising the mountains…') });
+  terrain = new Terrain(seedBig, heights);
   scene.add(terrain.mesh, terrain.water);
   tunnels = new Tunnels(terrain, tunnels_flat(seedBig)); scene.add(tunnels.group);
   rig = new CameraRig(ui.canvas, terrain);
   ui.progress(38, 'Planting the forests…'); await nextFrame();
-  forest = new Forest(seedBig, terrain); scene.add(forest.group);
+  const treeRows = trees_in_row_count(-HALF, HALF);
+  const treeData = await collectInSlices(treeRows, (a, b) => trees_in_rows(seedBig, -HALF, -HALF, HALF, a, b), 4, { onProgress: f => ui.progress(38 + Math.round(f * 8), 'Planting the forests…') });
+  forest = new Forest(seedBig, terrain, treeData); scene.add(forest.group);
   ui.progress(50, 'Waking the animals…'); await nextFrame();
   wildlife = new Wildlife(seedBig, terrain, forest.all, Array.from(village_sites(seedBig))); scene.add(wildlife.group);
   crowd = new Crowd(); scene.add(crowd.group);
@@ -855,6 +867,10 @@ async function startGame(name: string, username: string) {
     forestDirty: () => { forestDirtyFlag = true; },
   };
 
+  ui.progress(50, 'Mapping the roads…'); await nextFrame();
+  // The army navigation grid (a few seconds of work) is needed by the first road link or field army, and so by the first command a history replays: build it first,
+  // a slice at a time so the page keeps painting. (Left to the first command, it froze the whole page for seconds and Chrome offered to kill the tab.)
+  await warmNavigationInSlices(warm_navigation_step, seedBig, { onProgress: f => ui.progress(50 + Math.round(f * 9), 'Mapping the roads…') });
   ui.progress(60, 'Gathering your villagers…'); await nextFrame();
   // your village: restore from the last visit, or found a new one
   let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number; v?: number; rules?: string } | null = null;
@@ -864,11 +880,13 @@ async function startGame(name: string, username: string) {
   let away = 0;
   if (saved) {
     const entries = validSavedLog(saved.log);
-    for (const s of entries) { myLog.push(s.signed); stepTo(w, s.cmd.tick); applyCmd(w, s.cmd); cmdN = Math.max(cmdN, s.cmd.n + 1); }
+    for (const s of entries) { myLog.push(s.signed); cmdN = Math.max(cmdN, s.cmd.n + 1); }
     sharedCount = countShared(entries);
-    stepTo(w, saved.tick);
     away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
-    for (let i = 0; i < away; i++) w.step();   // the world kept turning while you were away
+    // the whole history, then the ticks that passed while you were away, a few milliseconds at a time behind the loading screen
+    const prog = (f: number) => ui.progress(60 + Math.round(f * 8), 'Gathering your villagers…');
+      await replayInSlices(w, entries.map(e => e.cmd), applyCmd, saved.tick, { onProgress: prog });
+      await replayInSlices(w, [], applyCmd, Number(w.tick()) + away, { onProgress: prog });
   }
   lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf;
   lv.onReport = onLocalReport;
@@ -910,9 +928,7 @@ async function startGame(name: string, username: string) {
 /** Compile every shader and draw a few real frames (shadow map, textures, trees) behind the loading screen,
  *  so nothing pops in or stalls once the player sees the world. */
 async function warmUp() {
-  ui.progress(70, 'Mapping the roads…'); await nextFrame();
-  warm_navigation(seedBig);   // otherwise the first field army you form freezes the game for a second or two
-  ui.progress(74, 'Compiling shaders…'); await nextFrame();
+  ui.progress(72, 'Compiling shaders…'); await nextFrame();
   fx.warm(true); effects.smoke.points.visible = true;
   try { await renderer.compileAsync(scene, rig.cam); } catch { /* older drivers: the warm-up frames below compile instead */ }
   fx.warm(false);

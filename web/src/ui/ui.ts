@@ -343,8 +343,9 @@ export class UI {
 
   // ---- loading screen ----
   private tips = ['Hunters keep the larder full if a forest is near.', 'Stone buildings shrug off fire; thatch does not.', 'Wells and chapels keep the plague away. When it comes it lasts 10 to 20 days: it spreads, peaks and fades, and a hospital, a chapel, a graveyard and a quarantine save lives.', 'Paths appear on their own between your buildings.', 'Press V to reveal ore and stone deposits.', 'Your village keeps growing while you are away.', 'Walls link up by themselves when placed close together.'];
+  private lastPhase = '';   // (each phase of the loading screen leaves a performance mark, so a slow start can be read off the timeline)
   beginLoading() { $('intro').hidden = true; $('loader').hidden = false; $('ltip').textContent = this.tips[Math.floor(Math.random() * this.tips.length)]; this.progress(1, 'Preparing the world…'); }
-  progress(p: number, text: string) { ($('lbar-i') as HTMLElement).style.width = p + '%'; $('ltext').textContent = text; }
+  progress(p: number, text: string) { if (text !== this.lastPhase) { this.lastPhase = text; performance.mark('load: ' + text); } ($('lbar-i') as HTMLElement).style.width = p + '%'; $('ltext').textContent = text; }
   private finishLoading() { ($('lbar-i') as HTMLElement).style.width = '100%'; const l = $('loader'); l.style.transition = 'opacity .5s'; l.style.opacity = '0'; setTimeout(() => { l.hidden = true; l.style.opacity = ''; l.style.transition = ''; }, 520); }
 
   // ---- collapsible panels (remembered between visits) ----
