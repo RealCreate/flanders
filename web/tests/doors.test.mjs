@@ -53,10 +53,10 @@ test('the road from a door leaves the building\'s plot: the exit lies beyond the
   }
 });
 
-test('the lane through the fields of a farm ends where the core has the road leave the plot', () => {
+test('the door of a farm is in the back wall of its barn, so its road leaves away from the fields', () => {
   for (const tier of [0, 1, 2, 3]) {
-    const [dx, , , , ex, ez] = core.door_info(1, tier);
-    assert.ok(Math.abs(ex - dx) < 0.05, 'the lane runs straight out along the door');
-    assert.ok(Math.abs(ez - B.FARM_LANE_END[tier]) < 0.1, `farm tier ${tier}: the lane ends at ${B.FARM_LANE_END[tier]}, the core's exit is at ${ez.toFixed(2)}`);
+    const [dx, dz, fx, fz, ex, ez] = core.door_info(1, tier);
+    assert.ok(fz < -0.9 && ez < dz, `farm tier ${tier}: the door faces away from the fields`);
+    assert.ok(Math.abs(ex - dx) < 0.05, 'and the road runs straight out');
   }
 });

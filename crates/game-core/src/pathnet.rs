@@ -284,7 +284,7 @@ impl World {
 
     /// What the roads of this village must keep clear of.
     pub(crate) fn road_ctx(&self) -> RoadCtx {
-        let solids = (0..self.buildings.len()).filter(|&i| !matches!(self.buildings[i].kind, WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE | TOLL)).collect();   // (a toll post is walked through: the network blocks its hut and posts only)
+        let solids = (0..self.buildings.len()).filter(|&i| !matches!(self.buildings[i].kind, WALL | FENCE | GATE | MOAT | RIVER | RAISE | LOWER | ROAD | BRIDGE | DRAWBRIDGE)).collect();
         RoadCtx { segs: self.wall_lines().0, solids, memo: Default::default() }
     }
 
@@ -293,6 +293,10 @@ impl World {
     fn road_point_free(&self, net: &Net, near: &[usize], segs: &[&crate::wallnet::Seg], x: f32, y: f32, dir: (f32, f32), half: f32) -> bool {
         for &i in near {
             let b = &self.buildings[i];
+            if b.kind == TOLL {   // a toll post is driven through: only its hut and its two posts are in the way, the gate between them is the road
+                for (lx, lz, r) in [(2.4f32, -0.2f32, 1.25f32), (-1.25, 0.0, 0.3), (1.25, 0.0, 0.3)] { let (dx, dy) = crate::doors::to_world(b.rot, (lx, lz)); if (x - b.x - dx).hypot(y - b.y - dy) < r + half { return false; } }
+                continue;
+            }
             if (x - b.x).hypot(y - b.y) < crate::solid_radius(b.kind, b.tier) + half { return false; }
             if field_distance(b, x, y) < half { return false; }
         }

@@ -81,7 +81,6 @@ function makeMats() {
     ironPile: col(0x8a4a30, { roughness: 0.8 }),
     clay: col(0xb5693a, { roughness: 0.75 }),
     earth: col(0x4a3a2a, { roughness: 1 }),
-    lane: col(0xb59468, { roughness: 1 }),   // the dirt road through a farm's fields
     mound: col(0x5a4630, { roughness: 1 }),
     glow: col(0xff8a2a, { emissive: 0xff6a10, emissiveIntensity: 2.4 }),
     hay: col(0xd9b95a),
@@ -261,14 +260,12 @@ const wallMat = (t: number) => [M().wood, M().plaster, M().stone, M().stone][t];
 const roofMat = (t: number) => [M().thatch, M().tile, M().slate, M().slate][t];
 
 
-/** Where the road through a farm's fields meets the ring round its plot, by tier (z along the lane at x = -1.2): the exit of the core's door table. */
-export const FARM_LANE_END = [9.16, 13.36, 13.36, 16.2];
 const farm: Model = b => {
   const t = b.t, m = M();
   b.box(10.4, 0.1, 8.4, m.field, 0, 0.02, 1.4);
   const bm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
   b.box(4, 2.4, 3, bm, -1.2, 0.2, -2.6); b.gable(4, 3, 1.8 + t * 0.2, t >= 1 ? m.tile : m.thatch, -1.2, 2.6, -2.6, 0.45);
-  b.box(1.5, 1.7, 0.12, m.door, -1.2, 0.2, -1.05);
+  b.box(1.5, 1.7, 0.12, m.door, -1.2, 0.2, -4.16);   // the door is in the back wall of the barn, away from the fields: the farm's road leaves from there (see doors.rs)
   b.cyl(0.8, 0.8, 0.9, m.hay, 3.2, 0.1, -3, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.3, 0.1, -2.4, 10);
   if (t >= 1) { b.cyl(0.95, 1.0, 4.2, t >= 2 ? m.stone : m.wood, 2.8, 0.1, -3.4, 14); b.cone(1.1, 1.0, m.slate, 2.8, 4.3, -3.4, 14); }
   if (t >= 2) {
@@ -277,10 +274,6 @@ const farm: Model = b => {
     bl.position.set(-4.6, 4.2, 3.7); b.g.add(bl); b.spin.push(bl);
   }
   if (t === 3) b.flag(-1.2, 4.2, -2.6, 1.8);
-  // the farm's own road: from the barn door straight out through the fields to the circle that the farm's plot ends at (where the village's roads meet it: the core's door table, crates/game-core/src/doors.rs,
-  // puts the exit there, and tests/doors.test.mjs checks it). It lies on the crops, on a bank of earth that reaches down to the ground where the levelled land eases back into the slope.
-  const laneEnd = FARM_LANE_END[Math.min(3, t)];
-  b.box(1.9, 1.0, laneEnd + 0.9, m.lane, -1.2, -0.84, (laneEnd - 0.9) / 2);
   // a bigger farm works more fields: a second beside the first, a third below it and a fourth in the corner (the farm's footprint grows to make room)
   const crop = (c: number) => new THREE.MeshStandardMaterial({ color: c, roughness: 1 });
   const extra: [number, number, number, number, number][] = [[5.0, 8.4, 7.9, 1.4, 0xc9a43b], [10.4, 4.6, 0, 8.0, 0x6f9a3a], [5.0, 4.6, 7.9, 8.0, 0x8a6a3a]];
