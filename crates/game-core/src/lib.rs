@@ -21,6 +21,8 @@ mod farmcheck;
 #[cfg(test)]
 mod roadtests;
 #[cfg(test)]
+mod perf_bench;
+#[cfg(test)]
 mod flatten_tests;
 #[cfg(test)]
 mod snapshot_tests;
