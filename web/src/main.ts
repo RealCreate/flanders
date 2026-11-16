@@ -8,8 +8,9 @@ import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
 import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
-import { icon } from './ui/icons';
-import { parseLedger, steadyRate } from './flowrate';
+import { icon, type IconName } from './ui/icons';
+import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
+import { HighlightState, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL } from './stockhighlight';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
@@ -93,6 +94,9 @@ const ui: UI = new UI({
   select: k => selectKind(k === selectedKind ? null : k),
   act: a => onAct(a),
   upgradeHover: on => showUpgradeOutline(on),
+  stockHover: (res, sign) => stockHover(res, sign),
+  stockInfo: (res, sign) => stockInfo(res, sign),
+  stockGo: (res, sign, kind) => stockGo(res, sign, kind),
   speed: n => setSpeed(n),
   toggleResources: () => toggleResources(),
   muster: u => doMuster(u),
@@ -1202,6 +1206,7 @@ function stepLocal() {
   { const l = newlyLent(w.buildings_flat(), lentBridges); lentBridges = l.now; if (l.fresh.length) ui.toast('Lowering the drawbridge for the army', 'info', 'drawbridge'); }
   pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
   if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools });
+  if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
   if (t % 3 === 0) { deposits.sync(w.deposits_flat()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
@@ -1336,7 +1341,64 @@ function showUpgradeOutline(on: boolean) {
   blockers.slice(0, blockRings.length).forEach((b, i) => { const q = b * 10; blockRings[i].set(f[q + 2], f[q + 3], footprint(f[q], f[q + 1]) + 1.1); blockRings[i].visible = true; });
   if (blockers.length) ui.hint(`Not enough room: ${blockers.length} building${blockers.length > 1 ? 's' : ''} in the way (marked red). Demolish ${blockers.length > 1 ? 'them' : 'it'} to upgrade.`, true);
 }
-function selectBuilding(i: number | null) { showUpgradeOutline(false); selectedIdx = i; if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
+// --- Hovering a resource's rate in the top bar: ring every building that makes (+) or uses (-) it ---
+const hlState = new HighlightState(), goState = new HighlightState(), hlRings: SelectionMark[] = [], HL_MAX = 96;
+let hlRes: number[] = [], hlSign = 0, hlPinUntil = 0, hlShown = 0;
+const hlOn = () => hlState.active !== null || performance.now() < hlPinUntil;
+function stockSummary(res: number[], sign: number) {
+  const w = lv.world, flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS), src = mergeSources(res.map(r => stockSources(flow, r, sign)));
+  const stocks = w.stocks(), afford = new Map<number, boolean>();
+  const can = (kind: number, tier: number) => {
+    const key = kind * 32 + tier; let ok = afford.get(key);
+    if (ok === undefined) { const uc = upgrade_cost_flat(kind, tier + 1); ok = true; for (let i = 0; i < uc.length; i += 2) if (stocks[uc[i]] < uc[i + 1]) ok = false; afford.set(key, ok); }
+    return ok;
+  };
+  const sums = summarize(w.buildings_flat(), src.kinds, k => ({ maxTier: defs[k].maxTier, jobs: defs[k].jobs }), can);
+  return { src, sums };
+}
+function stockInfo(res: number[], sign: number): { kind: number; html: string }[] {
+  if (!res.length || !lv) return [];
+  const { src, sums } = stockSummary(res, sign), out: { kind: number; html: string }[] = [];
+  for (const k of sums) out.push({ kind: k.kind, html: `${icon(KIND_ICON[k.kind] as IconName, 14)} ${esc(kindLine(defs[k.kind].name, k, sign))} <span class="muted">(${esc(tierText(k))})</span>` });
+  for (const e of src.extras) { const x = EXTRA_INFO[e.key]; if (x) out.push({ kind: -1, html: `${icon(x.icon as IconName, 14)} ${esc(x.label)}: ${esc(fmtRate(sign * e.perDay))}` }); }
+  return out;
+}
+/** Place a ring on every highlighted building (green: working; orange: held up; gold: can be upgraded now). Runs on hover and every few ticks, never per frame. */
+function applyHighlight() {
+  if (!hlOn() || !hlRes.length) { hlRings.forEach(r => (r.visible = false)); hlShown = 0; return; }
+  const w = lv.world, f = w.buildings_flat(), { sums } = stockSummary(hlRes, hlSign), stocks = w.stocks();
+  let n = 0;
+  for (const k of sums) for (const i of k.idx) {
+    if (n >= HL_MAX) break;
+    if (hlState.active ? !hlState.ringed(i, selectedIdx) : i === selectedIdx) continue;   // the selected building keeps its own ring
+    const o = i * STRIDE, tier = f[o + 1], status = f[o + 6], held = (defs[k.kind].jobs > 0 && f[o + 8] === 0) || status === ST_WAIT || status === ST_EXHAUSTED || status === ST_FULL;
+    let up = false; if (tier < defs[k.kind].maxTier) { const uc = upgrade_cost_flat(k.kind, tier + 1); up = true; for (let c = 0; c < uc.length; c += 2) if (stocks[uc[c]] < uc[c + 1]) up = false; }
+    const r = hlRings[n] ?? (hlRings[n] = (() => { const m = new SelectionMark(terrain); scene.add(m); return m; })());
+    r.set(f[o + 2], f[o + 3], footprint(f[o], tier) + 1.1, f[o], f[o + 5]);
+    (r.material as THREE.MeshBasicMaterial).color.setHex(held ? 0xff6a3a : up ? 0xffffff : 0x9dffb0); r.visible = true; n++;
+  }
+  for (let i = n; i < hlRings.length; i++) hlRings[i].visible = false;
+  hlShown = n;
+}
+function stockHover(res: number[], sign: number) {
+  if (!sign || !res.length || !lv) { hlState.leave(); if (performance.now() >= hlPinUntil) { hlRes = []; hlSign = 0; } applyHighlight(); return; }
+  hlRes = res; hlSign = sign; hlState.enter(res[0], sign); applyHighlight();
+}
+/** Look at the next building behind a rate (of one kind, or of any), selecting it; the rings stay lit for a few seconds when it was not a hover. */
+function stockGo(res: number[], sign: number, kind?: number): boolean {
+  const { sums } = stockSummary(res, sign), idx: number[] = [];
+  for (const k of sums) if (kind === undefined || kind < 0 || k.kind === kind) idx.push(...k.idx);
+  idx.sort((a, b) => a - b);
+  goState.enter(res[0] * 1000 + (kind ?? -1) + 1, sign);
+  const i = goState.next(idx); if (i < 0) return false;
+  const f = lv.world.buildings_flat();
+  rig.focus(f[i * STRIDE + 2], f[i * STRIDE + 3]);
+  if (!hlState.active) { hlRes = res; hlSign = sign; hlPinUntil = performance.now() + 6000; }
+  selectBuilding(i); applyHighlight();
+  return true;
+}
+
+function selectBuilding(i: number | null) { showUpgradeOutline(false); selectedIdx = i; if (hlOn()) applyHighlight(); if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
 function selectRuin(i: number | null) { selectedRuin = i; if (i !== null) { selectedIdx = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
@@ -2016,6 +2078,7 @@ function frame(now: number) {
   effects.update(dt, now / 1000, all.map(v => v.view));
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
+  if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }
   perf.start('labels + minimap');
   updateHallLabels(all); updateJourneyLabels();
   updateLabels(); updateBossBar();

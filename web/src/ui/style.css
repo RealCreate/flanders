@@ -397,3 +397,7 @@ table.flowtab td.r { text-align: right; font-variant-numeric: tabular-nums; whit
 .brand .sub { cursor: pointer; }
 table.winter td { vertical-align: top; padding: 6px 4px; }
 table.winter td .muted { font-size: 13.5px; line-height: 1.35; margin-top: 2px; }
+#tooltip .hlhead { margin-top: 6px; color: var(--gold-soft); }
+#tooltip .hlline { color: #e9dcb8; }
+table.flowbld td { border-bottom: 0; padding: 1px 4px; font-size: 13px; color: #cdbb95; }
+table.flowbld .pbtn { padding: 2px 8px; font-size: 12px; }

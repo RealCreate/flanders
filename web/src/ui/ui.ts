@@ -37,6 +37,12 @@ export interface Handlers {
   select(kind: number | null): void;
   act(name: string): void;
   upgradeHover(on: boolean): void;
+  /** The pointer is on (sign 1 / -1) or has left (0) the rate of these resources: light up the buildings behind it. */
+  stockHover(res: number[], sign: number): void;
+  /** One tooltip line per building kind behind the rate, plus the non-building sources. */
+  stockInfo(res: number[], sign: number): { kind: number; html: string }[];
+  /** Centre the camera on the next building behind the rate (of one kind, or of any). Returns false when there is none. */
+  stockGo(res: number[], sign: number, kind?: number): boolean;
   speed(n: number): void;
   toggleResources(): void;
   minimapClick(x: number, z: number): void;
@@ -320,6 +326,11 @@ export class UI {
     $('btn-display').onclick = () => this.modal('display', true);
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
+    $('flow-body').onclick = e => {   // "Show on map": close the breakdown and look at the next building of that kind
+      const b = (e.target as HTMLElement).closest<HTMLElement>('[data-show]'); if (!b) return;
+      const [res, sign, kind] = b.dataset.show!.split(':').map(Number);
+      this.modal('flow', false); this.h.stockGo([res], sign, kind);
+    };
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => this.modal(b.dataset.close!, false));
     $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').innerHTML = `${bi('check')} Copied`; setTimeout(() => ($('mp-copy').innerHTML = `${bi('copy')} Copy invite link`), 1800); };
     { const up = (e: Event) => this.h.upgradeHover(!!(e.target as HTMLElement).closest('[data-act="upgrade"]'));   // hovering Upgrade outlines the bigger building
@@ -579,17 +590,31 @@ export class UI {
     RES.forEach((r, i) => {
       const p = document.createElement('span'); p.className = 'pill'; p.dataset.i = String(i);
       p.innerHTML = `<span class="ic">${icon(r.key, 18)}</span><b>0</b><span class="d"></span>`;
-      p.onmouseenter = () => { this.hoverPill = i; this.tipFor(i); };
-      p.onclick = () => this.openFlow(i); p.title = '';
-      p.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
+      p.onmouseenter = () => { this.hoverPill = i; this.stockOn(i); this.tipFor(i); };
+      p.onclick = e => { if (this.rateClick(e, i)) return; this.openFlow(i); }; p.title = '';
+      p.onmouseleave = () => { this.hoverPill = -1; this.stockOff(); this.lastTip = ''; $('tooltip').hidden = true; };
       t.appendChild(p); this.pills.push(p);
       if (FOOD_KEYS.includes(r.key)) p.hidden = true;   // the foods are one pill: Food
     });
     const fp = document.createElement('span'); fp.className = 'pill'; fp.dataset.i = String(RES.length);
     fp.innerHTML = `<span class="ic">${icon('food', 18)}</span><b>0</b><span class="d"></span>`;
-    fp.onmouseenter = () => { this.hoverPill = RES.length; this.tipFor(RES.length); }; fp.onclick = () => this.openFlow(FOOD_ID);
-    fp.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
+    fp.onmouseenter = () => { this.hoverPill = RES.length; this.stockOn(RES.length); this.tipFor(RES.length); }; fp.onclick = e => { if (this.rateClick(e, RES.length)) return; this.openFlow(FOOD_ID); };
+    fp.onmouseleave = () => { this.hoverPill = -1; this.stockOff(); this.lastTip = ''; $('tooltip').hidden = true; };
     t.insertBefore(fp, this.pills[RES.findIndex(r => r.key === 'grain')]); this.pills.push(fp);
+  }
+  /** The resources behind a pill (the Food pill stands for all the foods) and the side of the rate the pointer is on: what makes it (+) or what uses it (-). */
+  private pillRes(i: number): number[] { return i === RES.length ? Array.from({ length: Math.floor((this.lastHud?.food?.length ?? 0) / 2) }, (_, k) => this.lastHud!.food![k * 2]) : [i]; }
+  private pillSign(i: number): number {
+    const h = this.lastHud; if (!h) return 1;
+    const r = i === RES.length && h.food ? foodTotals(h.stocks, h.rates, h.food).rate : h.rates[i] ?? 0;
+    return r < 0 ? -1 : 1;
+  }
+  private stockOn(i: number) { this.h.stockHover(this.pillRes(i), this.pillSign(i)); }
+  private stockOff() { this.h.stockHover([], 0); }
+  /** A click on the rate itself (the + or - number) steps the camera through the buildings behind it; elsewhere on the pill it opens the breakdown. */
+  private rateClick(e: MouseEvent, i: number): boolean {
+    if (!(e.target as HTMLElement).closest('.d')) return false;
+    this.h.stockGo(this.pillRes(i), this.pillSign(i)); return true;
   }
   private flowOpen = CLOSED; private lastHud: Hud | null = null;
   /** The breakdown of one resource: what makes it and what uses it, per day (from the core's ledger of the last day). */
@@ -601,7 +626,9 @@ export class UI {
       return `<tr title="${esc(x.hint)}"><td>${icon(x.ic as IconName, 18)}</td><td>${esc(x.label)}${r.count > 1 ? ` <span class="muted">× ${r.count}</span>` : ''}</td><td class="r">${sign}${Math.round(r.perDay)}/day</td></tr>`;
     }).join('') : `<tr><td></td><td class="muted">Nothing</td><td></td></tr>`;
     const b = breakdown(h.flow!, i, c => (c < h.flow!.nk ? h.kinds?.[c] ?? 0 : 0));
-    return { b, html: `<h3>Comes in</h3><table class="flowtab">${rows(b.sources, '+')}</table><h3>Goes out</h3><table class="flowtab">${rows(b.sinks, '\u2212')}</table>` };
+    const mine = (sign: number) => this.h.stockInfo([i], sign).filter(l => l.kind >= 0).map(l => `<tr><td></td><td>${l.html}</td><td class="r"><button class="pbtn" data-show="${i}:${sign}:${l.kind}">Show on map</button></td></tr>`).join('');
+    const sb = mine(1), kb = mine(-1);
+    return { b, html: `<h3>Comes in</h3><table class="flowtab">${rows(b.sources, '+')}</table>${sb ? `<table class="flowtab flowbld">${sb}</table>` : ''}<h3>Goes out</h3><table class="flowtab">${rows(b.sinks, '\u2212')}</table>${kb ? `<table class="flowtab flowbld">${kb}</table>` : ''}` };
   }
   private renderFlow(h: Hud) {
     const i = this.flowOpen; if (i === CLOSED || !h.flow) return;
@@ -634,8 +661,11 @@ export class UI {
   private pillText: string[] = [];
   /** Show the resource tooltip under its pill. The DOM is only touched when the text really changed, so it never flickers. */
   private tipFor(i: number) {
-    const el = $('tooltip'), html = this.pillText[i] ?? '';
+    const el = $('tooltip');
+    let html = this.pillText[i] ?? '';
     if (!html) return;
+    const lines = this.h.stockInfo(this.pillRes(i), this.pillSign(i));
+    if (lines.length) html += `<small class="hlhead">${this.pillSign(i) > 0 ? 'Made by' : 'Used by'} (lit on the map; click the rate to look at each)</small>` + lines.map(l => `<small class="hlline">${l.html}</small>`).join('');
     if (html !== this.lastTip || el.hidden) { this.lastTip = html; el.innerHTML = html; el.hidden = false; }
     const r = this.pills[i].getBoundingClientRect(); el.style.left = Math.min(innerWidth - 280, r.left) + 'px'; el.style.top = (r.bottom + 6) + 'px';
   }
