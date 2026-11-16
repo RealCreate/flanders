@@ -65,12 +65,14 @@ export interface Hud {
   tick: number; stocks: number[]; rates: number[]; flow?: FlowData; kinds?: number[]; food?: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
   radius: number; buildings: number; storage: number;
   vitals?: number[]; beds?: number; devotion?: number;
+  winter?: number[];   // the core's winter_numbers()
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
 }
 
 export interface PeerRow { key: string; name: string; where?: string; online?: boolean; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
 
+import { parseWinter, winterTip, winterWarning, winterLines } from '../winter';
 const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
 const BUILDABLE = defs.filter(d => d.id !== 15).sort((a, b) => a.cat - b.cat || a.id - b.id);
 
@@ -268,6 +270,10 @@ export class UI {
   <div class="sheet flowsheet"><h2 id="flow-title"></h2><div id="flow-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="flow">Close</button></div></div>
 </div>
+<div class="overlay clear" id="winter" hidden>
+  <div class="sheet flowsheet"><h2 id="winter-title"></h2><div id="winter-body"></div>
+    <div class="btnrow"><button class="pbtn primary" data-close="winter">Close</button></div></div>
+</div>
 <div class="overlay clear" id="mp" hidden>
   <div class="sheet">
     <h2>The shared world</h2>
@@ -315,6 +321,7 @@ export class UI {
     $('btn-res').onclick = () => this.h.toggleResources();
     $('btn-sound').onclick = () => this.h.toggleMute();
     this.initTitleTips();
+    $('sub').onclick = () => { this.modal('winter', true); if (this.lastHud) this.renderWinter(this.lastHud); };
     $('btn-help').onclick = () => this.modal('help', true);
     $('btn-display').onclick = () => this.modal('display', true);
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
@@ -638,6 +645,14 @@ export class UI {
     $('flow-title').innerHTML = `${resIcon(i, 26)} ${RES[i].name}`;
     $('flow-body').innerHTML = `<p class="muted">${v} / ${h.storage} stored · steady rate <b class="${b.steady < 0 ? 'neg' : b.steady > 0 ? 'pos' : ''}">${fmtRate(b.steady)}</b>${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)}</b>` : ''}</p>${html}${foot(b.covered, b.net, b.steady)}`;
   }
+  private warnedDay = '';
+  /** What winter does here, with this village's numbers (the panel behind the season in the top bar). */
+  private renderWinter(h: Hud) {
+    if (!h.winter) return;
+    const season = Math.floor((Math.floor(h.tick / 240)) / 10) % 4, lines = winterLines(parseWinter(h.winter), h.pop, season);
+    $('winter-title').innerHTML = `${icon('cold', 26)} Winter`;
+    $('winter-body').innerHTML = `<table class="flowtab winter">${lines.map(l => `<tr><td>${icon(l.icon as IconName, 22)}</td><td><b class="${l.tone === 'bad' ? 'neg' : l.tone === 'good' ? 'pos' : ''}">${esc(l.title)}</b><div class="muted">${esc(l.text)}</div></td></tr>`).join('')}</table>`;
+  }
   private lastTip = '';
   private pillText: string[] = [];
   /** Show the resource tooltip under its pill. The DOM is only touched when the text really changed, so it never flickers. */
@@ -661,6 +676,11 @@ export class UI {
     const day = Math.floor(h.tick / 240) + 1, season = SEASONS[Math.floor((day - 1) / 10) % 4];
     const ph = dayPhase(h.tick);
     $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season} · ${clockText(ph)} `; $('sub').insertAdjacentHTML('beforeend', icon(nightFactor(ph) > 0.5 ? 'moon' : 'sun', 14));
+    if (h.winter) {
+      const wn = parseWinter(h.winter), si = Math.floor((day - 1) / 10) % 4; $('sub').title = winterTip(wn, si);
+      const key = `${Math.floor((day - 1) / 40)}:${day}`; if (key !== this.warnedDay) { this.warnedDay = key; const m = winterWarning(wn, si, (day - 1) % 10 + 1); if (m) this.toast(m.text, m.tone, 'cold'); }
+      if (!$('winter').hidden) this.renderWinter(h);
+    }
     this.lastHud = h; if (this.flowOpen >= 0 && !$('flow').hidden) this.renderFlow(h);
     if (h.food) {
       const t = foodTotals(h.stocks, h.rates, h.food), p = this.pills[RES.length], left = daysLeft(t.meals, t.rate);

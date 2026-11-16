@@ -21,6 +21,9 @@ export const RELEASES: Release[] = [
       'This version number and the release notes page.',
     ],
     changed: [
+      'Winter is gentler: farms make 55% grain (85% with haystacks) instead of 25%, the village burns about a third less firewood, the town hall hearth keeps it warm while any wood is left, and the cold now takes unhappiness first, nobody for the first 3 cold days (5 with a staffed hospital), then a daily chance that grows. Fishing, hunting and smoked food are untouched by winter.',
+      'New Winter panel (click the season in the top bar, or hover it): exactly what winter does, firewood per day and days left at the present size, and a warning toast a season ahead.',
+      'The rules fingerprint changed again for the winter rules: villages on this version only sync with players on the same version.',
       'Armies cross water only by a bridge or a temporarily lowered drawbridge.',
       'Combat overhaul: defending, raiders, siege engines, fire and rams all behave more distinctly.',
       'Knights and siege engines march at their own pace.',
