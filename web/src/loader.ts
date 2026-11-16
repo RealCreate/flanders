@@ -36,6 +36,9 @@ class Slicer {
 
 export interface SliceStats { slices: number; longestMs: number }
 
+/** Where a replay spent its time: per command kind (how many, how many ms) and on plain ticks. */
+export interface ReplayTiming { totalMs: number; stepMs: number; commands: number; ticks: number; byOp: Record<string, { n: number; ms: number }> }
+
 /** Step a world to `target`, yielding as the budget runs out. A tick is cheap, so the clock is looked at only every 128. */
 async function stepSliced(w: World, target: number, s: Slicer, o: SliceOpts): Promise<boolean> {
   let n = 0; const goal = BigInt(target);
@@ -50,14 +53,17 @@ async function stepSliced(w: World, target: number, s: Slicer, o: SliceOpts): Pr
  * Play a history onto a world exactly as the blocking loop `for (c of cmds) { stepTo(w, c.tick); apply(w, c) }` does (then on to `finalTick`), but in slices.
  * Resolves `ok: false` when `cancelled` said stop.
  */
-export async function replayInSlices<C extends { tick: number }>(w: World, cmds: readonly C[], apply: (w: World, c: C) => void, finalTick = 0, o: SliceOpts = {}): Promise<SliceStats & { ok: boolean }> {
-  const s = new Slicer(o);
+export async function replayInSlices<C extends { tick: number }>(w: World, cmds: readonly C[], apply: (w: World, c: C) => void, finalTick = 0, o: SliceOpts = {}): Promise<SliceStats & { ok: boolean; timing: ReplayTiming }> {
+  const s = new Slicer(o), now = o.now ?? (() => performance.now());
+  const timing: ReplayTiming = { totalMs: 0, stepMs: 0, commands: 0, ticks: 0, byOp: {} }, t00 = now(), tick0 = Number(w.tick());
   const end = Math.max(finalTick, cmds.length ? cmds[cmds.length - 1].tick : 0, 1);
   const report = () => o.onProgress?.(Math.min(1, Number(w.tick()) / end));
-  const done = (ok: boolean) => ({ ok, slices: s.slices, longestMs: s.longest });
+  let applyMs = 0;
+  const done = (ok: boolean) => { timing.totalMs = now() - t00; timing.stepMs = timing.totalMs - applyMs; timing.ticks = Number(w.tick()) - tick0; return { ok, slices: s.slices, longestMs: s.longest, timing }; };
   for (const c of cmds) {
     if (!(await stepSliced(w, c.tick, s, o))) return done(false);
-    apply(w, c);
+    const ta = now(); apply(w, c); const d = now() - ta;
+    applyMs += d; timing.commands++; const e = (timing.byOp[(c as { op?: string }).op ?? '?'] ??= { n: 0, ms: 0 }); e.n++; e.ms += d;
     if (await s.maybe()) { report(); if (o.cancelled?.()) return done(false); }   // (one command can cost tens of ms: look at the clock after every one)
   }
   if (!(await stepSliced(w, finalTick, s, o))) return done(false);
