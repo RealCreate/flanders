@@ -4482,6 +4482,26 @@ mod pathnet_tests {
     }
 
     #[test]
+    fn a_drawbridge_over_a_moat_stands_at_deck_height_not_on_the_moat_bed() {
+        // the building's height (what the model, its pick volume and its selection ring are placed at) is the deck, well above the moat's floor, at every angle round the ring
+        let mut seen = std::collections::BTreeSet::new();
+        for k in 0..16 {
+            let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+            for i in 0..56 { let a = i as f32 / 56.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+            let a = k as f32 / 16.0 * std::f32::consts::TAU;
+            let s = w.drawbridge_snap((a.cos() * 18.0).round() as i32, (a.sin() * 18.0).round() as i32);
+            if s.len() != 3 { continue; }
+            let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); if br < 0 { continue; }
+            let b = &w.buildings[br as usize]; seen.insert(b.rot);
+            let bed = w.height_ground(b.x, b.y);   // the ditch's bed under the middle of the deck
+            assert!(b.pad_h > bed + 2.5, "rot {}: deck {} must lie well above the bed {}", b.rot, b.pad_h, bed);
+            assert!(b.pad_h >= 0.7, "rot {}: the deck is above the water surface: {}", b.rot, b.pad_h);
+            assert!(w.on_deck(b.x, b.y), "rot {}: soldiers walk on the deck", b.rot);
+        }
+        assert!(seen.len() >= 2, "several rotations covered: {seen:?}");
+    }
+
+    #[test]
     fn a_snapped_drawbridge_faces_outward_across_the_moat_at_every_angle() {
         // turn -> (sin, cos) of the deck direction, the same convention as the model and `on_deck`
         let dir = |r: f32| { let a = r * std::f32::consts::FRAC_PI_4; (a.sin(), a.cos()) };

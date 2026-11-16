@@ -14,6 +14,7 @@ import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, ti
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
+import { drawbridgeDeckHeight } from './render/ringheight';
 import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
 import { auditModel, setNightLight } from './render/buildings';
@@ -68,6 +69,13 @@ await init();
 const radii = defs.map(d => d.r);
 /** How much room a building takes at a tier (the core's rule: grander buildings spread out as they are upgraded). */
 const footprint = (kind: number, tier: number) => footprint_of(kind, tier);
+/** Deck height of a drawbridge about to be placed at (x, z), as the core works it out when it is built. */
+function drawbridgeDeckAt(w: World, x: number, z: number, rot: number): number {
+  const f = w.buildings_flat(), gates: { d: number; h: number }[] = [];
+  for (let i = 0; i + 9 < f.length; i += 10) if (f[i] === 22) gates.push({ d: Math.hypot(f[i + 2] - x, f[i + 3] - z), h: f[i + 5] });
+  const a = (rot & 7) * Math.PI / 4, sx = Math.sin(a), sz = Math.cos(a);
+  return drawbridgeDeckHeight(gates, w.height_at(x + sx * 9, z + sz * 9), w.height_at(x - sx * 9, z - sz * 9));
+}
 const sound = new Sound();
 const nextFrame = () => new Promise<void>(r => setTimeout(r, 20));
 /** Game ticks per real second at 1x. Half a tick per second keeps the pace of the village calm and readable. */
@@ -1320,7 +1328,7 @@ function updateSelection() {
   const f = w.buildings_flat(), o = selectedIdx * 10, hp = w.building_health();
   const kind = f[o], tier = f[o + 1], x = f[o + 2], z = f[o + 3], status = f[o + 6], pct = f[o + 7];
   const d = defs[kind];
-  selRing.visible = true; selRing.set(x, z, footprint(kind, tier) + 1.1);
+  selRing.visible = true; selRing.set(x, z, footprint(kind, tier) + 1.1, kind, f[o + 5]);
   const stocks = Array.from(w.stocks());
   const io = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)} ${n} ${RES[r].name}`).join(', ');
   const health = hp[selectedIdx * 3] / hp[selectedIdx * 3 + 1], burning = hp[selectedIdx * 3 + 2] > 0;
@@ -1566,9 +1574,9 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29 || selectedKind === 41) h = Math.min(h, w.wheel_pad_cap(x, z, grot & 7));   // (a waterwheel house stands low on the bank, WHEEL_PAD_MAX above the water under its wheel: a moat's own level, as the core)
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
-  if (!pad) h = terrain.heightAt(x, z);
+  if (!pad) h = selectedKind === 23 ? drawbridgeDeckAt(w, x, z, grot) : terrain.heightAt(x, z);   // (a drawbridge hangs at deck height over the water, not on the bed)
   ghost.visible = true; ghost.position.set(x, h, z); ghost.rotation.y = grot * Math.PI / 4;
-  ghostRing.visible = true; ghostRing.position.set(x, h + 0.14, z); ghostRing.scale.setScalar(d.r * 1.05);
+  ghostRing.visible = true; ghostRing.position.set(x, h + 0.14, z); if (selectedKind === 23) { ghostRing.scale.set(2.4, 1, 7.4); ghostRing.rotation.y = grot * Math.PI / 4; } else { ghostRing.scale.setScalar(d.r * 1.05); ghostRing.rotation.y = 0; }   // (a drawbridge's outline is long: it covers the whole deck)
   if (code !== ghostCode) {
     ghostCode = code;
     ghost.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) { const mm = m.material as THREE.MeshStandardMaterial; mm.emissive.setHex(code === 0 ? 0x22cc55 : 0xdd2a1a); mm.emissiveIntensity = code === 0 ? 0.32 : 0.55; } });
