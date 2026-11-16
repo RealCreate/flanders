@@ -273,17 +273,21 @@ export function buildRam(): THREE.Group {
   return g;
 }
 
+/** Catapult arm angle about x: resting (cup low at the back) and at the top of the throw (cup up and forward of the pivot). */
+export const ARM_REST = -0.9, ARM_THROW = 1.9;
+
 export function buildCatapult(): THREE.Group {
   const g = new THREE.Group();
   const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 });
   const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
   add(new THREE.BoxGeometry(1.5, 0.25, 2.8), wood, 0, 0.6, 0);
   for (const sx of [-0.85, 0.85]) for (const sz of [-0.9, 0.9]) { const w = add(new THREE.CylinderGeometry(0.5, 0.5, 0.18, 12), dark, sx, 0.5, sz); w.rotation.z = Math.PI / 2; }
-  for (const sx of [-0.6, 0.6]) add(new THREE.BoxGeometry(0.18, 1.3, 0.18), wood, sx, 1.2, -0.3);
-  const arm = new THREE.Group(); arm.position.set(0, 1.7, -0.3); g.add(arm);
-  const beam = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 2.8), wood); beam.position.set(0, 0, 0.9); beam.castShadow = true; arm.add(beam);
-  const cup = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.15, 0.6), dark); cup.position.set(0, 0.1, 2.3); arm.add(cup);
-  const stone = new THREE.Mesh(new THREE.IcosahedronGeometry(0.28, 0), new THREE.MeshStandardMaterial({ color: 0x8a8782, roughness: 1 })); stone.position.set(0, 0.35, 2.3); arm.add(stone);
+  for (const sx of [-0.6, 0.6]) add(new THREE.BoxGeometry(0.18, 1.3, 0.18), wood, sx, 1.2, 0.5);
+  // the model fires towards +z (like every model, yaw 0 faces +z): the arm pivots near the front and its cup trails behind, resting low at the back, then whips up and over to the front
+  const arm = new THREE.Group(); arm.position.set(0, 1.7, 0.5); g.add(arm);
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 2.8), wood); beam.position.set(0, 0, -0.9); beam.castShadow = true; arm.add(beam);
+  const cup = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.15, 0.6), dark); cup.position.set(0, 0.1, -2.3); arm.add(cup);
+  const stone = new THREE.Mesh(new THREE.IcosahedronGeometry(0.28, 0), new THREE.MeshStandardMaterial({ color: 0x8a8782, roughness: 1 })); stone.position.set(0, 0.35, -2.3); arm.add(stone);
   g.userData.arm = arm; g.userData.stone = stone;
   return g;
 }

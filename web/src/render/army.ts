@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { buildCatapult, buildRam, buildStandard, HAT, TOOL, type Crowd, type Draw } from './crowd';
+import { buildCatapult, buildRam, buildStandard, ARM_REST, ARM_THROW, HAT, TOOL, type Crowd, type Draw } from './crowd';
 import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses';
 import { smoothPath } from './field';
 import { lunge, fallen, mix } from './fight';
@@ -335,7 +335,7 @@ export class ArmyView {
       let g = this.siege[i]; if (!g) { g = buildCatapult(); g.visible = true; this.siege[i] = g; this.group.add(g); }
       g.position.set(x, this.terrain.walkAt(x, z), z); g.rotation.y = yaw; g.visible = true; sg.add(g);
       // fire = seconds of the throwing motion left (1 -> 0): a quick swing forward, then the arm is winched back
-      const p = 1 - fire; (g.userData.arm as THREE.Object3D).rotation.x = fire <= 0 ? -0.9 : p < 0.25 ? -0.9 + (p / 0.25) * 2.1 : 1.2 - ((p - 0.25) / 0.75) * 2.1;
+      const p = 1 - fire; (g.userData.arm as THREE.Object3D).rotation.x = fire <= 0 ? ARM_REST : p < 0.25 ? ARM_REST + (p / 0.25) * (ARM_THROW - ARM_REST) : ARM_THROW - ((p - 0.25) / 0.75) * (ARM_THROW - ARM_REST);
     };
     let ri = 0;
     const placeRam = (x: number, z: number, yaw: number, swing: number) => {
