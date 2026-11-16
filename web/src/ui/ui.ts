@@ -597,16 +597,12 @@ export class UI {
   }
   /** The resources behind a pill (the Food pill stands for all the foods) and the side of the rate the pointer is on: what makes it (+) or what uses it (-). */
   private pillRes(i: number): number[] { return i === RES.length ? Array.from({ length: Math.floor((this.lastHud?.food?.length ?? 0) / 2) }, (_, k) => this.lastHud!.food![k * 2]) : [i]; }
-  private pillSign(i: number): number {
-    const h = this.lastHud; if (!h) return 1;
-    const r = i === RES.length && h.food ? foodTotals(h.stocks, h.rates, h.food).rate : h.rates[i] ?? 0;
-    return r < 0 ? -1 : 1;
-  }
+  private pillSign(_i: number): number { return 2; }   // the pill stands for both sides: what makes the resource and what uses it
   private stockOn(i: number) { this.h.stockHover(this.pillRes(i), this.pillSign(i)); }
   private stockOff() { this.h.stockHover([], 0); }
-  /** A click on the rate itself (the + or - number) steps the camera through the buildings behind it; elsewhere on the pill it opens the breakdown. */
+  /** A click on the number or the rate steps the camera through the buildings behind it; elsewhere on the pill it opens the breakdown. */
   private rateClick(e: MouseEvent, i: number): boolean {
-    if (!(e.target as HTMLElement).closest('.d')) return false;
+    if (!(e.target as HTMLElement).closest('.d, b')) return false;
     this.h.stockGo(this.pillRes(i), this.pillSign(i)); return true;
   }
   private flowOpen = CLOSED; private lastHud: Hud | null = null;
@@ -649,8 +645,10 @@ export class UI {
     const el = $('tooltip');
     let html = this.pillText[i] ?? '';
     if (!html) return;
-    const lines = this.h.stockInfo(this.pillRes(i), this.pillSign(i));
-    if (lines.length) html += `<small class="hlhead">${this.pillSign(i) > 0 ? 'Made by' : 'Used by'} (lit on the map; click the rate to look at each)</small>` + lines.map(l => `<small class="hlline">${l.html}</small>`).join('');
+    for (const sg of [1, -1]) {
+      const lines = this.h.stockInfo(this.pillRes(i), sg);
+      if (lines.length) html += `<small class="hlhead">${sg > 0 ? 'Made by' : 'Used by'}${sg > 0 ? ' (lit on the map; click the number to look at each)' : ''}</small>` + lines.map(l => `<small class="hlline">${l.html}</small>`).join('');
+    }
     if (html !== this.lastTip || el.hidden) { this.lastTip = html; el.innerHTML = html; el.hidden = false; }
     const r = this.pills[i].getBoundingClientRect(); el.style.left = Math.min(innerWidth - 280, r.left) + 'px'; el.style.top = (r.bottom + 6) + 'px';
   }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stockSources, summarize, kindLine, kindNote, tierText, HighlightState, idleTotal, mergeSources } from '../src/stockhighlight.ts';
+import { stockSources, summarize, kindLine, kindNote, tierText, HighlightState, idleTotal, mergeSources, addCatalogKinds } from '../src/stockhighlight.ts';
 
 const flow = { covered: 240, nk: 3, extras: ['villagers', 'orders'], lines: [
   { cat: 0, res: 10, gain: 120, loss: 0 },   // farms make grain
@@ -56,4 +56,11 @@ test('hover state machine', () => {
 test('merging resources (the Food pill)', () => {
   const m = mergeSources([stockSources(flow, 10, 1), { kinds: [{ kind: 0, perDay: 5 }, { kind: 9, perDay: 7 }], extras: [] }]);
   assert.deepEqual(m.kinds.map(k => [k.kind, k.perDay]), [[0, 125], [2, 10], [9, 7]]);
+});
+
+test('catalogue kinds are added before the ledger has seen them', () => {
+  const defs = [{ inputs: [], outputs: [[10, 10]] }, { inputs: [[10, 3]], outputs: [[14, 3]] }, { inputs: [], outputs: [] }];
+  const p = addCatalogKinds({ kinds: [], extras: [] }, defs, 10, 1), m = addCatalogKinds({ kinds: [{ kind: 1, perDay: 30 }], extras: [] }, defs, 10, -1);
+  assert.deepEqual(p.kinds, [{ kind: 0, perDay: 0 }]);
+  assert.deepEqual(m.kinds, [{ kind: 1, perDay: 30 }], 'no duplicate');
 });
