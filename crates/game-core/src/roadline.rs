@@ -203,6 +203,11 @@ impl World {
     /// Can a road piece stand at (dx, dy) (inside the land or just beyond it, on dry level ground, clear of buildings)? The `can_place` code.
     pub fn road_can(&self, dx: i32, dy: i32) -> i32 { self.can_place(ROAD, dx, dy) }
 
+    fn push_run(v: &mut Vec<f32>, born: u32, run: &[(f32, f32)]) {
+        v.extend_from_slice(&[1.0, born as f32, run.len() as f32]);
+        for p in run { v.extend_from_slice(&[p.0, p.1]); }
+    }
+
     /// The drawn lines of the roads for the client: for each, [kind, born tick, n, x, y, x, y, ...]; kind 0 a building's stub (door to node), 1 a stretch of a road the player laid.
     pub fn road_lines_flat(&self) -> Vec<f32> {
         let mut v = vec![];
@@ -210,12 +215,17 @@ impl World {
             if !has_stub(b.kind) { continue; }
             let _ = i;
             let (door, exit) = doors::door_world(b);
-            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 { v.extend_from_slice(&[0.0, b.born as f32, 2.0, door.0, door.1, exit.0, exit.1]); }
+            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 && self.leg_is_dry(door, exit) { v.extend_from_slice(&[0.0, b.born as f32, 2.0, door.0, door.1, exit.0, exit.1]); }
         }
         for e in self.road_edges() {
             let born = self.buildings[e.a].born.max(self.buildings[e.b].born);
-            v.extend_from_slice(&[1.0, born as f32, e.pts.len() as f32]);
-            for p in &e.pts { v.extend_from_slice(&[p.0, p.1]); }
+            // only the dry stretches are drawn: a road stops at the bank and starts again on the far bank (a bridge or a drawbridge carries it over, with its own deck)
+            let mut run: Vec<(f32, f32)> = vec![];
+            for k in 0..e.pts.len() {
+                if k > 0 && !self.leg_is_dry(e.pts[k - 1], e.pts[k]) { if run.len() >= 2 { Self::push_run(&mut v, born, &run); } run.clear(); }
+                run.push(e.pts[k]);
+            }
+            if run.len() >= 2 { Self::push_run(&mut v, born, &run); }
         }
         v
     }

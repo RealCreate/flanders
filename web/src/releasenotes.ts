@@ -37,6 +37,7 @@ export const RELEASES: Release[] = [
       'Waterwheels and watermills stand at the visible water level of a moat and sit on the bank, with the wheel dipping into the water.',
       'Fishing hut, gold mine and iron mine footings no longer glitch against the bank or the door pad.',
       'Drawbridges snap to face outward across the moat.',
+      'Roads are no longer drawn across a moat or river or under a drawbridge: they stop at the bank. A road you lay shows the moment you lay it instead of growing in over the next day.',
       'A black beam over olive branches and scrolls.',
       'Jumping a moat, clicking mines, spires and upgrades that could only be added.',
     ],
