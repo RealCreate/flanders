@@ -892,9 +892,11 @@ async function startGame(name: string, username: string) {
     sharedCount = countShared(entries);
     away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
     // the whole history, then the ticks that passed while you were away, a few milliseconds at a time behind the loading screen
-    const prog = (f: number) => ui.progress(60 + Math.round(f * 8), 'Gathering your villagers…');
-      await replayInSlices(w, entries.map(e => e.cmd), applyCmd, saved.tick, { onProgress: prog });
-      await replayInSlices(w, [], applyCmd, Number(w.tick()) + away, { onProgress: prog });
+    const prog = (f: number) => ui.progress(60 + Math.round(f * 8), `Gathering your villagers… ${Math.round(f * 100)}%`);
+    const rep = await replayInSlices(w, entries.map(e => e.cmd), applyCmd, saved.tick, { onProgress: prog });
+    await replayInSlices(w, [], applyCmd, Number(w.tick()) + away, { onProgress: prog });
+    const slow = Object.entries(rep.timing.byOp).sort((p, q) => q[1].ms - p[1].ms).slice(0, 4).map(([op, v]) => `${op} ×${v.n}: ${Math.round(v.ms)} ms`).join(', ');
+    console.info(`Replayed your history: ${rep.timing.commands} commands and ${rep.timing.ticks} ticks in ${Math.round(rep.timing.totalMs)} ms (ticks alone ${Math.round(rep.timing.stepMs)} ms; slowest commands: ${slow || 'none'}).`);
   }
   lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf;
   lv.onReport = onLocalReport;
