@@ -940,7 +940,7 @@ const fishingHut: Model = b => {
   b.box(0.8, 1.5, 0.12, m.door, -0.6, 0.18, D / 2 + 0.04); b.window(-0.6 + W * 0.3, 1.1, D / 2 + 0.02);
   if (t >= 2) b.chimney(-1.5, h + 0.9, -0.5, 1.1);
   // the jetty: planks on piles, from the house out over the water
-  const J0 = W / 2 - 0.5, J1 = 5.6, JW = 1.5, n = Math.round((J1 - J0) / 0.5);
+  const J0 = W / 2 - 0.45, J1 = 5.6, JW = 1.5, n = Math.round((J1 - J0) / 0.5);
   for (let i = 0; i < n; i++) b.box(0.44, 0.1, JW, i % 2 ? m.wood : m.log, J0 + 0.25 + i * 0.5, 0.0, 0);
   for (const x of [J0 + 0.5, J0 + 2.0, J0 + 3.5, J1 - 0.2]) for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.11, 0.13, 2.0, m.darkwood, x, -1.7, z, 6);
   for (const z of [-JW / 2, JW / 2]) b.box(J1 - J0, 0.1, 0.14, m.darkwood, (J0 + J1) / 2, -0.12, z);
@@ -957,12 +957,12 @@ const fishingHut: Model = b => {
   for (const z of [-2.3, -0.9]) b.cyl(0.07, 0.09, 2.2, m.darkwood, nx, 0, z, 6);
   b.box(0.1, 0.1, 1.7, m.darkwood, nx, 2.0, -1.6);
   for (let i = 0; i < 6; i++) b.box(0.05, 1.3 - (i % 3) * 0.2, 0.2, f.net, nx, 0.7 + (i % 3) * 0.1, -2.2 + i * 0.28);
-  for (const x of [-1.8, 0.2]) b.cyl(0.06, 0.07, 1.5, m.darkwood, x, 0, D / 2 + 0.9, 6);
-  b.box(2.4, 0.07, 0.07, m.darkwood, -0.8, 1.35, D / 2 + 0.9);
-  for (let i = 0; i < 6; i++) b.box(0.1, 0.3, 0.12, i % 2 ? f.silver : f.smoked, -1.6 + i * 0.34, 1.0, D / 2 + 0.9);
+  for (const x of [-2.6, -0.6]) b.cyl(0.06, 0.07, 1.5, m.darkwood, x, 0, D / 2 + 0.9, 6);   // the drying rack stands back by the house, well clear of the jetty and the water
+  b.box(2.4, 0.07, 0.07, m.darkwood, -1.6, 1.35, D / 2 + 0.9);
+  for (let i = 0; i < 6; i++) b.box(0.1, 0.3, 0.12, i % 2 ? f.silver : f.smoked, -2.4 + i * 0.34, 1.0, D / 2 + 0.9);
   // creels and a barrel
   b.box(0.5, 0.45, 0.5, m.hay, 1.0, 0.1, -D / 2 - 0.5); b.box(0.45, 0.4, 0.45, m.hay, 1.5, 0.1, -D / 2 - 0.4, 0.5);
-  b.cyl(0.35, 0.35, 0.7, m.log, -2.6, 0, 1.3, 9);
+  b.cyl(0.35, 0.35, 0.7, m.log, -3.2, 0, 0.6, 9);
   if (t >= 1) for (const z of [-0.3, 0.3]) b.cyl(0.05, 0.05, 1.4, m.darkwood, J1 - 1.4, 0.1, z * 3, 5).rotation.x = 0.35;   // rods leaning on the rail
   if (t >= 3) b.flag(-0.6 + W / 2 - 0.2, h + 1.0, -D / 2 + 0.3, 2.0);
 };

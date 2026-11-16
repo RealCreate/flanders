@@ -70,3 +70,15 @@ test('the fishing hut footing stays well short of the bank, at every tier', asyn
     assert.ok(Math.abs(fb.max.z) <= 1.45 + 1e-3 && Math.abs(fb.min.z) <= 1.45 + 1e-3, `tier ${tier}: the footing's sides stay within 1.45`);
   }
 });
+
+test('the fishing hut jetty starts where the footing ends and the drying rack stays behind the footing front', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) {
+    const g = B.buildModel(41, tier, 0x2f5fa8, 1, 0, undefined, false); g.updateMatrixWorld(true);
+    const fb = new THREE.Box3().setFromObject(g.getObjectByName('footing'));
+    let planks = 0;
+    g.traverse(o => { if (!o.isMesh) return; const bb = new THREE.Box3().setFromObject(o), s = bb.getSize(new THREE.Vector3());
+      if (Math.abs(s.x - 0.44) < 1e-3 && Math.abs(s.y - 0.1) < 1e-3) { planks++; assert.ok(bb.min.x >= fb.max.x - 1e-3, `tier ${tier}: a jetty plank (from ${bb.min.x}) lies over the footing (to ${fb.max.x})`); } });
+    assert.ok(planks >= 6, `tier ${tier}: the jetty planks are found`);
+  }
+});
