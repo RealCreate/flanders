@@ -19,13 +19,15 @@ mod roadcheck;
 mod farmcheck;
 #[cfg(test)]
 mod roadnet_tests;
+#[cfg(test)]
+mod snapshot_tests;
 mod terrain;
 use catalog::*;
 use military::*;
 use terrain::{lerp, smoothstep, Deposit};
 
 /// Small deterministic PCG32 RNG.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u32 {
@@ -37,7 +39,7 @@ impl Rng {
     fn range(&mut self, n: u32) -> u32 { self.next() % n.max(1) }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Building {
     kind: u8,
     tier: u8,
@@ -194,11 +196,11 @@ const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
 const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2, 2, 3];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Caravan { res: u8, amount: i32, to: i32, start: u64, eta: u64, escort: u32 }
 /// A diplomatic errand on the road to another village (`tag`): `kind` is a treaty kind (0 trade pact, 1 peace, 2 alliance) or one of JK_ENVOY, JK_MARRIAGE, JK_WAR; `arg` is the treaty's length in days.
 /// It sets out at `start` and its effect happens when it arrives at `arrive`. Everyone's copy of the village holds the same list, so the procession can be shown on all of them.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Journey { kind: u8, tag: i32, arg: i32, start: u64, arrive: u64 }
 pub const JK_ENVOY: u8 = 3;
 pub const JK_MARRIAGE: u8 = 4;
@@ -208,7 +210,7 @@ pub const JK_CARAVAN: u8 = 6;
 /// Ticks per unit of road for each journey kind (a rider is quicker than a procession).
 const JOURNEY_SPEED: [f32; 6] = [2.2, 1.6, 1.5, 1.8, 1.0, 3.0];
 /// An agreement with another village: `kind` 0 trade pact (better prices), 1 non-aggression (neither side may start a battle against the other), 2 alliance (the same, and the best prices), until tick `until`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Treaty { tag: i32, kind: u8, until: u64 }
 pub const TREATY_TRADE: u8 = 0;
 pub const TREATY_PEACE: u8 = 1;
@@ -217,6 +219,7 @@ pub const TREATY_ALLIANCE: u8 = 2;
 const CARAVAN_SPEED: f32 = 1.2;
 
 #[wasm_bindgen]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct World {
     seed: u64,
     ox: i32,
@@ -248,7 +251,7 @@ pub struct World {
     market_sold: [i32; market::MARKET_GOODS.len()],
     style: u32,                   // the village's flag as one number (see web/src/flag.ts), 0 = none chosen; part of the state so every peer sees it
     hero: Option<(u8, u32)>,      // the village's lord: name index and experience (level follows from it)
-    defer_roads: bool,            // inside place_batch: the path network is rebuilt once at the end
+    #[serde(skip)] defer_roads: bool,            // inside place_batch: the path network is rebuilt once at the end
     choice: Option<(u8, u64)>,   // a decision waiting for the player: kind and the tick it is made for them
     mood: i32,                   // temporary lift (or drag) on happiness from the last decision
     mood_until: u64,
@@ -276,7 +279,7 @@ pub struct World {
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
     road_links: Vec<(u32, u32)>,  // (child, parent) building indices for each segment
     road_paths: Vec<(u32, u32, Vec<(f32, f32)>)>,   // full walkable route of each link, child doorstep to parent doorstep (crosses drawbridges)
-    road_cache: std::collections::HashMap<(u32, u32), (u64, Option<Vec<(f32, f32)>>)>,   // routes already found over the path network, valid while the network's stamp is the same
+    #[serde(skip)] road_cache: std::collections::HashMap<(u32, u32), (u64, Option<Vec<(f32, f32)>>)>,   // routes already found over the path network, valid while the network's stamp is the same
     road_sig: u64,                // a fingerprint of the roads as they stand (derived: the network with the roads marked on it, and the overlays, are rebuilt when it changes)
     army: [u32; NK],
     queue: [u32; NK],
@@ -295,16 +298,26 @@ pub struct World {
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
     links: Vec<Vec<(f32, f32)>>,   // invisible paths chained from this city out to other villages' cities (set by `link_village`; part of the state)
-    ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
-    net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network with the roads marked on it (derived; rebuilt when the village or its roads change)
-    ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
-    height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
-    net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
+    #[serde(skip)] ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
+    #[serde(skip)] net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network with the roads marked on it (derived; rebuilt when the village or its roads change)
+    #[serde(skip)] ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
+    #[serde(skip)] height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
+    #[serde(skip)] net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
     db_want: Vec<u32>,           // drawbridges that own soldiers in the fight are waiting to cross this tick (transient: filled by the battle, used by drawbridge_step and cleared)
     map_ver: u32,                // changes when trees are felled or bridges built
+}
+
+/// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD1";
+
+/// Rebuild a world from `World::snapshot` bytes. None when the bytes are not a snapshot of this layout (damaged, or made by another build).
+#[wasm_bindgen]
+pub fn world_restore(bytes: &[u8]) -> Option<World> {
+    if bytes.len() < 8 || &bytes[..8] != SNAP_MAGIC { return None; }
+    bincode::deserialize::<World>(&bytes[8..]).ok()
 }
 
 #[wasm_bindgen]
@@ -392,6 +405,13 @@ type Memo = std::collections::HashMap<(usize, usize, u8), Option<Vec<(f32, f32)>
 
 #[wasm_bindgen]
 impl World {
+    /// The whole state of the village as bytes (the caches are not in it: they are rebuilt on demand). `world_restore` turns it back into the same world, to the last bit.
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut v = SNAP_MAGIC.to_vec();
+        v.extend(bincode::serialize(self).expect("a world can be written"));
+        v
+    }
+
     #[wasm_bindgen(constructor)]
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {

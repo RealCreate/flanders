@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
+import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon } from './ui/icons';
 import { parseLedger, steadyRate } from './flowrate';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses } from './data';
@@ -47,6 +47,7 @@ import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
 import { applyCmd, stepTo, validSavedLog } from './commands';
 import { replayInSlices, warmNavigationInSlices, collectInSlices } from './loader';
+import { resumeFromCheckpoint, checksum, loadCheckpoint, saveCheckpoint, deleteCheckpoint } from './checkpoint';
 import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
@@ -183,6 +184,18 @@ const myTag = () => tagOf(identity.pub);
 const slot = params.get('player') ?? ''; // lets several players share one browser profile (testing)
 let resetting = false;   // set while the full reset is wiping the saves, so nothing writes them back
 const saveKey = () => `flanders:save:v${MAP_VERSION}:${worldName}${slot ? ':' + slot : ''}`;
+const checkpointKey = () => saveKey() + ':checkpoint';
+let commitsInFlight = 0;   // commands applied to the world that are not in the saved history yet (they wait for their signature): no checkpoint while there are any
+let lastCheckpointAt = 0;
+
+/** Keep the whole state of your village, so that the next visit does not replay a long history (see checkpoint.ts). Only when the world is exactly what the saved history gives. */
+function checkpoint(force = false) {
+  if (resetting || !lv || replay?.target === lv || commitsInFlight > 0 || !myLog.length || !myRules) return;
+  const now = performance.now();
+  if (!force && now - lastCheckpointAt < 45_000) return;
+  lastCheckpointAt = now;
+  try { const bytes = lv.world.snapshot(); saveCheckpoint(checkpointKey(), { meta: { rules: myRules, v: SYNC_PROTOCOL, site: mySite, cmds: myLog.length, lastCmd: myLog[myLog.length - 1].cmd, tick: Number(lv.world.tick()), savedAt: Date.now(), hash: String(lv.world.state_hash()), sum: checksum(bytes) }, bytes }); } catch (e) { console.warn('Could not write a checkpoint.', e); }
+}
 // maps made by older generators are gone: their saved villages would not fit the new terrain, so they are removed
 try { for (const k of Object.keys(localStorage)) if (k.startsWith('flanders:save:') && !k.startsWith(`flanders:save:v${MAP_VERSION}:`)) localStorage.removeItem(k); } catch { /* storage blocked */ }
 
@@ -192,7 +205,8 @@ async function commit(cmd: Omit<Cmd, 'tick' | 'n'>) {
   const full: Cmd = { ...cmd, tick: Number(lv.world.tick()), n: cmdN++ };
   if (isTool(cmd.op)) usedTools = true; else sharedCount++;
   const signing = identity.sign(full);
-  sendChain = sendChain.then(async () => { const s = await signing; myLog.push(s); room?.broadcastCmd(s); save(); });
+  commitsInFlight++;
+  sendChain = sendChain.then(async () => { try { const s = await signing; myLog.push(s); room?.broadcastCmd(s); save(); } finally { commitsInFlight--; } });
   await sendChain;
 }
 
@@ -423,6 +437,7 @@ async function fullReset() {
   if (!(await ui.confirm('This deletes every saved village in this browser, in every world, and restarts from the empty map. Other players keep their own copies of your old village until they leave.', 'Delete everything', 'Reset the whole map?'))) return;
   resetting = true;
   try { for (const k of Object.keys(localStorage)) if (k.startsWith('flanders:save:')) localStorage.removeItem(k); } catch { /* blocked */ }
+  await deleteCheckpoint(checkpointKey()); try { indexedDB.deleteDatabase('flanders'); } catch { /* blocked */ }
   location.reload();
 }
 
@@ -884,7 +899,9 @@ async function startGame(name: string, username: string) {
   let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number; v?: number; rules?: string } | null = null;
   try { saved = JSON.parse(localStorage.getItem(saveKey()) ?? 'null'); } catch { /* ignore */ }
   mySite = saved && saved.site < sites.length ? saved.site : 0;
-  const o = siteOrigin(mySite), w = new World(seedBig, o.x, o.z);
+  try { myRules = rules_fingerprint(seedBig); ui.setRules(myRules); } catch { /* without a fingerprint other players cannot tell our build */ }
+  const o = siteOrigin(mySite);
+  let w = new World(seedBig, o.x, o.z);
   let away = 0;
   if (saved) {
     const entries = validSavedLog(saved.log);
@@ -893,7 +910,12 @@ async function startGame(name: string, username: string) {
     away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
     // the whole history, then the ticks that passed while you were away, a few milliseconds at a time behind the loading screen
     const prog = (f: number) => ui.progress(60 + Math.round(f * 8), `Gathering your villagers… ${Math.round(f * 100)}%`);
-    const rep = await replayInSlices(w, entries.map(e => e.cmd), applyCmd, saved.tick, { onProgress: prog });
+    // a checkpoint of the world (if it belongs to this very history) saves replaying most of it
+    let from = 0; const cp = await loadCheckpoint(checkpointKey());
+    const restored = cp && cp.meta.tick <= saved.tick ? resumeFromCheckpoint(cp, { rules: myRules, v: SYNC_PROTOCOL, site: mySite }, entries.map(e => ({ cmd: e.signed.cmd, tick: e.cmd.tick })), world_restore) : null;
+    if (restored && cp) { w.free(); w = restored; from = cp.meta.cmds; console.info(`Resumed from a checkpoint at tick ${cp.meta.tick} (${from} of ${entries.length} commands already in it).`); }
+    else if (cp) { console.info('The saved checkpoint does not belong to this history or is damaged: replaying the whole history.'); void deleteCheckpoint(checkpointKey()); }
+    const rep = await replayInSlices(w, entries.slice(from).map(e => e.cmd), applyCmd, saved.tick, { onProgress: prog });
     await replayInSlices(w, [], applyCmd, Number(w.tick()) + away, { onProgress: prog });
     const slow = Object.entries(rep.timing.byOp).sort((p, q) => q[1].ms - p[1].ms).slice(0, 4).map(([op, v]) => `${op} ×${v.n}: ${Math.round(v.ms)} ms`).join(', ');
     console.info(`Replayed your history: ${rep.timing.commands} commands and ${rep.timing.ticks} ticks in ${Math.round(rep.timing.totalMs)} ms (ticks alone ${Math.round(rep.timing.stepMs)} ms; slowest commands: ${slow || 'none'}).`);
@@ -927,7 +949,8 @@ async function startGame(name: string, username: string) {
     rivals: () => [...rivals.entries()].map(([key, r]) => ({ key, name: r.name, x: r.village.ox, z: r.village.oz, online: r.online })),
     attack: (key, u) => { const r = rivals.get(key); if (!r || !r.online) return false; doAttack(key, u); return true; },
   }, agentPort, agentToken);
-  setInterval(() => { save(); updatePeers(); }, 8000);
+  setInterval(() => { save(); updatePeers(); checkpoint(); }, 8000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { save(); checkpoint(true); } });
   tutorial.begin(!saved); updateGoals();
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
