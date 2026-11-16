@@ -44,7 +44,7 @@ export class Paths {
   }
 
   /** Rebuild from the world: buildings_flat (stride 10), roads_flat (stride 6), building radii, hall tier, and road_clear_flat (the free room at both ends of each road segment: corners are rounded and the ribbon is narrowed no further than it allows). The roads come from the core already running from doorstep ring to doorstep ring, over the free ground the walkers use. */
-  update(buildings: Float32Array, roads: Float32Array, radii: number[], born: ArrayLike<number> = [], _ring?: (kind: number, tier: number) => number, clear?: ArrayLike<number>) {
+  update(buildings: Float32Array, roads: Float32Array, radii: number[], born: ArrayLike<number> = [], _ring?: (kind: number, tier: number) => number, clear?: ArrayLike<number>, squares: ArrayLike<number> = []) {
     const pos: number[] = [], col: number[] = [], uv: number[] = [], idx: number[] = [], rd: number[] = [];
     let rb = -1e6, rs = 0, rp = 0;   // the road the next vertices belong to: birth tick, distance from the village end (0..1), paveable
     const hallTier = buildings[1] ?? 0, tone = TIER_COLOR[Math.min(3, hallTier)];
@@ -68,7 +68,7 @@ export class Paths {
     for (let i = 0; i < buildings.length; i += S) if (buildings[i] === 37) pieces.push(i);
     for (let a = 0; a < pieces.length; a++) for (let b = a + 1; b < pieces.length; b++) {
       const [ia, ib] = [pieces[a], pieces[b]], d = Math.hypot(buildings[ia + 2] - buildings[ib + 2], buildings[ia + 3] - buildings[ib + 3]);
-      if (d < 7.5) lines.push({ pts: [buildings[ia + 2], buildings[ia + 3], buildings[ib + 2], buildings[ib + 3]], room: [6, 6], child: ib / S, parent: ia / S });
+      if (d < 12) lines.push({ pts: [buildings[ia + 2], buildings[ia + 3], buildings[ib + 2], buildings[ib + 3]], room: [6, 6], child: ib / S, parent: ia / S });
     }
     // A road already starts and ends on the ring of path round its building (the doorstep), so it is drawn from end to end. Only where a road ends away from a building (a piece of road, kind 37)
     // a round patch fills the join.
@@ -109,6 +109,15 @@ export class Paths {
       const c = vert(dx, dz, 0.95, 0.5, 0.5), n = 14, R = half * EDGE, first = pos.length / 3;
       for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2; vert(dx + Math.cos(a) * R, dz + Math.sin(a) * R, 0, 0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5); }
       for (let k = 0; k < n; k++) idx.push(c, first + k, first + (k + 1) % n);
+    }
+    // squares: the same ground as the roads (same texture, colour and paving), so the roads that run into one are not told apart from it
+    rb = -1e6; rs = 0.5; rp = 1;
+    for (let q = 0; q + 3 < squares.length; q += 4) {
+      const cx = squares[q], cz = squares[q + 1], R = squares[q + 2], rings = 4, seg = 36, base = pos.length / 3;
+      vert(cx, cz, 0.95, 0.5, 0.5);
+      for (let r = 1; r <= rings; r++) for (let k = 0; k < seg; k++) { const a = (k / seg) * Math.PI * 2, rr = (R * r) / rings; vert(cx + Math.cos(a) * rr, cz + Math.sin(a) * rr, r === rings ? 0 : 0.95, 0.5 + Math.cos(a) * (r / rings) * 0.5, 0.5 + Math.sin(a) * (r / rings) * 0.5); }
+      for (let k = 0; k < seg; k++) idx.push(base, base + 1 + k, base + 1 + ((k + 1) % seg));
+      for (let r = 1; r < rings; r++) for (let k = 0; k < seg; k++) { const a = base + 1 + (r - 1) * seg + k, b = base + 1 + (r - 1) * seg + ((k + 1) % seg), c = a + seg, d = b + seg; idx.push(a, c, b, b, c, d); }
     }
     rb = -1e6; rs = 0; rp = 0;
     // aprons under buildings (and the plaza under the hall)
