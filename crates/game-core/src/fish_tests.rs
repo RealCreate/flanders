@@ -122,7 +122,7 @@ fn fish_hash_and_wide_stock_are_deterministic() {
 }
 
 /// The hut's stone footing in the model's frame (+x towards the water): x from `FISH_FOOT_MIN` to `FISH_FOOT_MAX`, z within `FISH_FOOT_HALF_D`. Mirrors `fishingHut` in buildings.ts (tier 3, the widest).
-const FISH_FOOT_MIN: f32 = -2.7; const FISH_FOOT_MAX: f32 = 1.5; const FISH_FOOT_HALF_D: f32 = 1.45;
+#[allow(dead_code)] const FISH_FOOT_MIN: f32 = -2.7; const FISH_FOOT_MAX: f32 = 1.5; const FISH_FOOT_HALF_D: f32 = 1.45;
 
 #[test]
 fn a_fishing_huts_footing_stays_on_the_land_side_of_the_bank_at_every_turn() {
