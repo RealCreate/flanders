@@ -277,7 +277,7 @@ export class UI {
     </div>
     <h3>Soldiers</h3><div class="btnrow" style="flex-wrap:wrap" id="cheat-army"></div>
     <h3>Village</h3><div class="btnrow"><button class="pbtn primary" data-ch="100,0,0">${bi('house')} Build a model village</button><button class="pbtn" data-ch="103,0,0" title="Every building at every tier, plus the design options">${bi('townhall')} Test hall: all buildings</button></div>
-    <h3>Ground</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="102,30,0">${bi('pen-rect')} Level 30</button><button class="pbtn" data-ch="102,50,0">${bi('pen-rect')} Level 50</button><button class="pbtn" data-ch="102,72,0">${bi('pen-rect')} Level 72</button></div>
+    <h3>Ground</h3><div class="btnrow" style="flex-wrap:wrap"><label class="muted" for="flat-height">Target height</label><input id="flat-height" type="number" min="0" max="24" step="0.5" value="5" style="width:76px"><button class="pbtn" data-flat-radius="30">${bi('pen-rect')} Level 30</button><button class="pbtn" data-flat-radius="50">${bi('pen-rect')} Level 50</button><button class="pbtn" data-flat-radius="72">${bi('pen-rect')} Level 72</button></div><small class="muted">Levels the ground around your town hall to this height. No materials required.</small>
     <h3>Repair</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="7,0,0">${bi('water')} Extinguish all fires</button><button class="pbtn" data-ch="8,0,0">${bi('raiseground')} Reset terrain</button><button class="pbtn danger" data-ch="101,0,0">${bi('reset')} Full reset (all villages)</button></div>
     <h3>Trouble</h3>
     <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn danger" data-ch="4,90,200">Small raid</button><button class="pbtn danger" data-ch="4,200,700">Big raid</button><button class="pbtn danger" data-ch="5,-1,0">Burn selected building</button></div>
@@ -332,7 +332,7 @@ export class UI {
       const c = (e.target as HTMLElement).dataset.c; if (c === undefined) return;
       this.filter = Number(c);
       $('cats').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', (x as HTMLElement).dataset.c === c));
-      this.cards.forEach((el, id) => { el.hidden = this.filter >= 0 && (defs[id]?.cat ?? CATS.length - 1) !== this.filter; });
+      this.cards.forEach((el, id) => { const road = id === 37 || id === 38; el.hidden = this.filter >= 0 && (this.filter === 7 ? !road : road || (defs[id]?.cat ?? CATS.length - 1) !== this.filter); });   // the Roads tab holds the road and the bridge only
     };
     $('speed').onclick = e => { const s = (e.target as HTMLElement).dataset.s; if (s !== undefined) this.h.speed(Number(s)); };
     { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
@@ -506,7 +506,7 @@ export class UI {
     $('btn-cheat').onclick = () => this.modal('cheats', true);
     $('cheat-res').innerHTML = RES.map((r, i) => `<span>${resIcon(i)} ${r.name}</span><button class="pbtn" data-ch="0,${i},100">+100</button><button class="pbtn" data-ch="0,${i},1000">+1000</button>`).join('');
     $('cheat-army').innerHTML = units.slice(0, 6).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${unitIcon(u.id, 16)} +10 ${u.name}</button>`).join('');
-    $('cheats').onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
+    $('cheats').onclick = e => { const target = e.target as HTMLElement; const flat = target.closest<HTMLElement>('[data-flat-radius]'); if (flat) { const radius = Number(flat.dataset.flatRadius); const height = Number(($('flat-height') as HTMLInputElement).value); if (Number.isFinite(height) && height >= 0 && height <= 24) this.h.cheat(102, radius, Math.round(height * 10)); return; } const b = target.closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
   }
 
   /** Show the rules fingerprint (the hash other players compare) next to the build in The shared world and in the home page tooltip. */

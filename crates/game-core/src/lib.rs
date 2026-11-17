@@ -192,6 +192,8 @@ fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
+/// Warning time before a bandit raid: 30 game seconds.
+const RAID_WARNING_TICKS: u32 = 30;
 /// The town hall's backup: every `BACKUP_EVERY` ticks it adds `BACKUP_AMOUNT` + `BACKUP_PER_TIER` per tier of wood and of grain, but only while that store holds less than `BACKUP_BELOW`.
 const BACKUP_EVERY: u64 = 6;
 const BACKUP_AMOUNT: i32 = 1;
@@ -325,6 +327,11 @@ pub struct World {
     train_prog: u32,
     away: [u32; NK],
     battle: Option<Battle>,
+    raid_warning_ticks: u32,
+    raid_warning_angle: f32,
+    raid_warning_rf: f32,
+    raid_warning_boss: bool,
+    raid_warning_name: u8,
     wildfires: Vec<Wildfire>,
     craters: Vec<[f32; 4]>,
     scorch: Vec<[f32; 3]>,
@@ -465,7 +472,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -714,13 +721,17 @@ impl World {
     /// Terrain height including graded paths and the levelled pads under buildings.
     pub fn height_at(&self, x: f32, y: f32) -> f32 { self.height_core(x, y, true) }
 
-    /// Level the ground round the village (radius `r`) to an even height, so a whole castle can be raised on flat land. 0 ok, -1 battle going on.
-    pub fn flatten(&mut self, r: u32) -> i32 {
+    /// Level the ground round the village (radius `r`) to `target_height` (a negative height: the average of the land round it). 0 ok, -1 battle going on, -2 invalid height.
+    pub fn flatten(&mut self, r: u32, target_height: f32) -> i32 {
         if self.battle.is_some() { return -1; }
+        if target_height.is_nan() || target_height > 24.0 { return -2; }
         let (cx, cy) = (self.buildings[0].x, self.buildings[0].y); let rr = (r as f32).clamp(10.0, 110.0);
-        let mut sum = 0.0; let mut n = 0.0;
-        for k in 0..25 { let (i, j) = ((k % 5) as f32 - 2.0, (k / 5) as f32 - 2.0); sum += self.base(cx + i * rr * 0.25, cy + j * rr * 0.25); n += 1.0; }
-        let h = (sum / n).clamp(3.0, 9.0);
+        // No material charge: this is a direct, inexpensive grading operation. A negative height means 'the land round it': the average of the natural ground, as before there was a height setting.
+        let h = if target_height >= 0.0 { target_height } else {
+            let mut sum = 0.0; let mut n = 0.0;
+            for k in 0..25 { let (i, j) = ((k % 5) as f32 - 2.0, (k / 5) as f32 - 2.0); sum += self.base(cx + i * rr * 0.25, cy + j * rr * 0.25); n += 1.0; }
+            (sum / n).clamp(3.0, 9.0)
+        };
         self.levels.push([cx, cy, rr, h]); self.terrain_ver += 1; self.map_ver += 1;
         // everything already standing keeps its own levelled base; ground between is blended
         self.after_change(); 0
@@ -1425,12 +1436,20 @@ impl World {
             self.push_event(EV_HARVEST, n, 0);
         }
         self.greed_step();
-        // bandits: a real fight on the village grounds
-        if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(self.raid_one_in()) == 0 {
-            let angle = self.rng.range(628) as f32 * 0.01;
-            let rf = self.rng.range(1000) as f32 / 1000.0;
-            if self.boss_due() { let name = self.rng.range(4) as u8; self.begin_boss_raid(RAID_BOSS, angle, rf, name); }
-            else { let force = self.bandit_force(rf); self.begin_battle(force, angle, 0); }
+        // Bandits give a clear 30-second warning. The direction and strength are chosen at the warning,
+        // not at arrival, so every peer sees the same countdown and the player can prepare.
+        if self.raid_warning_ticks > 0 {
+            self.raid_warning_ticks -= 1;
+            if self.raid_warning_ticks == 0 {
+                if self.raid_warning_boss { self.begin_boss_raid(RAID_BOSS, self.raid_warning_angle, self.raid_warning_rf, self.raid_warning_name); }
+                else { let force = self.bandit_force(self.raid_warning_rf); self.begin_battle(force, self.raid_warning_angle, 0); }
+            }
+        } else if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(self.raid_one_in()) == 0 {
+            self.raid_warning_angle = self.rng.range(628) as f32 * 0.01;
+            self.raid_warning_rf = self.rng.range(1000) as f32 / 1000.0;
+            self.raid_warning_boss = self.boss_due();
+            self.raid_warning_name = if self.raid_warning_boss { self.rng.range(4) as u8 } else { 0 };
+            self.raid_warning_ticks = RAID_WARNING_TICKS;
         }
         if self.rng.range(320) == 0 {
             let g = 20 + self.rng.range(40) as i32;
@@ -2048,6 +2067,12 @@ impl World {
     pub fn battle_spawn(&self) -> Vec<f32> { self.battle.as_ref().filter(|b| b.lair < 0).map_or(vec![], |b| b.spawn.to_vec()) }
     pub fn battle_angle(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.angle) }
     pub fn battle_time(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.t) }
+    /// Ticks until the announced bandit raid arrives (zero when there is no warning).
+    pub fn raid_warning_ticks(&self) -> u32 { self.raid_warning_ticks }
+    /// Direction the announced bandits will approach from, in radians.
+    pub fn raid_warning_angle(&self) -> f32 { self.raid_warning_angle }
+    /// Whether the announced raid is led by a boss.
+    pub fn raid_warning_boss(&self) -> bool { self.raid_warning_boss && self.raid_warning_ticks > 0 }
     /// The boss in the fight: [boss (1 warlord, 2 ogre), name, hp, maxhp, phase, alive] or nothing.
     pub fn battle_boss(&self) -> Vec<f32> {
         let Some(b) = &self.battle else { return vec![] };
@@ -2329,7 +2354,7 @@ impl World {
         let part = |f: &dyn Fn(&mut dyn FnMut(u64))| -> u64 { let mut h: u64 = 0xcbf29ce484222325 ^ self.seed; f(&mut |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); }); h };
         vec![
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
-                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.cold_days as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.greed as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
+                mix(self.tick); mix(self.rng.0); mix(self.raid_warning_ticks as u64); mix(self.raid_warning_angle.to_bits() as u64); mix(self.raid_warning_rf.to_bits() as u64); mix(self.raid_warning_boss as u64); mix(self.raid_warning_name as u64); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.cold_days as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.greed as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
             part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } mix(self.meal_credit as i64 as u64); for s in &self.market_sold { mix(*s as i64 as u64); } }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
@@ -3168,6 +3193,16 @@ mod road_tests {
     }
 
     #[test]
+    fn flatten_uses_the_requested_height_without_spending_materials() {
+        let mut w = rich();
+        let before = w.stock;
+        assert_eq!(w.flatten(40, 7.5), 0);
+        assert!((w.height_ground(20.0, 0.0) - 7.5).abs() < 0.01);
+        assert_eq!(w.stock, before, "flattening is a free testing operation");
+        assert_eq!(w.flatten(40, f32::NAN), -2, "reject non-finite heights");
+    }
+
+    #[test]
     fn moat_water_stands_just_below_the_rim_not_down_at_the_sea() {
         let mut w = rich();
         ring(&mut w, 24.0, 52, MOAT);
@@ -3222,7 +3257,7 @@ mod perf_tests {
     fn many_buildings_stay_fast() {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
         for _ in 0..3 { w.upgrade(0); }
-        w.flatten(72);
+        w.flatten(72, 5.0);
         let t = std::time::Instant::now();
         let mut n = 0;
         for (r, k, kind) in [(24.0f32, 24, WALL), (44.0, 40, WALL), (61.0, 60, MOAT)] {
@@ -3915,7 +3950,7 @@ mod channel_tests {
     use super::*;
     #[test]
     fn a_moat_is_a_trench_with_steep_banks() {
-        let mut w = World::new(1337, 0, 0); w.stock = [9999; N_RES]; w.flatten(40);
+        let mut w = World::new(1337, 0, 0); w.stock = [9999; N_RES]; w.flatten(40, 5.0);
         let i = w.place(MOAT, 20, 0, 0); assert!(i >= 0);
         let (x, y) = (w.buildings[i as usize].x, w.buildings[i as usize].y); let ground = w.base(x + 12.0, y);
         assert!(w.height_at(x, y) < -1.0, "the bed is below the water");
@@ -3932,7 +3967,7 @@ mod channel_tests {
 #[cfg(test)]
 mod bridge_tests {
     use super::*;
-    fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40); w }
+    fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40, 5.0); w }
     /// A moat ring round the hall, so there is water to cross.
     fn with_moat() -> World { let mut w = rich(); w.deposits.clear(); for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); } w }
 
@@ -4521,7 +4556,7 @@ mod pathnet_tests {
 
     #[test]
     fn a_waterwheel_at_a_moat_stands_at_the_moat_water_level() {
-        let mut w = village(); w.stock = [30000; N_RES]; w.flatten(40);
+        let mut w = village(); w.stock = [30000; N_RES]; w.flatten(40, 5.0);
         for i in 0..52 { let a = i as f32 / 52.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 24.0).round() as i32, (a.sin() * 24.0).round() as i32, 0); }
         let level = w.moat_level_at(0.0, 24.0);
         assert!(level > 1.0, "a moat's water stands well above the sea: {level}");

@@ -6,7 +6,7 @@ use std::time::Instant;
 pub(crate) fn busy_village() -> World {
     let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
     for _ in 0..3 { w.upgrade(0); }
-    w.flatten(72);
+    w.flatten(72, 5.0);
     let mut flat = vec![];
     for (r, k, kind) in [(70.0f32, 60, WALL)] {
         for i in 0..k { let a = i as f32 / k as f32 * std::f32::consts::TAU; flat.extend([kind as i32, (a.cos() * r).round() as i32, (a.sin() * r).round() as i32, 0]); }

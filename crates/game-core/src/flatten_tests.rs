@@ -1,7 +1,7 @@
 //! The level-ground tool (see flatten.rs): the stuck pit of the report, the shoulder, the limits and what refuses a patch.
 use super::*;
 
-fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40); w }
+fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40, 5.0); w }
 
 /// A spot (relative to the origin) well inside the land with nothing built within 30 units.
 fn free_spot(w: &World) -> (i32, i32) {

@@ -189,7 +189,7 @@ fn raiders_get_no_dry_footing_from_a_lent_drawbridge() {
     let b = w.battle.as_mut().unwrap();
     let r = b.units.iter().position(|u| u.side == 1).unwrap();
     b.units[r].x = 0.0; b.units[r].y = 23.0;
-    World::attacker_step(b, r, 0.0, 1.0, 0.1, &[], &wetd);
+    World::attacker_step(b, r, 0.0, 1.0, 0.1, &[], &wetd, 1337, &mut Vec::new());
     assert!(b.units[r].wading, "a raider on the lent deck still wades: the deck is for our own soldiers");
 }
 

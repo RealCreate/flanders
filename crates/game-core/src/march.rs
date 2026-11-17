@@ -440,7 +440,7 @@ impl World {
 
     fn march_speed(units: &[u32; NK]) -> f32 {
         let mut m = f32::MAX; for k in 0..NK { if units[k] > 0 { m = m.min(UNITS[k].speed); } }
-        if m == f32::MAX { 3.0 } else { m * 1.1 }
+        if m == f32::MAX { 3.0 } else { m * 1.65 }
     }
 
     /// Who marches as the army proper and who apart from it. With foot soldiers along, knights and siege engines each make a group of their own; an army of riders or engines alone is one body.
@@ -547,10 +547,10 @@ impl World {
                             let (dx, dy) = (wp.x - d.x, wp.y - d.y); let dl = dx.hypot(dy).max(1e-3); let reach = base_speed.min(dl);
                             for f in [0.0f32, 0.5, 1.0] {
                                 let (px, py) = (d.x + dx / dl * reach * f, d.y + dy / dl * reach * f);
-                                let ts = terrain::trees(self.seed, px - 2.6, py - 2.6, px + 2.6, py + 2.6);
+                                let ts = terrain::trees(self.seed, px - 6.5, py - 6.5, px + 6.5, py + 6.5);
                                 for k in (0..ts.len()).step_by(5) {
                                     let (tx, ty) = (ts[k], ts[k + 1]);
-                                    if (tx - px).hypot(ty - py) <= 2.4 && !self.felled.iter().any(|q| (q[0] - tx).hypot(q[1] - ty) < q[2]) { self.felled.push([tx, ty, 1.6]); cut = true; }
+                                    if (tx - px).hypot(ty - py) <= 6.0 && !self.felled.iter().any(|q| (q[0] - tx).hypot(q[1] - ty) < q[2]) { self.felled.push([tx, ty, 3.0]); cut = true; }
                                 }
                             }
                             if cut { self.map_ver += 1; }

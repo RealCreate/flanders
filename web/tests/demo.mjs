@@ -6,7 +6,7 @@ const { World, catalog } = require('./.wasm/game_core.js');
 const defs = JSON.parse(catalog());
 export function buildDemo(seed = 1337n) {
   const w = new World(seed, 0, 0);
-  w.cheat(8, 0, 0); w.flatten(Number(process.env.FLAT ?? 108));
+  w.cheat(8, 0, 0); w.flatten(Number(process.env.FLAT ?? 108), -1);
   const fill = () => w.cheat(3, 0, 0);
   const api = {
     place(kind, x, y, rot = 0, search = 8, ok = () => true) {

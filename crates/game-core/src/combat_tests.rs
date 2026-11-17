@@ -67,7 +67,7 @@ fn raiders_in_water_are_slower_weaker_and_easier_to_hit_than_before() {
     let b = w.battle.as_mut().unwrap();
     let sp = b.units.iter().position(|u| u.side == 1 && u.kind == 0).unwrap();
     let kn = b.units.iter().position(|u| u.side == 1 && u.kind == 3).unwrap();
-    let step = |b: &mut Battle, i: usize| { let (x0, y0) = (b.units[i].x, b.units[i].y); World::attacker_step(b, i, -1.0, 0.0, 1.0, &[], &[]); ((b.units[i].x - x0).powi(2) + (b.units[i].y - y0).powi(2)).sqrt() };
+    let step = |b: &mut Battle, i: usize| { let (x0, y0) = (b.units[i].x, b.units[i].y); World::attacker_step(b, i, -1.0, 0.0, 1.0, &[], &[], 1337, &mut Vec::new()); ((b.units[i].x - x0).powi(2) + (b.units[i].y - y0).powi(2)).sqrt() };
     let dry = step(b, sp);
     b.units[sp].wading = true; let wade = step(b, sp);
     b.units[kn].wading = true; let wade_knight = step(b, kn);
@@ -84,7 +84,7 @@ fn a_raider_coming_out_of_the_water_is_sodden_for_a_while() {
     let b = w.battle.as_mut().unwrap();
     let i = b.units.iter().position(|u| u.side == 1).unwrap();
     b.units[i].wading = true;   // (no water in the way: the next step finds dry land)
-    World::attacker_step(b, i, -1.0, 0.0, 1.0, &[], &[]);
+    World::attacker_step(b, i, -1.0, 0.0, 1.0, &[], &[], 1337, &mut Vec::new());
     assert!(!b.units[i].wading && b.units[i].soak > 4.0, "out of the water and dripping");
 }
 

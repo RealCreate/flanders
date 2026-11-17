@@ -7,7 +7,7 @@ fn put(w: &mut World, kind: u8, x: f32, y: f32) -> usize {
     w.buildings.len() - 1
 }
 fn moat_world() -> World {
-    let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40);
+    let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w.flatten(40, 5.0);
     for i in 0..52 { let a = i as f32 / 52.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 24.0).round() as i32, (a.sin() * 24.0).round() as i32, 0); }
     w
 }
