@@ -9,15 +9,15 @@ function texture(dashed: boolean): THREE.CanvasTexture {
   const hit = dashed ? dashTex : solidTex; if (hit) return hit;
   const c = document.createElement('canvas'); c.width = c.height = 512;
   const g = c.getContext('2d')!;
-  g.fillStyle = 'rgba(255,255,255,0.10)'; g.beginPath(); g.arc(256, 256, 250, 0, Math.PI * 2); g.fill();
+  g.fillStyle = 'rgba(255,255,255,0.16)'; g.beginPath(); g.arc(256, 256, 250, 0, Math.PI * 2); g.fill();
   if (!dashed) {   // a soft glow under the rim
     const grad = g.createRadialGradient(256, 256, 214, 256, 256, 256);
-    grad.addColorStop(0, 'rgba(255,255,255,0)'); grad.addColorStop(0.7, 'rgba(255,255,255,0.28)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+    grad.addColorStop(0, 'rgba(255,255,255,0)'); grad.addColorStop(0.7, 'rgba(255,255,255,0.4)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
     g.fillStyle = grad; g.fillRect(0, 0, 512, 512);
   }
-  g.strokeStyle = 'rgba(255,255,255,0.95)'; g.lineWidth = dashed ? 6 : 7; g.lineCap = 'butt';
+  g.strokeStyle = 'rgba(255,255,255,0.95)'; g.lineWidth = dashed ? 10 : 14; g.lineCap = 'butt';
   if (dashed) g.setLineDash([22, 16]);
-  g.beginPath(); g.arc(256, 256, 247, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.arc(256, 256, 244, 0, Math.PI * 2); g.stroke();
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
   if (dashed) dashTex = t; else solidTex = t;
   return t;
@@ -27,8 +27,8 @@ class RadiusMesh extends THREE.Mesh {
   private unit: Float32Array = new Float32Array(0);
   private segs = 0;
   constructor() {
-    super(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
-    this.renderOrder = 8; this.frustumCulled = false; this.visible = false;
+    super(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, depthTest: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    this.renderOrder = 9; this.frustumCulled = false; this.visible = false;
   }
   /** Lay this ring on the ground: centre (x, z), radius r, drawn in the style of effect `fx`. The geometry is rebuilt only when the radius needs another resolution. */
   place(terrain: Terrain, x: number, z: number, r: number, fx: number) {
