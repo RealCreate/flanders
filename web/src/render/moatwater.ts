@@ -19,7 +19,7 @@ export class MoatWater {
   private sig = '';
 
   constructor(terrain: Terrain) {
-    this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), terrain.makeWaterMaterial());
+    this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), terrain.makeWaterMaterial(true));
     this.mesh.frustumCulled = false; this.mesh.renderOrder = 1; this.mesh.receiveShadow = false;
     this.group.add(this.mesh);
   }

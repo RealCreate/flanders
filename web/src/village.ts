@@ -56,7 +56,7 @@ export class Village {
     this.defaultBanner = color; this.view = new VillageView(color); this.paths = new Paths(sh.terrain); this.nodes = new RoadNodes(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
     this.moats = new MoatWater(sh.terrain); sh.scene.add(this.moats.group);
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
-    this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
+    this.field = new FieldView(sh.terrain, sh.forest); this.field.friend = color; this.field.obstacles = sh.obstacles; this.field.walker = { blocked: (x, z, l) => this.world.member_blocked(x, z, l), step: (x, z, tx, tz, d, l) => this.world.member_step(x, z, tx, tz, d, l), reach: (x, z, dx, dz, w, l) => this.world.member_reach(x, z, dx, dz, w, l), route: (sx, sz, tx, tz, l) => this.world.member_route(sx, sz, tx, tz, l) }; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
     this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k); this.army.onRage = (x, y, z) => sh.fx.rageSpark(x, y, z);
     this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);

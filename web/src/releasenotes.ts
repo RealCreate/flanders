@@ -4,6 +4,18 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.2.1', date: '2026-11-17', title: 'Soldiers keep to the paths',
+    added: [],
+    changed: [
+      'Marching armies: every soldier, knight, catapult and ram now keeps strictly to the invisible path network of the village, one after another like the villagers, with no fanning out; it only leaves the path to get onto it from the crowd round the army and for the last stretch where no path reaches. They never walk through a building, wall, fence, field or water; gates, bridges and lowered drawbridges are crossed as the army crosses them.',
+      'A soldier that gets stuck asks for a route of its own along the network and carries on. Knights and siege engines keep to the wider layer of the network that clears buildings, walls and fields.',
+    ],
+    fixed: [
+      'Soldiers no longer cut through buildings and fields while marching in a crowd.',
+      'Moat water stays solid right up to the bank instead of fading out, so no strip of bare ditch shows between the water and the land.',
+    ],
+  },
+  {
     version: '0.2.0', date: '2026-11-16', title: 'Bosses, bridges and a proper food economy',
     added: [
       'Target height for the Level ground tool: in the bar at the bottom, next to the sizes, a slider and number box (1 to 24, in half steps) or Auto (the land round the patch, as before). The preview shows a flat disc at the height the patch would be levelled to, blue where earth is added and orange where it is cut away, with the ground height under the pointer and the cost in the hint.',
