@@ -715,13 +715,17 @@ impl World {
     /// Terrain height including graded paths and the levelled pads under buildings.
     pub fn height_at(&self, x: f32, y: f32) -> f32 { self.height_core(x, y, true) }
 
-    /// Level the ground round the village (radius `r`) to `target_height`. 0 ok, -1 battle going on, -2 invalid height.
+    /// Level the ground round the village (radius `r`) to `target_height` (a negative height: the average of the land round it). 0 ok, -1 battle going on, -2 invalid height.
     pub fn flatten(&mut self, r: u32, target_height: f32) -> i32 {
         if self.battle.is_some() { return -1; }
-        if !target_height.is_finite() || !(0.0..=24.0).contains(&target_height) { return -2; }
+        if target_height.is_nan() || target_height > 24.0 { return -2; }
         let (cx, cy) = (self.buildings[0].x, self.buildings[0].y); let rr = (r as f32).clamp(10.0, 110.0);
-        // No averaging pass or material charge: this is a direct, inexpensive grading operation.
-        let h = target_height;
+        // No material charge: this is a direct, inexpensive grading operation. A negative height means 'the land round it': the average of the natural ground, as before there was a height setting.
+        let h = if target_height >= 0.0 { target_height } else {
+            let mut sum = 0.0; let mut n = 0.0;
+            for k in 0..25 { let (i, j) = ((k % 5) as f32 - 2.0, (k / 5) as f32 - 2.0); sum += self.base(cx + i * rr * 0.25, cy + j * rr * 0.25); n += 1.0; }
+            (sum / n).clamp(3.0, 9.0)
+        };
         self.levels.push([cx, cy, rr, h]); self.terrain_ver += 1; self.map_ver += 1;
         // everything already standing keeps its own levelled base; ground between is blended
         self.after_change(); 0

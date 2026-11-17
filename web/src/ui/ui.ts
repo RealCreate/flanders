@@ -332,7 +332,7 @@ export class UI {
       const c = (e.target as HTMLElement).dataset.c; if (c === undefined) return;
       this.filter = Number(c);
       $('cats').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', (x as HTMLElement).dataset.c === c));
-      this.cards.forEach((el, id) => { el.hidden = this.filter >= 0 && (defs[id]?.cat ?? CATS.length - 1) !== this.filter; });
+      this.cards.forEach((el, id) => { const road = id === 37 || id === 38; el.hidden = this.filter >= 0 && (this.filter === 7 ? !road : road || (defs[id]?.cat ?? CATS.length - 1) !== this.filter); });   // the Roads tab holds the road and the bridge only
     };
     $('speed').onclick = e => { const s = (e.target as HTMLElement).dataset.s; if (s !== undefined) this.h.speed(Number(s)); };
     { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };

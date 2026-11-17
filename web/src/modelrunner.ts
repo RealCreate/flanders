@@ -22,7 +22,7 @@ export function runModelVillageIn(ctx: ModelCtx): boolean {
   w.cheat(7, 0, 0) && commit({ op: 'cheat', kind: 7, x: 0, y: 0 });
   for (let i = w.building_count() - 1; i >= 1; i--) if (w.demolish(i)) commit({ op: 'demolish', idx: i });
   // level the whole site first: the castle is only raised once the ground under it is flat
-  if (w.flatten(MODEL_FLAT_RADIUS, 5.0) === 0) commit({ op: 'flatten', x: MODEL_FLAT_RADIUS, y: 50 });
+  if (w.flatten(MODEL_FLAT_RADIUS, -1) === 0) commit({ op: 'flatten', x: MODEL_FLAT_RADIUS, y: -10 });
   ctx.changed();
   const fill = () => { if (w.cheat(3, 0, 0)) commit({ op: 'cheat', kind: 3, x: 0, y: 0 }); };
   const api: ModelApi = {
