@@ -4,6 +4,17 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.2.1', date: '2026-11-17', title: 'Soldiers keep to the paths',
+    added: [],
+    changed: [
+      'Marching armies: every soldier, knight, catapult and ram now walks the invisible path network of the village on its own, a little to one side of the line its army takes, instead of following a free offset from the centre of the army. They spread out loosely and set off one after another, bunch up where the way is narrow, and never walk through a building, wall, fence, field or water; gates, bridges and lowered drawbridges are crossed as the army crosses them.',
+      'A soldier that gets stuck asks for a route of its own along the network and carries on. Knights and siege engines keep to the wider layer of the network that clears buildings, walls and fields.',
+    ],
+    fixed: [
+      'Soldiers no longer cut through buildings and fields while marching in a crowd.',
+    ],
+  },
+  {
     version: '0.2.0', date: '2026-11-16', title: 'Bosses, bridges and a proper food economy',
     added: [
       'Buy off raiders: when a bandit raid (or a boss raid) forms up at your gates, a Pay them off button in the red banner shows the price (what the raiders are worth, more for a boss) and, once you pay, they turn and walk away: no fight, no loot, but no glory or prize either. It only works before the first blow, never against another player, and the Ogre will not take coin. The bandits get greedy: the next raids come sooner and stronger and ask more, until it fades over a few days.',

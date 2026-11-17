@@ -8,6 +8,7 @@ mod lend;
 mod ledger;
 mod market;
 mod march;
+mod members;
 mod military;
 mod pathnet;
 pub mod doors;
@@ -346,6 +347,7 @@ pub struct World {
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
     links: Vec<Vec<(f32, f32)>>,   // invisible paths chained from this city out to other villages' cities (set by `link_village`; part of the state)
+    #[serde(skip)] mem_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<members::Obst>)>>,   // what stops a walking soldier (derived)
     #[serde(skip)] ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
     #[serde(skip)] ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
     #[serde(skip)] height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
@@ -472,7 +474,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), mem_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -4803,3 +4805,6 @@ mod pathnet_tests {
 mod combat_tests;
 #[cfg(test)]
 mod boss_tests;
+
+#[cfg(test)]
+mod member_tests;

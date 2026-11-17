@@ -13,7 +13,9 @@ interface Member { kind: number; x: number; z: number; px: number; pz: number; y
   /** Position before the soldiers were pushed apart this frame. */
   qx?: number; qz?: number;
   /** The height it is drawn at: follows the ground or a deck, but never faster than a person could climb. */
-  dy?: number }
+  dy?: number;
+  /** Its own habits (see memberpath.ts), seconds it still waits before setting off, how long it has been blocked, and its own route along the path network when it got stuck. */
+  tr?: Traits; hold?: number; blocked?: number; route?: number[] | null; ri?: number }
 interface Det {
   route: number[] | null; id: number; x: number; z: number; tx: number; tz: number; sx: number; sz: number; segT: number; segD: number; lastSync: number; heading: number; yaw: number; units: number[]; state: number; mode: number; prog: number; speed: number;
   members: Member[]; sig: string; siege: THREE.Group[]; rams: THREE.Group[]; banner: THREE.Group; total: number; boats: THREE.Group | null;
@@ -22,7 +24,7 @@ interface Det {
   /** The centre's own speed, smoothed. */
   cspd: number;
   /** Whether the centre is moving along its route. */
-  marching: boolean;
+  marching: boolean; wasMarching?: boolean;
   /** Where the centre was a frame ago (NaN before the first). */
   lx: number; lz: number;
   /** Where the army has been ordered to go and the waypoints on the way (x, z pairs), for the dotted line and the flag. */
@@ -38,6 +40,7 @@ interface Cluster { x: number; z: number; tx: number; tz: number; yaw: number; s
 export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle'];
 
 import { trailAt, dotsAlong, nearestOnTrail } from './trail';
+import { memberTraits, levelOf, pathNormal, stuckUpdate, STUCK_REROUTE, routeTarget, clampOffset, type Walker, type Traits } from '../memberpath';
 const TREE_R = 0.9;                     // soldiers keep this far from a trunk
 const MAX_SHOWN = 70;
 /** Siege engine dimensions used for ground clearance and wheel placement. */
@@ -56,6 +59,8 @@ export class FieldView {
   private tmp: { x: number; z: number }[] = [];
   friend = 0x2f5fa8;
   obstacles: () => Obstacle[] = () => [];
+  /** The core's own checks of where a soldier may walk (see members.rs); without it the soldiers only keep out of the obstacles they are told of. */
+  walker: Walker | null = null;
 
   constructor(private terrain: Terrain, private trees: TreeQuery) { this.ring.renderOrder = 11; this.ring.visible = false; this.group.add(this.ring); }
 
@@ -228,42 +233,51 @@ export class FieldView {
       const moving = d.state === 1 || d.state === 2 || d.state === 7 || d.state === 4;
       const cruise = Math.max(1.5, d.speed * 1.2 + 1.5);
 
+      const W = this.walker, setOff = d.marching && !d.wasMarching;   // (the army has just set off)
+      d.wasMarching = d.marching;
       d.members.forEach((m, i) => {
-        const angle = (m.seed % 1) * Math.PI * 2, spread = 2.0 + Math.sqrt(i + 1) * 1.35;
-        let gx = d.x + Math.cos(angle) * spread, gz = d.z + Math.sin(angle) * spread, spd = 0, pursuing = false;
-        const kg = m.kind === 3 ? d.g3 : null;
+        const tr = m.tr ?? (m.tr = memberTraits(d.id, i, m.kind)), lvl = levelOf(m.kind), kg = m.kind === 3 ? d.g3 : null;
+        if (setOff) m.hold = tr.delay;   // not everybody leaves at the same instant
+        let gx = d.x, gz = d.z, spd = 0, pursuing = false;
+        // where it is heading: its place beside the path the army's centre is taking (the network's own line), or in the loose crowd round the centre when the army stands
+        const ox = Math.cos(tr.angle) * tr.spread, oz = Math.sin(tr.angle) * tr.spread;
         if (kg) {
-          // Knights follow their own invisible route as a loose bunch, not in ranks.
-          const r = 1.5 + Math.sqrt(i + 1) * 1.0;
-          gx = kg.x + Math.cos(angle) * r; gz = kg.z + Math.sin(angle) * r; pursuing = true;
-          spd = Math.max(0, kg.spd * 1.25 + 0.5 + Math.min(8, Math.hypot(gx - m.x, gz - m.z) * 0.8));
+          const r = 1.5 + Math.sqrt(i + 1) * 1.0, cx = kg.x, cz = kg.z, wx = Math.cos(tr.angle) * r, wz = Math.sin(tr.angle) * r, [qx, qz] = W ? clampOffset(W, cx, cz, wx, wz, lvl) : [wx, wz];
+          gx = cx + qx; gz = cz + qz; pursuing = true;
+          spd = Math.max(0, kg.spd * 1.25 + 0.5 + Math.min(8, Math.hypot(gx - m.x, gz - m.z) * 0.8)) * tr.pace;
         } else if (d.marching) {
-          const nt = nearestOnTrail(d.trail, d.x, d.z, m.x, m.z);
-          const aim = Math.max(0, nt.s - 2.6 + Math.sin(angle * 2) * 2.5);
-          [gx, gz] = trailAt(d.trail, d.x, d.z, aim, fx, fz);
-          const lateral = Math.cos(angle) * 5.5;
-          gx += rx * lateral; gz += rz * lateral;
-          spd = Math.max(0, Math.min(d.cspd + 7, d.cspd + Math.max(-1, nt.s - 2.0) * 0.8));
+          const nt = nearestOnTrail(d.trail, d.x, d.z, m.x, m.z), aim = Math.max(0, nt.s - 2.6 + tr.lead * 0.0 + Math.sin(tr.angle * 2) * 2.5);
+          const [hx, hz] = trailAt(d.trail, d.x, d.z, aim, fx, fz), [bx, bz] = trailAt(d.trail, d.x, d.z, aim + 1.5, fx, fz), [nx, nz] = pathNormal(hx, hz, bx, bz);
+          const [qx, qz] = W ? clampOffset(W, hx, hz, nx * tr.lateral, nz * tr.lateral, lvl) : [nx * tr.lateral, nz * tr.lateral];   // sideways, but only as far as the ground there is free
+          gx = hx + qx; gz = hz + qz;
+          spd = Math.max(0, Math.min(d.cspd + 7, d.cspd + Math.max(-1, nt.s - 2.0) * 0.8)) * tr.pace;
           pursuing = true;
+          if ((m.hold ?? 0) > 0) { m.hold = (m.hold ?? 0) - dt; spd = 0; }
+        } else {
+          const [qx, qz] = W ? clampOffset(W, d.x, d.z, ox, oz, lvl) : [ox, oz]; gx = d.x + qx; gz = d.z + qz;
         }
+        // stuck for a while: its own route along the path network from where it stands (the core's), followed until it is clear
+        if (m.route) { const rt = routeTarget(m.route, m.ri ?? 0, m.x, m.z); m.ri = rt.ri; if (rt.done) m.route = null; else { gx = rt.tx; gz = rt.tz; pursuing = true; spd = Math.max(spd, 3.2); } }
         m.px = m.x; m.pz = m.z;
         const dx = gx - m.x, dz = gz - m.z, dist = Math.hypot(dx, dz);
-        if (!pursuing) spd = Math.max(moving ? cruise : 3, dist * 0.7) * (0.9 + (m.seed % 1) * 0.2);
+        if (!pursuing) spd = Math.max(moving ? cruise : 3, dist * 0.7) * tr.pace;
         // speed and heading change gradually: the velocity eases towards what the soldier wants, and it slows down on arriving
         const want = dist > 0.04 ? Math.min(spd, dist * 5) : 0, tvx = dist > 0.04 ? dx / dist * want : 0, tvz = dist > 0.04 ? dz / dist * want : 0, ease = Math.min(1, dt * (pursuing ? 7 : 5));
         m.vx = (m.vx ?? 0) + (tvx - (m.vx ?? 0)) * ease; m.vz = (m.vz ?? 0) + (tvz - (m.vz ?? 0)) * ease;
-        m.x += m.vx * dt; m.z += m.vz * dt;
-        // steer round things: trees, buildings, other soldiers
-        this.tmp.length = 0; this.trees.nearTrees(m.x, m.z, TREE_R + 0.5, this.tmp);
-        for (const t of this.tmp) { const ox = m.x - t.x, oz = m.z - t.z, od = Math.hypot(ox, oz) || 0.01; if (od < TREE_R) { m.x += ox / od * (TREE_R - od); m.z += oz / od * (TREE_R - od); } }
-        for (const b of obs) { const ox = m.x - b.x, oz = m.z - b.z, od = Math.hypot(ox, oz) || 0.01, rr = b.r + 0.5; if (od < rr) { m.x += ox / od * (rr - od); m.z += oz / od * (rr - od); } }
-        if (d.state !== 4) { const sn = this.terrain.snapToDeck(m.x, m.z); if (sn) { m.x = sn[0]; m.z = sn[1]; } }   // beside a bridge deck: up onto it
-        // never wade into water: a step into it is undone, unless a bridge or drawbridge deck is under the soldier (the check knows how wide the deck really is)
-        if (d.state !== 4 && this.terrain.wetAt(m.x, m.z) && !this.terrain.wetAt(m.px, m.pz)) {
-          m.x = m.px; m.z = m.pz; m.vx = 0; m.vz = 0;
-          m.stuck = (m.stuck ?? 0) + dt;
-          if (pursuing && m.stuck > 0.6) { m.x = gx; m.z = gz; m.stuck = 0; }   // held up at the water's edge: back onto the path the head took
-        } else m.stuck = 0;
+        const sp = Math.hypot(m.vx, m.vz) * dt;
+        if (W && sp > 1e-5 && d.state !== 4) {
+          const r = W.step(m.x, m.z, m.x + m.vx * dt, m.z + m.vz * dt, sp, lvl); m.x = r[0]; m.z = r[1];
+          m.blocked = stuckUpdate(m.blocked ?? 0, dt, r[2], want > 0.5);
+          if ((m.blocked ?? 0) > STUCK_REROUTE && !m.route) { const rt = W.route(m.x, m.z, gx, gz, lvl); m.route = rt.length >= 2 ? Array.from(rt) : null; m.ri = 0; m.blocked = 0; }
+        } else { m.x += m.vx * dt; m.z += m.vz * dt; }
+        // trees: stepped round (they are not part of the path network); but never pushed into a blocked place
+        { const qx0 = m.x, qz0 = m.z; this.tmp.length = 0; this.trees.nearTrees(m.x, m.z, TREE_R + 0.5, this.tmp);
+          for (const t of this.tmp) { const ex = m.x - t.x, ez = m.z - t.z, od = Math.hypot(ex, ez) || 0.01; if (od < TREE_R) { m.x += ex / od * (TREE_R - od); m.z += ez / od * (TREE_R - od); } }
+          if (W && W.blocked(m.x, m.z, lvl) && !W.blocked(qx0, qz0, lvl)) { m.x = qx0; m.z = qz0; } }
+        if (!W) {   // (without the core's checks: the old way, keep out of what is known)
+          for (const b of obs) { const ex = m.x - b.x, ez = m.z - b.z, od = Math.hypot(ex, ez) || 0.01, rr = b.r + 0.5; if (od < rr) { m.x += ex / od * (rr - od); m.z += ez / od * (rr - od); } }
+          if (d.state !== 4 && this.terrain.wetAt(m.x, m.z) && !this.terrain.wetAt(m.px, m.pz)) { m.x = m.px; m.z = m.pz; m.vx = 0; m.vz = 0; }
+        }
         { const ty = d.state === 4 ? 0.35 : this.terrain.walkAt(m.x, m.z); m.dy = m.dy === undefined || !Number.isFinite(m.dy) ? ty : m.dy + Math.max(-9 * dt, Math.min(9 * dt, ty - m.dy)); }
         const moved = Math.hypot(m.x - m.px, m.z - m.pz);
         m.spd += (moved / Math.max(dt, 0.001) - m.spd) * Math.min(1, dt * 6);
@@ -287,12 +301,18 @@ export class FieldView {
           tx = d.x + Math.cos(a) * r; tz = d.z + Math.sin(a) * r;
           if (this.terrain.wetAt(tx, tz) || this.slopeAt(tx, tz) > 0.95) { [tx, tz] = trailAt(d.trail, d.x, d.z, 2.0 + i * 0.5, fx, fz); }
         }
+        const W = this.walker, cx0 = eg ? eg.x : d.x, cz0 = eg ? eg.z : d.z;
+        if (W) { const [qx, qz] = clampOffset(W, cx0, cz0, tx - cx0, tz - cz0, 3); tx = cx0 + qx; tz = cz0 + qz; }   // (an engine's place is only as far from the path as the free ground allows)
         const px = g.position.x, pz = g.position.z, k = 1 - Math.exp(-dt * (eg ? 4 : 2.6));
         g.position.x += (tx - px) * k; g.position.z += (tz - pz) * k;
+        if (W && d.state !== 4) { const r = W.step(px, pz, g.position.x, g.position.z, Math.hypot(g.position.x - px, g.position.z - pz), 3); g.position.x = r[0]; g.position.z = r[1]; }
         this.tmp.length = 0; this.trees.nearTrees(g.position.x, g.position.z, 2.2, this.tmp);
         for (const t of this.tmp) { const ox = g.position.x - t.x, oz = g.position.z - t.z, od = Math.hypot(ox, oz) || 0.01; if (od < 1.6) { g.position.x += ox / od * (1.6 - od); g.position.z += oz / od * (1.6 - od); } }
-        for (const o of obs) { const ox = g.position.x - o.x, oz = g.position.z - o.z, od = Math.hypot(ox, oz) || 0.01, rr = o.r + 1.6; if (od < rr) { g.position.x += ox / od * (rr - od); g.position.z += oz / od * (rr - od); } }
-        if (d.state !== 4 && this.terrain.wetAt(g.position.x, g.position.z) && !this.terrain.wetAt(px, pz)) { g.position.x = px; g.position.z = pz; }   // a step into water is undone
+        if (W && W.blocked(g.position.x, g.position.z, 3) && !W.blocked(px, pz, 3)) { g.position.x = px; g.position.z = pz; }   // (never pushed by a tree into a blocked place)
+        if (!W) {
+          for (const o of obs) { const ox = g.position.x - o.x, oz = g.position.z - o.z, od = Math.hypot(ox, oz) || 0.01, rr = o.r + 1.6; if (od < rr) { g.position.x += ox / od * (rr - od); g.position.z += oz / od * (rr - od); } }
+          if (d.state !== 4 && this.terrain.wetAt(g.position.x, g.position.z) && !this.terrain.wetAt(px, pz)) { g.position.x = px; g.position.z = pz; }   // a step into water is undone
+        }
         // it rests on the ground under both ends of its frame (the higher of the two, so the wheels never sink into a rise), changing height no faster than it could roll, and tilts with the slope
         const ddx = eg ? Math.sin(eg.yaw) : d.x - g.position.x, ddz = eg ? Math.cos(eg.yaw) : d.z - g.position.z, face = Math.atan2(ddx, ddz), hx = Math.sin(g.rotation.y), hz = Math.cos(g.rotation.y), half = SIEGE_LEN / 2;
         const yF = this.terrain.walkAt(g.position.x + hx * half, g.position.z + hz * half), yB = this.terrain.walkAt(g.position.x - hx * half, g.position.z - hz * half), yC = this.terrain.walkAt(g.position.x, g.position.z);
@@ -343,7 +363,7 @@ export class FieldView {
       }
     }
     // being pushed by a neighbour must not put a soldier into the water (the soft push has no idea where the edge of a deck is)
-    for (const a of all) if (a.qx !== undefined && this.terrain.wetAt(a.x, a.z) && !this.terrain.wetAt(a.qx, a.qz!)) { a.x = a.qx; a.z = a.qz!; }
+    for (const a of all) if (a.qx !== undefined && (this.walker ? this.walker.blocked(a.x, a.z, levelOf(a.kind)) && !this.walker.blocked(a.qx, a.qz!, levelOf(a.kind)) : this.terrain.wetAt(a.x, a.z) && !this.terrain.wetAt(a.qx, a.qz!))) { a.x = a.qx; a.z = a.qz!; }
   }
 
   draw(crowd: Crowd, cx: number, cz: number, radius: number) {
