@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
+import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
 import { parseRows, parseTotals, stepWant } from './workview';
@@ -16,6 +16,8 @@ import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, ti
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
 import { SelectionMark } from './render/selection';
+import { RadiusRings } from './render/coverage';
+import { parseRadii, describe as describeRadii, uncoveredByWells, wallsOutOfReach, FX_FIRE_FULL, FX_FIRE_HALF, FX_SHOOT, type Radius } from './coverage';
 import { drawbridgeDeckHeight } from './render/ringheight';
 import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
@@ -107,6 +109,7 @@ const ui: UI = new UI({
   goBuilding: i => { const f = lv.world.buildings_flat(); rig.focus(f[i * STRIDE + 2], f[i * STRIDE + 3]); selectBuilding(i); },
   speed: n => setSpeed(n),
   toggleResources: () => toggleResources(),
+  toggleCoverage: () => toggleCoverage(),
   muster: u => doMuster(u),
   detAction: (a, id) => detAction(a, id),
   toggleMute: () => { sound.setMuted(!sound.muted); ui.setMuteIcon(sound.muted); },
@@ -993,7 +996,7 @@ async function startGame(name: string, username: string) {
   travellers = new Travellers(terrain); scene.add(travellers.group);
   fx = new Effects2(terrain); scene.add(fx.group);
   effects = new Effects(); scene.add(effects.smoke.points);
-  selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
+  covInit(); selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
   for (let i = 0; i < 8; i++) { const r = new SelectionMark(terrain, 0xff6a5a); blockRings.push(r); scene.add(r); }
   pathLine = new PathLine(terrain); scene.add(pathLine.mesh);
   penPreview = new PenPreview(terrain); scene.add(...penPreview.objects);
@@ -1343,6 +1346,7 @@ function stepLocal() {
   { const l = newlyLent(w.buildings_flat(), lentBridges); lentBridges = l.now; if (l.fresh.length) ui.toast('Lowering the drawbridge for the army', 'info', 'drawbridge'); }
   pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
   if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools, e: myEpoch });
+  if (t % 15 === 0) { if (covOn) covOverlay(); if (covB !== null || covG) covRefocus(); }
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
   if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
@@ -1356,7 +1360,7 @@ function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r =>
 function selectKind(k: number | null) {
   selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
-  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false;
+  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; covGhost(null);
   if (k === LEVEL_TOOL) { selectedIdx = null; updateSelection(); ui.setLevelCost(Array.from(World.level_cost_flat(levelR))); ui.hint(placeHint(k)); }
   else if (k !== null) {
     selectedIdx = null; updateSelection();
@@ -1478,6 +1482,84 @@ function showUpgradeOutline(on: boolean) {
   blockers.slice(0, blockRings.length).forEach((b, i) => { const q = b * 10; blockRings[i].set(f[q + 2], f[q + 3], footprint(f[q], f[q + 1]) + 1.1); blockRings[i].visible = true; });
   if (blockers.length) ui.hint(`Not enough room: ${blockers.length} building${blockers.length > 1 ? 's' : ''} in the way (marked red). Demolish ${blockers.length > 1 ? 'them' : 'it'} to upgrade.`, true);
 }
+// --- Coverage: how far wells, builders' yards and towers reach. Every number comes from the core (`effect_radii`, radii.rs); nothing here repeats one. ---
+const K_WELL = 16, K_TOWER = 3, K_KEEP = 26, K_YARD = 20, WALL_KINDS: ReadonlySet<number> = new Set([2, 22]), NO_FIRE_CHECK: ReadonlySet<number> = new Set([2, 21, 22, 23, 37, 38, 44]);
+const radiiCache = new Map<number, Radius[]>();
+const radiiOf = (kind: number, tier: number): Radius[] => { const key = kind * 8 + Math.min(tier, 7); let r = radiiCache.get(key); if (!r) { r = parseRadii(effect_radii(kind, tier)); radiiCache.set(key, r); } return r; };
+let covOn = false, covB: number | null = null, covG: { x: number; z: number } | null = null;
+let covFocus!: RadiusRings, covAll!: RadiusRings; const covTints: SelectionMark[] = [], COV_TINT_MAX = 120;
+const covLabels: { el: HTMLElement; x: number; z: number; on: boolean }[] = [];
+function covInit() { covFocus = new RadiusRings(terrain, 12); covAll = new RadiusRings(terrain, 160); scene.add(covFocus.group, covAll.group); }
+function covLabel(n: number, text: string, x: number, z: number) {
+  const l = covLabels[n] ?? (covLabels[n] = (() => { const el = document.createElement('div'); el.className = 'lbl cov'; el.hidden = true; ui.labels.appendChild(el); return { el, x: 0, z: 0, on: false }; })());
+  if (l.el.textContent !== text) l.el.textContent = text;
+  l.x = x; l.z = z; l.on = true;
+}
+/** Rings (and their words) for what is being placed, selected or hovered: only on a change, never per frame. */
+function covRefocus() {
+  if (!covFocus || !lv) return;
+  covFocus.begin(); for (const l of covLabels) l.on = false;
+  let nl = 0;
+  const show = (x: number, z: number, radii: Radius[], note = '') => {
+    for (const e of radii) covFocus.add(x, z, e.r, e.fx);
+    for (const d of describeRadii(radii)) { const anchor = Math.max(...radii.filter(e => d.fx.includes(e.fx)).map(e => e.r)); covLabel(nl++, d.text + (d.fx.includes(FX_SHOOT) ? note : ''), x, z - anchor); }
+  };
+  if (selectedKind !== null) { if (covG) show(covG.x, covG.z, radiiOf(selectedKind, 0)); }
+  else {
+    const w = lv.world, n = w.building_count(), f = w.buildings_flat(), gar = w.garrison_flat();
+    for (const i of covB === selectedIdx ? [selectedIdx] : [selectedIdx, covB]) {
+      if (i === null || i >= n) continue;
+      const o = i * STRIDE, kind = f[o], tier = f[o + 1];
+      show(f[o + 2], f[o + 3], radiiOf(kind, tier), (kind === K_TOWER || kind === K_KEEP) && gar[i] === 0 ? ' · no archers inside yet' : '');
+    }
+  }
+  covFocus.end();
+}
+function covHover(i: number | null) { if (i === covB) return; covB = i; covRefocus(); }
+function covGhost(p: { x: number; z: number } | null) { if (!p) { if (!covG) return; covG = null; covRefocus(); return; } if (covG && covG.x === p.x && covG.z === p.z) return; covG = p; covRefocus(); }
+/** The "Show coverage" overlay: every well's and manned tower's rings, an amber mark on buildings no well reaches, a red one on wall pieces no manned tower covers. Rebuilt on a change and every few ticks. */
+function covOverlay(announce = false) {
+  if (!covAll || !lv) return;
+  covAll.begin(); let nt = 0;
+  const tint = (x: number, z: number, r: number, kind: number, padH: number, color: number) => {
+    if (nt >= COV_TINT_MAX) return;
+    const m = covTints[nt] ?? (covTints[nt] = (() => { const k = new SelectionMark(terrain); scene.add(k); return k; })());
+    m.set(x, z, r, kind, padH); (m.material as THREE.MeshBasicMaterial).color.setHex(color); m.visible = true; nt++;
+  };
+  let unwelled = 0, bare = 0, towers = 0;
+  if (covOn) {
+    const w = lv.world, f = w.buildings_flat(), gar = w.garrison_flat(), n = f.length / STRIDE, manned: { x: number; z: number; r: number }[] = [];
+    for (let i = 0; i < n; i++) {
+      const o = i * STRIDE, kind = f[o], tier = f[o + 1];
+      if (kind === K_WELL) { for (const e of radiiOf(kind, tier)) if (e.fx === FX_FIRE_FULL || e.fx === FX_FIRE_HALF) covAll.add(f[o + 2], f[o + 3], e.r, e.fx); }
+      else if (kind === K_YARD && f[o + 8] > 0) { for (const e of radiiOf(kind, tier)) covAll.add(f[o + 2], f[o + 3], e.r, e.fx); }
+      else if ((kind === K_TOWER || kind === K_KEEP) && gar[i] > 0) { const e = radiiOf(kind, tier).find(q => q.fx === FX_SHOOT); if (e) { covAll.add(f[o + 2], f[o + 3], e.r, e.fx); manned.push({ x: f[o + 2], z: f[o + 3], r: e.r }); towers++; } }
+    }
+    const wr = radiiOf(K_WELL, 0), full = wr.find(e => e.fx === FX_FIRE_FULL)?.r ?? 0, half = wr.find(e => e.fx === FX_FIRE_HALF)?.r ?? 0;
+    const open = uncoveredByWells(f, K_WELL, full, half, (k, t) => !NO_FIRE_CHECK.has(k) && flammability_of(k, t) >= 0.1);
+    for (const i of open) { const o = i * STRIDE; tint(f[o + 2], f[o + 3], footprint(f[o], f[o + 1]) + 1.1, f[o], f[o + 5], 0xffb23a); }
+    unwelled = open.length;
+    if (towers) { const gaps = wallsOutOfReach(f, WALL_KINDS, manned); for (const i of gaps) { const o = i * STRIDE; tint(f[o + 2], f[o + 3], footprint(f[o], f[o + 1]) + 0.9, f[o], f[o + 5], 0xff4a3a); } bare = gaps.length; }
+  }
+  covAll.end(); for (let i = nt; i < covTints.length; i++) covTints[i].visible = false;
+  if (announce && covOn) ui.toast(`Coverage: ${unwelled ? `${unwelled} building${unwelled > 1 ? 's' : ''} no well reaches (amber)` : 'every building that can burn has a well within reach'}${towers ? ` · ${bare ? `${bare} wall piece${bare > 1 ? 's' : ''} no manned tower covers (red)` : 'every wall piece is covered by an archer tower'}` : ' · no tower has archers stationed in it'}.`, unwelled || bare ? 'info' : 'good');
+}
+function toggleCoverage() { covOn = !covOn; ui.setCoverageToggle(covOn); covOverlay(true); }
+const cvec = new THREE.Vector3();
+/** Move the few labels beside the focus rings to where their ground points are on the screen. */
+function updateCovLabels() {
+  for (const l of covLabels) {
+    if (!l.on) { if (!l.el.hidden) l.el.hidden = true; continue; }
+    cvec.set(l.x, terrain.heightAt(l.x, l.z) + 1, l.z).project(rig.cam);
+    const on = cvec.z < 1 && Math.abs(cvec.x) < 1 && Math.abs(cvec.y) < 1; l.el.hidden = !on; if (!on) continue;
+    l.el.style.left = Math.round((cvec.x * 0.5 + 0.5) * innerWidth) + 'px'; l.el.style.top = Math.round((-cvec.y * 0.5 + 0.5) * innerHeight) + 'px';
+  }
+}
+/** The radii of a building as lines with icons, for its panel. */
+function reachHtml(kind: number, tier: number): string {
+  const lines = describeRadii(radiiOf(kind, tier)); if (!lines.length) return '';
+  return `<div><h3>Reach</h3>${lines.map(l => `<div class="reach">${icon(l.icon as IconName, 16)} ${esc(l.text)}</div>`).join('')}<small class="muted">Drawn on the ground while it is selected or pointed at; ${keyNames('coverage')} shows every well and tower at once.</small></div>`;
+}
 // --- Hovering a resource's rate in the top bar: ring every building that makes (+) or uses (-) it ---
 const hlState = new HighlightState(), goState = new HighlightState(), hlRings: SelectionMark[] = [], HL_MAX = 96;
 let hlRes: number[] = [], hlSign = 0, hlPinUntil = 0, hlShown = 0;
@@ -1539,7 +1621,7 @@ function stockGo(res: number[], sign: number, kind?: number): boolean {
   return true;
 }
 
-function selectBuilding(i: number | null) { showUpgradeOutline(false); selectedIdx = i; if (hlOn()) applyHighlight(); if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
+function selectBuilding(i: number | null) { showUpgradeOutline(false); selectedIdx = i; covRefocus(); if (hlOn()) applyHighlight(); if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
 function selectRuin(i: number | null) { selectedRuin = i; if (i !== null) { selectedIdx = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
@@ -1569,6 +1651,7 @@ function updateSelection() {
   const health = hp[selectedIdx * 3] / hp[selectedIdx * 3 + 1], burning = hp[selectedIdx * 3 + 2] > 0;
   let html = `<div><div class="eyebrow">${CATS[d.cat].name} · Tier ${tier + 1} of 4</div><h2>${tierName(kind, tier)}</h2><p class="muted">${d.name}</p></div><p>${d.desc}</p>`;
   html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
+  html += reachHtml(kind, tier);
   if (health < 0.995 && !burning) {   // damaged: offer repairs
     const rc = w.repair_cost(selectedIdx), rcost: [number, number][] = []; for (let i = 0; i < rc.length; i += 2) rcost.push([rc[i], rc[i + 1]]);
     const rok = rcost.every(([r, n]) => stocks[r] >= n);
@@ -1842,7 +1925,7 @@ function roadPreview(hover: { x: number; z: number; snapped: boolean } | null) {
   ui.hint(ctrl.length < 2 ? placeHint(37) : `Road: ${pieces.length} points, ${wood} wood${stocks[0] < wood ? ' — not enough wood' : ''}${bad ? ` · ${bad} of the points cannot be laid (outside your land, in water or in the way)` : ''} · double-click or Enter to build`, bad > 0 || stocks[0] < wood);
 }
 function roadHover(e: { clientX: number; clientY: number }) {
-  if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false;
+  if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; covGhost(null);
   const hit = terrain.pick(pointerRay(e).ray); if (!hit) { lv.nodes.highlight(null); return; }
   const p = roadPoint(hit.x, hit.z); lv.nodes.highlight(p.snapped ? p : null); roadPreview(p);
 }
@@ -1881,7 +1964,7 @@ function drawLevelBar() {
 }
 /** Hover with the level-ground tool: a ring at the height the patch would be levelled to, green when it can be done, red (with the reason) when not. */
 function levelHover(e: { clientX: number; clientY: number }) {
-  if (ghost) ghost.visible = false;
+  if (ghost) ghost.visible = false; covGhost(null);
   const hit = terrain.pick(pointerRay(e).ray); if (!hit) { ghostRing.visible = false; return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = w.level_check(dx, dy, levelR);
   const h = code === 0 || code === -6 || code === -26 ? w.level_target(dx, dy, levelR) : w.height_at(hit.x, hit.z);
@@ -1902,7 +1985,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
-  if (!hit) { ghost.visible = false; return; }
+  if (!hit) { ghost.visible = false; covGhost(null); return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
   if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
     const bp = w.bridge_preview(dx, dy), code = bp[0];
@@ -1931,7 +2014,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = selectedKind === 23 ? drawbridgeDeckAt(w, x, z, grot) : terrain.heightAt(x, z);   // (a drawbridge hangs at deck height over the water, not on the bed)
-  ghost.visible = true; ghost.position.set(x, h, z); ghost.rotation.y = grot * Math.PI / 4;
+  ghost.visible = true; ghost.position.set(x, h, z); ghost.rotation.y = grot * Math.PI / 4; covGhost({ x, z });
   ghostRing.visible = true; ghostRing.position.set(x, h + 0.14, z); if (selectedKind === 23) { ghostRing.scale.set(2.4, 1, 7.4); ghostRing.rotation.y = grot * Math.PI / 4; } else { ghostRing.scale.setScalar(d.r * 1.05); ghostRing.rotation.y = 0; }   // (a drawbridge's outline is long: it covers the whole deck)
   if (code !== ghostCode) {
     ghostCode = code;
@@ -1972,7 +2055,7 @@ function bindInput() {
     }
     if (selectedKind === null && performance.now() - hoverT > 90 && !e.buttons) {
       hoverT = performance.now();
-      const idx = pickBuilding(pointerRay(e));
+      const idx = pickBuilding(pointerRay(e)); covHover(idx);
       let hit: { r: Rival; i: number } | null = null;
       if (idx === null) for (const r of rivals.values()) { const i = r.village.pick(ray); if (i !== null) { hit = { r, i }; break; } }
       const armyId = idx === null ? pickArmy(e) : null;
@@ -1982,7 +2065,7 @@ function bindInput() {
       else { ui.tip(null); cv.style.cursor = multiDets.length ? 'crosshair' : 'default'; }   // with armies selected the ground is where they are sent
     }
   });
-  cv.addEventListener('pointerleave', () => ui.tip(null));
+  cv.addEventListener('pointerleave', () => { ui.tip(null); covHover(null); });
   cv.addEventListener('pointerup', e => {
     if (e.button !== 0 || !down) return;
     const d0 = down, moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); down = null;
@@ -2060,6 +2143,7 @@ function bindInput() {
       case 'cancel': if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
       case 'rotateBuilding': if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); break; } rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; break;
       case 'deposits': toggleResources(); break;
+      case 'coverage': toggleCoverage(); break;
       case 'pause': e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); break;
       case 'perf': e.preventDefault(); perf.toggle(); break;
       case 'help': e.preventDefault(); ui.modal('help', true); break;
@@ -2275,7 +2359,7 @@ function frame(now: number) {
   if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }
   perf.start('labels + minimap');
   updateHallLabels(all); updateJourneyLabels();
-  updateLabels(); updateBossBar(); updateFoeTrack(now); updateFoeArrow();
+  updateLabels(); updateCovLabels(); updateBossBar(); updateFoeTrack(now); updateFoeArrow();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {
     miniT = now;
