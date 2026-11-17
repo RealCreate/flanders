@@ -143,34 +143,44 @@ export function cutPts(p: number[], s: number, e: number): number[] {
   return o;
 }
 
-interface Arm { li: number; end: 0 | 1; pts: number[]; ang: number; len: number; cut: number; L: Pt; M: Pt; R: Pt }
+interface Arm { li: number; end: 0 | 1; pts: number[]; ang: number; len: number; cut: number; L: Pt; M: Pt; R: Pt; v0: number }
 
 /** How far back from the node a ribbon must be cut so that its soft edge meets the soft edge of the neighbour at this angle. */
 const cutFor = (gap: number, H: number) => (gap < Math.PI - 0.02 ? Math.min(H / Math.tan(gap / 2), CUT_MAX * H) : 0);
 
-/** The fan of a junction. `arms` are sorted counter-clockwise by angle and carry their cut row (L, M, R as seen leaving the node). */
+/** The fan of a junction. `arms` are sorted counter-clockwise by angle and carry their cut row (L, M, R as seen leaving the node).
+ *  Every wedge of the fan takes the texture mapping of the ribbon it hangs on, so the paving and the ruts run on from the ribbon into the joint without a jump. */
 function addJunction(m: Mesh, ox: number, oz: number, arms: Arm[], H: number, born: number) {
   const n = arms.length;
-  // a frame for the texture: along the most straight-through pair, so the paving runs on through the joint
-  let best = 0, bestD = 9;
-  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const d = Math.abs(Math.abs(arms[i].ang - arms[j].ang) - Math.PI); if (d < bestD) { bestD = d; best = i; } }
-  const fx = Math.cos(arms[best].ang), fz = Math.sin(arms[best].ang);
-  const vert = (x: number, z: number, a: number) => {
-    const dx = x - ox, dz = z - oz, k = m.x.length;
-    m.x.push(x); m.z.push(z); m.a.push(a); m.u.push(0.5 - (dx * fz - dz * fx) / (2 * H)); m.v.push(0.37 + (dx * fx + dz * fz) * 0.25);
-    m.born.push(born); m.along.push(0.5); m.pave.push(1); return k;
+  // the mapping of an arm: across the road from the left/right of its ribbon, along from the v of its cut row
+  const mapOf = (a: Arm) => {
+    let nx = a.L[0] - a.R[0], nz = a.L[1] - a.R[1]; const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;   // left, leaving the node
+    const dx = nz, dz = -nx, sU = a.end === 0 ? -1 : 1, sV = a.end === 0 ? 1 : -1;
+    return (x: number, z: number): [number, number] => {
+      const px = x - a.M[0], pz = z - a.M[1];
+      return [0.5 + sU * (px * nx + pz * nz) / (2 * H), a.v0 + sV * (px * dx + pz * dz) * 0.25];
+    };
   };
-  const c = vert(ox, oz, 0.95);
-  const rows = arms.map(a => ({ L: vert(a.L[0], a.L[1], 0), M: vert(a.M[0], a.M[1], 0.95), R: vert(a.R[0], a.R[1], 0) }));
+  const vert = (map: (x: number, z: number) => [number, number], x: number, z: number, al: number) => {
+    const k = m.x.length, [u, v] = map(x, z);
+    m.x.push(x); m.z.push(z); m.a.push(al); m.u.push(u); m.v.push(v); m.born.push(born); m.along.push(0.5); m.pave.push(1); return k;
+  };
   for (let i = 0; i < n; i++) {
-    const a = arms[i], b = arms[(i + 1) % n], ri = rows[i], rj = rows[(i + 1) % n];
-    m.idx.push(c, ri.R, ri.M, c, ri.M, ri.L);
+    const a = arms[i], b = arms[(i + 1) % n], mi = mapOf(a), mj = mapOf(b);
+    const o = vert(mi, ox, oz, 0.95), r = vert(mi, a.R[0], a.R[1], 0), mm = vert(mi, a.M[0], a.M[1], 0.95), l = vert(mi, a.L[0], a.L[1], 0);
+    m.idx.push(o, r, mm, o, mm, l);
     let gap = b.ang - a.ang; if (gap <= 1e-9) gap += Math.PI * 2;
     const need = cutFor(gap, H) - 1e-6;
     if (gap < Math.PI - 0.02 && a.cut >= need && b.cut >= need) {
-      const mid = a.ang + gap / 2, d = H / Math.sin(gap / 2), k = vert(ox + Math.cos(mid) * d, oz + Math.sin(mid) * d, 0);
-      m.idx.push(c, ri.L, k, c, k, rj.R);
-    } else m.idx.push(c, ri.L, rj.R);   // a straight or reflex stretch, or a corner too sharp to mitre: the outline goes straight across
+      const mid = a.ang + gap / 2, d = H / Math.sin(gap / 2), cx = ox + Math.cos(mid) * d, cz = oz + Math.sin(mid) * d;
+      // the corner: half hangs on this arm, half on the next
+      const o1 = vert(mi, ox, oz, 0.95), l1 = vert(mi, a.L[0], a.L[1], 0), c1 = vert(mi, cx, cz, 0);
+      const o2 = vert(mj, ox, oz, 0.95), c2 = vert(mj, cx, cz, 0), r2 = vert(mj, b.R[0], b.R[1], 0);
+      m.idx.push(o1, l1, c1, o2, c2, r2);
+    } else {   // a straight or reflex stretch, or a corner too sharp to mitre: the outline goes straight across
+      const o1 = vert(mi, ox, oz, 0.95), l1 = vert(mi, a.L[0], a.L[1], 0), r1 = vert(mi, b.R[0], b.R[1], 0);
+      m.idx.push(o1, l1, r1);
+    }
   }
 }
 
@@ -185,7 +195,7 @@ export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
       let nd = nodes.get(k); if (!nd) nodes.set(k, nd = { x, z, arms: [], born: l.born });
       nd.born = Math.min(nd.born, l.born);
       const pts = thin(e ? reversePts(l.pts) : l.pts), len = arcLength(pts);
-      nd.arms.push({ li, end: e, pts, ang: 0, len, cut: 0, L: [x, z], M: [x, z], R: [x, z] });
+      nd.arms.push({ li, end: e, pts, ang: 0, len, cut: 0, L: [x, z], M: [x, z], R: [x, z], v0: 0 });
     }
   });
   // the direction of every arm, and how far it is cut back
@@ -221,6 +231,7 @@ export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
         // the row of the cut: the left of the line's travel is the left leaving the node along its start, the right along its end
         const row = a.end === 0 ? r.first : r.last, pos = (i: number): Pt => [m.x[row[i]], m.z[row[i]]];
         if (a.end === 0) { a.L = pos(0); a.M = pos(1); a.R = pos(2); } else { a.L = pos(2); a.M = pos(1); a.R = pos(0); }
+        a.v0 = m.v[row[1]];
       } else {
         const q = pointAt(a.pts, a.cut), q2 = pointAt(a.pts, a.cut + 0.5); let ux = q2[0] - q[0], uz = q2[1] - q[1]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
         a.M = q; a.L = [q[0] - uz * H, q[1] + ux * H]; a.R = [q[0] + uz * H, q[1] - ux * H];
