@@ -91,12 +91,12 @@ export class Terrain {
 
   /** A water surface material: shaded by how deep the water is over the ground (see water.ts). The sea and the water of the moats share it. Reflections are kept gentle: a
    *  full mirror coat turned every bridge and wall into a bright glare on the water. */
-  makeWaterMaterial() {
+  makeWaterMaterial(solid = false) {
     const wm = new THREE.MeshPhysicalMaterial({
       color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: true, opacity: 1, depthWrite: false,
       normalMap: this.waterTex, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.35, clearcoatRoughness: 0.22, envMapIntensity: 0.8,
     });
-    patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, this.waterTime, false);
+    patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, this.waterTime, false, solid);
     return wm;
   }
 

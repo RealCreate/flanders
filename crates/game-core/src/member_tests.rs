@@ -68,7 +68,7 @@ fn walk(w: &mut World, units: [u32; NK], dest: (f32, f32), cap: u32) -> Result<(
             let (angle, spread) = (h(1) * std::f32::consts::TAU, 2.0 + ((i + 1) as f32).sqrt() * 1.35);
             let reach = w.member_reach(cx, cy, angle.cos(), angle.sin(), spread, if hk >= 3 { 3 } else { 0 });
             let _ = k;
-            mems.push(Mem { kind, x: cx + angle.cos() * reach, y: cy + angle.sin() * reach, vx: 0.0, vy: 0.0, lateral: (h(2) - 0.5) * 9.0, delay: h(3) * 2.2, lead: 0.5 + h(4) * 8.0, pace: 0.92 + h(5) * 0.16, angle, spread, hold: 0.0, blocked: 0.0, route: None, ri: 0 });
+            mems.push(Mem { kind, x: cx + angle.cos() * reach, y: cy + angle.sin() * reach, vx: 0.0, vy: 0.0, lateral: 0.0, delay: h(3) * 2.2, lead: 0.5 + h(4) * 8.0, pace: 0.92 + h(5) * 0.16, angle, spread, hold: 0.0, blocked: 0.0, route: None, ri: 0 });
         }
     }
     let mut trail: Vec<(f32, f32)> = vec![(cx, cy)];
@@ -97,8 +97,9 @@ fn walk(w: &mut World, units: [u32; NK], dest: (f32, f32), cap: u32) -> Result<(
                 } else if marching && speed > 0.15 {
                     let (px, py) = trail_at(&trail, m.lead); let (qx, qy) = trail_at(&trail, m.lead + 1.5);
                     let (dx, dy) = (px - qx, py - qy); let l = dx.hypot(dy).max(1e-6); let (nx, ny) = (-dy / l, dx / l);
-                    let reach = w.member_reach(px, py, nx * m.lateral.signum(), ny * m.lateral.signum(), m.lateral.abs(), lvl);
-                    gx = px + nx * m.lateral.signum() * reach; gy = py + ny * m.lateral.signum() * reach;
+                    let _ = (nx, ny);
+                    gx = px; gy = py;   // strictly on the path
+                    if m.route.is_none() && (m.x - gx).hypot(m.y - gy) > 6.0 { let rt = w.member_route(m.x, m.y, gx, gy, lvl); if rt.len() >= 2 { m.route = Some(rt); m.ri = 0; reroutes += 1; } }
                     spd = (speed + 4.0) * m.pace;
                     if m.hold > 0.0 { m.hold -= dt; spd = 0.0; }
                 } else {

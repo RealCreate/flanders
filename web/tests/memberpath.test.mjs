@@ -6,12 +6,12 @@ test('member traits are the same every time and differ between members', () => {
   const a = memberTraits(3, 5, 0), b = memberTraits(3, 5, 0), c = memberTraits(3, 6, 0);
   assert.deepEqual(a, b);
   assert.notDeepEqual(a, c);
-  for (let i = 0; i < 200; i++) { const t = memberTraits(7, i, i % 4); assert.ok(t.delay >= 0 && t.delay < 2.2 && Math.abs(t.lateral) <= 4.5 && t.lead >= 0.5 && t.lead < 8.5 && t.pace >= 0.92 && t.pace < 1.08); }
+  for (let i = 0; i < 200; i++) { const t = memberTraits(7, i, i % 4); assert.ok(t.delay >= 0 && t.delay < 2.2 && t.lateral === 0 && t.lead >= 0.5 && t.lead < 8.5 && t.pace >= 0.92 && t.pace < 1.08); }
 });
-test('members spread: different delays and sides, none in a line', () => {
+test('members keep strictly to the path: no sideways offset, only different start delays and places in the line', () => {
   const ts = Array.from({ length: 40 }, (_, i) => memberTraits(1, i, 0));
   assert.ok(new Set(ts.map(t => t.delay.toFixed(2))).size > 30, 'start delays differ');
-  assert.ok(ts.some(t => t.lateral < -1) && ts.some(t => t.lateral > 1), 'on both sides of the path');
+  assert.ok(ts.every(t => t.lateral === 0), 'nobody walks beside the path');
   assert.ok(Math.max(...ts.map(t => t.delay)) - Math.min(...ts.map(t => t.delay)) > 1.5);
 });
 test('hash01 stays inside [0, 1)', () => { for (let i = 0; i < 1000; i++) { const h = hash01(i, i * 3, i * 5); assert.ok(h >= 0 && h < 1); } });

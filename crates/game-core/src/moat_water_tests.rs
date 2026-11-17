@@ -57,3 +57,22 @@ fn neighbouring_pieces_have_water_levels_that_differ_by_a_gentle_slope_only() {
         for p in &w.moat_water { for q in &w.moat_water { let d = (p[0] - q[0]).hypot(p[1] - q[1]); if d < 9.0 { assert!((p[3] - q[3]).abs() <= 0.05 * d + 0.01, "step of {:.2} over {d:.1}", (p[3] - q[3]).abs()); } } }
     }
 }
+
+#[test]
+fn every_point_dug_below_the_water_is_under_a_drawn_disc() {
+    for (seed, ox, oy, r) in [(1337u64, 0, 0, 24.0f32), (7, 0, 0, 24.0), (42, 60, 60, 40.0)] {
+        let mut w = world(seed, ox, oy);
+        ring(&mut w, r, (r * 2.2) as usize);
+        let (mut under, mut uncovered, mut worst) = (0, 0, 0.0f32);
+        for xi in -70..=70 { for yi in -70..=70 {
+            let (x, y) = (ox as f32 + xi as f32, oy as f32 + yi as f32);
+            let near = w.moat_water.iter().filter(|p| (p[0] - x).hypot(p[1] - y) < p[2] + 4.0).map(|p| (p[3], (p[0] - x).hypot(p[1] - y) - p[2])).collect::<Vec<_>>();
+            if near.is_empty() { continue; }
+            let lvl = near.iter().map(|q| q.0).fold(f32::MAX, f32::min);
+            let h = w.height_core(x, y, true);
+            if h < lvl - 0.05 { under += 1; if !w.moat_water.iter().any(|p| (p[0] - x).hypot(p[1] - y) < p[2] + 0.6) { uncovered += 1; worst = worst.max(lvl - h); } }
+        } }
+        assert!(under > 500, "enough of the ditch was looked at: {under}");
+        assert_eq!(uncovered, 0, "seed {seed} r{r}: ditch ground below the water with no disc over it (worst depth {worst:.2})");
+    }
+}

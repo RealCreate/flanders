@@ -1,5 +1,6 @@
 // How the soldiers drawn round a marching army find their own way. The core moves the army as one body along the unified path network; each soldier, knight and siege engine follows the very line the
-// army's centre took (the network's own line), a little to one side of it, and never leaves the free ground: every sideways offset is cut short by the core's own blocking check (`World.member_reach`),
+// army's centre took (the network's own line), strictly on it with no sideways offset, one after another like the villagers; only the stretch from the crowd round the centre onto the line, and
+// the last stretch at the destination, is off the path, and every offset there is cut short by the core's own blocking check (`World.member_reach`),
 // every step goes through `World.member_step`, and a soldier who still gets stuck asks the core for a route of its own along the network (`World.member_route`).
 // This file is the pure part (no game, no drawing), tested under plain node (tests/memberpath.test.mjs).
 
@@ -27,7 +28,7 @@ export function hash01(a: number, b = 0, c = 0): number {
 export interface Traits {
   /** Direction and distance of its place in the loose crowd round the army's centre when it stands. */
   angle: number; spread: number;
-  /** How far to the side of the path it likes to walk (negative: left), within what the core finds free. */
+  /** Sideways offset from the path: always 0 (soldiers keep strictly to the path, like villagers); kept so the core and client share the same traits. */
   lateral: number;
   /** How long after the army sets off before it does (seconds), so they do not all leave at one instant. */
   delay: number;
@@ -40,7 +41,7 @@ export function memberTraits(armyId: number, index: number, kind: number): Trait
   const h = (k: number) => hash01(armyId, index * 7 + kind, k);
   return {
     angle: h(1) * Math.PI * 2, spread: 2 + Math.sqrt(index + 1) * 1.35,
-    lateral: (h(2) - 0.5) * 9, delay: h(3) * 2.2, lead: 0.5 + h(4) * 8, pace: 0.92 + h(5) * 0.16,
+    lateral: 0, delay: h(3) * 2.2, lead: 0.5 + h(4) * 8, pace: 0.92 + h(5) * 0.16,
   };
 }
 

@@ -15,7 +15,7 @@ interface Member { kind: number; x: number; z: number; px: number; pz: number; y
   /** The height it is drawn at: follows the ground or a deck, but never faster than a person could climb. */
   dy?: number;
   /** Its own habits (see memberpath.ts), seconds it still waits before setting off, how long it has been blocked, and its own route along the path network when it got stuck. */
-  tr?: Traits; hold?: number; blocked?: number; route?: number[] | null; ri?: number }
+  tr?: Traits; joinT?: number; hold?: number; blocked?: number; route?: number[] | null; ri?: number }
 interface Det {
   route: number[] | null; id: number; x: number; z: number; tx: number; tz: number; sx: number; sz: number; segT: number; segD: number; lastSync: number; heading: number; yaw: number; units: number[]; state: number; mode: number; prog: number; speed: number;
   members: Member[]; sig: string; siege: THREE.Group[]; rams: THREE.Group[]; banner: THREE.Group; total: number; boats: THREE.Group | null;
@@ -246,11 +246,13 @@ export class FieldView {
           gx = cx + qx; gz = cz + qz; pursuing = true;
           spd = Math.max(0, kg.spd * 1.25 + 0.5 + Math.min(8, Math.hypot(gx - m.x, gz - m.z) * 0.8)) * tr.pace;
         } else if (d.marching) {
-          const nt = nearestOnTrail(d.trail, d.x, d.z, m.x, m.z), aim = Math.max(0, nt.s - 2.6 + tr.lead * 0.0 + Math.sin(tr.angle * 2) * 2.5);
-          const [hx, hz] = trailAt(d.trail, d.x, d.z, aim, fx, fz), [bx, bz] = trailAt(d.trail, d.x, d.z, aim + 1.5, fx, fz), [nx, nz] = pathNormal(hx, hz, bx, bz);
-          const [qx, qz] = W ? clampOffset(W, hx, hz, nx * tr.lateral, nz * tr.lateral, lvl) : [nx * tr.lateral, nz * tr.lateral];   // sideways, but only as far as the ground there is free
-          gx = hx + qx; gz = hz + qz;
+          // strictly on the path: the line the army's centre is taking along the network (no sideways offset, no fanning out), a little behind the centre, one after another as the villagers walk
+          const nt = nearestOnTrail(d.trail, d.x, d.z, m.x, m.z), aim = Math.max(0, nt.s - 2.6 + Math.sin(tr.angle * 2) * 1.2);
+          [gx, gz] = trailAt(d.trail, d.x, d.z, aim, fx, fz);
           spd = Math.max(0, Math.min(d.cspd + 7, d.cspd + Math.max(-1, nt.s - 2.0) * 0.8)) * tr.pace;
+          // not on the path yet (it stood in the crowd round the centre): the way onto it is a route of its own along the network, the only stretch it walks off the path
+          m.joinT = (m.joinT ?? 0) - dt;
+          if (W && !m.route && m.joinT <= 0 && Math.hypot(m.x - gx, m.z - gz) > 6) { const rt = W.route(m.x, m.z, gx, gz, lvl); m.route = rt.length >= 2 ? Array.from(rt) : null; m.ri = 0; m.joinT = 3; }
           pursuing = true;
           if ((m.hold ?? 0) > 0) { m.hold = (m.hold ?? 0) - dt; spd = 0; }
         } else {

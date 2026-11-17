@@ -49,7 +49,8 @@ export function waterNormalTexture(size = 512): THREE.DataTexture {
 /** Give a water material depth: shallow water over the ground is pale and see-through with foam at the shore, deep water is dark and almost opaque, and the ripples
  *  are two layers of the normal map moving across each other in world space (so they look the same on the sea and on a moat, and never repeat in an obvious grid).
  *  Works for a plane and for instanced discs. */
-export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, time: { value: number }, instanced: boolean) {
+/** `solid`: the water of a moat, whose banks are steep and whose edge must not fade: it stays nearly opaque right up to where the land hides it (the sea and rivers fade out gently over their shallows). */
+export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, time: { value: number }, instanced: boolean, solid = false) {
   mat.onBeforeCompile = sh => {
     sh.uniforms.uTime = time; sh.uniforms.uGround = { value: src.heightTex }; sh.uniforms.uHalf = { value: src.half }; sh.uniforms.uStep = { value: src.step }; sh.uniforms.uNV = { value: src.nv };
     sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vWP;')
@@ -72,11 +73,11 @@ export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, ti
         float crest = smoothstep(0.78, 0.96, texture2D(normalMap, uvA * 2.1).g) * smoothstep(2.2, 0.4, depth) * 0.35;
         float foam = clamp(edge * smoothstep(0.35, 0.7, nz + 0.25) + crest, 0.0, 1.0);
         diffuseColor.rgb = mix(wc, vec3(0.93, 0.97, 0.98), foam * 0.9);
-        diffuseColor.a = clamp(mix(0.985, 0.42, shallow) * smoothstep(0.0, 0.1, depth + 0.05) + foam * 0.7, 0.0, 1.0);`)
+        diffuseColor.a = ${solid ? 'clamp(mix(0.985, 0.88, shallow) + foam * 0.7, 0.0, 1.0);' : 'clamp(mix(0.985, 0.42, shallow) * smoothstep(0.0, 0.1, depth + 0.05) + foam * 0.7, 0.0, 1.0);'}`)
       .replace('#include <normal_fragment_maps>', normalChunk);
   };
   // three.js shares one compiled program between materials whose shader code is identical and calls onBeforeCompile only for the first, so a second patched material (the moat
   // water next to the sea) would be left without its uniforms. A key of its own per material makes every one get compiled with them.
-  mat.customProgramCacheKey = () => 'water' + mat.id;
+  mat.customProgramCacheKey = () => 'water' + mat.id + (solid ? 's' : '');
   mat.needsUpdate = true;
 }
