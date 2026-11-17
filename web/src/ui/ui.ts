@@ -848,18 +848,18 @@ export class UI {
 
   /** The red banner while a fight is on. */
   /** The attack banner. With `onClick` it is a button (e.g. to look at where the attackers are). */
-  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string }[] = []) {
+  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = []) {
     const b = $('battle'); b.hidden = !text;
     if (!text) return;
     let body = document.getElementById('battle-text'), bar = document.getElementById('battle-acts');
     if (!body || !bar) { b.innerHTML = '<div id="battle-text"></div><div id="battle-acts"></div>'; body = $('battle-text'); bar = $('battle-acts'); }
     body.innerHTML = text;   // (the text changes every second; the buttons are only rebuilt when they change, so a click is never lost to a refresh)
-    const sig = actions.map(a => a.label).join('|');
+    const sig = actions.map(a => a.label + (a.disabled ? '!' : '')).join('|');
     if (bar.dataset.sig !== sig) {
       bar.dataset.sig = sig; bar.innerHTML = '';
-      for (const a of actions) { const btn = document.createElement('button'); btn.className = 'pbtn'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.dataset.label = a.label; bar.appendChild(btn); }
+      for (const a of actions) { const btn = document.createElement('button'); btn.className = 'pbtn'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.disabled = !!a.disabled; btn.dataset.label = a.label; bar.appendChild(btn); }
     }
-    bar.onclick = e => { const t = (e.target as HTMLElement).closest('button'); if (!t) return; e.stopPropagation(); actions.find(a => a.label === t.dataset.label)?.run(); };
+    bar.onclick = e => { const t = (e.target as HTMLElement).closest('button'); if (!t) return; e.stopPropagation(); const act = actions.find(a => a.label === t.dataset.label); if (act && !act.disabled) act.run(); };
     b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
   }
   private armyNow: number[] = [];

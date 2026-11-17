@@ -42,7 +42,7 @@ const EVENTS = {
   0: (a) => ['harvest +' + a, false], 1: (a) => ['plague ' + a, true], 2: (a, b) => [`raided: -${a} gold, ${b} defenders died`, true], 3: () => ['raid repelled', false], 4: (a) => ['caravan +' + a + ' gold', false],
   5: () => ['famine', true], 6: () => ['plague over', false], 7: (a) => ['ATTACK ' + (a || ''), true], 8: () => ['fire', true], 9: () => ['building lost', true], 10: () => ['soldier trained', false], 11: () => ['fire out', false],
   13: () => ['repaired', false], 14: () => ['rebuilt', false], 15: (a) => [a >= 0 ? 'trade +' + a : 'bought grain ' + (-a), false], 16: () => ['froze', true], 17: () => ['caravan robbed', false], 18: () => ['CHOICE', true],
-  19: () => ['decided', false], 21: () => ['lord event', false], 22: (a) => ['unburied ' + a, true], 23: (a) => ['tithe +' + a, false], 24: () => ['envoy', false],
+  27: (a) => ['raiders bought off for ' + a + ' gold', false], 19: () => ['decided', false], 21: () => ['lord event', false], 22: (a) => ['unburied ' + a, true], 23: (a) => ['tithe +' + a, false], 24: () => ['envoy', false],
 };
 
 /** Goals that guide a first game; the next few that are not yet done are part of `status`. */
@@ -117,7 +117,7 @@ export class Game {
       stock: Array.from(w.stocks()), per60: Array.from(w.flows()).map(v => Math.round(v * 60)), max: w.storage(),
       army: Array.from(w.army()), queued: Array.from(w.queued()), hall: c.hall,
     };
-    if (w.battle_active()) { s.attack = 1; const b = w.battle_boss(); if (b.length) s.boss = { kind: b[0] === 1 ? 'warlord' : 'ogre', hp: Math.round(b[2]), max: Math.round(b[3]), enraged: b[4] > 0, alive: b[5] > 0, lair: w.battle_lair().length > 0 }; }   // (a boss leads the attack, or guards the lair your army is in)
+    if (w.battle_active()) { s.attack = 1; { const p = w.bribe_price(); if (p >= 0) s.attack_price = p; } const b = w.battle_boss(); if (b.length) s.boss = { kind: b[0] === 1 ? 'warlord' : 'ogre', hp: Math.round(b[2]), max: Math.round(b[3]), enraged: b[4] > 0, alive: b[5] > 0, lair: w.battle_lair().length > 0 }; }   // (a boss leads the attack, or guards the lair your army is in)
     const fires = Array.from(w.fires_flat()).filter((_, i) => i % 4 === 0).length; if (fires) s.fires = fires;
     if (ch.length) s.choice = { q: CHOICES[ch[0]]?.[0], opts: CHOICES[ch[0]]?.[1], days: ch[2] };
     const goals = GOALS.filter(([, ok]) => !ok(c)).slice(0, 3).map(([text]) => text); if (goals.length) s.next = goals;
@@ -204,7 +204,7 @@ export class Game {
    * Do one action. Forms (all coordinates relative to the hall, x east and y south):
    *   place kind dx dy [rot] [search]   build; mines and quarries snap to the nearest matching deposit, waterwheels and fishing huts to the bank; `search` tries nearby spots (0-12 units) when the first is refused
    *   up idx | opt idx bit [on] | demo idx true | fix idx | gar idx archers | draw idx up | gate idx closed | field idx mode(0 sow,1 fallow,2 rotate)
-   *   train kind n | hero | form s a w k c r? | march id dx dy | recall id | visit id | decide option
+   *   train kind n | hero | form s a w k c r? | march id dx dy | recall id | visit id | decide option | bribe (pay the raiders to leave: only a bandit raid that has not struck yet; see status.attack_price)
    * Returns { ok: true, ... } or { ok: false, e: why }.
    */
   act(a) {
@@ -240,6 +240,7 @@ export class Game {
       case 'march': { const [, id, dx, dy] = a; if (![id, dx, dy].every(isInt) || Math.abs(dx) > 1100 || Math.abs(dy) > 1100) return fail('bad arguments'); const c = w.det_march(id, this.origin.x + dx, this.origin.z + dy, false, 0, 0); return c === 0 ? logged({ ok: true }, ['march', id, dx, dy]) : fail(c === -1 ? 'no such army' : c === -2 ? 'unreachable' : c === -3 ? 'catapults need soldiers to clear forest' : 'water too wide'); }
       case 'recall': { if (!isInt(idx)) return fail('bad arguments'); const c = w.det_recall(idx); return c === 0 ? logged({ ok: true }, ['recall', idx]) : fail('no such army'); }
       case 'visit': { if (!isInt(idx)) return fail('bad arguments'); const c = w.visit_neutral(idx); return c >= 0 ? logged({ ok: true, kind: c }, ['visit', idx]) : fail(c === -1 ? 'no such army' : c === -2 ? 'not close enough to a place' : c === -4 ? 'a fight is already on' : 'already visited'); }
+      case 'bribe': { const c = w.bribe(); return c === 0 ? logged({ ok: true }, ['bribe']) : fail(c === -6 ? 'not enough gold: ' + w.bribe_price() + ' wanted' : 'they cannot be bought off now (no bandit raid, it has begun, or the boss refuses)'); }
       case 'decide': { if (!isInt(idx) || idx < 0 || idx > 2) return fail('bad arguments'); const c = w.choose(idx); return c === 0 ? logged({ ok: true }, ['decide', idx]) : fail('no decision waiting'); }
       default: return fail('unknown action ' + String(op));
     }

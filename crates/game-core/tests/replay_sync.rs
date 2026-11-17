@@ -7,7 +7,7 @@ use game_core::World;
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
-    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32), Restart, Workers(u32, i32),
+    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32), Restart, Workers(u32, i32), Bribe,
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -36,6 +36,7 @@ fn apply(w: &mut World, c: &C) {
         C::Caravan(r, a, t, d, e) => { w.caravan_send(*r, *a, *t, *d, *e); }
         C::Restart => w.restart(),
         C::Workers(i, n) => { w.set_workers(*i, *n); }
+        C::Bribe => { w.bribe(); }
     }
 }
 
@@ -339,4 +340,27 @@ fn a_restart_in_the_middle_of_a_history_replays_identically() {
         }
     }
     assert_eq!(at, hashes2, "a newcomer replaying both epochs ends in the same second life");
+}
+
+/// A raid is bought off: the payment, the raiders walking away and the greed that follows are part of the state, so an owner and a replica agree tick by tick, however the replica is looked at.
+#[test]
+fn a_bought_off_raid_replays_tick_by_tick() {
+    game_core::warm_navigation(1337);
+    let seed = 1337u64;
+    let script: Vec<(u64, C)> = vec![
+        (0, C::Cheat(3, 0, 0)), (1, C::Place(0, 14, 4, 0)), (1, C::Place(0, 18, 4, 0)), (2, C::Place(19, 0, 18, 0)), (4, C::Cheat(2, 0, 12)),
+        (10, C::Cheat(4, 150, 500)), (14, C::Bribe), (15, C::Bribe), (60, C::Cheat(10, 400, 700)), (63, C::Bribe), (100, C::Cheat(4, 250, 300)), (180, C::Bribe),
+    ];
+    let mut w = World::new(seed, 0, 0); let mut log: Vec<(u64, C)> = vec![]; let mut hashes = vec![]; let mut i = 0;
+    let (mut bought, mut greed_seen) = (false, false);
+    for _ in 0..260u64 {
+        while i < script.len() && script[i].0 <= w.tick() { apply(&mut w, &script[i].1); log.push((w.tick(), script[i].1.clone())); i += 1; }
+        w.step();
+        if w.last_report_bought() { bought = true; } if w.bribe_greed() > 0 { greed_seen = true; }
+        hashes.push(w.state_hash());
+    }
+    assert!(bought && greed_seen, "the script really buys a raid off");
+    let said = |what: &str, r: Option<(usize, usize)>| if let Some((t, c)) = r { panic!("bribe, replay ({what}) diverged at tick {t} after {c} of {} commands", log.len()) };
+    said("silent", replay(seed, 0, 0, &log, &hashes, &mut |_, _| {}));
+    said("drawn every tick", replay(seed, 0, 0, &log, &hashes, &mut |w, _| { look(w); let _ = (w.battle_units_flat(), w.bribe_price()); }));
 }

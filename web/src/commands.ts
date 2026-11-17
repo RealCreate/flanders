@@ -29,6 +29,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'accept': w.receive_goods(c.kind ?? 0, c.x ?? 0); break;
     case 'settle': w.settle(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;
     case 'choose': w.choose(c.kind ?? 0); break;
+    case 'bribe': w.bribe(); break;   // the raiders are paid to turn back (the core checks it is allowed and affordable at this tick)
     case 'treaty': if ((c.y ?? 1) === 0) w.treaty_end(c.idx!, c.kind ?? 0); else w.treaty_set(c.idx!, c.kind ?? 0, c.x ?? 10); break;
     case 'buy': w.buy(c.kind ?? 0, c.idx ?? 0); break;   // kind = the good, idx = how many
     case 'envoy': w.envoy(c.idx!); break;

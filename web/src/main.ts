@@ -64,6 +64,8 @@ import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Ve
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
+const GOLD = 8;   // the gold store (catalog GD)
+import { bribeOffer, bribeToast, bribeRefusal, BRIBE_CONSEQUENCE } from './bribe';
 import { roleOf, actionsFor, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd, Sequence } from './net/validate';
@@ -854,6 +856,7 @@ function onRivalReport(key: string, rep: number[]) {
 
 function onLocalReport(rep: number[]) {
   if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
+  if (lv.world.last_report_bought()) return;   // paid off: the purchase was reported when it happened (see EV_BRIBED), nothing was won or lost
   const [, won, tag, , dead, lost] = rep;
   const br = reportBoss(rep);
   if (br) { const line = reportLine(bosses, br, !!won), good = br.fell || (won && !br.lair); ui.log(line, good ? 'good' : 'bad', Number(lv.world.tick())); ui.toast(line, good ? 'good' : 'bad'); if (br.lair) { updateHud(); return; } }
@@ -1217,14 +1220,17 @@ function battleBanner() {
       : role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
       : role === 'attack' ? `Your army attacks from the ${dir}. You are the attacker.` : `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
     const armies = fieldArmiesFree(), standing = w.battle_standing().reduce((x: number, y: number) => x + y, 0);
-    const acts: { label: string; title: string; run: () => void; icon?: string }[] = [];
+    const acts: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = [];
     for (const act of actionsFor(role, { armies, standing, reserve: 0 })) {
       if (lair) continue;
       if (act === 'send-armies') acts.push({ icon: 'army', label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { for (const id of freeArmyIds()) orderDefend(id); } });
       else if (act === 'sally') acts.push({ icon: 'attack', label: `Sally out (${standing})`, title: 'The soldiers at their posts leave them and march out to meet the raiders as a field army', run: () => doSally() });
       else if (act === 'retreat') acts.push({ icon: 'halt', label: 'Retreat', title: 'Call off the attack: your soldiers break off and run for home', run: () => doRetreat(key) });
     }
-    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${Math.round(w.battle_time())}s · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
+    const offer = role === 'defend' && !lair && tag === 0 ? bribeOffer(w.bribe_price(), w.stocks()[GOLD], w.bribe_greed()) : null;
+    if (offer?.show) acts.push({ icon: 'gold', label: offer.label, title: offer.title, disabled: offer.disabled, run: () => doBribe() });
+    const bribeLine = offer?.show ? `<small class="bribe">The raiders will turn back for coin before the first blow. ${esc(offer.disabled ? offer.reason : BRIBE_CONSEQUENCE)}</small>` : '';
+    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}${bribeLine}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${Math.round(w.battle_time())}s · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
       () => lookAtAttackers(v), acts);
     return;
   }
@@ -1313,6 +1319,13 @@ function doSally() {
 }
 
 /** The attacker calls off the attack. In a village whose owner is here the owner's own copy carries it out (and tells everybody); in an away village the fight is local. */
+/** Pay the raiders at the gates to turn back (a bandit raid on your own village that has not struck yet). The core decides whether it is allowed and affordable; the command lets every copy of the village do the same at this tick. */
+function doBribe() {
+  const w = lv.world, price = w.bribe_price(), boss = parseBoss(w.battle_boss())?.kind ?? 0, code = w.bribe();
+  if (code !== 0) { ui.toast(bribeRefusal(code, price, w.stocks()[GOLD]), 'bad'); return; }
+  commit({ op: 'bribe' }); sound.coin(); ui.toast(bribeToast(price, boss), 'info'); afterLocalChange(); updateHud();
+}
+
 function doRetreat(key: string) {
   const r = rivals.get(key); if (!r) return;
   if (r.online) { commit({ op: 'retreat', to: key }); ui.toast('You sound the retreat. Your soldiers fall back.', 'info'); }

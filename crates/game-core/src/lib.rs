@@ -2,6 +2,7 @@
 use wasm_bindgen::prelude::*;
 
 mod battle;
+mod bribe;
 mod catalog;
 mod lend;
 mod ledger;
@@ -153,6 +154,7 @@ const EV_HERO: i32 = 21;
 const EV_MIASMA: i32 = 22;
 const EV_SERVICE: i32 = 23;
 const EV_DIPLO: i32 = 24;
+const EV_BRIBED: i32 = 27;   // raiders were paid to leave: a = coins, b = boss (0 none)
 const EV_LAIR: i32 = 26;   // the army went into a lair: a = place
 const EV_BOSS: i32 = 25;   // a boss fell: a = boss * 16 + name, b = 1
 /// Causes of death, for the village's ledger.
@@ -327,6 +329,8 @@ pub struct World {
     terrain_ver: u32,
     report: Vec<i32>,
     report_seq: u32,
+    #[serde(default)] report_bought: bool,   // the last battle ended with the raiders paid off
+    #[serde(default)] greed: u32,   // how greedy the bandits are after being paid off: see bribe.rs (part of the state hash)
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
@@ -448,7 +452,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -1400,8 +1404,9 @@ impl World {
             self.gain(ledger::EX_HARVEST, GR, n, cap);
             self.push_event(EV_HARVEST, n, 0);
         }
+        self.greed_step();
         // bandits: a real fight on the village grounds
-        if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(RAID_ONE_IN) == 0 {
+        if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(self.raid_one_in()) == 0 {
             let angle = self.rng.range(628) as f32 * 0.01;
             let rf = self.rng.range(1000) as f32 / 1000.0;
             if self.boss_due() { let name = self.rng.range(4) as u8; self.begin_boss_raid(RAID_BOSS, angle, rf, name); }
@@ -2063,6 +2068,8 @@ impl World {
     pub fn building_health(&self) -> Vec<f32> { self.buildings.iter().flat_map(|b| [b.hp.max(0.0), battle::max_hp(b.kind, b.tier), b.burning]).collect() }
     /// Last battle report: [seq, won, tag, attackersLeft, defenderDead, buildingsLost, survivors x5, loot x12, attackersFled, defendersFled].
     pub fn last_report(&self) -> Vec<i32> { self.report.clone() }
+    /// Did the last battle end with the raiders paid off (see bribe.rs)?
+    pub fn last_report_bought(&self) -> bool { self.report_bought }
     /// Ignite a building (for fire arrows or testing).
     pub fn set_fire(&mut self, idx: u32) { self.ignite(idx as usize); }
     /// Villagers currently available to fight fires.
@@ -2302,7 +2309,7 @@ impl World {
         let part = |f: &dyn Fn(&mut dyn FnMut(u64))| -> u64 { let mut h: u64 = 0xcbf29ce484222325 ^ self.seed; f(&mut |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); }); h };
         vec![
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
-                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.cold_days as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
+                mix(self.tick); mix(self.rng.0); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.cold_days as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.greed as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
             part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } mix(self.meal_credit as i64 as u64); for s in &self.market_sold { mix(*s as i64 as u64); } }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
@@ -2328,7 +2335,7 @@ impl World {
                 for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for l in &self.flats { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
-            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8); mix(bt.lair as i64 as u64); } }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); mix(bt.lair as i64 as u64); } }),
         ]
     }
 
@@ -2379,6 +2386,8 @@ const FARM_PAD_BLEND: f32 = 4.6;
 /// No field of a farm of any tier lies farther than this from its middle (plus the blend).
 const FARM_PAD_REACH: f32 = 22.0;
 
+#[cfg(test)]
+mod bribe_tests;
 #[cfg(test)]
 mod restart_tests;
 #[cfg(test)]

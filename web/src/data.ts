@@ -1,6 +1,7 @@
 import { icon, KIND_ICON_NAMES, UNIT_ICON_NAMES, CAT_ICON_NAMES } from './ui/icons';
 import init, { catalog, units as unitsJson, bosses as bossesJson } from './wasm/game_core.js';
 import { bossTitle, type BossDef } from './bosses';
+import { bribedText } from './bribe';
 
 await init(); // the building catalog comes from the Rust core, so wasm must be ready before this module evaluates
 
@@ -95,6 +96,7 @@ export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; ton
     case 1: return { text: `Plague breaks out! ${a} villagers fall ill.`, tone: 'bad' };
     case 2: return { text: `The raiders pillaged the village: ${a} gold stolen, ${b} defenders fell.`, tone: 'bad' };
     case 3: return { text: 'The attackers were beaten back!', tone: 'good' };
+    case 27: return { text: bribedText(a, b), tone: 'info' };
     case 4: return { text: `A merchant caravan pays ${a} gold for passage.`, tone: 'good' };
     case 5: return { text: 'Famine! A villager starves.', tone: 'bad' };
     case 6: return { text: 'The plague has passed.', tone: 'good' };

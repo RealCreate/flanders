@@ -83,7 +83,7 @@ impl World {
 
     /// Raiders scale with how long the village has existed and how rich it is.
     pub(crate) fn bandit_force(&self, rf: f32) -> [u32; NK] {
-        let s = (3.0 + self.population as f32 / 7.0 + self.tick as f32 / 500.0) * (0.75 + rf * 0.5);
+        let s = (3.0 + self.population as f32 / 7.0 + self.tick as f32 / 500.0) * (0.75 + rf * 0.5) * (1.0 + self.greed as f32 / 400.0);
         let s = s as u32;
         [2 + s / 2, s / 3, s / 6, if s > 14 { (s - 14) / 6 } else { 0 }, if s > 20 { (s - 20) / 12 } else { 0 }, if s > 26 { (s - 26) / 14 } else { 0 }]
     }
@@ -184,7 +184,7 @@ impl World {
             }
         }
         let ladders = if atk[0] + atk[2] > 0 { ((atk[0] + atk[2]) / 4).max(1) } else { 0 };
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4 });
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4, bought: false, bought_t: 0.0 });
         let fixed = self.bridge_points();
         if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);
@@ -324,6 +324,7 @@ impl World {
         let Some(mut b) = self.battle.take() else { return };
         let dt = SUBSTEP;
         b.t += dt;
+        if b.bought { Self::bribed_substep(&mut b, dt); self.battle = Some(b); self.check_battle_end(); return; }
         let n = b.units.len();
         let mut impacts: Vec<(f32, f32)> = vec![];
         let mut ignites: Vec<usize> = vec![];
@@ -801,7 +802,7 @@ impl World {
         if !won && b.pillage > 0.0 && !lair {
             for r in 0..N_RES { let pct = if r == GD as usize { 35 } else { 15 }; let take = self.stock[r] * pct / 100; self.stock[r] -= take; loot[r] = take; }
         }
-        let boss_down = b.boss > 0 && b.units.iter().any(|u| u.boss > 0 && !u.alive && !u.escaped);
+        let boss_down = !b.bought && b.boss > 0 && b.units.iter().any(|u| u.boss > 0 && !u.alive && !u.escaped);
         if boss_down { self.boss_rewards(b.boss, b.bname); }
         if lair && won { if let Some(d) = self.neutral_done.get_mut(b.lair as usize) { *d = true; } self.reveal(b.lair_at[0], b.lair_at[1], 80.0); self.push_event(EV_VISIT, 3, 0); }
         self.report_seq += 1;
@@ -810,10 +811,11 @@ impl World {
         self.report.extend(loot.iter());
         self.report.extend([b.boss as i32, b.bname as i32, boss_down as i32, lair as i32]);   // the boss that led the raid, its name, whether it fell, and whether this was a lair (see docs/BOSSES.md)
         self.report.extend([b.fled[1] as i32, b.fled[0] as i32]);   // attackers and defenders who ran away
-        if !lair { let ev = if won { EV_REPELLED } else { EV_RAID }; self.push_event(ev, loot[GD as usize], b.def_dead as i32); }
+        self.report_bought = b.bought;   // the raiders were paid to leave (see bribe.rs): not a victory, not a defeat (kept apart from `report`, whose fields are read from its end)
+        if !lair && !b.bought { let ev = if won { EV_REPELLED } else { EV_RAID }; self.push_event(ev, loot[GD as usize], b.def_dead as i32); }
         // the lord learns from a defence, and may fall in a defeat
         if let Some((name, xp)) = self.hero.filter(|_| !lair) {
-            if won { let gain = 10 + b.atk_dead.min(40); let before = Self::hero_level(xp); let now = xp + gain; self.hero = Some((name, now)); if Self::hero_level(now) > before { self.push_event(EV_HERO, name as i32, Self::hero_level(now) as i32); } }
+            if b.bought { /* no glory in a purchase */ } else if won { let gain = 10 + b.atk_dead.min(40); let before = Self::hero_level(xp); let now = xp + gain; self.hero = Some((name, now)); if Self::hero_level(now) > before { self.push_event(EV_HERO, name as i32, Self::hero_level(now) as i32); } }
             else if self.rf() < 0.3 { self.hero = None; self.push_event(EV_HERO, name as i32, -1); }
         }
     }
@@ -836,7 +838,7 @@ impl World {
             units.push(Unit::new(1, kind as u8, nx + a.cos() * r, ny + a.sin() * r, face + std::f32::consts::PI)); j += 1;
         } }
         let n1 = units.len() as u32;
-        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8 });
+        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0 });
         self.det_join(di);
         self.push_event(EV_LAIR, ni as i32, 0);
         true

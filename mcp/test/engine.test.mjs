@@ -123,3 +123,18 @@ test('a boss leading a raid shows in the status, and the battle data is fourteen
   assert.equal(bosses, 1, 'exactly one boss on the field');
   assert.ok(size(s) < 900, `status with a boss is ${size(s)} characters`);
 });
+
+test('a raid can be bought off through the engine: the price is in the status, gold is paid, the raiders leave', () => {
+  const g = new Game({ world: 'test-bribe' });
+  assert.equal(g.act(['bribe']).ok, false, 'nothing to buy off in peace');
+  assert.ok(g.world.cheat(4, 120, 400), 'a bandit raid (the testing tool the engine itself never offers)');
+  const s = g.status(); assert.ok(s.attack_price >= 40, 'the price is shown while a raid can be bought off');
+  assert.equal(g.act(['bribe']).e?.startsWith('not enough gold'), true, 'a poor village is refused with the price');
+  g.world.cheat(0, 8, 5000);
+  const before = Array.from(g.world.stocks())[8];
+  const r = g.act(['bribe']); assert.equal(r.ok, true);
+  assert.equal(Array.from(g.world.stocks())[8], before - s.attack_price);
+  assert.equal(g.act(['bribe']).ok, false, 'only once');
+  for (let i = 0; i < 20 && g.world.battle_active(); i++) g.advance(1, true);
+  assert.equal(g.world.battle_active(), false, 'the raiders went away');
+});
