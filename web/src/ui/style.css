@@ -105,6 +105,8 @@ table.res td.r { text-align: right; }
 .btnrow { display: flex; gap: 8px; }
 .pbtn { font-family: var(--f-old); font-size: 16px; padding: 7px 14px; border-radius: 3px; border: 1px solid var(--ink); background: var(--paper-2); color: var(--ink); cursor: pointer; flex: none; }
 .btnrow .pbtn { flex: 1; }
+.pbtn:disabled { opacity: .5; cursor: not-allowed; }
+#battle .bribe { color: #f3d9a4; }
 .pbtn:hover:not(:disabled) { background: #f6edd6; }
 .pbtn.primary { background: var(--gold); color: #1d150d; border-color: #6d4d18; font-weight: 700; }
 .pbtn.danger { color: var(--bad); border-color: var(--bad); }

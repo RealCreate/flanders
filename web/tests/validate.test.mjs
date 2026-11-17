@@ -76,3 +76,10 @@ test('workers commands: a building and -1 (auto) .. a sane count, nothing else',
   for (const bad of [{ idx: 5, kind: -2 }, { idx: 5, kind: 1001 }, { idx: 5, kind: 1.5 }, { idx: -1, kind: 1 }, { idx: 100001, kind: 1 }, { kind: 1 }, { idx: 5 }, { idx: 5, kind: '3' }, { idx: 5, kind: null }])
     assert.equal(ok({ op: 'workers', ...bad }), null, JSON.stringify(bad));
 });
+
+test('a bribe command carries nothing but its op: stray fields are dropped', () => {
+  assert.deepEqual(ok({ op: 'bribe', kind: 5, units: [1], evil: 1 }), { op: 'bribe', tick: 5, n: 1, kind: 5, units: [1] });
+  assert.ok(PEER_OPS.includes('bribe'));
+  assert.equal(ok({ op: 'bribe', tick: -1 }), null);
+  assert.equal(ok({ op: 'bribe', x: Infinity }), null);
+});
