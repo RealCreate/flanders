@@ -19,6 +19,7 @@ export interface Cmd {
   to?: string;            // attack/refuse: pub key of the village concerned
   from?: string;          // raid/return: pub key of the attacking village
   units?: number[]; loot?: number[]; angle?: number; tag?: number;
+  h?: number;   // level: the height to level to (absent: Auto)
   ax?: number; ay?: number;   // march: position of the village being attacked
 }
 export interface Signed { cmd: string; sig: string }

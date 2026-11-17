@@ -10,6 +10,9 @@ use super::*;
 
 pub const FLAT_MIN_R: i32 = 3;
 pub const FLAT_MAX_R: i32 = 14;
+/// The lowest and highest height a patch may be levelled to by hand (below `FLAT_MIN_H` the ground would be the shore, not dry land). A negative height means Auto: the land round it.
+pub const FLAT_MIN_H: f32 = 1.0;
+pub const FLAT_MAX_H: f32 = 24.0;
 /// How far past the marked circle the levelled ground eases back into the land.
 pub(crate) const FLAT_SHOULDER: f32 = 4.0;
 /// A building standing well inside the patch must already sit within this much of the new ground, or the patch is refused (its pad is never moved).
@@ -24,16 +27,17 @@ impl World {
     /// Flat [resource, amount, ...] cost of levelling a patch of radius `r`.
     pub fn level_cost_flat(r: i32) -> Vec<i32> { level_cost(r.clamp(FLAT_MIN_R, FLAT_MAX_R)).into_iter().flat_map(|(a, n)| [a as i32, n]).collect() }
 
-    /// 0 if a patch of radius `r` could be levelled at (dx, dy), otherwise: -1 a battle is on, -2 outside the village's land, -6 cannot afford it, -24 the radius is out of range,
-    /// -25 no dry ground round it to level to, -26 a building stands in it (its footing would be left up or down in the air).
-    pub fn level_check(&self, dx: i32, dy: i32, r: i32) -> i32 { self.level_plan(dx, dy, r).map_or_else(|c| c, |_| 0) }
+    /// 0 if a patch of radius `r` could be levelled at (dx, dy) to the height `h` (negative: Auto, the land round it), otherwise: -1 a battle is on, -2 outside the village's land,
+    /// -6 cannot afford it, -24 the radius is out of range, -25 no dry ground round it to level to (Auto only), -26 a building stands in it (its footing would be left up or down in the air),
+    /// -28 the height is not a number or is out of range.
+    pub fn level_check(&self, dx: i32, dy: i32, r: i32, h: f32) -> i32 { self.level_plan(dx, dy, r, h).map_or_else(|c| c, |_| 0) }
 
-    /// The height a patch at (dx, dy) of radius `r` would be levelled to (or -1000 if it cannot be worked out).
-    pub fn level_target(&self, dx: i32, dy: i32, r: i32) -> f32 { self.level_plan(dx, dy, r).map_or(-1000.0, |t| t.2) }
+    /// The height a patch at (dx, dy) of radius `r` would be levelled to (the chosen height `h`, or the land round it when `h` is negative); -1000 if it cannot be worked out.
+    pub fn level_target(&self, dx: i32, dy: i32, r: i32, h: f32) -> f32 { self.level_plan(dx, dy, r, h).map_or(-1000.0, |t| t.2) }
 
-    /// Level the ground in a round patch to the land round it. Returns what `level_check` returns; the patch is made only when that is 0.
-    pub fn level_ground(&mut self, dx: i32, dy: i32, r: i32) -> i32 {
-        let (x, y, h) = match self.level_plan(dx, dy, r) { Ok(t) => t, Err(c) => return c };
+    /// Level the ground in a round patch to the height `h` (negative: the land round it). Returns what `level_check` returns; the patch is made only when that is 0.
+    pub fn level_ground(&mut self, dx: i32, dy: i32, r: i32, h: f32) -> i32 {
+        let (x, y, h) = match self.level_plan(dx, dy, r, h) { Ok(t) => t, Err(c) => return c };
         let rr = r as f32;
         for (res, n) in level_cost(r) { self.stock[res as usize] -= n; }
         // whatever dug or heaped the ground here is taken away: ditches and earthworks whose middle is in the patch, and the scars of battle
@@ -75,13 +79,14 @@ impl World {
     }
 
     /// Everything `level_ground` needs: the patch's middle and the height, or the code that refuses it.
-    fn level_plan(&self, dx: i32, dy: i32, r: i32) -> Result<(f32, f32, f32), i32> {
+    fn level_plan(&self, dx: i32, dy: i32, r: i32, want: f32) -> Result<(f32, f32, f32), i32> {
         if self.battle.is_some() { return Err(-1); }
+        if want.is_nan() || (want >= 0.0 && !(FLAT_MIN_H..=FLAT_MAX_H).contains(&want)) { return Err(-28); }
         if !(FLAT_MIN_R..=FLAT_MAX_R).contains(&r) { return Err(-24); }
         let (x, y) = (self.ox.wrapping_add(dx) as f32, self.oy.wrapping_add(dy) as f32);
         if !self.in_territory(x, y) { return Err(-2); }
         let rr = r as f32;
-        let Some(h) = self.ring_height(x, y, rr) else { return Err(-25) };
+        let h = if want < 0.0 { match self.ring_height(x, y, rr) { Some(h) => h, None => return Err(-25) } } else { (want * 16.0).round() / 16.0 };
         for b in self.buildings.iter().filter(|b| !is_edit(b.kind) && b.kind != ROAD) {
             let d = (b.x - x).hypot(b.y - y);
             if d >= rr + FLAT_SHOULDER { continue; }

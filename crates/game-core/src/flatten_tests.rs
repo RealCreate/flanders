@@ -32,8 +32,8 @@ fn raising_cannot_fill_a_ditch_but_levelling_can() {
     assert!(w.height_at(fx, fy) < -2.0, "still a pit: a ditch bed is dug after the raisings are added");
     let hash0 = w.state_hash();
     let v0 = w.terrain_ver;
-    assert_eq!(w.level_check(px, py, 8), 0);
-    assert_eq!(w.level_ground(px, py, 8), 0);
+    assert_eq!(w.level_check(px, py, 8, -1.0), 0);
+    assert_eq!(w.level_ground(px, py, 8, -1.0), 0);
     assert!(w.terrain_ver > v0 && w.state_hash() != hash0, "the change is part of the hashed state");
     for (dx, dy) in [(0.0, 0.0), (3.0, 2.0), (-5.0, 0.0), (0.0, 6.5), (7.0, -3.0)] {
         assert!((w.height_at(fx + dx, fy + dy) - rim).abs() < 0.35, "ground at ({dx}, {dy}) is {} not {rim}", w.height_at(fx + dx, fy + dy));
@@ -51,7 +51,7 @@ fn a_bump_is_cut_down_and_a_crater_filled() {
     w.place(RAISE, px, py, 0);
     assert!(w.height_at(fx, fy) > rim + 1.5);
     w.craters.push([fx + 3.0, fy, 4.0, 2.0]);
-    assert_eq!(w.level_ground(px, py, 7), 0);
+    assert_eq!(w.level_ground(px, py, 7, -1.0), 0);
     assert!((w.height_at(fx, fy) - rim).abs() < 0.3);
     assert!((w.height_at(fx + 3.0, fy) - rim).abs() < 0.3, "the crater is filled");
     assert!(w.craters.is_empty());
@@ -63,7 +63,7 @@ fn the_shoulder_eases_into_the_land() {
     let (px, py) = free_spot(&w);
     let (fx, fy) = ((w.ox + px) as f32, (w.oy + py) as f32);
     w.place(RAISE, px + 9, py, 0);   // a bump just outside the patch: the ring sees it, the shoulder has to bring the ground down to the patch
-    assert_eq!(w.level_ground(px, py, 5), 0);
+    assert_eq!(w.level_ground(px, py, 5, -1.0), 0);
     let mut prev = w.height_at(fx, fy); let mut x = 0.5;
     while x < 14.0 { let h = w.height_at(fx + x, fy); assert!((h - prev).abs() < 0.6, "a step of {} at {x}", (h - prev).abs()); prev = h; x += 0.5; }
 }
@@ -72,19 +72,19 @@ fn the_shoulder_eases_into_the_land() {
 fn limits_and_refusals() {
     let mut w = rich();
     let (px, py) = free_spot(&w);
-    assert_eq!(w.level_check(px, py, 2), -24);
-    assert_eq!(w.level_check(px, py, 15), -24);
-    assert_eq!(w.level_check(300, 300, 6), -2, "outside the village's land");
+    assert_eq!(w.level_check(px, py, 2, -1.0), -24);
+    assert_eq!(w.level_check(px, py, 15, -1.0), -24);
+    assert_eq!(w.level_check(300, 300, 6, -1.0), -2, "outside the village's land");
     // a building standing in it
     assert!(w.place(HOUSE, px + 14, py, 0) >= 0);
     let i = w.buildings.iter().position(|b| !is_edit(b.kind) && DEFS[b.kind as usize].pad && b.kind != TOWN_HALL).expect("a building");
     let (bx, by) = (w.buildings[i].x, w.buildings[i].y);
     w.buildings[i].pad_h += 3.0;
-    assert_eq!(w.level_check((bx - w.ox as f32) as i32, (by - w.oy as f32) as i32, 6), -26);
+    assert_eq!(w.level_check((bx - w.ox as f32) as i32, (by - w.oy as f32) as i32, 6, -1.0), -26);
     // cannot afford
     w.stock = [0; N_RES];
-    assert_eq!(w.level_check(px, py, 6), -6);
-    assert_eq!(w.level_ground(px, py, 6), -6);
+    assert_eq!(w.level_check(px, py, 6, -1.0), -6);
+    assert_eq!(w.level_ground(px, py, 6, -1.0), -6);
     assert!(w.flats.is_empty(), "a refused patch changes nothing");
 }
 
@@ -95,7 +95,7 @@ fn every_replica_levels_alike() {
         let (px, py) = free_spot(&w);
         dig_pit(&mut w, (px, py));
         for _ in 0..30 { w.step(); }
-        assert_eq!(w.level_ground(px, py, 9), 0);
+        assert_eq!(w.level_ground(px, py, 9, -1.0), 0);
         for _ in 0..30 { w.step(); }
         (w.state_hash(), w.height_at((w.ox + px) as f32 + 2.0, (w.oy + py) as f32 - 1.0).to_bits())
     };

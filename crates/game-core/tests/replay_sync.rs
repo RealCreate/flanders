@@ -8,6 +8,7 @@ enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
     Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32), Restart, Workers(u32, i32), Bribe,
+    Level(i32, i32, i32, f32), Flatten(u32, f32),
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -37,6 +38,8 @@ fn apply(w: &mut World, c: &C) {
         C::Restart => w.restart(),
         C::Workers(i, n) => { w.set_workers(*i, *n); }
         C::Bribe => { w.bribe(); }
+        C::Level(x, y, r, h) => { w.level_ground(*x, *y, *r, *h); }
+        C::Flatten(r, h) => { w.flatten(*r, *h); }
     }
 }
 
@@ -65,7 +68,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if t % 25 == 0 { issue(&mut w, &mut log, C::Cheat(3, 0, 0)); }   // keep the store full: the test is about replay, not about the economy
         if t % 6 == 0 {
             let n = w.building_count().max(1) as u64;
-            let c = match rng.below(34) {
+            let c = match rng.below(38) {
                 0..=5 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(10, 70) as f32; C::Place([0u8, 1, 4, 28, 19, 18, 1, 25, 2, 3][rng.below(10) as usize], (ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.below(8) as u8) }
                 6 => C::Upgrade(rng.below(n) as u32),
                 7 => C::Demolish(rng.below(n) as u32 + 1),
@@ -86,6 +89,8 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
                 28 => C::Caravan(rng.range(0, 3) as u8, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
                 29..=31 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(6, 40) as f32; let n = rng.range(2, 6); C::Road((0..n).flat_map(|i| { let a = ang + i as f32 * 0.25; let rr = r + i as f32 * 6.0; [(a.cos() * rr) as i32, (a.sin() * rr) as i32] }).collect()) }   // a curved road, laid outwards
                 32 => C::Workers(rng.below(n) as u32, rng.range(-2, 5)),   // some of these are out of range on purpose
+                33 | 34 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(8, 50) as f32; C::Level((ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.range(3, 14), [-1.0, 1.0, 3.5, 6.0, 9.5, 12.0, 24.0][rng.below(7) as usize]) }   // levelled at explicit heights too (some of them refused)
+                35 => C::Flatten(rng.range(10, 70) as u32, [-1.0, 2.0, 5.0, 11.5][rng.below(4) as usize]),
                 _ => C::Raid(rng.below(628) as f32 / 100.0, [3, 2, 1, 0, 0], 7),
             };
             issue(&mut w, &mut log, c);

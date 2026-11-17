@@ -24,7 +24,8 @@ import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
 import { auditModel, setNightLight } from './render/buildings';
 import { subdivide, curve, type Pt } from './roadtool';
-import { LEVEL_SIZES, DEFAULT_LEVEL_SIZE, nextLevelSize } from './leveltool';
+import { LEVEL_SIZES, DEFAULT_LEVEL_SIZE, nextLevelSize, LEVEL_AUTO, LEVEL_HEIGHT_STEP, clampLevelHeight, levelHeightLabel, levelWork } from './leveltool';
+import { LEVEL_HEIGHT } from './net/validate';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
 import { Terrain, HALF, STEP, NV } from './render/terrain';
@@ -167,7 +168,7 @@ const byPeer = new Map<string, string>();   // peerId -> pub
 let sites: { x: number; z: number }[] = [];
 let mySite = 0, myName = 'Traveller';
 let perf!: Perf;
-let levelR = DEFAULT_LEVEL_SIZE, levelCode = 99;   // the level-ground tool: the radius of the patch and the last answer for it (to say it once)
+let levelR = DEFAULT_LEVEL_SIZE, levelCode = 99, levelH = LEVEL_AUTO, levelHintKey = '', levelDisc!: THREE.Mesh;   // the level-ground tool: the radius of the patch and the last answer for it (to say it once)
 let selectedKind: number | null = null, rot = 0, ghost: THREE.Group | null = null, ghostCode = 99;
 let selectedIdx: number | null = null;
 let selRing!: SelectionMark, growRing!: SelectionMark; const blockRings: SelectionMark[] = [];
@@ -1008,6 +1009,9 @@ async function startGame(name: string, username: string) {
   minimap = new Minimap(ui.minimap, terrain); bigMap = new Minimap(ui.bigmap, terrain, 900); minimap.tunnels = bigMap.tunnels = tunnels.list;
   ghostRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 56).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x66ff88, transparent: true, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
   ghostRing.visible = false; ghostRing.renderOrder = 9; scene.add(ghostRing);
+  // the level-ground tool's preview: a flat disc at the height the patch would be levelled to, blue where earth is added and orange where it is cut away
+  levelDisc = new THREE.Mesh(new THREE.CircleGeometry(1, 56).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x5fb3ff, transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
+  levelDisc.visible = false; levelDisc.renderOrder = 8; scene.add(levelDisc);
   builderRangeRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 96).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x8fd6ff, transparent: true, opacity: 0.58, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
   builderRangeRing.visible = false; builderRangeRing.renderOrder = 8; scene.add(builderRangeRing);
   anchorGhost = new AnchorGhost(terrain); scene.add(anchorGhost.group);
@@ -1393,7 +1397,7 @@ function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r =>
 function selectKind(k: number | null) {
   selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
-  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false;
+  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false;
   if (k === LEVEL_TOOL) { selectedIdx = null; updateSelection(); ui.setLevelCost(Array.from(World.level_cost_flat(levelR))); ui.hint(placeHint(k)); }
   else if (k !== null) {
     selectedIdx = null; updateSelection();
@@ -1409,7 +1413,7 @@ function selectKind(k: number | null) {
 function scaled(a: [number, number][], tier: number): [number, number][] { return a.map(([r, n]) => [r, Math.max(n, Math.floor((n * (4 + 5 * tier) + 2) / 4))]); }
 
 function placeHint(k: number) {
-  if (k === LEVEL_TOOL) return `Level ground, ${levelR} wide — click to level the patch to the land round it: pits are filled, bumps cut, ditches and earthworks inside taken away · R changes the size · Esc cancels`;
+  if (k === LEVEL_TOOL) return `Level ground, ${levelR} wide, to ${levelH < 0 ? 'the land round it (Auto)' : 'height ' + levelH.toFixed(1)} — click to level the patch: pits are filled, bumps cut, ditches and earthworks inside taken away · set the Target height in the bar · R changes the size · Esc cancels`;
   if (k === 24) return `Moat ${(1 + 0.13 * moatWidth).toFixed(1)}× wide — press R to make it thinner or broader · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Alt = any angle · Esc cancels`;
   if (PEN_SPACING[k]) return `${defs[k].name} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · hold Alt for any angle · Esc cancels`;
   if (k === 37) return 'Road — click the points of the road: it runs in a smooth curve through them · its ends snap onto nodes (the rings at the edge of a building, the four sides of a plaza) and onto other roads · double-click or Enter to build · right-click takes the last point back · Esc cancels';
@@ -1958,7 +1962,7 @@ function roadPreview(hover: { x: number; z: number; snapped: boolean } | null) {
   ui.hint(ctrl.length < 2 ? placeHint(37) : `Road: ${pieces.length} points, ${wood} wood${stocks[0] < wood ? ' — not enough wood' : ''}${bad ? ` · ${bad} of the points cannot be laid (outside your land, in water or in the way)` : ''} · double-click or Enter to build`, bad > 0 || stocks[0] < wood);
 }
 function roadHover(e: { clientX: number; clientY: number }) {
-  if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null);
+  if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null);
   const hit = terrain.pick(pointerRay(e).ray); if (!hit) { lv.nodes.highlight(null); return; }
   const p = roadPoint(hit.x, hit.z); lv.nodes.highlight(p.snapped ? p : null); roadPreview(p);
 }
@@ -1982,34 +1986,69 @@ function roadCommit() {
   roadReset(); lv.nodes.setActive(selectedKind === 37);
 }
 
-function setLevelRadius(r: number) { levelR = r; levelCode = 99; ui.setLevelCost(Array.from(World.level_cost_flat(r))); drawLevelBar(); ui.hint(placeHint(LEVEL_TOOL)); updateHud(); }
-/** The sizes of the level-ground tool, in a bar at the bottom like the pen shapes. */
+function setLevelRadius(r: number) { levelR = r; levelCode = 99; levelHintKey = ''; ui.setLevelCost(Array.from(World.level_cost_flat(r))); drawLevelBar(); ui.hint(placeHint(LEVEL_TOOL)); updateHud(); }
+/** Choose the height the level-ground tool levels to: a number (kept to half-unit steps) or Auto (the land round the patch). */
+function setLevelHeight(h: number) { levelH = h < 0 ? LEVEL_AUTO : clampLevelHeight(h); levelCode = 99; levelHintKey = ''; drawLevelBar(); ui.hint(placeHint(LEVEL_TOOL)); if (lastGhostE) levelHover(lastGhostE); }
+/** The level-ground tool's bar at the bottom: the patch sizes and the Target height (Auto or a number, with the ground height under the pointer). */
 function drawLevelBar() {
   let bar = document.getElementById('levelbar');
   if (selectedKind !== LEVEL_TOOL) { bar?.remove(); return; }
+  const btn = 'cursor:pointer;border-radius:5px;border:1px solid #6d5a38;background:#2a2014;color:#f1e4c3;font:12px system-ui,sans-serif';
   if (!bar) {
     bar = document.createElement('div'); bar.id = 'levelbar';
-    bar.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;display:flex;gap:4px;background:#1d150de6;border:1px solid #c9a24a;border-radius:8px;padding:5px 6px;box-shadow:0 4px 16px #0008';
-    bar.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-r]'); if (b) setLevelRadius(Number(b.dataset.r)); };
+    bar.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;display:flex;gap:10px;align-items:stretch;background:#1d150de6;border:1px solid #c9a24a;border-radius:8px;padding:5px 8px;box-shadow:0 4px 16px #0008;color:#f1e4c3;font:12px system-ui,sans-serif';
+    bar.innerHTML = `<div id="level-sizes" style="display:flex;gap:4px"></div>
+      <div id="level-height" style="display:flex;flex-direction:column;gap:3px;justify-content:center;min-width:230px;border-left:1px solid #6d5a38;padding-left:10px">
+        <div style="display:flex;gap:6px;align-items:center"><b>Target height</b><span id="lh-val" style="color:#ffe08a"></span><button id="lh-auto" title="Level to the land just outside the patch" style="${btn};margin-left:auto;padding:2px 8px">Auto</button></div>
+        <div style="display:flex;gap:6px;align-items:center"><input id="lh-range" type="range" min="${LEVEL_HEIGHT.min}" max="${LEVEL_HEIGHT.max}" step="${LEVEL_HEIGHT_STEP}" style="flex:1"><input id="lh-num" type="number" min="${LEVEL_HEIGHT.min}" max="${LEVEL_HEIGHT.max}" step="${LEVEL_HEIGHT_STEP}" title="Height to level to (${LEVEL_HEIGHT.min} to ${LEVEL_HEIGHT.max})" style="width:56px"></div>
+        <div id="lh-ground" style="opacity:.8"></div></div>`;
+    bar.onclick = e => {
+      const t = e.target as HTMLElement; const b = t.closest<HTMLElement>('[data-r]'); if (b) { setLevelRadius(Number(b.dataset.r)); return; }
+      if (t.id === 'lh-auto') setLevelHeight(LEVEL_AUTO);
+    };
+    const range = bar.querySelector<HTMLInputElement>('#lh-range')!, num = bar.querySelector<HTMLInputElement>('#lh-num')!;
+    range.oninput = () => setLevelHeight(Number(range.value));
+    num.onchange = () => { const v = Number(num.value); if (num.value !== '' && Number.isFinite(v)) setLevelHeight(v); else drawLevelBar(); };
+    num.onkeydown = e => e.stopPropagation(); num.onkeyup = e => e.stopPropagation();   // (typing a height must not trigger the game's keys)
     document.body.appendChild(bar);
   }
-  bar.innerHTML = LEVEL_SIZES.map(r => `<button data-r="${r}" title="Level a patch ${r} wide" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${r === levelR ? '#ffe08a' : '#6d5a38'};background:${r === levelR ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon('levelground', 24, { mono: true })}</span><span style="font-size:10px">${r}</span></button>`).join('');
+  bar.querySelector('#level-sizes')!.innerHTML = LEVEL_SIZES.map(r => `<button data-r="${r}" title="Level a patch ${r} wide" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${r === levelR ? '#ffe08a' : '#6d5a38'};background:${r === levelR ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon('levelground', 24, { mono: true })}</span><span style="font-size:10px">${r}</span></button>`).join('');
+  const auto = levelH < 0;
+  bar.querySelector('#lh-val')!.textContent = auto ? 'Auto (the land round it)' : levelHeightLabel(levelH);
+  const range = bar.querySelector<HTMLInputElement>('#lh-range')!, num = bar.querySelector<HTMLInputElement>('#lh-num')!, ab = bar.querySelector<HTMLElement>('#lh-auto')!;
+  if (document.activeElement !== num) num.value = auto ? '' : String(levelH);
+  num.placeholder = 'Auto'; range.value = String(auto ? 5 : levelH); range.style.opacity = auto ? '.55' : '1';
+  ab.style.background = auto ? '#7a5a22' : '#2a2014'; ab.style.borderColor = auto ? '#ffe08a' : '#6d5a38';
 }
-/** Hover with the level-ground tool: a ring at the height the patch would be levelled to, green when it can be done, red (with the reason) when not. */
+/** Hover with the level-ground tool: a ring and a flat disc at the height the patch would be levelled to (ring green when it can be done, red with the reason when not; disc blue where
+ *  earth is added, orange where it is cut away), and what it costs. */
 function levelHover(e: { clientX: number; clientY: number }) {
+  lastGhostE = e;
   if (ghost) ghost.visible = false; covGhost(null);
-  const hit = terrain.pick(pointerRay(e).ray); if (!hit) { ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; return; }
-  const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = w.level_check(dx, dy, levelR);
-  const h = code === 0 || code === -6 || code === -26 ? w.level_target(dx, dy, levelR) : w.height_at(hit.x, hit.z);
-  ghostRing.visible = true; ghostRing.position.set(lv.ox + dx, (h > -100 ? h : 0) + 0.14, lv.oz + dy); ghostRing.scale.setScalar(levelR); ghostRing.rotation.y = 0;
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) { ghostRing.visible = false; levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; return; }
+  const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = w.level_check(dx, dy, levelR, levelH);
+  const ground = w.height_at(hit.x, hit.z);
+  const planned = code === 0 || code === -6 || code === -26;
+  const h = planned ? w.level_target(dx, dy, levelR, levelH) : ground;
+  // the mean of the ground inside the patch tells filling from cutting
+  let sum = 0, n = 0; for (let k = 0; k < 13; k++) { const a = k === 0 ? 0 : (k - 1) * Math.PI / 6, r = k === 0 ? 0 : levelR * (k % 2 ? 0.45 : 0.9); sum += w.height_at(lv.ox + dx + Math.cos(a) * r, lv.oz + dy + Math.sin(a) * r); n++; }
+  const work = levelWork(sum / n, h);
+  const y = (h > -100 ? h : 0);
+  ghostRing.visible = true; ghostRing.position.set(lv.ox + dx, y + 0.14, lv.oz + dy); ghostRing.scale.setScalar(levelR); ghostRing.rotation.y = 0;
   (ghostRing.material as THREE.MeshBasicMaterial).color.setHex(code === 0 ? 0x66ff88 : 0xff6655);
-  if (code !== levelCode) { levelCode = code; ui.hint(code === 0 ? placeHint(LEVEL_TOOL) : PLACE_ERRORS[code] ?? 'Cannot level here', code !== 0); }
+  levelDisc.visible = planned; levelDisc.position.set(lv.ox + dx, y + 0.08, lv.oz + dy); levelDisc.scale.setScalar(levelR);
+  (levelDisc.material as THREE.MeshBasicMaterial).color.setHex(work.kind === 'cut' ? 0xffa940 : work.kind === 'fill' ? 0x5fb3ff : 0xd8d8d8);
+  const gl = document.getElementById('lh-ground'); if (gl) gl.textContent = `Ground here: ${ground.toFixed(1)}` + (planned ? ` · patch to ${h.toFixed(1)}` : '');
+  const cost = Array.from(World.level_cost_flat(levelR)); const costText = cost.length ? ' · costs ' + Array.from({ length: cost.length / 2 }, (_, i) => `${cost[2 * i + 1]} ${RES[cost[2 * i]].name.toLowerCase()}`).join(', ') : '';
+  const text = code === 0 ? `Level ${levelR} wide to ${h.toFixed(1)}${levelH < 0 ? ' (Auto)' : ''}: ${work.kind === 'even' ? 'the ground is already about that height' : work.kind === 'fill' ? `earth added, about ${work.by.toFixed(1)} on average` : `earth cut away, about ${work.by.toFixed(1)} on average`}${costText} — click to level · R changes the size`
+    : code === -6 ? `${PLACE_ERRORS[code]}${costText}` : PLACE_ERRORS[code] ?? 'Cannot level here';
+  const key = `${code}|${text}`; if (key !== levelHintKey) { levelHintKey = key; levelCode = code; ui.hint(text, code !== 0); }
 }
 /** Click with the level-ground tool. */
 function levelClick(e: { clientX: number; clientY: number }) {
   const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
-  const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = lv.world.level_ground(dx, dy, levelR);
-  if (code === 0) { commit({ op: 'level', x: dx, y: dy, kind: levelR }); levelCode = 99; afterLocalChange(); sound.place(3); ui.toast('The ground is levelled.', 'good'); levelHover(e); }
+  const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = lv.world.level_ground(dx, dy, levelR, levelH);
+  if (code === 0) { commit(levelH < 0 ? { op: 'level', x: dx, y: dy, kind: levelR } : { op: 'level', x: dx, y: dy, kind: levelR, h: levelH }); levelCode = 99; levelHintKey = ''; afterLocalChange(); sound.place(3); ui.toast('The ground is levelled.', 'good'); levelHover(e); }
   else { ui.hint(PLACE_ERRORS[code] ?? 'Cannot level here', true); ui.toast(PLACE_ERRORS[code] ?? 'Cannot level here', 'bad'); sound.error(); }
 }
 
@@ -2028,14 +2067,14 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
-  if (!hit) { ghost.visible = false; ghostRing.visible = false; covGhost(null); builderRangeRing.visible = false; return; }
+  if (!hit) { ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; covGhost(null); builderRangeRing.visible = false; return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
   if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
     const bp = w.bridge_preview(dx, dy), code = bp[0];
-    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; builderRangeRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
+    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; builderRangeRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
     const [, cx, cz, ang, len, span, planks, wood] = Array.from(bp), ux = Math.cos(ang), uz = Math.sin(ang), hA = terrain.heightAt(cx - ux * len / 2, cz - uz * len / 2), hB = terrain.heightAt(cx + ux * len / 2, cz + uz * len / 2);
     terrain.clearPreview(); previewKey = '';
-    ghost.visible = true; ghostRing.visible = false; showAnchors(`38:${cx.toFixed(1)}:${cz.toFixed(1)}:${code}`, Array.from(bp).slice(8, 12), null, code === 0); ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
+    ghost.visible = true; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; showAnchors(`38:${cx.toFixed(1)}:${cz.toFixed(1)}:${code}`, Array.from(bp).slice(8, 12), null, code === 0); ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
     const key = `${code}:${cx.toFixed(1)}:${cz.toFixed(1)}`;
     if (key !== previewKey2) {
       previewKey2 = key; ghostCode = code;
@@ -2087,7 +2126,7 @@ function bindInput() {
       const dragging = penStart && (e.buttons & 1) && down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8, walking = penShape === 'path' && penPath.length > 0 && !e.buttons;
       if (dragging || walking) {
         const h = terrain.pick(pointerRay(e).ray), o = h ? penOutline(penStart, { x: h.x, z: h.z }, e.altKey) : null;
-        if (o) { penPreviewUpdate(selectedKind, o); if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; }
+        if (o) { penPreviewUpdate(selectedKind, o); if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; }
       }
     }
     if (selectedDet !== null && selectedKind === null && performance.now() - routeT > 140 && !e.buttons) {   // preview the route under the cursor
