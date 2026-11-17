@@ -68,7 +68,7 @@ import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
 const GOLD = 8;   // the gold store (catalog GD)
 import { bribeOffer, bribeToast, bribeRefusal, BRIBE_CONSEQUENCE } from './bribe';
-import { roleOf, actionsFor, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
+import { roleOf, actionsFor, foeFocus, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd, Sequence } from './net/validate';
 import { restartCmd, rebaseLog, restartBlocker, validArchive, type Archive, type Facts } from './restart';
@@ -1957,6 +1957,7 @@ function updatePlacementNet(valid: boolean) {
   const color = valid ? 0x65ff91 : 0xff5b55;
   for (const child of placementNet.children) { const mat = (child as THREE.LineSegments | THREE.Points).material as THREE.LineBasicMaterial | THREE.PointsMaterial; mat.color.setHex(color); }
   placementNet.visible = true;
+}
 /** Where a road point clicked at (x, z) goes: onto the node or piece of road within reach, or where it was clicked. */
 function roadPoint(x: number, z: number): { x: number; z: number; snapped: boolean } {
   const sn = lv.world.road_snap(Math.round(x - lv.ox), Math.round(z - lv.oz));

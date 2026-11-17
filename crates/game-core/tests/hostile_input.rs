@@ -54,7 +54,7 @@ fn no_command_panics_on_hostile_arguments() {
                 8 => { w.garrison_set(r.u(), r.u()); }
                 9 => { w.drawbridge_set(r.u(), r.next() % 2 == 0); }
                 10 => { w.set_option(r.u(), r.b(), r.next() % 2 == 0); }
-                11 => { let n = r.u(); w.flatten(n.min(400)); }
+                11 => { let n = r.u(); w.flatten(n.min(400), 5.0); }
                 12 => { w.place_batch(&r.flat()); }
                 13 => { w.visit_neutral(r.u()); }
                 14 => { w.hero_hire(); }
