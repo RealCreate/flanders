@@ -68,12 +68,12 @@ export function thin(pts: number[], min = 0.35): number[] {
 }
 
 /** A ribbon along the line: three vertices across at every point (soft edge, solid middle, soft edge), turned smoothly at corners. `half` is the solid half width. */
-export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0) {
+export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0): { first: number[]; last: number[] } | null {
   const P = thin(line.pts); const n = P.length / 2;
-  if (n < 2) return;
+  if (n < 2) return null;
   const cum = [0]; for (let k = 1; k < n; k++) cum.push(cum[k - 1] + Math.hypot(P[2 * k] - P[2 * k - 2], P[2 * k + 1] - P[2 * k - 1]));
-  const total = cum[n - 1]; if (total < 0.3) return;
-  let prev: number[] | null = null;
+  const total = cum[n - 1]; if (total < 0.3) return null;
+  let prev: number[] | null = null, first: number[] | null = null;
   for (let i = 0; i < n; i++) {
     const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
     let ux = P[2 * b] - P[2 * a], uz = P[2 * b + 1] - P[2 * a + 1]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
@@ -92,8 +92,9 @@ export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0) {
       m.born.push(line.born); m.along.push(t); m.pave.push(1); row.push(k);
     }
     if (prev) for (let k = 0; k < 2; k++) m.idx.push(prev[k], row[k], prev[k + 1], prev[k + 1], row[k], row[k + 1]);
-    prev = row;
+    prev = row; if (!first) first = row;
   }
+  return { first: first!, last: prev! };
 }
 
 /** A round patch (a fan) at a place where roads end or meet: it fills the wedge the square-cut ends of the ribbons leave. */
@@ -105,21 +106,140 @@ export function addDisc(m: Mesh, x: number, z: number, half: number, born = -1e6
   for (let k = 0; k < seg; k++) m.idx.push(c, c + 1 + k, c + 1 + ((k + 1) % seg));
 }
 
-/** The whole road mesh for the lines of the core: ribbons, and a patch at every end of a road and wherever two or more lines end at one place. */
+
+// ---- junctions -------------------------------------------------------------------------------------------------------------------------------------------------
+// Where two or more lines end at one place (a T, an X as two Ts, a Y, a stub on a road) the ribbons are cut back to the soft edge of their neighbours and the joint is
+// one fan polygon: full brightness in the middle, the falloff only along the outer boundary of the union of the roads, so no dark edge is drawn across a road.
+
+/** The farthest (in soft half widths) a ribbon is cut back at a very sharp angle; beyond it the corner is bevelled. */
+const CUT_MAX = 2.2;
+
+type Pt = [number, number];
+const arcLength = (p: number[]) => { let t = 0; for (let k = 2; k < p.length; k += 2) t += Math.hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]); return t; };
+const reversePts = (p: number[]) => { const r: number[] = []; for (let q = p.length - 2; q >= 0; q -= 2) r.push(p[q], p[q + 1]); return r; };
+
+/** The point at arc distance d from the start of the polyline. */
+export function pointAt(p: number[], d: number): Pt {
+  let acc = 0;
+  for (let k = 2; k < p.length; k += 2) {
+    const l = Math.hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]);
+    if (acc + l >= d && l > 0) { const f = (d - acc) / l; return [p[k - 2] + (p[k] - p[k - 2]) * f, p[k - 1] + (p[k + 1] - p[k - 1]) * f]; }
+    acc += l;
+  }
+  return [p[p.length - 2], p[p.length - 1]];
+}
+
+/** The polyline with arc length `s` removed from its start and `e` from its end. */
+export function cutPts(p: number[], s: number, e: number): number[] {
+  const total = arcLength(p), end = total - e;
+  if (s <= 0 && e <= 0) return p;
+  if (end - s < 1e-6) return [];
+  const o: number[] = [...pointAt(p, s)]; let acc = 0;
+  for (let k = 2; k < p.length; k += 2) {
+    acc += Math.hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]);
+    if (acc > s + 1e-6 && acc < end - 1e-6) o.push(p[k], p[k + 1]);
+  }
+  o.push(...pointAt(p, end));
+  return o;
+}
+
+interface Arm { li: number; end: 0 | 1; pts: number[]; ang: number; len: number; cut: number; L: Pt; M: Pt; R: Pt; v0: number }
+
+/** How far back from the node a ribbon must be cut so that its soft edge meets the soft edge of the neighbour at this angle. */
+const cutFor = (gap: number, H: number) => (gap < Math.PI - 0.02 ? Math.min(H / Math.tan(gap / 2), CUT_MAX * H) : 0);
+
+/** The fan of a junction. `arms` are sorted counter-clockwise by angle and carry their cut row (L, M, R as seen leaving the node).
+ *  Every wedge of the fan takes the texture mapping of the ribbon it hangs on, so the paving and the ruts run on from the ribbon into the joint without a jump. */
+function addJunction(m: Mesh, ox: number, oz: number, arms: Arm[], H: number, born: number) {
+  const n = arms.length;
+  // the mapping of an arm: across the road from the left/right of its ribbon, along from the v of its cut row
+  const mapOf = (a: Arm) => {
+    let nx = a.L[0] - a.R[0], nz = a.L[1] - a.R[1]; const nl = Math.hypot(nx, nz) || 1; nx /= nl; nz /= nl;   // left, leaving the node
+    const dx = nz, dz = -nx, sU = a.end === 0 ? -1 : 1, sV = a.end === 0 ? 1 : -1;
+    return (x: number, z: number): [number, number] => {
+      const px = x - a.M[0], pz = z - a.M[1];
+      return [0.5 + sU * (px * nx + pz * nz) / (2 * H), a.v0 + sV * (px * dx + pz * dz) * 0.25];
+    };
+  };
+  const vert = (map: (x: number, z: number) => [number, number], x: number, z: number, al: number) => {
+    const k = m.x.length, [u, v] = map(x, z);
+    m.x.push(x); m.z.push(z); m.a.push(al); m.u.push(u); m.v.push(v); m.born.push(born); m.along.push(0.5); m.pave.push(1); return k;
+  };
+  for (let i = 0; i < n; i++) {
+    const a = arms[i], b = arms[(i + 1) % n], mi = mapOf(a), mj = mapOf(b);
+    const o = vert(mi, ox, oz, 0.95), r = vert(mi, a.R[0], a.R[1], 0), mm = vert(mi, a.M[0], a.M[1], 0.95), l = vert(mi, a.L[0], a.L[1], 0);
+    m.idx.push(o, r, mm, o, mm, l);
+    let gap = b.ang - a.ang; if (gap <= 1e-9) gap += Math.PI * 2;
+    const need = cutFor(gap, H) - 1e-6;
+    if (gap < Math.PI - 0.02 && a.cut >= need && b.cut >= need) {
+      const mid = a.ang + gap / 2, d = H / Math.sin(gap / 2), cx = ox + Math.cos(mid) * d, cz = oz + Math.sin(mid) * d;
+      // the corner: half hangs on this arm, half on the next
+      const o1 = vert(mi, ox, oz, 0.95), l1 = vert(mi, a.L[0], a.L[1], 0), c1 = vert(mi, cx, cz, 0);
+      const o2 = vert(mj, ox, oz, 0.95), c2 = vert(mj, cx, cz, 0), r2 = vert(mj, b.R[0], b.R[1], 0);
+      m.idx.push(o1, l1, c1, o2, c2, r2);
+    } else {   // a straight or reflex stretch, or a corner too sharp to mitre: the outline goes straight across
+      const o1 = vert(mi, ox, oz, 0.95), l1 = vert(mi, a.L[0], a.L[1], 0), r1 = vert(mi, b.R[0], b.R[1], 0);
+      m.idx.push(o1, l1, r1);
+    }
+  }
+}
+
+/** The whole road mesh for the lines of the core: ribbons, a round cap at every dead end, and a joint polygon wherever two or more lines end at one place. */
 export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
-  const m = newMesh(), lines = joinLines(parseRoadLines(flat));
-  const ends = new Map<string, [number, number, number, number]>();   // place -> x, z, how many ends, earliest birth
-  lines.forEach((l0, li) => {
-    let l = l0;
-    // a road the player laid shows at once, in full (only a building's stub grows in with the building)
-    if (l.kind === 1) l = { ...l, born: INSTANT };
-    addRibbon(m, l, half, li);
-    const stub = l.kind === 0;
-    for (const e of stub ? [1] : [0, 1]) {
-      const x = l.pts[e ? l.pts.length - 2 : 0], z = l.pts[e ? l.pts.length - 1 : 1], k = x + ':' + z, o = ends.get(k);
-      if (o) { o[2]++; o[3] = Math.min(o[3], l.born); } else ends.set(k, [x, z, 1, l.born]);
+  const m = newMesh(), lines = joinLines(parseRoadLines(flat)).map(l => (l.kind === 1 ? { ...l, born: INSTANT } : l));   // a road the player laid shows at once, in full (only a building's stub grows in with the building)
+  const H = half * EDGE;
+  const nodes = new Map<string, { x: number; z: number; arms: Arm[]; born: number }>();
+  lines.forEach((l, li) => {
+    for (const e of (l.kind === 0 ? [1] : [0, 1]) as (0 | 1)[]) {
+      const x = l.pts[e ? l.pts.length - 2 : 0], z = l.pts[e ? l.pts.length - 1 : 1], k = x + ':' + z;
+      let nd = nodes.get(k); if (!nd) nodes.set(k, nd = { x, z, arms: [], born: l.born });
+      nd.born = Math.min(nd.born, l.born);
+      const pts = thin(e ? reversePts(l.pts) : l.pts), len = arcLength(pts);
+      nd.arms.push({ li, end: e, pts, ang: 0, len, cut: 0, L: [x, z], M: [x, z], R: [x, z], v0: 0 });
     }
   });
-  for (const [x, z, c, born] of ends.values()) if (c >= 1) addDisc(m, x, z, half, born);
+  // the direction of every arm, and how far it is cut back
+  const cutOf = lines.map(() => [0, 0]);
+  const joints: { x: number; z: number; arms: Arm[]; born: number }[] = [];
+  for (const nd of nodes.values()) {
+    const arms = nd.arms.filter(a => a.len >= 0.05);
+    if (arms.length < 2) continue;
+    for (const a of arms) { const q = pointAt(a.pts, Math.min(H, a.len)); a.ang = Math.atan2(q[1] - nd.z, q[0] - nd.x); }
+    arms.sort((p, q) => p.ang - q.ang);
+    arms.forEach((a, i) => {
+      const prev = arms[(i + arms.length - 1) % arms.length], next = arms[(i + 1) % arms.length];
+      let g1 = next.ang - a.ang; if (g1 <= 1e-9) g1 += Math.PI * 2;
+      let g0 = a.ang - prev.ang; if (g0 <= 1e-9) g0 += Math.PI * 2;
+      a.cut = Math.max(cutFor(g1, H), cutFor(g0, H));
+      cutOf[a.li][a.end] = a.cut;
+    });
+    joints.push({ ...nd, arms });
+  }
+  // never cut a line to nothing from both ends
+  lines.forEach((l, li) => {
+    const len = arcLength(l.pts), s = cutOf[li][0], e = cutOf[li][1];
+    if (s + e > len * 0.9 && s + e > 0) { const f = (len * 0.9) / (s + e); cutOf[li][0] *= f; cutOf[li][1] *= f; }
+  });
+  for (const j of joints) for (const a of j.arms) a.cut = cutOf[a.li][a.end];
+  // the ribbons
+  const rowsOf = lines.map((l, li) => addRibbon(m, { ...l, pts: cutPts(l.pts, cutOf[li][0], cutOf[li][1]) }, half, li));
+  // the joints
+  for (const j of joints) {
+    for (const a of j.arms) {
+      const r = rowsOf[a.li];
+      if (r) {
+        // the row of the cut: the left of the line's travel is the left leaving the node along its start, the right along its end
+        const row = a.end === 0 ? r.first : r.last, pos = (i: number): Pt => [m.x[row[i]], m.z[row[i]]];
+        if (a.end === 0) { a.L = pos(0); a.M = pos(1); a.R = pos(2); } else { a.L = pos(2); a.M = pos(1); a.R = pos(0); }
+        a.v0 = m.v[row[1]];
+      } else {
+        const q = pointAt(a.pts, a.cut), q2 = pointAt(a.pts, a.cut + 0.5); let ux = q2[0] - q[0], uz = q2[1] - q[1]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
+        a.M = q; a.L = [q[0] - uz * H, q[1] + ux * H]; a.R = [q[0] + uz * H, q[1] - ux * H];
+      }
+    }
+    addJunction(m, j.x, j.z, j.arms, H, j.born);
+  }
+  // a dead end (one line ends here alone) is capped with a round patch
+  for (const nd of nodes.values()) if (nd.arms.length === 1) addDisc(m, nd.x, nd.z, half, nd.born);
   return m;
 }

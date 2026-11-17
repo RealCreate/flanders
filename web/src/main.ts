@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
+import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
 import { parseRows, parseTotals, stepWant } from './workview';
@@ -15,6 +15,7 @@ import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize,
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
+import { AnchorGhost, anchorShape, doorInWorld } from './render/anchorghost';
 import { SelectionMark } from './render/selection';
 import { RadiusRings } from './render/coverage';
 import { parseRadii, describe as describeRadii, uncoveredByWells, wallsOutOfReach, FX_FIRE_FULL, FX_FIRE_HALF, FX_SHOOT, type Radius } from './coverage';
@@ -183,7 +184,7 @@ let obstCache: { x: number; z: number; r: number }[] = [];
 let selectedDet: number | null = null;
 let selectedRuin: number | null = null;
 const attackTargets = new Map<number, string>();   // field army id -> the rival it is marching on
-let ghostRing!: THREE.Mesh, builderRangeRing!: THREE.Mesh, placementNet!: THREE.Group, placementNetVersion = -1, previewKey = '', previewKey2 = '';
+let ghostRing!: THREE.Mesh, builderRangeRing!: THREE.Mesh, previewKey = '', previewKey2 = '', anchorGhost: AnchorGhost | null = null, anchorKey = '', lastGhostE: { clientX: number; clientY: number } | null = null;
 
 /** Bumped whenever the map generator changes: every world gets a fresh map and old saves are discarded. */
 const MAP_VERSION = 7;
@@ -1009,7 +1010,7 @@ async function startGame(name: string, username: string) {
   ghostRing.visible = false; ghostRing.renderOrder = 9; scene.add(ghostRing);
   builderRangeRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 96).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x8fd6ff, transparent: true, opacity: 0.58, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
   builderRangeRing.visible = false; builderRangeRing.renderOrder = 8; scene.add(builderRangeRing);
-  placementNet = new THREE.Group(); placementNet.visible = false; placementNet.renderOrder = 31; scene.add(placementNet);
+  anchorGhost = new AnchorGhost(terrain); scene.add(anchorGhost.group);
 
   shared = {
     scene, terrain, wildlife, fx, radii, forest, obstacles: () => obstCache,
@@ -1392,7 +1393,7 @@ function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r =>
 function selectKind(k: number | null) {
   selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
-  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false; if (placementNet) placementNet.visible = false;
+  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false;
   if (k === LEVEL_TOOL) { selectedIdx = null; updateSelection(); ui.setLevelCost(Array.from(World.level_cost_flat(levelR))); ui.hint(placeHint(k)); }
   else if (k !== null) {
     selectedIdx = null; updateSelection();
@@ -1938,26 +1939,6 @@ function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: nu
   return { dx: Math.round(nx + ux * off - lv.ox), dy: Math.round(nz + uz * off - lv.oz), rot: ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8 };
 }
 
-function updatePlacementNet(valid: boolean) {
-  if (!placementNet) return;
-  const w = lv.world, version = w.terrain_version();
-  if (placementNetVersion !== version) {
-    placementNetVersion = version;
-    for (const child of [...placementNet.children]) { const m = child as THREE.Mesh | THREE.LineSegments | THREE.Points; m.geometry?.dispose(); const mat = m.material; if (Array.isArray(mat)) mat.forEach(x => x.dispose()); else mat?.dispose(); }
-    placementNet.clear();
-    const flat = w.net_flat(), n = flat[0] | 0, e = flat[1] | 0, edges: number[] = [], nodes: number[] = [];
-    const at = (i: number) => { const x = lv.ox + flat[2 + i * 2], z = lv.oz + flat[3 + i * 2]; return [x, terrain.walkAt(x, z) + 0.7, z]; };
-    for (let i = 0; i < n; i++) nodes.push(...at(i));
-    for (let i = 0; i < e; i++) { const o = 2 + n * 2 + i * 3, a = at(flat[o] | 0), b = at(flat[o + 1] | 0); edges.push(...a, ...b); }
-    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(edges, 3));
-    const pg = new THREE.BufferGeometry(); pg.setAttribute('position', new THREE.Float32BufferAttribute(nodes, 3));
-    placementNet.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x77e8ff, transparent: true, opacity: 0.75, depthTest: false })));
-    placementNet.add(new THREE.Points(pg, new THREE.PointsMaterial({ color: 0x9cecff, size: 5, sizeAttenuation: false, transparent: true, opacity: 0.95, depthTest: false })));
-  }
-  const color = valid ? 0x65ff91 : 0xff5b55;
-  for (const child of placementNet.children) { const mat = (child as THREE.LineSegments | THREE.Points).material as THREE.LineBasicMaterial | THREE.PointsMaterial; mat.color.setHex(color); }
-  placementNet.visible = true;
-}
 /** Where a road point clicked at (x, z) goes: onto the node or piece of road within reach, or where it was clicked. */
 function roadPoint(x: number, z: number): { x: number; z: number; snapped: boolean } {
   const sn = lv.world.road_snap(Math.round(x - lv.ox), Math.round(z - lv.oz));
@@ -1977,7 +1958,7 @@ function roadPreview(hover: { x: number; z: number; snapped: boolean } | null) {
   ui.hint(ctrl.length < 2 ? placeHint(37) : `Road: ${pieces.length} points, ${wood} wood${stocks[0] < wood ? ' — not enough wood' : ''}${bad ? ` · ${bad} of the points cannot be laid (outside your land, in water or in the way)` : ''} · double-click or Enter to build`, bad > 0 || stocks[0] < wood);
 }
 function roadHover(e: { clientX: number; clientY: number }) {
-  if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; covGhost(null);
+  if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null);
   const hit = terrain.pick(pointerRay(e).ray); if (!hit) { lv.nodes.highlight(null); return; }
   const p = roadPoint(hit.x, hit.z); lv.nodes.highlight(p.snapped ? p : null); roadPreview(p);
 }
@@ -2017,7 +1998,7 @@ function drawLevelBar() {
 /** Hover with the level-ground tool: a ring at the height the patch would be levelled to, green when it can be done, red (with the reason) when not. */
 function levelHover(e: { clientX: number; clientY: number }) {
   if (ghost) ghost.visible = false; covGhost(null);
-  const hit = terrain.pick(pointerRay(e).ray); if (!hit) { ghostRing.visible = false; return; }
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) { ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), code = w.level_check(dx, dy, levelR);
   const h = code === 0 || code === -6 || code === -26 ? w.level_target(dx, dy, levelR) : w.height_at(hit.x, hit.z);
   ghostRing.visible = true; ghostRing.position.set(lv.ox + dx, (h > -100 ? h : 0) + 0.14, lv.oz + dy); ghostRing.scale.setScalar(levelR); ghostRing.rotation.y = 0;
@@ -2032,19 +2013,29 @@ function levelClick(e: { clientX: number; clientY: number }) {
   else { ui.hint(PLACE_ERRORS[code] ?? 'Cannot level here', true); ui.toast(PLACE_ERRORS[code] ?? 'Cannot level here', 'bad'); sound.error(); }
 }
 
+/** The road anchors of the building being placed (see render/anchorghost.ts): its node rings (and stub from the door) from the core's own node computation, and the nodes or roads they would join. */
+function showAnchors(key: string, nodes: number[], door: { x: number; z: number } | null, ok: boolean) {
+  if (!anchorGhost || key === anchorKey) return;
+  anchorKey = key;
+  const shape = anchorShape(nodes, nodes.length === 2 ? door : null), w = lv.world;
+  const joins = shape.rings.map(r => { const s = w.road_snap(Math.round(r.x - lv.ox), Math.round(r.z - lv.oz)); return s.length === 4 ? { x: lv.ox + s[0], z: lv.oz + s[1] } : null; });
+  anchorGhost.show(shape, joins, ok);
+}
+
 function updateGhost(e: { clientX: number; clientY: number }) {
+  lastGhostE = e;
   if (selectedKind === LEVEL_TOOL) { levelHover(e); return; }
   if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
-  if (!hit) { ghost.visible = false; ghostRing.visible = false; covGhost(null); builderRangeRing.visible = false; placementNet.visible = false; return; }
+  if (!hit) { ghost.visible = false; ghostRing.visible = false; covGhost(null); builderRangeRing.visible = false; return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
   if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
     const bp = w.bridge_preview(dx, dy), code = bp[0];
-    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; builderRangeRing.visible = false; placementNet.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
+    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; builderRangeRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
     const [, cx, cz, ang, len, span, planks, wood] = Array.from(bp), ux = Math.cos(ang), uz = Math.sin(ang), hA = terrain.heightAt(cx - ux * len / 2, cz - uz * len / 2), hB = terrain.heightAt(cx + ux * len / 2, cz + uz * len / 2);
     terrain.clearPreview(); previewKey = '';
-    ghost.visible = true; ghostRing.visible = false; builderRangeRing.visible = false; updatePlacementNet(code === 0); ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
+    ghost.visible = true; ghostRing.visible = false; showAnchors(`38:${cx.toFixed(1)}:${cz.toFixed(1)}:${code}`, Array.from(bp).slice(8, 12), null, code === 0); ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
     const key = `${code}:${cx.toFixed(1)}:${cz.toFixed(1)}`;
     if (key !== previewKey2) {
       previewKey2 = key; ghostCode = code;
@@ -2067,9 +2058,9 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = selectedKind === 23 ? drawbridgeDeckAt(w, x, z, grot) : terrain.heightAt(x, z);   // (a drawbridge hangs at deck height over the water, not on the bed)
   ghost.visible = true; ghost.position.set(x, h, z); ghost.rotation.y = grot * Math.PI / 4; covGhost({ x, z });
+  { const di = selectedKind !== 23 ? door_info(selectedKind, 0) : null; showAnchors(`${selectedKind}:${x}:${z}:${grot}:${code}`, Array.from(w.node_preview(selectedKind, 0, x, z, grot & 7)), di ? doorInWorld(di, x, z, grot) : null, code === 0); }
   ghostRing.visible = true; ghostRing.position.set(x, h + 0.14, z); if (selectedKind === 23) { ghostRing.scale.set(2.4, 1, 7.4); ghostRing.rotation.y = grot * Math.PI / 4; } else { ghostRing.scale.setScalar(d.r * 1.05); ghostRing.rotation.y = 0; }   // (a drawbridge's outline is long: it covers the whole deck)
   builderRangeRing.visible = selectedKind === 20; builderRangeRing.position.set(x, h + 0.12, z); builderRangeRing.scale.setScalar(70);
-  updatePlacementNet(code === 0);
   if (code !== ghostCode) {
     ghostCode = code;
     ghost.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) { const mm = m.material as THREE.MeshStandardMaterial; mm.emissive.setHex(code === 0 ? 0x22cc55 : 0xdd2a1a); mm.emissiveIntensity = code === 0 ? 0.32 : 0.55; } });
@@ -2096,7 +2087,7 @@ function bindInput() {
       const dragging = penStart && (e.buttons & 1) && down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8, walking = penShape === 'path' && penPath.length > 0 && !e.buttons;
       if (dragging || walking) {
         const h = terrain.pick(pointerRay(e).ray), o = h ? penOutline(penStart, { x: h.x, z: h.z }, e.altKey) : null;
-        if (o) { penPreviewUpdate(selectedKind, o); if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; }
+        if (o) { penPreviewUpdate(selectedKind, o); if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; anchorGhost?.hide(); anchorKey = ''; }
       }
     }
     if (selectedDet !== null && selectedKind === null && performance.now() - routeT > 140 && !e.buttons) {   // preview the route under the cursor
@@ -2195,7 +2186,7 @@ function bindInput() {
       case 'penFinish': if (selectedKind === 37 && roadPts.length >= 2) { e.preventDefault(); roadCommit(); break; } if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) { e.preventDefault(); penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); } break;
       case 'penUndo': if (selectedKind === 37 && roadPts.length) { e.preventDefault(); roadPts.pop(); roadPreview(null); break; } if (penShape === 'path' && penPath.length) { e.preventDefault(); penPath.pop(); if (!penPath.length) penPreview.clear(); } break;
       case 'cancel': if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
-      case 'rotateBuilding': if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); break; } rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; break;
+      case 'rotateBuilding': if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); break; } rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; if (lastGhostE && selectedKind !== null) updateGhost(lastGhostE); break;
       case 'deposits': toggleResources(); break;
       case 'coverage': toggleCoverage(); break;
       case 'pause': e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); break;
