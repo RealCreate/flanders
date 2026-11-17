@@ -27,6 +27,8 @@ mod perf_bench;
 #[cfg(test)]
 mod flatten_tests;
 #[cfg(test)]
+mod terrain_layers_tests;
+#[cfg(test)]
 mod moat_water_tests;
 #[cfg(test)]
 mod snapshot_tests;
@@ -113,6 +115,7 @@ pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank ru
 /// How far below the rim of the land the water of a moat stands.
 const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_WATER_SLOPE: f32 = 0.05;   // how fast the water level may change along a moat, per unit
+const CHANNEL_REF_TOP: f32 = 9.0;   // ground up to this height has a ditch bed at the fixed depth below; above it the bed rises with the ground
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
 const RIVER_BED: f32 = -2.0; // a river is shallower than a moat, but holds real water  // depth of the bottom
 const ROAD_INNER: f32 = 2.1; // fully graded half-width of a path (as wide as the ribbon drawn on it, soft edge included: no cross slope under a road)
@@ -732,8 +735,18 @@ impl World {
             for k in 0..25 { let (i, j) = ((k % 5) as f32 - 2.0, (k / 5) as f32 - 2.0); sum += self.base(cx + i * rr * 0.25, cy + j * rr * 0.25); n += 1.0; }
             (sum / n).clamp(3.0, 9.0)
         };
+        // Layering (see docs/TERRAIN.md): a later levelling wins over an earlier one, so a patch of the level tool that lies wholly inside the new disc is dropped (it would otherwise be
+        // applied on top again and bring its old height back), and whatever stands inside the disc is set on the new ground (its footing is re-fitted, never left on a pedestal or in a pit).
+        self.flats.retain(|f| (f[0] - cx).hypot(f[1] - cy) + f[2] > rr);
         self.levels.push([cx, cy, rr, h]); self.terrain_ver += 1; self.map_ver += 1;
-        // everything already standing keeps its own levelled base; ground between is blended
+        for i in 0..self.buildings.len() {
+            let b = &self.buildings[i];
+            if is_edit(b.kind) || b.kind == ROAD || !(DEFS[b.kind as usize].pad || b.kind == DRAWBRIDGE) || (b.x - cx).hypot(b.y - cy) > rr { continue; }
+            let kind = b.kind; let (bx, by, rot) = (b.x, b.y, b.rot);
+            let mut ph = h;
+            if matches!(kind, WATERWHEEL | FISHING_HUT) { ph = ph.min(self.wheel_pad_cap(bx, by, rot & 7)); }
+            self.buildings[i].pad_h = ph;
+        }
         self.after_change(); 0
     }
 
@@ -754,6 +767,7 @@ impl World {
             let d = (dx * dx + dy * dy).sqrt();
             if d < reach { h = lerp(h, l[3], 1.0 - smoothstep(l[2], reach, d)); }
         }
+        let mut ditch = 0.0f32;   // how much of a standing ditch is here (0 to 1): a levelled patch never fills it in
         if moats {
             // A moat or river is a chain of pieces. Digging each piece as its own round hollow (each one taking the deepest) leaves a scalloped bank, a bump at every piece. So the
             // pieces' reach is summed instead and the ground is dug by the total (at most all the way): between two neighbours both contribute, which fills in the scallop. A single
@@ -771,14 +785,18 @@ impl World {
                     _ => h -= 2.2 * (1.0 - smoothstep(floor, bank, dist)),
                 }
             }
-            if fm > 0.0 && h > MOAT_BED { h += (MOAT_BED - h) * fm.min(1.0); }
-            if fr > 0.0 && h > RIVER_BED { h += (RIVER_BED - h) * fr.min(1.0); }
+            // The bed lies at a fixed depth below the sea, which is deep enough on ordinary land; on ground levelled high (above CHANNEL_REF_TOP) the bed rides up with it, so a moat is
+            // never a sheer shaft a hill deep.
+            let rise = (h - CHANNEL_REF_TOP).max(0.0);
+            if fm > 0.0 && h > MOAT_BED + rise { h += (MOAT_BED + rise - h) * fm.min(1.0); }
+            if fr > 0.0 && h > RIVER_BED + rise { h += (RIVER_BED + rise - h) * fr.min(1.0); }
+            ditch = fm.max(fr).min(1.0);
         }
         for f in &self.flats {   // ground the player levelled: after the ditches and earthworks, so it hides whatever was dug there
             let (dx, dy) = (x - f[0], y - f[1]); let reach = f[2] + flatten::FLAT_SHOULDER;
             if dx.abs() > reach || dy.abs() > reach { continue; }
             let d = (dx * dx + dy * dy).sqrt();
-            if d < reach { h = lerp(h, f[3], 1.0 - smoothstep(f[2], reach, d)); }
+            if d < reach { h = lerp(h, f[3], (1.0 - smoothstep(f[2], reach, d)) * (1.0 - ditch)); }
         }
         // the earth at each end of a drawbridge is levelled to the deck, in a strip that runs on from the deck's ends (after the ditch is dug, so the water stays between them):
         // the deck meets the ground flush, with no step and no slope to climb

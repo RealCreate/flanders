@@ -11,6 +11,8 @@ export interface WireCmd {
   /** The epoch of the village's history this command belongs to (see restart.ts): absent (0) until the owner first restarts. */
   e?: number;
   kind?: number; x?: number; y?: number; rot?: number; idx?: number; tag?: number; angle?: number; ax?: number; ay?: number;
+  /** level: the height to level to (absent or negative: Auto, the land round it). */
+  h?: number;
   to?: string; from?: string; units?: number[]; loot?: number[];
 }
 
@@ -18,6 +20,8 @@ export interface WireCmd {
 /** The most workers one building can ever be given a target for (far above any building's jobs). */
 export const WORKERS_MAX = 1000;
 export const LEVEL_RADIUS = { min: 3, max: 14 } as const;
+/** The heights a patch may be levelled to by hand (the core refuses any other; an absent `h` or a negative one is Auto: the land round it). */
+export const LEVEL_HEIGHT = { min: 1, max: 24 } as const;
 
 export const LIMITS = {
   /** A single signed message: a batch of 400 pieces is about 20 kB of JSON. */
@@ -37,7 +41,7 @@ const TESTING = new Set<string>(['cheat', 'flatten', 'demo']);
 const KEY = /^[A-Za-z0-9+/_=-]{20,100}$/;
 // x and y are whole numbers for buildings but real positions for armies and distances for caravans, so they only have to be finite and sane
 const INT_FIELDS = ['kind', 'rot', 'idx', 'tag'] as const;
-const FLOAT_FIELDS = ['x', 'y', 'angle', 'ax', 'ay'] as const;
+const FLOAT_FIELDS = ['x', 'y', 'angle', 'ax', 'ay', 'h'] as const;
 const BIG = 1e7;
 /** Most restarts a village can have had. */
 export const MAX_EPOCH = 100_000;
@@ -70,6 +74,7 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
   }
   if (r.op === 'level') {   // level the ground: x, y the middle (relative to the village origin), kind the radius
     if (!(isInt(out.kind) && out.kind >= LEVEL_RADIUS.min && out.kind <= LEVEL_RADIUS.max) || !(isInt(out.x) && isInt(out.y)) || Math.abs(out.x) > 2000 || Math.abs(out.y) > 2000) return null;
+    if (out.h !== undefined && !(out.h < 0 || (out.h >= LEVEL_HEIGHT.min && out.h <= LEVEL_HEIGHT.max))) return null;
   }
   if (r.op === 'workers') {   // idx the building, kind how many workers it should have: -1 auto, 0 paused, up to what its jobs allow (the core bounds-checks it too)
     if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 100_000) || !(isInt(out.kind) && out.kind >= -1 && out.kind <= WORKERS_MAX)) return null;

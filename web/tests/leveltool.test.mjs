@@ -18,3 +18,16 @@ test('level is a command peers may send, with a sane middle and radius', () => {
     assert.equal(sanitizeCmd({ op: 'level', tick: 1, n: 1, x: 0, y: 0, ...bad }), null, JSON.stringify(bad));
   assert.equal(parseCmd(JSON.stringify({ op: 'level', tick: 1, n: 1, x: 3, y: 4 })), null, 'a radius is required');
 });
+
+test('the target height: Auto is the default, a chosen height is kept to half units inside the core\'s range and travels with the command', async () => {
+  const { clampLevelHeight, levelHeightLabel, levelWork, LEVEL_AUTO } = await import('../src/leveltool.ts');
+  assert.equal(LEVEL_AUTO, -1);
+  assert.equal(clampLevelHeight(7.26), 7.5); assert.equal(clampLevelHeight(0), 1); assert.equal(clampLevelHeight(99), 24); assert.equal(clampLevelHeight(NaN), LEVEL_AUTO);
+  assert.equal(levelHeightLabel(-1), 'Auto'); assert.equal(levelHeightLabel(6), '6.0');
+  assert.deepEqual(levelWork(3, 5), { kind: 'fill', by: 2 }); assert.deepEqual(levelWork(5, 3), { kind: 'cut', by: 2 }); assert.equal(levelWork(5, 5.1).kind, 'even');
+  const ok = { op: 'level', tick: 4, n: 2, x: -12, y: 30, kind: 8 };
+  assert.deepEqual(sanitizeCmd({ ...ok, h: 7.5 }), { ...ok, h: 7.5 }, 'an explicit height is kept');
+  assert.deepEqual(sanitizeCmd(ok), ok, 'older logs without a height mean Auto');
+  assert.deepEqual(sanitizeCmd({ ...ok, h: -1 }), { ...ok, h: -1 });
+  for (const h of [0.5, 24.5, 1000, 'a', null, NaN]) assert.equal(sanitizeCmd({ ...ok, h }), null, `h ${h}`);
+});

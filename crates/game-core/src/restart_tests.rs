@@ -9,7 +9,7 @@ enum C { Place(u8, i32, i32), Level(i32, i32, i32), Cheat(u8, i32, i32), Clear(u
 fn apply(w: &mut World, c: &C) {
     match *c {
         C::Place(k, x, y) => { w.place(k, x, y, 0); }
-        C::Level(x, y, r) => { w.level_ground(x, y, r); }
+        C::Level(x, y, r) => { w.level_ground(x, y, r, -1.0); }
         C::Cheat(a, x, y) => { w.cheat(a, x, y); }
         C::Clear(i) => { w.clear_deposit(i); }
         C::Treaty(t, k, d) => { w.treaty_set(t, k, d); }

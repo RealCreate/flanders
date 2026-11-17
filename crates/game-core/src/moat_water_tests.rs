@@ -45,7 +45,7 @@ fn moat_water_stays_under_every_bank_beside_a_slanted_chain_and_after_levelling(
     let mut w = world(1337, 150, -90);
     for i in 0..14 { w.place(MOAT, -26 + i * 4, 12 + i, 0); }
     assert_eq!(survey(&w).1, 0, "a diagonal chain over a slope");
-    assert_eq!(w.level_ground(-5, 8, 6), 0, "levelling a patch beside the chain");
+    assert_eq!(w.level_ground(-5, 8, 6, -1.0), 0, "levelling a patch beside the chain");
     assert_eq!(survey(&w).1, 0, "after the level ground tool");
 }
 

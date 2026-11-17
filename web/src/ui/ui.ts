@@ -571,7 +571,7 @@ export class UI {
     const lc = document.createElement('div');
     lc.className = 'card'; lc.dataset.id = String(LEVEL_TOOL);
     lc.innerHTML = `<div class="ico">${icon('levelground', 30)}</div><div><div class="nm"><span>Level Ground</span></div>
-      <div class="ds">Levels a round patch of ground to the land just outside it: fills pits and cuts bumps, and takes away any ditch or earthworks inside. R changes the size. Buildings in the patch must already stand at that height.</div><div class="cost level-cost"></div></div>`;
+      <div class="ds">Levels a round patch of ground to a Target height you choose in the bar (or Auto: the land just outside it): fills pits and cuts bumps, and takes away any ditch or earthworks inside. R changes the size. Buildings in the patch must already stand at that height.</div><div class="cost level-cost"></div></div>`;
     lc.onclick = () => this.h.select(LEVEL_TOOL);
     el.appendChild(lc); this.cards.set(LEVEL_TOOL, lc);
   }
