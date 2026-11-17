@@ -27,6 +27,8 @@ mod perf_bench;
 #[cfg(test)]
 mod flatten_tests;
 #[cfg(test)]
+mod moat_water_tests;
+#[cfg(test)]
 mod snapshot_tests;
 mod terrain;
 use catalog::*;
@@ -110,6 +112,7 @@ pub(crate) const RIVER_FLOOR: f32 = 2.0; // and of a river piece
 pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
 /// How far below the rim of the land the water of a moat stands.
 const MOAT_FREEBOARD: f32 = 0.8;
+const MOAT_WATER_SLOPE: f32 = 0.05;   // how fast the water level may change along a moat, per unit
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
 const RIVER_BED: f32 = -2.0; // a river is shallower than a moat, but holds real water  // depth of the bottom
 const ROAD_INNER: f32 = 2.1; // fully graded half-width of a path (as wide as the ribbon drawn on it, soft edge included: no cross slope under a road)
@@ -625,17 +628,20 @@ impl World {
     }
 
     /// Where the water stands in a moat. The ditch is dug deep so that it reads as deep water, but the sea is at height 0 and the banks are several units higher, so the plain water
-    /// plane would sit far below the brim. A moat's water is drawn at its own level instead: a little below the rim of the surrounding ground (an average of the land just outside the
-    /// bank), smoothed between neighbouring pieces so the surface is one continuous sheet. Gameplay does not use it: water is still wherever the ground is below the shore line.
+    /// plane would sit far below the brim. A moat's water is drawn at its own level instead: a little below the lowest bit of undug ground round the piece (the drawn disc reaches
+    /// 0.6 past the ditch; the ground there and a little further out is sampled all the way round), so no water ever hangs over a lower bank or a slope. Between pieces the level may only
+    /// change gently (`MOAT_WATER_SLOPE` per unit), and each piece takes the lowest of its neighbours' limits plus that slope, so the surface is one continuous sheet that never
+    /// rises above any piece's own limit. Gameplay does not use it: water is still wherever the ground is below the shore line.
     fn compute_moat_water(&self) -> Vec<[f32; 4]> {
         let pieces: Vec<[f32; 4]> = self.buildings.iter().filter(|b| b.kind == MOAT).map(|b| {
             let reach = MOAT_FLOOR * moat_scale(b) + CHANNEL_BANK;
-            let rim = (0..8).map(|k| { let a = k as f32 * std::f32::consts::TAU / 8.0; self.height_core(b.x + a.cos() * (reach + 1.5), b.y + a.sin() * (reach + 1.5), false) }).sum::<f32>() / 8.0;
-            [b.x, b.y, reach, (rim - MOAT_FREEBOARD).max(0.4)]
+            let mut low = f32::MAX;
+            for r in [reach + 0.6, reach + 1.5] { for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; low = low.min(self.height_core(b.x + a.cos() * r, b.y + a.sin() * r, false)); } }
+            [b.x, b.y, reach, (low - MOAT_FREEBOARD).max(0.4)]
         }).collect();
         pieces.iter().map(|p| {
-            let near: Vec<f32> = pieces.iter().filter(|q| (q[0] - p[0]).hypot(q[1] - p[1]) < 10.0).map(|q| q[3]).collect();
-            [p[0], p[1], p[2], near.iter().sum::<f32>() / near.len().max(1) as f32]
+            let level = pieces.iter().map(|q| { let d = (q[0] - p[0]).hypot(q[1] - p[1]); if d < 60.0 { q[3] + MOAT_WATER_SLOPE * d } else { f32::MAX } }).fold(p[3], f32::min);
+            [p[0], p[1], p[2], level]
         }).collect()
     }
     /// The surface of the water in each moat piece: [x, y, reach, level] (stride 4).
