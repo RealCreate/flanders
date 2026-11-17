@@ -163,6 +163,8 @@ export const ICONS: Record<string, S> = {
   fullscreen: L('M4 9 V4 H9 M15 4 H20 V9 M20 15 V20 H15 M9 20 H4 V15', K, 2),
   windowed: L('M9 4 V9 H4 M20 9 H15 V4 M15 20 V15 H20 M4 15 H9 V20', K, 2),
   pick: pickaxe(),
+  /** Coverage: three rings round a centre dot, the outer one dashed. */
+  coverage: C(12, 12, 9.5, 'none', `stroke="${BL}" stroke-width="1.4" stroke-dasharray="2.4 2"`) + C(12, 12, 5.6, 'none', `stroke="${BL}" stroke-width="1.8"`) + C(12, 12, 2.2, GD),
   copy: R(5, 4, 14, 18, PA2, 1.5) + R(8.5, 2, 7, 4, IR, 1) + L('M8 11 H16 M8 14.5 H16 M8 18 H13', ST2, 1),
   reset: L('M20 12 A8 8 0 1 1 15.5 5', K, 2) + P('M12 3 L17.5 5 L14.5 9.5Z', K),
   dice: R(3, 3, 18, 18, PA, 3) + [[8, 8], [16, 8], [12, 12], [8, 16], [16, 16]].map(([x, y]) => C(x, y, 1.5, K, 'stroke="none"')).join(''),

@@ -13,6 +13,7 @@ pub mod doors;
 mod roadline;
 mod flatten;
 mod plague;
+pub mod radii;
 mod wallnet;
 #[cfg(test)]
 mod roadcheck;
@@ -357,6 +358,15 @@ pub fn catalog() -> String { catalog_json() }
 
 #[wasm_bindgen]
 pub fn units() -> String { military::units_json() }
+
+/// What a building of this kind and tier reaches, for the interface: a JSON array of `{r, fx, pct}` (radius in world units, effect code, strength in percent). See `radii.rs`.
+#[wasm_bindgen]
+pub fn effect_radii(kind: u8, tier: u8) -> String { radii::effect_radii_json(kind, tier) }
+
+/// How readily a building of this kind and tier catches fire (0 never): the interface warns about buildings that burn and have no well near.
+#[wasm_bindgen]
+pub fn flammability_of(kind: u8, tier: u8) -> f32 { battle::flammability(kind, tier) }
+
 /// The bosses: [{id, name, names, hp, dmg, speed, armor, desc}].
 #[wasm_bindgen]
 pub fn bosses() -> String { military::bosses_json() }
