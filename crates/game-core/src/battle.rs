@@ -249,10 +249,10 @@ impl World {
             let fl = flammability(kind, tier);
             // villagers form a bucket brigade from the nearest well: close wells help most, distant ones half as much
             let near = |l: &[(f32, f32)], r: f32| l.iter().filter(|w| ((w.0 - bx).powi(2) + (w.1 - by).powi(2)).sqrt() <= r).count();
-            let (w18, w36) = (near(&wells, 18.0), near(&wells, 36.0));
+            let (w18, w36) = (near(&wells, radii::WELL_FULL_RANGE), near(&wells, radii::WELL_HALF_RANGE));
             let mut help = 0.0f32;
             if w18 > 0 { help = fighters + WELL_CREW * w18.min(2) as f32 } else if w36 > 0 { help = fighters * 0.5 + WELL_CREW * 0.5 }
-            help += BUILDER_CREW * near(&yards, 45.0).min(2) as f32;
+            help += BUILDER_CREW * near(&yards, radii::YARD_FIRE_RANGE).min(2) as f32;
             self.buildings[i].hp -= FIRE_DAMAGE * (4.0 + 14.0 * fl) * dt * (1.0 - (help * HELP_CUT).min(0.75));
             self.buildings[i].burning -= dt * (1.0 + help * 0.55);
             if self.buildings[i].burning <= 0.0 && self.buildings[i].hp > 0.0 { put_out += 1; continue; }
@@ -264,7 +264,7 @@ impl World {
                 let align = (dx * wx + dy * wy) / d; // downwind spreads faster
                 let flj = flammability(self.buildings[j].kind, self.buildings[j].tier);
                 let mut p = FIRE_SPREAD * flj * (1.0 - d / FIRE_RANGE) * (0.7 + 0.55 * align) * dt;
-                let wn = wells.iter().filter(|w| (w.0 - self.buildings[j].x).powi(2) + (w.1 - self.buildings[j].y).powi(2) < 16.0 * 16.0).count().min(2);
+                let wn = wells.iter().filter(|w| (w.0 - self.buildings[j].x).powi(2) + (w.1 - self.buildings[j].y).powi(2) < radii::WELL_SPARK_RANGE * radii::WELL_SPARK_RANGE).count().min(2);
                 p *= 0.5f32.powi(wn as i32);                       // each well beside it (two count) halves the chance a spark takes
                 if self.rf() < p { ignite.push(j); }
             }
@@ -388,7 +388,7 @@ impl World {
             if u.held && u.pelev > 0.0 && !bars.iter().any(|q| (q.1 - u.hx).powi(2) + (q.2 - u.hy).powi(2) < 3.2 * 3.2) { b.units[i].pelev = 0.0; b.units[i].elev = 0.0; }   // the wall they stood on is gone
             let u = b.units[i].clone();
             if u.held && u.pelev > 0.0 { let (dx, dy) = (u.hx - u.x, u.hy - u.y); b.units[i].elev = if (dx * dx + dy * dy).sqrt() < 1.8 { u.pelev } else { 0.0 }; }
-            let rng = ud.range * if b.units[i].elev > 0.0 { 1.25 } else { 1.0 };      // a wall gives height: archers on it shoot further
+            let rng = ud.range * if b.units[i].elev > 0.0 { radii::WALL_HEIGHT_RANGE } else { 1.0 };      // a wall gives height: archers on it shoot further
             let aggro = if u.side == 1 { 26.0 } else if u.held { rng.max(ud.range + 5.0) } else { 34.0 };
             let pinned = b.units[i].elev > 0.0 && d_enemy > rng;                       // on the wall: they do not leave it to chase
             // catapults on the defending side lob stones at whoever comes into range

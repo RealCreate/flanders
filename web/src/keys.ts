@@ -3,7 +3,7 @@
 export type Action =
   | 'panUp' | 'panDown' | 'panLeft' | 'panRight' | 'panFast'
   | 'rotLeft' | 'rotRight' | 'tiltUp' | 'tiltDown' | 'zoomIn' | 'zoomOut'
-  | 'rotateBuilding' | 'deposits' | 'pause' | 'cancel' | 'perf' | 'help' | 'toggleLedger' | 'toggleMinimap' | 'fullMap' | 'fullscreen' | 'photo' | 'nextArmy' | 'haltArmy' | 'recallArmy' | 'musterAll' | 'penFinish' | 'penUndo';
+  | 'rotateBuilding' | 'deposits' | 'coverage' | 'pause' | 'cancel' | 'perf' | 'help' | 'toggleLedger' | 'toggleMinimap' | 'fullMap' | 'fullscreen' | 'photo' | 'nextArmy' | 'haltArmy' | 'recallArmy' | 'musterAll' | 'penFinish' | 'penUndo';
 
 export const ACTIONS: { id: Action; label: string; group: string; defaults: string[] }[] = [
   { id: 'panUp', label: 'Move forward', group: 'Camera', defaults: ['w', 'z', 'arrowup'] },
@@ -23,6 +23,7 @@ export const ACTIONS: { id: Action; label: string; group: string; defaults: stri
   { id: 'cancel', label: 'Cancel / close', group: 'Game', defaults: ['escape'] },
   { id: 'pause', label: 'Pause / resume', group: 'Game', defaults: [' '] },
   { id: 'deposits', label: 'Show ore deposits', group: 'Game', defaults: ['v'] },
+  { id: 'coverage', label: 'Show coverage (wells and towers)', group: 'Game', defaults: ['c'] },
   { id: 'perf', label: 'Performance monitor', group: 'Game', defaults: ['f3', 'p'] },
   { id: 'help', label: 'Help', group: 'Game', defaults: ['f1'] },
   { id: 'nextArmy', label: 'Select next field army', group: 'Armies', defaults: ['tab'] },

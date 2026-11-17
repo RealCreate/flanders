@@ -50,6 +50,7 @@ export interface Handlers {
   stockGo(res: number[], sign: number, kind?: number): boolean;
   speed(n: number): void;
   toggleResources(): void;
+  toggleCoverage(): void;
   minimapClick(x: number, z: number): void;
   train(kind: number, n: number): void;
   attack(peerKey: string, units: number[]): void;
@@ -139,6 +140,7 @@ export class UI {
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
   <button class="btn" id="btn-mp" title="Players in this world">${bi('globe')} <span id="mp-count">Online</span></button>
   <button class="btn" id="btn-map" title="Full-screen map (M)">${bi('map')} Map</button>
+  <button class="btn" id="btn-cov" aria-pressed="false" title="Show how far wells and towers reach, and what they leave unprotected (C)">${bi('coverage')} Show coverage</button>
   <div class="menuwrap">
     <button class="btn" id="btn-menu" title="Menu: display settings, sound, deposits, full screen, help" aria-haspopup="true" aria-expanded="false">${bi('menu')} Menu</button>
     <div id="menu" hidden>
@@ -339,6 +341,7 @@ export class UI {
       document.addEventListener('pointerdown', e => { if (!menu.hidden && !(e.target as HTMLElement).closest('.menuwrap')) close(); });
       addEventListener('keydown', e => { if (e.key === 'Escape') close(); }); }
     $('btn-res').onclick = () => this.h.toggleResources();
+    $('btn-cov').onclick = () => this.h.toggleCoverage();
     $('btn-sound').onclick = () => this.h.toggleMute();
     this.initTitleTips();
     $('sub').onclick = () => { this.modal('winter', true); if (this.lastHud) this.renderWinter(this.lastHud); };
@@ -889,6 +892,7 @@ export class UI {
     t.innerHTML = html; t.style.left = Math.min(innerWidth - 280, x + 16) + 'px'; t.style.top = (y + 18) + 'px';
   }
   setSpeed(n: number) { $('speed').querySelectorAll('.btn').forEach(b => b.classList.toggle('on', Number((b as HTMLElement).dataset.s) === n)); }
+  setCoverageToggle(on: boolean) { $('btn-cov').setAttribute('aria-pressed', String(on)); $('btn-cov').classList.toggle('on', on); }
   setResourcesToggle(on: boolean) { $('btn-res').setAttribute('aria-pressed', String(on)); $('btn-res').classList.toggle('on', on); }
   netStatus(s: string) { $('net-status').textContent = s; }
   get labels() { return $('labels'); }
