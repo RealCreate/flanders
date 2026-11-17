@@ -45,6 +45,7 @@ export const RELEASES: Release[] = [
       'Plagues last longer.',
     ],
     fixed: [
+      'Road junctions are clean, in dirt and in stone: a road that ends on another (a T), crosses it (an X) or meets two others (a Y) now starts at the edge of the road it joins instead of from its middle, and the dark soft edge is drawn only along the outside of the joined roads, no longer as a seam across the junction. Works at any angle, for curved roads and for the short paths of buildings.',
       'Moat water no longer floats: on a slope, at a hill or beside a lowered or levelled patch the water of a moat used to stand above the lower bank and hang in the air; it now never rises above the lowest ground round a moat piece and changes level only gently along the moat.',
       'Finished buildings no longer start rebuilding for no reason: when another building was pulled down, burnt or lost in a raid, every building after it in the list played its construction animation again.',
       'Waterwheels and watermills stand at the visible water level of a moat and sit on the bank, with the wheel dipping into the water.',
