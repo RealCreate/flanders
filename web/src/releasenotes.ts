@@ -17,6 +17,8 @@ export const RELEASES: Release[] = [
       'Town hall backup supplies of wood and grain, so a village that runs dry can recover.',
       'Soldiers\' bridges: design a bridge for your army from bank to bank.',
       'Level Ground tool (Land category): levels a round patch of ground to the land just outside it, so a pit that raising could not fill is mended and a bump is cut away. Any ditch or earthworks inside the patch is taken away with it. Costs wood and stone; refused where a building stands in the patch or the ground round it is water.',
+      'Road anchors while you place a building: the ring where its road joins the village (the circle a road snaps to) is drawn at its exact place and turns as you rotate the building, with the short stretch of road from its door to it, green when you can build and red when you cannot; any node or road it would join lights up in gold, so you can line buildings up with your roads.',
+      'Gates, toll houses, bridges and drawbridges now have two road anchors, one at each end (the doorways of a gate or toll house, the banks of a bridge or drawbridge), so a road you lay snaps to both ends and runs through. A gate and a toll house show dirt or stone road under them (by castle tier); bridges and drawbridges show only their deck.',
       'Plaza: a paved square with a connection node on each of its four sides, and design options (benches, trees, a fountain, lanterns).',
       'Out-of-sync detection and repair: when a copy of another player\'s village drifts, the game notices and repairs it by itself.',
       'Rules fingerprint and build marker (see the home page and The shared world panel) so players can check they run the same version.',

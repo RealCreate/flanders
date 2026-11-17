@@ -1,6 +1,6 @@
 //! Tests of the roads the player lays (see roadline.rs): the stub and node of every building, snapping, the curve, pathing over roads, the build range, the plaza.
 use super::*;
-use crate::roadline::{nodes_of, nodes_local, has_stub, SNAP};
+use crate::roadline::{nodes_of, nodes_local, has_stub, is_passage, SNAP};
 
 impl World {
     /// Is some node of building `i`'s ring in the same piece of the path network as the hall's?
@@ -369,4 +369,126 @@ fn the_drawn_lines_change_the_moment_a_road_is_laid_or_taken_away() {
     assert!(w.demolish(piece as u32));
     assert!(w.road_lines_flat().len() != len_ext, "a piece taken away changes the list at once");
     let _ = v0;
+}
+
+// ---------- anchor nodes: every building has one, the passages have two ----------
+
+/// The kinds that have no node by design: edit pieces, the walls and fences (a wall is a line, a road runs up to its gate), and the road piece itself.
+fn nodeless(kind: u8) -> bool { matches!(kind, WALL | FENCE | MOAT | RIVER | RAISE | LOWER | ROAD) }
+
+/// A bridge of length 24 at 30 degrees, as `place_bridge` stores it.
+fn bridge_b(x: f32, y: f32) -> Building { let mut b = bld(BRIDGE, 0, 0, x, y); b.aux = 30 + 360 * 240; b }
+
+/// Every kind a player can build has at least one node, whatever its tier, turn and design options; the ones with none are exactly the nodeless list.
+#[test]
+fn every_kind_has_a_node_except_walls_fences_and_edit_pieces() {
+    let mut without = vec![];
+    for kind in 0..DEFS.len() as u8 {
+        for tier in 0..=max_tier(kind) { for rot in 0..8u8 { for opts in [0, 0xff] {
+            let mut b = if kind == BRIDGE { bridge_b(40.0, -20.0) } else { bld(kind, tier, rot, 40.0, -20.0) }; b.opts = opts;
+            let n = nodes_of(&b).len();
+            if n == 0 { if !without.contains(&DEFS[kind as usize].name) { without.push(DEFS[kind as usize].name); } assert!(nodeless(kind), "{} has no node", DEFS[kind as usize].name); }
+            else { assert!(!nodeless(kind), "{} should have no node", DEFS[kind as usize].name); }
+            if is_passage(kind) { assert!(n >= 2, "{} tier {tier} rot {rot}: a passage has two nodes, found {n}", DEFS[kind as usize].name); }
+        } } }
+    }
+    assert_eq!(without.len(), 7, "nodeless kinds: {without:?}");
+}
+
+/// The two nodes of a passage lie on its axis, one at each end, either side of the middle and well apart, turning with the building.
+#[test]
+fn the_nodes_of_a_passage_are_at_its_two_ends_on_its_axis() {
+    for kind in [GATE, TOLL, DRAWBRIDGE] {
+        for tier in 0..=max_tier(kind) { for rot in 0..8u8 {
+            let b = bld(kind, tier, rot, 100.0, 50.0); let n = nodes_of(&b);
+            let name = DEFS[kind as usize].name;
+            let axis = doors::to_world(rot, (0.0, 1.0));
+            let (a, c) = ((n[0].0 - 100.0, n[0].1 - 50.0), (n[1].0 - 100.0, n[1].1 - 50.0));
+            assert!(a.0 * axis.0 + a.1 * axis.1 > 3.0 && c.0 * axis.0 + c.1 * axis.1 < -3.0, "{name} rot {rot}: one node at each end");
+            assert!((a.0 * axis.1 - a.1 * axis.0).abs() < 1e-3 && (c.0 * axis.1 - c.1 * axis.0).abs() < 1e-3, "{name} rot {rot}: on the axis");
+            assert!((n[0].0 - n[1].0).hypot(n[0].1 - n[1].1) >= 7.0, "{name}: the nodes are apart");
+        } }
+    }
+    // a bridge: the nodes are on the banks, just beyond the ends of the deck, along its direction
+    for k in 0..2 {
+        let b = bridge_b(-10.0, 15.0); let n = nodes_of(&b); let (ux, uy, l) = World::bridge_dir(&b);
+        assert!((l - 24.0).abs() < 1e-3);
+        let t = (n[k].0 + 10.0) * ux + (n[k].1 - 15.0) * uy; let side = ((n[k].0 + 10.0) * uy - (n[k].1 - 15.0) * ux).abs();
+        assert!((t.abs() - (12.0 + crate::roadline::BRIDGE_NODE_GAP)).abs() < 1e-3 && side < 1e-3, "bridge node {k} at the bank end of the deck");
+    }
+    let b = bridge_b(0.0, 0.0); let n = nodes_of(&b); assert!(n[0].0 * n[1].0 <= 0.0 && n[0].1 * n[1].1 <= 0.0, "opposite ends");
+}
+
+/// The ghost nodes (`node_preview`) are exactly the nodes of the building once it is put up there, for every turn.
+#[test]
+fn the_preview_of_the_nodes_is_the_nodes_the_building_gets() {
+    let mut w = rich(); let mut seen = 0;
+    for (kind, dx, dy) in [(HOUSE, 18, 6), (FARM, -30, 12), (MARKET, 22, -26), (PLAZA, -22, -24), (TOLL, 30, 30), (WELL, 4, -16), (BARRACKS, -34, -10)] {
+        for rot in [0u8, 1, 3, 6] {
+            let id = w.place(kind, dx, dy, rot); if id < 0 { continue; }
+            let b = w.buildings[id as usize].clone();
+            let want = w.node_preview(kind, b.tier, b.x, b.y, b.rot);
+            let got: Vec<f32> = w.road_nodes_flat().chunks(4).filter(|c| c[2] as usize == id as usize).flat_map(|c| [c[0], c[1]]).collect();
+            assert!(!want.is_empty() && want == got, "{}: preview {want:?} vs built {got:?}", DEFS[kind as usize].name);
+            seen += 1; assert!(w.demolish(id as u32));
+        }
+    }
+    assert!(seen >= 12, "{seen} placements compared");
+    // turning the building turns its node round the middle
+    let (a, b) = (w.node_preview(HOUSE, 0, 10.0, 10.0, 0), w.node_preview(HOUSE, 0, 10.0, 10.0, 2));
+    assert!(((a[0] - 10.0).hypot(a[1] - 10.0) - (b[0] - 10.0).hypot(b[1] - 10.0)).abs() < 1e-3 && (a[0] - b[0]).hypot(a[1] - b[1]) > 1.0, "the ring moves with the turn");
+}
+
+/// A road end near any node snaps onto it, the nodes of the passages included, and the node is joined to the right building.
+#[test]
+fn a_road_end_snaps_onto_every_node_including_gates_and_toll_houses() {
+    let mut w = rich();
+    for x in [-8, 8] { w.place(WALL, x, 14, 0); }
+    let gate = w.place(GATE, 0, 14, 0); assert!(gate >= 0);
+    let toll = w.place(TOLL, 34, -30, 2); assert!(toll >= 0, "toll {toll}");
+    let nodes = w.road_nodes_flat();
+    for g in [gate, toll] { assert_eq!(nodes.chunks(4).filter(|c| c[2] as i32 == g).count(), 2, "two nodes"); }
+    for c in nodes.chunks(4) {
+        let (dx, dy) = ((c[0] + 0.3).round() as i32 - w.ox, (c[1] - 0.2).round() as i32 - w.oy);
+        let s = w.road_snap(dx, dy); assert_eq!(s.len(), 4, "a node at {:?} is seen by the preview", c);
+        assert!((s[0] + w.ox as f32 - c[0]).hypot(s[1] + w.oy as f32 - c[1]) < 1.2 + SNAP, "snaps to a node near it");
+    }
+    // a road from one end of the toll house to the other is joined to both nodes
+    let ns = nodes_of(&w.buildings[toll as usize]);
+    let (a, b) = ((ns[0].0 + 1.0, ns[0].1 + 1.0), (ns[1].0 - 1.0, ns[1].1 - 1.0));
+    let pts = pts_between(&w, a, b, 5.0);
+    assert_eq!(w.lay_road(&pts), 0, "laying the road");
+    let (tx, ty) = (w.buildings[toll as usize].x, w.buildings[toll as usize].y);
+    let ks: Vec<u8> = w.road_conn.iter().flat_map(|c| c.to.iter()).filter(|t| t.k >= 2 && (t.x, t.y) == (tx, ty)).map(|t| t.k).collect();
+    assert!(ks.contains(&2) && ks.contains(&3), "both nodes of the toll house are joined: {ks:?}");
+    // every passage is part of the village's path network (people and armies still walk through)
+    assert!(w.linked_to_hall(toll as usize) && w.linked_to_hall(gate as usize));
+}
+
+/// The gate and the toll house show a road under them from node to node; a bridge and a drawbridge show none, and no road line lies on water.
+#[test]
+fn a_gate_and_a_toll_house_have_a_road_under_them_but_bridges_do_not() {
+    let mut w = rich();
+    for x in [-8, 8] { w.place(WALL, x, 14, 0); }
+    let gate = w.place(GATE, 0, 14, 0) as usize; let toll = w.place(TOLL, 34, -30, 2) as usize;
+    let lines = |w: &World| { let f = w.road_lines_flat(); let mut v = vec![]; let mut i = 0; while i < f.len() { let n = f[i + 2] as usize; v.push((f[i] as u8, f[i + 3..i + 3 + 2 * n].to_vec())); i += 3 + 2 * n; } v };
+    let under: Vec<_> = lines(&w).into_iter().filter(|l| l.0 == 2).collect();
+    assert_eq!(under.len(), 2, "a road under the gate and the toll house");
+    let ns = w.nodes_all();
+    for (i, l) in [(gate, &under[0]), (toll, &under[1])] { assert_eq!(l.1, vec![ns[i][0].0, ns[i][0].1, ns[i][1].0, ns[i][1].1], "from node to node"); }
+    // a drawbridge and a bridge over a moat show no road, nor does any road line cross the water
+    let mut w = rich(); w.deposits.clear();
+    for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+    let br = w.place(BRIDGE, 24, 3, 0); let db = w.place(DRAWBRIDGE, 0, 20, 0);
+    assert!(br >= 0 && db >= 0, "bridge {br} drawbridge {db}");
+    for b in [br as usize, db as usize] {
+        assert_eq!(w.nodes_all()[b].len(), 2, "two nodes");
+        let p = w.nodes_all()[b][0]; let (cx, cy) = (w.buildings[b].x, w.buildings[b].y);
+        let start = (p.0 + (p.0 - cx) * 0.8, p.1 + (p.1 - cy) * 0.8);
+        let pts = pts_between(&w, start, p, 0.0); w.lay_road(&pts);
+    }
+    for l in lines(&w) {
+        assert_ne!(l.0, 2, "no road under a bridge or a drawbridge (only a gate and a toll house have one)");
+        for s in l.1.chunks(2).collect::<Vec<_>>().windows(2) { assert!(w.leg_is_dry((s[0][0], s[0][1]), (s[1][0], s[1][1])), "a stretch of road crosses water or a deck"); }
+    }
 }

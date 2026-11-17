@@ -1160,11 +1160,15 @@ impl World {
         self.after_change();
         (self.buildings.len() - 1) as i32
     }
-    /// What a bridge would be if placed at (dx, dy): [code, centre x, centre y, angle, length, span, planks, wood]. The code is `can_place`'s.
+    /// What a bridge would be if placed at (dx, dy): [code, centre x, centre y, angle, length, span, planks, wood, node x, node z, node x, node z]. The code is `can_place`'s; the nodes are where its roads would join.
     pub fn bridge_preview(&self, dx: i32, dy: i32) -> Vec<f32> {
         let (code, snap) = self.bridge_check(dx, dy, 0);
         if snap.is_empty() { return vec![code as f32]; }
-        let c = Self::bridge_cost(snap[4]); let mut v = vec![code as f32]; v.extend_from_slice(&snap); v.push(c[0].1 as f32); v.push(c[1].1 as f32); v
+        let c = Self::bridge_cost(snap[4]); let mut v = vec![code as f32]; v.extend_from_slice(&snap); v.push(c[0].1 as f32); v.push(c[1].1 as f32);
+        // (the nodes of the bridge as it would be built: its direction is stored in whole degrees, and its length to a tenth)
+        let deg = ((snap[2].to_degrees().round() as i32) % 360 + 360) % 360; let a = (deg as f32).to_radians();
+        for p in roadline::bridge_nodes(snap[0], snap[1], a.cos(), a.sin(), (snap[3] * 10.0).round() / 10.0) { v.push(p.0); v.push(p.1); }
+        v
     }
     /// Every bridge: [building index, centre x, centre y, angle, length, tier, options, ground height at one end, at the other end, deck height] each.
     pub fn bridge_spans_flat(&self) -> Vec<f32> {

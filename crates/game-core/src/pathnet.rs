@@ -324,14 +324,23 @@ impl World {
             }
             if b.kind == DRAWBRIDGE {   // along the deck, which only exists while the bridge is down (a drawn-up bridge leaves water, which is not walkable)
                 let an = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (an.sin(), an.cos());
-                let mut prev = u32::MAX;
+                let mut prev = u32::MAX; let mut ring_ends = [u32::MAX; 2];
                 for t in [-16.0f32, -12.5, -9.0, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0, 12.5, 16.0] {
                     let (px, py) = (b.x + sx * t, b.y + sy * t);
                     if !net.ok_at(px, py) { prev = u32::MAX; continue; }
                     let id = net.add(px, py); road_pre.push(id);
                     if prev != u32::MAX && net.clear(net.nodes[prev as usize], net.nodes[id as usize], 0.0) { net.link(prev, id, true); }
                     prev = id;
+                    if t == 9.0 { ring_ends[0] = id; } else if t == -9.0 { ring_ends[1] = id; }
                 }
+                ring[i] = ring_ends.to_vec();
+                continue;
+            }
+            if b.kind == BRIDGE {   // the two nodes on the banks, joined across the deck (the deck cells are walkable, so the way is clear)
+                let (ux, uy, l) = Self::bridge_dir(b);
+                let ids: Vec<u32> = crate::roadline::bridge_nodes(b.x, b.y, ux, uy, l).iter().map(|&(px, py)| if net.ok_at(px, py) { let id = net.add(px, py); road_pre.push(id); id } else { u32::MAX }).collect();
+                if ids[0] != u32::MAX && ids[1] != u32::MAX && net.clear(net.nodes[ids[0] as usize], net.nodes[ids[1] as usize], 0.0) { net.link(ids[0], ids[1], true); }
+                ring[i] = ids;
                 continue;
             }
             if b.kind == ROAD { continue; }   // (the roads the player laid are nodes of the network too: see below)
@@ -381,9 +390,9 @@ impl World {
                 let key = (px.to_bits(), py.to_bits());
                 let mut id = at.get(&key).copied().unwrap_or(u32::MAX);
                 if k == last && self.buildings[e.b].kind != ROAD {   // the node of the building it runs into
-                    let nodes = crate::roadline::nodes_of(&self.buildings[e.b]);
+                    let nodes = Self::nodes_in(&self.buildings[e.b], e.b, &doors);
                     let which = nodes.iter().position(|q| q.0.to_bits() == px.to_bits() && q.1.to_bits() == py.to_bits());
-                    id = match (self.buildings[e.b].kind, which) { (PLAZA, Some(w)) => ring[e.b].get(w).copied().unwrap_or(u32::MAX), _ => net.door_node(e.b).unwrap_or(u32::MAX) };
+                    id = match (self.buildings[e.b].kind, which) { (PLAZA, Some(w)) => ring[e.b].get(w).copied().unwrap_or(u32::MAX), (GATE | TOLL | BRIDGE | DRAWBRIDGE, Some(w)) => ring[e.b].get(w).copied().filter(|&n| n != u32::MAX).or_else(|| net.door_node(e.b)).unwrap_or(u32::MAX), _ => net.door_node(e.b).unwrap_or(u32::MAX) };
                 } else if id == u32::MAX && net.ok_at(px, py) { id = net.add(px, py); at.insert(key, id); road_pre.push(id); }
                 if prev != u32::MAX && id != u32::MAX && prev != id && net.clear(net.nodes[prev as usize], net.nodes[id as usize], 0.0) { net.link(prev, id, true); }
                 prev = id;
