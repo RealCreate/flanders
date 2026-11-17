@@ -1398,10 +1398,24 @@ export class VillageView {
   /** flat = World.buildings_flat() (stride 8). Returns discs [x, z, r] that should be cleared of trees. */
   sync(flat: Float32Array, radii: number[], health?: Float32Array, options?: ArrayLike<number>) {
     const n = flat.length / 10, clear: { x: number; z: number; r: number }[] = [];
+    // A building is told from the others by what it is (kind, tier, place, turn), not by its index: the core's list shifts when one is pulled down, burnt or lost in a raid, and every later
+    // building would otherwise look new and play its build animation again. Each existing item is claimed by a building with the same signature (the one at its old index first).
+    const sigAt = (i: number) => `${flat[i * 10]}:${flat[i * 10 + 1]}:${flat[i * 10 + 2]}:${flat[i * 10 + 3]}:${flat[i * 10 + 4]}`;
+    const pool = new Map<string, number[]>(), claimed = new Map<number, Item>();
+    for (const [j, it] of this.items) { const l = pool.get(it.sig); if (l) l.push(j); else pool.set(it.sig, [j]); }
+    const taken = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      const l = pool.get(sigAt(i)); if (!l?.length) continue;
+      const k = l.includes(i) ? i : l[0]; l.splice(l.indexOf(k), 1); taken.add(k); claimed.set(i, this.items.get(k)!);
+    }
+    // what is left over at an index that still has a building (a changed tier: an upgrade) is rebuilt in place; the rest is gone
+    for (const [j, it] of [...this.items]) if (!taken.has(j)) { if (j < n && !claimed.has(j)) claimed.set(j, it); else { this.endBuild(it); this.dispose(it.group); this.touch(it.cell); } }
+    this.items = claimed;
     for (let i = 0; i < n; i++) {
       const [kind, tier, x, z, rot, pad, status] = [flat[i * 10], flat[i * 10 + 1], flat[i * 10 + 2], flat[i * 10 + 3], flat[i * 10 + 4], flat[i * 10 + 5], flat[i * 10 + 6]];
       const opt = options?.[i] ?? 0, sig = `${kind}:${tier}:${x}:${z}:${rot}`;
       let it = this.items.get(i);
+      if (it) it.group.userData.idx = i;
       const prevTier = it && it.sig.split(':')[0] === String(kind) && it.sig.split(':')[2] === String(x) ? 1 : 0;   // (same building, new tier: an upgrade, built a little quicker)
       if (it && it.sig === sig && it.opt !== opt && it.model) {
         // only the optional upgrades changed: the bare building stays as it is, and only the new item is built (and drawn up with its own scaffold)
@@ -1428,7 +1442,6 @@ export class VillageView {
       }
       clear.push({ x, z, r: radii[kind] * 1.15 + 3.5 });
     }
-    for (const [i, it] of [...this.items]) if (i >= n) { this.endBuild(it); this.dispose(it.group); this.items.delete(i); this.touch(it.cell); }
     return clear;
   }
 
