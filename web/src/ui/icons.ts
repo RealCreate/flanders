@@ -92,16 +92,20 @@ export const ICONS: Record<string, S> = {
   river: P('M9 2 H17 Q21 12 17 22 H9 Q13 12 9 2Z', BL) + P('M1 2 H9 Q13 12 9 22 H1Z', GN2) + P('M23 2 H17 Q21 12 17 22 H23Z', GN2) + L('M12 7 q1.5 1.5 0 3 t0 3', PA, 1),
   raiseground: P('M2 21 Q6 10 12 10 Q18 10 22 21Z', '#8a6a3a') + L('M12 1.5 V8 M9 4.5 L12 1.5 L15 4.5', K, 1.6),
   lowerground: R(2, 8, 20, 4, '#8a6a3a') + P('M6 12 Q12 20 18 12Z', '#4a3520') + L('M12 22 V16 M9 19 L12 22 L15 19', K, 1.6),
+  levelground: R(2, 12, 20, 9, '#8a6a3a') + R(2, 12, 20, 2.2, GN2) + L('M2 12 H22', K, 1.4) + L('M12 2 V9 M9.5 6.5 L12 9 L14.5 6.5', K, 1.6) + L('M6 17.5 H18', '#4a3520', 1.2) + L('M7 3.5 V9 M17 3.5 V9', K, 0.9),
   port: C(12, 4, 2, 'none') + L('M12 6 V20 M8 9 H16 M4 14 Q5 20 12 20 Q19 20 20 14 M2.5 15.5 L4 13.5 L6 15.5 M18 15.5 L20 13.5 L21.5 15.5', K, 1.6),
   tollpost: R(4, 5, 3, 16, WD) + R(5, 9, 17, 3, PA) + L('M9 9 l-1.2 3 M13 9 l-1.2 3 M17 9 l-1.2 3', RD, 1.6) + C(17, 18, 3, GD),
   road: P('M3 22 L10 3 H14 L21 22Z', '#c9a25a') + L('M12 5 V8 M12 11 V15 M12 18 V21', WD2, 1.4) + C(6, 19, 0.8, ST2) + C(18, 19, 0.8, ST2),
   bridge: R(1, 14, 22, 8, BL) + P('M2 9 H22 V19 H18 Q12 8 6 19 H2Z', ST) + L('M2 9 H22 M4 12 H20', ST2, 0.8) + L('M9 20.5 q1.5 -1 3 0 t3 0', PA, 0.8),
   infirmary: R(2, 2, 20, 20, PA, 3) + P('M9 5 H15 V9 H19 V15 H15 V19 H9 V15 H5 V9 H9Z', RD),
   fishinghut: R(1, 17, 22, 2.4, WD) + R(3, 19, 1.6, 4, WD2) + R(10, 19, 1.6, 4, WD2) + R(19, 19, 1.6, 4, WD2) + R(3, 9, 9, 8, WD3) + P('M2 10 L7.5 4 L13 10Z', RD) + R(6, 12, 3, 5, WD2) + L('M14 6 L14 17 M14 6 L22 6', WD2, 1.4) + P('M16 7 H21 V12 H16Z', '#8c7d58') + L('M16 9 H21 M18.5 7 V12', WD2, 0.6) + P('M15.5 21 Q19 19 23 21', 'none', `stroke="${BL}" stroke-width="1.4"`),
+  meat: P('M3 14 Q3 6 11 6 Q17 6 18 11 Q19 15 14 17 Q8 19 3 14Z', '#c0564a') + P('M17 12 L22 8 L23 11 L20 15Z', '#efe6d0') + C(21.8, 7.6, 1.6, '#efe6d0') + C(23, 11.4, 1.4, '#efe6d0') + L('M6 11 Q9 9 12 11 M6 14 Q10 12 14 14', '#8e3128', 1),
+  smokedmeat: P('M3 14 Q3 6 11 6 Q17 6 18 11 Q19 15 14 17 Q8 19 3 14Z', '#8a4a2a') + P('M17 12 L22 8 L23 11 L20 15Z', '#d8c8a0') + C(21.8, 7.6, 1.6, '#d8c8a0') + C(23, 11.4, 1.4, '#d8c8a0') + L('M6 11 Q9 9 12 11 M6 14 Q10 12 14 14', '#5a2e18', 1) + L('M6 1 q2 2 0 4 t0 4 M12 2 q2 2 0 4', '#7a7a7a', 1),
   bread: P('M2 15 Q2 7 12 7 Q22 7 22 15 Q22 19 18 19 H6 Q2 19 2 15Z', '#c98a3a') + L('M7 10 L9 14 M12 9 L13 13.5 M17 10 L17.5 14', '#8a5a22', 1.3),
   bakery: R(3, 12, 10, 9, PA2) + P('M1.5 13 L8 6 L14.5 13Z', RD) + R(6, 15, 3.5, 6, WD2) + P('M14 21 V15 Q18.5 9 23 15 V21Z', '#b5483a') + R(16.7, 17, 3.6, 4, FL2) + R(15.5, 4, 2.4, 6, ST2),
   food: P('M3 13 H21 Q21 20 12 20 Q3 20 3 13Z', WD) + P('M4 13 Q5 7 11 7 Q17 7 20 13Z', '#c98a3a') + P('M12 5 Q17 2 21 5 Q17 9 12 5Z', '#9fb4c0') + C(18.6, 4.6, 0.7, K, 'stroke="none"') + C(8, 10, 1.1, GD, 'stroke="none"') + C(12, 9, 1.1, GD, 'stroke="none"'),
   smokehouse: R(4, 11, 11, 10, WD2) + P('M2.5 12 L9.5 5 L16.5 12Z', ST2) + R(8, 2, 3, 3, WD) + L('M9.5 -1 q2 1.5 0 3', ST2, 1.2) + R(6.5, 15, 3.5, 6, FL) + R(7.2, 16.5, 2, 4.5, FL2) + L('M17 8 V21 M23 8 V21 M17 11 H23 M17 16 H23', WD, 1.2) + P('M18 11 L19.5 15 L21 11Z M20.5 16 L22 20 L23 16Z', '#b0782f'),
+  plaza: R(3, 3, 18, 18, ST) + R(4.5, 4.5, 15, 15, '#d4cdb8') + L('M4.5 9.5 H19.5 M4.5 14.5 H19.5 M9.5 4.5 V19.5 M14.5 4.5 V19.5', ST2, 0.8) + C(12, 12, 3.4, ST2) + C(12, 12, 2.4, BL) + C(12, 12, 0.7, PA) + C(1.8, 12, 1.4, GD) + C(22.2, 12, 1.4, GD) + C(12, 1.8, 1.4, GD) + C(12, 22.2, 1.4, GD),
   graveyard: P('M7 21 V9 Q7 4 12 4 Q17 4 17 9 V21Z', ST) + L('M12 7 V14 M9.5 10 H14.5', ST2, 1.4) + L('M2 21 H22 M3 21 q1 -2 2 0 M19 21 q1 -2 2 0', GN, 1.2),
 
   // ---- units (spearman, archer, swordsman, knight, catapult, militia) ----
@@ -159,6 +163,8 @@ export const ICONS: Record<string, S> = {
   fullscreen: L('M4 9 V4 H9 M15 4 H20 V9 M20 15 V20 H15 M9 20 H4 V15', K, 2),
   windowed: L('M9 4 V9 H4 M20 9 H15 V4 M15 20 V15 H20 M4 15 H9 V20', K, 2),
   pick: pickaxe(),
+  /** Coverage: three rings round a centre dot, the outer one dashed. */
+  coverage: C(12, 12, 9.5, 'none', `stroke="${BL}" stroke-width="1.4" stroke-dasharray="2.4 2"`) + C(12, 12, 5.6, 'none', `stroke="${BL}" stroke-width="1.8"`) + C(12, 12, 2.2, GD),
   copy: R(5, 4, 14, 18, PA2, 1.5) + R(8.5, 2, 7, 4, IR, 1) + L('M8 11 H16 M8 14.5 H16 M8 18 H13', ST2, 1),
   reset: L('M20 12 A8 8 0 1 1 15.5 5', K, 2) + P('M12 3 L17.5 5 L14.5 9.5Z', K),
   dice: R(3, 3, 18, 18, PA, 3) + [[8, 8], [16, 8], [12, 12], [8, 16], [16, 16]].map(([x, y]) => C(x, y, 1.5, K, 'stroke="none"')).join(''),
@@ -174,6 +180,7 @@ export const ICONS: Record<string, S> = {
   warn: P('M12 3 L22 20 H2Z', FL2) + L('M12 9 V14', K, 1.8) + C(12, 17, 1, K),
   banner: L('M5 2 V22', K, 1.6) + P('M5 3 H20 V14 L12.5 11 L5 14Z', RD) + C(12.5, 7, 1.6, GD),
   hero: P('M3 18 L5 7 L9 12 L12 5 L15 12 L19 7 L21 18Z', GD) + R(3, 18, 18, 3, GD2),
+  restart: P('M3 21 V14 L6 11 V15 L9 10 V21Z M14 21 V15 L17 12 V21Z', ST) + L('M3 21 H22', K, 1.2) + L('M20 9 A7 7 0 1 0 12 3', RD, 2) + P('M9.5 0.5 L14.5 3 L10.5 6.5Z', RD),
   ruin: P('M3 21 V13 L6 10 V14 L9 8 V21Z M13 21 V11 L16 14 V9 L21 12 V21Z', ST) + L('M3 21 H22', K, 1.2),
   castle: R(4, 9, 16, 12, ST) + crenels([4, 10, 16], 5, 4, 4, ST) + P('M10 21 V16 Q12 13 14 16 V21Z', K),
   abbey: R(5, 10, 14, 11, PA2) + P('M4 10 L12 4 L20 10Z', ST2) + L('M12 0.8 V4 M10.6 2.2 H13.4', K, 1.3) + P('M10 21 V16 Q12 13 14 16 V21Z', WD2),
@@ -203,7 +210,7 @@ export type IconName = keyof typeof ICONS | string;
 export const ICON_NAMES = Object.keys(ICONS);
 
 /** Building kind id (catalog.rs order) to icon name. */
-export const KIND_ICON_NAMES = ['house', 'farm', 'wall', 'watchtower', 'woodcutter', 'sawmill', 'quarry', 'claypit', 'brickworks', 'ironmine', 'goldmine', 'charcoalburner', 'smelter', 'blacksmith', 'mint', 'townhall', 'well', 'chapel', 'hunterslodge', 'barracks', 'buildersyard', 'spikedlogs', 'gate', 'drawbridge', 'moat', 'storehouse', 'keep', 'courthouse', 'market', 'waterwheel', 'garden', 'park', 'river', 'raiseground', 'lowerground', 'port', 'tollpost', 'road', 'bridge', 'infirmary', 'graveyard', 'fishinghut', 'smokehouse', 'bakery'];
+export const KIND_ICON_NAMES = ['house', 'farm', 'wall', 'watchtower', 'woodcutter', 'sawmill', 'quarry', 'claypit', 'brickworks', 'ironmine', 'goldmine', 'charcoalburner', 'smelter', 'blacksmith', 'mint', 'townhall', 'well', 'chapel', 'hunterslodge', 'barracks', 'buildersyard', 'spikedlogs', 'gate', 'drawbridge', 'moat', 'storehouse', 'keep', 'courthouse', 'market', 'waterwheel', 'garden', 'park', 'river', 'raiseground', 'lowerground', 'port', 'tollpost', 'road', 'bridge', 'infirmary', 'graveyard', 'fishinghut', 'smokehouse', 'bakery', 'plaza'];
 /** Unit id (military.rs order) to icon name. */
 export const UNIT_ICON_NAMES = ['spearman', 'archer', 'swordsman', 'knight', 'catapult', 'ram', 'militia'];
 /** Building category (CATS order) to icon name. */

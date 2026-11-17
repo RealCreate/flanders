@@ -15,7 +15,9 @@ pub const TL: u8 = 11; // tools
 pub const FI: u8 = 12; // raw fish
 pub const SF: u8 = 13; // smoked fish (food: eaten before grain)
 pub const BD: u8 = 14; // bread (food: baked from grain)
-pub const N_RES: usize = 15;
+pub const ME: u8 = 15; // game meat (food: from the hunter's lodge)
+pub const SM: u8 = 16; // smoked meat (food: smoked in a smokehouse set to meat)
+pub const N_RES: usize = 17;
 
 pub type Amount = (u8, i32);
 
@@ -74,14 +76,15 @@ pub const FISHING_HUT: u8 = 41;
 #[allow(dead_code)]   // named for the tests; the building is found through its table row
 pub const SMOKEHOUSE: u8 = 42;
 pub const BAKERY: u8 = 43;
+pub const PLAZA: u8 = 44;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
-pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD => 0, _ => 3 } }
+pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD | PLAZA => 0, _ => 3 } }
 
 /// Pieces that reshape the ground instead of standing on it.
 pub fn is_edit(kind: u8) -> bool { matches!(kind, MOAT | RIVER | RAISE | LOWER) }
 
-pub static DEFS: [Def; 44] = [
+pub static DEFS: [Def; 45] = [
     Def { name: "House", cat: 0, r: 3.2, weight: 1, cost: &[(W, 12)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 5, max_slope: 0.35, pad: true, desc: "Homes for your villagers. Better tiers house more people." },
     Def { name: "Farm", cat: 1, r: 6.5, weight: 2, cost: &[(W, 25)], jobs: 2, inputs: &[], outputs: &[(GR, 10)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.22, pad: true, desc: "Grows grain to feed the village. Needs flat ground." },
     Def { name: "Wall", cat: 4, r: 2.4, weight: 1, cost: &[(ST, 5)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.4, pad: true, desc: "A wall segment. Rotate with R and chain them into a curtain wall." },
@@ -100,7 +103,7 @@ pub static DEFS: [Def; 44] = [
     Def { name: "Town Hall", cat: 5, r: 6.0, weight: 6, cost: &[], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 8, max_slope: 9.0, pad: true, desc: "The heart of your settlement. Upgrade it into a manor, keep and castle." },
     Def { name: "Well", cat: 5, r: 2.0, weight: 1, cost: &[(ST, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Clean water makes plague outbreaks rarer." },
     Def { name: "Chapel", cat: 5, r: 4.0, weight: 2, cost: &[(ST, 30), (PL, 10)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Prayer and healing. Greatly reduces plague. Grows into a cathedral." },
-    Def { name: "Hunter's Lodge", cat: 1, r: 3.6, weight: 2, cost: &[(W, 25), (PL, 5)], jobs: 2, inputs: &[], outputs: &[(GR, 6)], cycle: 10, req: 2, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "Hunters stalk deer and boar in the forest and bring back venison. Needs forest nearby." },
+    Def { name: "Hunter's Lodge", cat: 1, r: 3.6, weight: 2, cost: &[(W, 25), (PL, 5)], jobs: 2, inputs: &[], outputs: &[(ME, 5)], cycle: 10, req: 2, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "Hunters stalk deer and boar in the forest and bring back meat. Needs forest nearby. Meat feeds the village, or can be smoked in a smokehouse." },
     Def { name: "Barracks", cat: 4, r: 5.0, weight: 4, cost: &[(PL, 25), (ST, 30), (TL, 2)], jobs: 2, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Trains spearmen, archers, swordsmen, knights and catapults. Upgrade it to train better troops." },
     Def { name: "Builders' Yard", cat: 5, r: 4.5, weight: 2, cost: &[(PL, 20), (ST, 10), (TL, 2)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Carpenters and masons who repair damaged buildings and rebuild ruins on their own, using your stores." },
     Def { name: "Spiked Logs", cat: 4, r: 1.8, weight: 1, cost: &[(W, 3)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.6, pad: true, desc: "The simplest barrier: a row of sharpened logs. Drag the wall pen to draw a long fence quickly." },
@@ -119,13 +122,14 @@ pub static DEFS: [Def; 44] = [
     Def { name: "Lower Ground", cat: 6, r: 1.9, weight: 1, cost: &[(W, 2)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Digs the ground away. Dig deep enough and it fills with water." },
     Def { name: "Port", cat: 5, r: 5.5, weight: 3, cost: &[(PL, 40), (ST, 20), (W, 30)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 3, req_arg: 0, housing: 0, max_slope: 0.5, pad: true, desc: "Merchant ships call here. Stock you have plenty of is sold for gold, and grain is bought when you run short. Must stand on the shore. Better tiers trade more." },
     Def { name: "Toll Post", cat: 5, r: 3.0, weight: 2, cost: &[(W, 20), (PL, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.5, pad: true, desc: "A keeper and a barrier on the road: travellers pay a toll. The busier the roads round it, the more it earns. Place it beside a path." },
-    Def { name: "Road", cat: 6, r: 1.0, weight: 0, cost: &[(W, 1)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 1.2, pad: false, desc: "A dirt road piece. Draw a path of them and they link up like the roads that grow between buildings: they level the ground, people walk them and they are paved in time. A road also pushes your border outwards." },
+    Def { name: "Road", cat: 6, r: 1.0, weight: 0, cost: &[(W, 1)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 1.2, pad: false, desc: "A dirt road you lay yourself: click the points of the road and it runs in a smooth curve through them. A road end near the node at the end of a building's own path, a square's node or another road snaps onto it. People and soldiers prefer roads, they level the ground and are paved in time. A road joined to your village also widens the land you can build on, and may lead out beyond its edge." },
     Def { name: "Bridge", cat: 4, r: 2.0, weight: 2, cost: &[(PL, 10), (W, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Spans a moat, river or narrow water. Click near the water: it snaps to the banks, finds the shortest way over and puts supports in the middle where the span needs them. Costs more planks the longer it is. Starts as a wooden footbridge; upgrade it to timber, stone and a great stone bridge, which span wider." },
     Def { name: "Infirmary", cat: 5, r: 4.2, weight: 3, cost: &[(ST, 40), (PL, 25), (W, 20)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Monks and nurses tend the sick in a ward of beds with a herb garden. Every bed cures people during a plague and fewer die; it needs its staff. Upgrade it into a hospital, a great hospital and a royal hospital for more beds." },
     Def { name: "Graveyard", cat: 5, r: 3.6, weight: 2, cost: &[(ST, 20), (W, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.4, pad: true, desc: "Consecrated ground where the dead are laid to rest. A gravedigger buries them; when plots run out, or there is no one to bury, bodies lie unburied and sickness and misery follow. Upgrade it for more plots." },
     Def { name: "Fishing Hut", cat: 1, r: 3.0, weight: 1, cost: &[(W, 20), (PL, 6)], jobs: 1, inputs: &[], outputs: &[(FI, 4)], cycle: 8, req: 3, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "A fisher's hut on the bank with a jetty, nets and drying racks. Stands at the edge of a river, lake, sea or moat and lands raw fish. Smoke it in a smokehouse to eat it." },
     Def { name: "Smokehouse", cat: 3, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(FI, 3), (W, 1)], outputs: &[(SF, 3)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Smokes raw fish over a slow wood fire. Smoked fish keeps and feeds the village before any grain is eaten." },
     Def { name: "Bakery", cat: 1, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(GR, 3), (W, 1)], outputs: &[(BD, 4)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A brick oven and a trough for kneading: grain is milled and baked into bread. Bread fills a villager half as much again as raw grain, so the same harvest feeds more mouths." },
+    Def { name: "Plaza", cat: 5, r: 5.0, weight: 1, cost: &[(ST, 25)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A paved square. It has four connection nodes, one on each side, where roads you lay snap on; people cross it on the way. Choose its design: benches, trees, a fountain, lanterns." },
 ];
 
 /// Resources needed to upgrade to `new_tier` (1..=3).
@@ -145,7 +149,7 @@ pub type Opt = (&'static str, &'static str, u8);
 pub fn options(kind: u8) -> &'static [Opt] {
     match kind {
         HOUSE => &[("Chimney", "A brick chimney with a curl of smoke. Gives the house room for one more villager.", 0), ("Flower boxes", "Shutters and window boxes full of flowers. Every two raise happiness by 1 (up to +8).", 0), ("Woodshed", "A lean-to for firewood against the wall. Stored firewood: the village burns less in winter.", 0), ("Dovecote", "A little tower for doves on the roof. Brings in one grain a day.", 1)],
-        FARM => &[("Scarecrow", "Keeps the crows off the crop. This field works 10% faster.", 0), ("Haystacks", "Golden stacks beside the field. Winter harvest drops to 45% instead of 25%.", 0), ("Fenced yard", "A fence round the yard. This field works 5% faster.", 0), ("Barn", "A small timber barn at the field's edge. This field works 10% faster.", 1)],
+        FARM => &[("Scarecrow", "Keeps the crows off the crop. This field works 10% faster.", 0), ("Haystacks", "Golden stacks beside the field. Winter harvest drops to 85% instead of 55%.", 0), ("Fenced yard", "A fence round the yard. This field works 5% faster.", 0), ("Barn", "A small timber barn at the field's edge. This field works 10% faster.", 1)],
         WALL => &[("Stairs", "A stone stair up to the wall walk, so guards can climb on to the wall.", 1), ("Banners", "Pennants on the parapet. Defenders fight 1% harder (up to +15% in all).", 0), ("Hoarding", "A timber gallery over the outer face. Pours boiling oil on anyone on a ladder against it.", 2), ("Braziers", "Iron fire baskets for the night watch.", 1)],
         TOWER => &[("Banner", "A pennant on a pole. Defenders fight 1% harder (up to +15% in all).", 0), ("Hoarding", "A timber gallery round the top. Pours boiling oil on anyone climbing the wall below.", 1), ("Spire", "A tall slate spire with a gilded tip on the roof. The village is proud of it: +1 happiness (up to +10 from such pride).", 1), ("Beacon", "A signal fire basket. Signal fire: two more villagers take up arms when raiders come (up to 8).", 0)],
         GATE => &[("Banners", "Pennants either side of the gate. Defenders fight 1% harder (up to +15% in all).", 0), ("Braziers", "Fire baskets on the pillars. Welcoming light: +1 happiness (up to +10 from such pride).", 0), ("Spikes", "Iron spikes along the lintel. Defenders fight 1% harder (up to +15% in all).", 1), ("Guard hut", "A little lean-to for the gate guard. One more villager takes up arms when raiders come (up to 8).", 1)],
@@ -158,6 +162,7 @@ pub fn options(kind: u8) -> &'static [Opt] {
         BRIDGE => &[("Lanterns", "Lanterns on the posts at both ends. +1 happiness (up to +10 from such pride).", 0), ("Pennants", "Pennants on the end posts. +1 happiness (up to +10 from such pride).", 0)],
         HOSPITAL => &[("Herb garden", "A walled garden of healing herbs: patients recover a little faster.", 0), ("Quarantine ward", "A separate ward for the worst cases: fewer die.", 1), ("Chapel ward", "A chapel in the ward: the dying are comforted and spirits rise.", 1), ("Banner", "The hospital's pennant.", 0)],
         GRAVEYARD => &[("Chapel of rest", "A small chapel by the gate: funerals bring comfort.", 0), ("Memorial cross", "A tall stone cross for the village's dead.", 0), ("Yew trees", "Old yews, the churchyard's guardians.", 0), ("Charnel house", "A bone house, so old graves can be reused: 50% more plots.", 1)],
+        PLAZA => &[("Benches", "Stone benches round the edge of the square. Purely for looks.", 0), ("Trees", "Lime trees in the corners, with shade for the benches. Purely for looks.", 0), ("Fountain", "A stone fountain in the middle. Purely for looks.", 0), ("Lanterns", "Lanterns on posts at the four nodes. Purely for looks.", 0)],
         MOAT | RIVER | RAISE | LOWER | FENCE | ROAD => &[],
         _ => &[("Banner", "A pennant on a pole. Defenders fight 1% harder (up to +15% in all).", 0), ("Lanterns", "Lanterns at the door. +1 happiness (up to +10 from such pride).", 0), ("Awning", "A cloth awning. Shade for the workers: this building works 10% faster.", 0), ("Stone footing", "A stone plinth. A dry, solid floor: this building works 5% faster.", 1)],
     }

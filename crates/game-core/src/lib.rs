@@ -2,6 +2,7 @@
 use wasm_bindgen::prelude::*;
 
 mod battle;
+mod bribe;
 mod catalog;
 mod lend;
 mod ledger;
@@ -9,17 +10,31 @@ mod market;
 mod march;
 mod military;
 mod pathnet;
+pub mod doors;
+mod roadline;
+mod flatten;
 mod plague;
+pub mod radii;
 mod wallnet;
 #[cfg(test)]
 mod roadcheck;
+#[cfg(test)]
+mod farmcheck;
+#[cfg(test)]
+mod roadtests;
+#[cfg(test)]
+mod perf_bench;
+#[cfg(test)]
+mod flatten_tests;
+#[cfg(test)]
+mod snapshot_tests;
 mod terrain;
 use catalog::*;
 use military::*;
 use terrain::{lerp, smoothstep, Deposit};
 
 /// Small deterministic PCG32 RNG.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u32 {
@@ -31,7 +46,7 @@ impl Rng {
     fn range(&mut self, n: u32) -> u32 { self.next() % n.max(1) }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Building {
     kind: u8,
     tier: u8,
@@ -40,7 +55,7 @@ struct Building {
     rot: u8,
     pad_h: f32,
     progress: u32,
-    status: u8, // 0 working, 1 missing input, 2 depleted / no resource, 3 storage full, 4 passive
+    status: u8, // 0 working, 1 missing input, 2 depleted / no resource, 3 storage full, 4 passive, 7 its deposit is dormant (regrowing)
     aux: i32,   // deposit index for mines
     staff: u32,     // villagers currently working here
     residents: u32, // villagers living here
@@ -51,7 +66,13 @@ struct Building {
     opts: u16,      // optional design upgrades chosen for this building (bit per option, see catalog::OPTIONS)
     fert: u16,      // farms: soil fertility in hundredths of a percent (FERT_MAX = rich soil). Sowing wears it down, a fallow field recovers
     mode: u8,       // farms: 0 always sow, 1 fallow (rest the field), 2 rotate (rest when worn, sow again when restored), 3 rotating and resting right now
+    #[serde(default = "auto_target")]
+    target: i16,    // workers the player wants here: -1 auto (shares what is left by the usual rule), 0 paused, n a set number (see `set_workers`)
+    #[serde(default = "full_eff")]
+    beff: u32,      // derived in `staffing`: how fully this building is staffed, in percent (what its production speed follows)
 }
+fn auto_target() -> i16 { -1 }
+fn full_eff() -> u32 { 100 }
 
 pub(crate) const DB_UP: u8 = 5;
 pub(crate) const DB_LENT: u8 = 6;
@@ -79,7 +100,6 @@ pub(crate) fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 
 pub(crate) struct Perks { pub housing: i32, pub happy: i32, pub banner_pct: i32, pub train_pct: u32, pub militia: u32, pub woodsheds: i32, pub doves: i32 }
 
 /// Walls, fences, gates and moat pieces are not on the village path network.
-fn is_barrier(kind: u8) -> bool { matches!(kind, WALL | FENCE | GATE) || is_edit(kind) }
 /// No order may point further than this from the map's centre (the map is about 2400 units across).
 const MAP_LIMIT: f32 = 1500.0;
 /// No standing army can hold more soldiers of one kind than this (the testing tool stops at the same number).
@@ -92,8 +112,12 @@ pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank ru
 const MOAT_FREEBOARD: f32 = 0.8;
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
 const RIVER_BED: f32 = -2.0; // a river is shallower than a moat, but holds real water  // depth of the bottom
-const ROAD_INNER: f32 = 1.5; // fully graded half-width of a path
-const ROAD_OUTER: f32 = 4.4; // terrain blends back to the natural slope by here
+const ROAD_INNER: f32 = 2.1; // fully graded half-width of a path (as wide as the ribbon drawn on it, soft edge included: no cross slope under a road)
+const ROAD_OUTER: f32 = 5.2; // terrain blends back to the natural slope by here (the shoulder)
+/// The steepest a road may climb: height gained per unit of road.
+pub(crate) const ROAD_MAX_SLOPE: f32 = 0.4;
+/// A road follows the ground smoothed over this far along it.
+const ROAD_SMOOTH: f32 = 4.5;
 
 const RADIUS_CAP: f32 = 110.0;
 /// The farthest from the town hall anything can be built, however far the territory has crept outwards.
@@ -131,6 +155,7 @@ const EV_HERO: i32 = 21;
 const EV_MIASMA: i32 = 22;
 const EV_SERVICE: i32 = 23;
 const EV_DIPLO: i32 = 24;
+const EV_BRIBED: i32 = 27;   // raiders were paid to leave: a = coins, b = boss (0 none)
 const EV_LAIR: i32 = 26;   // the army went into a lair: a = place
 const EV_BOSS: i32 = 25;   // a boss fell: a = boss * 16 + name, b = 1
 /// Causes of death, for the village's ledger.
@@ -156,9 +181,11 @@ pub const CH_WINTER: u8 = 3;
 const CHOICE_DAYS: u64 = 2;
 /// Ticks in a day, days in a season (the interface uses the same numbers).
 pub const DAY: u64 = 240;
+/// Famine: while the stores cannot feed everyone, about this many per mille of the villagers die each day (2% a day: half the village in a month, never a villager every few seconds).
+const HUNGER_PER_MILLE_DAY: u64 = 20;
 /// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
 fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
-     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE) }
+     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE) }
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
@@ -171,25 +198,46 @@ const BACKUP_PER_TIER: i32 = 1;
 const BACKUP_BELOW: i32 = 60;
 /// What the village eats, and how far an item goes, in quarter meals (a meal is what one tenth of a head needs each tick): raw grain and raw fish fill less, bread and smoked fish more.
 /// Each tick the villagers take from whichever of these stores holds the most food in all, so the stores run down together and none is emptied first.
-pub const FOODS: [(u8, i32); 4] = [(GR, 4), (FI, 4), (BD, 6), (SF, 6)];
+/// What a smokehouse set to meat takes and makes.
+const SMOKE_MEAT_IN: &[Amount] = &[(ME, 3), (W, 1)];
+const SMOKE_MEAT_OUT: &[Amount] = &[(SM, 3)];
+pub const FOODS: [(u8, i32); 6] = [(GR, 4), (FI, 4), (BD, 6), (SF, 6), (ME, 4), (SM, 6)];
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
 pub const WHEEL_REACH: f32 = 5.2;
 /// Where the house's stone footing ends on the water side: the bank. The wheel's axle hangs `WHEEL_REACH - WHEEL_FOOT` beyond it, over the water, clear of the footing.
 pub const WHEEL_FOOT: f32 = 3.2;
+/// The fishing hut stands this far from the bank (middle to bank): its footing (to 1.5 out) then ends well short of the water even where the bank runs oblique to the turn; its jetty carries on over the water.
+pub const HUT_FOOT: f32 = 3.8;
 pub const WHEEL_PAD_MAX: f32 = 0.7;
-/// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a barren winter.
-const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, 25];
+/// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a lean winter (see the WINTER_* numbers below).
+const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, WINTER_GRAIN];
+// ---- Winter: every number that decides how hard it is lives here (and `winter_numbers` hands them to the interface). Changing any of them changes the rules (the fingerprint says so). ----
+/// Grain a farm makes in winter, in percent of the usual; with haystacks beside the field.
+const WINTER_GRAIN: i32 = 55;
+const WINTER_GRAIN_HAYSTACKS: i32 = 85;
+/// Firewood: every `WINTER_BURN_EVERY` ticks the village burns one unit for each `WINTER_HEADS_PER_WOOD` villagers (rounded up). A woodshed saves one unit per `WINTER_SHED_SAVES` sheds, sharing halves it.
+const WINTER_BURN_EVERY: u64 = 10;
+const WINTER_HEADS_PER_WOOD: u32 = 14;
+const WINTER_SHED_SAVES: i32 = 6;
+/// The town hall's hearth: the village counts as warm while it can burn at least this much wood (or all it wants if that is less) in a burn, so it is never cold while any wood is left, only when the stock is really empty.
+const WINTER_HEARTH_WOOD: i32 = 1;
+/// A cold village first loses happiness (4 per cold day on top of 4, at most 12). Nobody dies of cold for the first `WINTER_COLD_GRACE` cold days (a staffed hospital adds `WINTER_HOSPITAL_GRACE`);
+/// after that each day brings a death with a chance of `WINTER_DEATH_STEP` percent for every cold day beyond the grace, at most `WINTER_DEATH_MAX`. Whoever it is, in proportion to the population.
+const WINTER_COLD_GRACE: u32 = 3;
+const WINTER_HOSPITAL_GRACE: u32 = 2;
+const WINTER_DEATH_STEP: u32 = 15;
+const WINTER_DEATH_MAX: u32 = 60;
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
-const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2];
+const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2, 2, 3];
 
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Caravan { res: u8, amount: i32, to: i32, start: u64, eta: u64, escort: u32 }
 /// A diplomatic errand on the road to another village (`tag`): `kind` is a treaty kind (0 trade pact, 1 peace, 2 alliance) or one of JK_ENVOY, JK_MARRIAGE, JK_WAR; `arg` is the treaty's length in days.
 /// It sets out at `start` and its effect happens when it arrives at `arrive`. Everyone's copy of the village holds the same list, so the procession can be shown on all of them.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Journey { kind: u8, tag: i32, arg: i32, start: u64, arrive: u64 }
 pub const JK_ENVOY: u8 = 3;
 pub const JK_MARRIAGE: u8 = 4;
@@ -199,7 +247,7 @@ pub const JK_CARAVAN: u8 = 6;
 /// Ticks per unit of road for each journey kind (a rider is quicker than a procession).
 const JOURNEY_SPEED: [f32; 6] = [2.2, 1.6, 1.5, 1.8, 1.0, 3.0];
 /// An agreement with another village: `kind` 0 trade pact (better prices), 1 non-aggression (neither side may start a battle against the other), 2 alliance (the same, and the best prices), until tick `until`.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Treaty { tag: i32, kind: u8, until: u64 }
 pub const TREATY_TRADE: u8 = 0;
 pub const TREATY_PEACE: u8 = 1;
@@ -208,6 +256,7 @@ pub const TREATY_ALLIANCE: u8 = 2;
 const CARAVAN_SPEED: f32 = 1.2;
 
 #[wasm_bindgen]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct World {
     seed: u64,
     ox: i32,
@@ -239,7 +288,7 @@ pub struct World {
     market_sold: [i32; market::MARKET_GOODS.len()],
     style: u32,                   // the village's flag as one number (see web/src/flag.ts), 0 = none chosen; part of the state so every peer sees it
     hero: Option<(u8, u32)>,      // the village's lord: name index and experience (level follows from it)
-    defer_roads: bool,            // inside place_batch: the path network is rebuilt once at the end
+    #[serde(skip)] defer_roads: bool,            // inside place_batch: the path network is rebuilt once at the end
     choice: Option<(u8, u64)>,   // a decision waiting for the player: kind and the tick it is made for them
     mood: i32,                   // temporary lift (or drag) on happiness from the last decision
     mood_until: u64,
@@ -254,6 +303,7 @@ pub struct World {
     delivered: Vec<[i32; 3]>, // the same, but only as a notice for the player's own client to pass on (drained by take_delivered, not part of the state)
     treaties: Vec<Treaty>,    // agreements with other villages
     warm: bool,    // false while winter fires are out for lack of wood
+    cold_days: u32, // days in a row the village has been cold (the cold only kills after a grace)
     eff: u32,
     /// How fully the food and wood workplaces are staffed, and everything else (derived in `staffing`: the hands go to food and wood first).
     eff_first: u32, eff_rest: u32,
@@ -264,10 +314,10 @@ pub struct World {
     meal_credit: i32,             // quarter meals left over from the last item eaten (an item can fill more than was needed)
     ledger: ledger::Ledger,       // where each resource came from and went to over the last day (derived display data: never read by the rules, never hashed)
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
+    flats: Vec<[f32; 4]>,         // [x, y, radius, height] patches the player levelled (see flatten.rs): applied after ditches and earthworks, so nothing dug there shows
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
-    road_links: Vec<(u32, u32)>,  // (child, parent) building indices for each segment
-    road_paths: Vec<(u32, u32, Vec<(f32, f32)>)>,   // full walkable route of each link, child doorstep to parent doorstep (crosses drawbridges)
-    road_cache: std::collections::HashMap<(u32, u32), (u64, Option<Vec<(f32, f32)>>)>,   // routes already found over the path network, valid while the network's stamp is the same
+    road_links: Vec<(u32, u32)>,  // what each segment belongs to: (i, i) the stub of building i, (piece, target) a stretch of a road the player laid (derived)
+    road_conn: Vec<roadline::RoadConn>,   // how each road piece the player laid is joined to what it runs to (see roadline.rs; part of the state)
     road_sig: u64,                // a fingerprint of the roads as they stand (derived: the network with the roads marked on it, and the overlays, are rebuilt when it changes)
     army: [u32; NK],
     queue: [u32; NK],
@@ -287,15 +337,16 @@ pub struct World {
     terrain_ver: u32,
     report: Vec<i32>,
     report_seq: u32,
+    #[serde(default)] report_bought: bool,   // the last battle ended with the raiders paid off
+    #[serde(default)] greed: u32,   // how greedy the bandits are after being paid off: see bribe.rs (part of the state hash)
     dets: Vec<march::Det>,       // field armies on the move
     next_det: u32,
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
     links: Vec<Vec<(f32, f32)>>,   // invisible paths chained from this city out to other villages' cities (set by `link_village`; part of the state)
-    ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
-    net_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the path network with the roads marked on it (derived; rebuilt when the village or its roads change)
-    ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
-    height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
-    net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
+    #[serde(skip)] ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
+    #[serde(skip)] ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
+    #[serde(skip)] height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
+    #[serde(skip)] net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
@@ -303,11 +354,30 @@ pub struct World {
     map_ver: u32,                // changes when trees are felled or bridges built
 }
 
+/// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD2";
+
+/// Rebuild a world from `World::snapshot` bytes. None when the bytes are not a snapshot of this layout (damaged, or made by another build).
+#[wasm_bindgen]
+pub fn world_restore(bytes: &[u8]) -> Option<World> {
+    if bytes.len() < 8 || &bytes[..8] != SNAP_MAGIC { return None; }
+    bincode::deserialize::<World>(&bytes[8..]).ok()
+}
+
 #[wasm_bindgen]
 pub fn catalog() -> String { catalog_json() }
 
 #[wasm_bindgen]
 pub fn units() -> String { military::units_json() }
+
+/// What a building of this kind and tier reaches, for the interface: a JSON array of `{r, fx, pct}` (radius in world units, effect code, strength in percent). See `radii.rs`.
+#[wasm_bindgen]
+pub fn effect_radii(kind: u8, tier: u8) -> String { radii::effect_radii_json(kind, tier) }
+
+/// How readily a building of this kind and tier catches fire (0 never): the interface warns about buildings that burn and have no well near.
+#[wasm_bindgen]
+pub fn flammability_of(kind: u8, tier: u8) -> f32 { battle::flammability(kind, tier) }
+
 /// The bosses: [{id, name, names, hp, dmg, speed, armor, desc}].
 #[wasm_bindgen]
 pub fn bosses() -> String { military::bosses_json() }
@@ -322,9 +392,27 @@ pub fn tunnels_flat(seed: u64) -> Vec<f32> { terrain::tunnels(seed).into_iter().
 #[wasm_bindgen]
 pub fn trees_in(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> { terrain::trees(seed, x0, y0, x1, y1) }
 
+/// Rows `j0..j1` of `terrain_grid` (the same numbers however the rows are cut), so the page can build a big grid a few rows at a time instead of freezing.
+#[wasm_bindgen]
+pub fn terrain_grid_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> { terrain::grid_rows(seed, x0, y0, nx, step, j0, j1) }
+
+/// How many rows of tree cells `trees_in` goes through for this area, and rows `r0..r1` of them (concatenated they are exactly `trees_in`).
+#[wasm_bindgen]
+pub fn trees_in_row_count(y0: f32, y1: f32) -> u32 { let c = terrain::TREE_CELL; ((y1 / c).ceil() as i32 - (y0 / c).floor() as i32).max(0) as u32 }
+#[wasm_bindgen]
+pub fn trees_in_rows(seed: u64, x0: f32, y0: f32, x1: f32, r0: u32, r1: u32) -> Vec<f32> {
+    let c = terrain::TREE_CELL; let cy0 = (y0 / c).floor() as i32;
+    terrain::trees_cells(seed, (x0 / c).floor() as i32, (x1 / c).ceil() as i32, cy0 + r0 as i32, cy0 + r1 as i32)
+}
+
 /// Build the army navigation grid now (about a second of work) instead of in the middle of play, when the first field army is formed. Call it behind the loading screen.
 #[wasm_bindgen]
 pub fn warm_navigation(seed: u64) { let _ = march::nav_static(seed); }
+
+/// The same as `warm_navigation`, a slice at a time: call it again and again (each call does about `rows` rows, a few milliseconds each) until it returns 1,
+/// letting the page breathe in between. Returns the progress, 0..1. The grid it ends with is identical to the one `warm_navigation` builds.
+#[wasm_bindgen]
+pub fn warm_navigation_step(seed: u64, rows: u32) -> f32 { march::nav_build_step(seed, rows) }
 
 #[wasm_bindgen]
 pub fn village_sites(seed: u64) -> Vec<f32> { terrain::sites(seed).into_iter().flat_map(|(x, y)| [x, y]).collect() }
@@ -366,17 +454,22 @@ pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
     }
 }
 
-type Memo = std::collections::HashMap<(usize, usize, u8), Option<Vec<(f32, f32)>>>;
-
 #[wasm_bindgen]
 impl World {
+    /// The whole state of the village as bytes (the caches are not in it: they are rebuilt on demand). `world_restore` turns it back into the same world, to the last bit.
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut v = SNAP_MAGIC.to_vec();
+        v.extend(bincode::serialize(self).expect("a world can be written"));
+        v
+    }
+
     #[wasm_bindgen(constructor)]
     pub fn new(seed: u64, ox: i32, oy: i32) -> World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
-            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], roads: vec![], road_links: vec![], road_paths: vec![], road_cache: Default::default(),
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], net_cache: Default::default(), ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -386,11 +479,20 @@ impl World {
         w.stock[GD as usize] = 30;
         let (x, y) = (ox as f32, oy as f32);
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
+        w.buildings.push(Building { kind: TOWN_HALL, tier: 0, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(TOWN_HALL, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
         w.neutral_done = vec![false; terrain::neutrals(seed).len()];
         w.reveal(x, y, 110.0);
         w.after_change();
         w
+    }
+
+    /// Start the village again from nothing: the world becomes exactly what `World::new` makes for this seed and site (the clock back at 0, the starting stock and town hall, every
+    /// building, road, ditch, levelled patch, felled tree, grove, deposit, soldier, army, treaty, relation, caravan, battle, plague, ruin and crater gone). Only the site and the
+    /// village's flag (`style`, the player's identity on the map) are kept. Played from a command log it is the first command of a new epoch (see docs/RESTART.md).
+    pub fn restart(&mut self) {
+        let style = self.style;
+        *self = World::new(self.seed, self.ox, self.oy);
+        self.style = style;
     }
 
     /// Lift the fog in a circle.
@@ -443,130 +545,69 @@ impl World {
 
     fn base(&self, x: f32, y: f32) -> f32 { terrain::base_height_s(self.seed, &self.sites, x, y) }
 
-    /// Link every building to the nearest earlier one it can walk to. The way is a route over the invisible path network (the one villagers and soldiers walk, without the road marks: the
-    /// roads are made of it), from the doorstep ring of one building to the doorstep ring of the other. So a road bends round every building, field, wall and moat the way a walker does and never
-    /// crosses one. A building the network does not join to an earlier one (cut off by water) gets no road.
+    /// The graded roads of the village, rebuilt from what stands: the short stub of every building (from its door to the node at the edge of its plot) and the roads the player laid
+    /// (chains of road pieces, see roadline.rs). Nothing is laid automatically: a building with no road to it still has its stub, and people walk over open ground to it.
     fn rebuild_roads(&mut self) {
         self.roads.clear();
         self.road_links.clear();
-        self.road_paths.clear();
-        let n = self.buildings.len();
-        let ends: Vec<usize> = (0..n).filter(|&i| i == 0 || !(is_barrier(self.buildings[i].kind) || self.buildings[i].kind == BRIDGE) || (self.buildings[i].kind == DRAWBRIDGE && !self.drawn_up(&self.buildings[i]))).collect();   // (a lowered drawbridge is joined by road like a building)
-        let net = self.net_base();
-        let ctx = self.road_ctx();
-        let base_stamp = self.net_stamp();
-        let mut memo: Memo = Default::default();
-        let m = ends.len();
-        let dist = |w: &World, a: usize, b: usize| ((w.buildings[ends[a]].x - w.buildings[ends[b]].x).powi(2) + (w.buildings[ends[a]].y - w.buildings[ends[b]].y).powi(2)).sqrt();
-        fn find(c: &mut [usize], x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } let mut y = x; while c[y] != r { let nx = c[y]; c[y] = r; y = nx; } r }
-        let mut comp: Vec<usize> = (0..m).collect();
-        let mut chosen: Vec<(usize, usize, u8)> = vec![];
-        // The roads form a tree over the buildings, built shortest link first (so every building is joined to its nearest neighbours and no two roads run side by side to the same place):
-        // each building offers its few nearest neighbours, and a link is laid when it joins two parts that are not yet joined and there is a walkable route.
-        let mut cand: Vec<(f32, usize, usize)> = vec![];
-        for a in 0..m {
-            let mut near: Vec<(f32, usize)> = (0..m).filter(|&b| b != a).map(|b| (dist(self, a, b) * if a == 0 || b == 0 { 0.8 } else { 1.0 }, b)).filter(|c| c.0 < 80.0).collect();
-            near.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)));
-            for &(d, b) in near.iter().take(5) { cand.push((d, a.min(b), a.max(b))); }
+        self.sync_road_conn();
+        for i in 0..self.buildings.len() {
+            let b = &self.buildings[i];
+            if !roadline::has_stub(b.kind) { continue; }
+            let (door, exit) = doors::door_world(b);
+            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 && self.leg_is_dry(door, exit) { self.roads.push([door.0, door.1, b.pad_h, exit.0, exit.1, b.pad_h]); self.road_links.push((i as u32, i as u32)); }
         }
-        cand.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
-        cand.dedup_by(|p, q| p.1 == q.1 && p.2 == q.2);
-        // the cleanest roads first: every link that has a way keeping all of its room clear (level 0), then those that squeeze past (level 1)
-        for level in 0u8..2 {
-            for &(_, a, b) in &cand {
-                let (ra, rb) = (find(&mut comp, a), find(&mut comp, b));
-                if ra == rb { continue; }
-                if self.route_for(&mut memo, &net, &ctx, base_stamp, ends[b], ends[a], level).is_some() { chosen.push((ends[b], ends[a], level)); comp[ra] = rb; }
-            }
-        }
-        // whatever is still cut off from the town hall is chained to it by the nearest walkable link, however far, one part at a time (only water and walls keep a building apart)
-        let mut tried = 0;
-        'chain: for level in 0u8..3 {
-            for _round in 0..64 {
-                let main = find(&mut comp, 0);
-                let mut far: Vec<(f32, usize, usize)> = vec![];
-                for a in 0..m { if find(&mut comp, a) == main { continue; } for b in 0..m { if find(&mut comp, b) != main { continue; } let d = dist(self, a, b); if d < 220.0 { far.push((d, a, b)); } } }
-                if far.is_empty() { break 'chain; }
-                far.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap_or(std::cmp::Ordering::Equal).then(p.1.cmp(&q.1)).then(p.2.cmp(&q.2)));
-                let mut joined = false;
-                for &(_, a, b) in far.iter().take(10) {
-                    tried += 1;
-                    let (i, j) = (ends[a].max(ends[b]), ends[a].min(ends[b]));
-                    if self.route_for(&mut memo, &net, &ctx, base_stamp, i, j, level).is_some() { chosen.push((i, j, level)); let ra = find(&mut comp, a); comp[ra] = main; joined = true; break; }
+        for e in self.road_edges() {
+            let (ha, hb) = (self.buildings[e.a].pad_h, self.buildings[e.b].pad_h);
+            let hs = self.grade_line(&e.pts, ha, hb);
+            for (k, w) in e.pts.windows(2).enumerate() {
+                if self.leg_is_dry(w[0], w[1]) {
+                    self.roads.push([w[0].0, w[0].1, hs[k], w[1].0, w[1].1, hs[k + 1]]);
+                    self.road_links.push((e.a as u32, e.b as u32));
                 }
-                if !joined || tried > 150 { break; }
             }
         }
-        // buildings that stand near each other are joined into blocks: a direct road between two neighbours that the tree only reaches the long way round (3 roads or more about)
-        // closes a loop, so the roads there form squares and no awkward gap is left. It is only laid where it crosses none of the roads already laid.
-        let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
-        for &(i, j, _) in &chosen { adj[i].push(j); adj[j].push(i); }
-        let mut laid: Vec<Vec<(f32, f32)>> = chosen.iter().filter_map(|&(i, j, l)| memo.get(&(i, j, l)).and_then(|c| c.clone())).collect();
-        let cross = |a: &[(f32, f32)], b: &[(f32, f32)]| -> bool {
-            let ccw = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0);
-            let near = |p: (f32, f32), q: (f32, f32)| (p.0 - q.0).hypot(p.1 - q.1) < 2.5;
-            a.windows(2).any(|s| b.windows(2).any(|t| {
-                if near(s[0], t[0]) || near(s[0], t[1]) || near(s[1], t[0]) || near(s[1], t[1]) { return false; }
-                ccw(s[0], s[1], t[0]) * ccw(s[0], s[1], t[1]) < 0.0 && ccw(t[0], t[1], s[0]) * ccw(t[0], t[1], s[1]) < 0.0
-            }))
-        };
-        for &(d, a, b) in &cand {
-            if d > 44.0 { break; }
-            let (i, j) = (ends[b], ends[a]);   // the later building is the child
-            if adj[i].contains(&j) || adj[i].len() >= 5 || adj[j].len() >= 5 { continue; }
-            // how many roads lead from one to the other through the roads laid so far
-            let mut hops = vec![u32::MAX; n]; hops[j] = 0; let mut q = std::collections::VecDeque::from([j]);
-            while let Some(x) = q.pop_front() { for &y in &adj[x] { if hops[y] == u32::MAX { hops[y] = hops[x] + 1; q.push_back(y); } } }
-            if hops[i] < 3 { continue; }
-            let Some(r) = self.route_for(&mut memo, &net, &ctx, base_stamp, i, j, 0) else { continue };   // (only the clean kind of road closes a loop)
-            let len: f32 = r.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum();
-            let (pi, pj) = (&self.buildings[i], &self.buildings[j]);
-            if len > 1.4 * (pi.x - pj.x).hypot(pi.y - pj.y) + 6.0 || laid.iter().any(|l| cross(&r, l)) { continue; }
-            chosen.push((i, j, 0)); adj[i].push(j); adj[j].push(i); laid.push(r);
-        }
-        chosen.sort();
-        for (i, j, l) in chosen { if let Some(Some(pts)) = memo.get(&(i, j, l)).cloned() { self.lay_road(i, j, pts); } }
-        // drop cache entries that point at buildings which no longer exist
-        if self.road_cache.len() > 4 * n + 64 { self.road_cache.retain(|k, _| (k.0 as usize) < n && (k.1 as usize) < n); }
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
-        for (c, p, pts) in &self.road_paths { mix(*c as u64); mix(*p as u64); for q in pts { mix(q.0.to_bits() as u64); mix(q.1.to_bits() as u64); } }
+        for r in &self.roads { for v in r { mix(v.to_bits() as u64); } }
         self.road_sig = h;
     }
 
-    /// The road route between two buildings (`i` the later one) at a level (0: keeping all of the road's room clear, 1: squeezed, 2: the plain cheapest way over the network), found once per
-    /// rebuild; level 0 is kept between rebuilds until something round the two changes.
-    fn route_for(&mut self, memo: &mut Memo, net: &pathnet::Net, ctx: &pathnet::RoadCtx, base_stamp: u64, i: usize, j: usize, level: u8) -> Option<Vec<(f32, f32)>> {
-        if let Some(r) = memo.get(&(i, j, level)) { return r.clone(); }
-        let r = if level == 0 {
-            let key = (i as u32, j as u32);
-            let stamp = self.route_stamp(base_stamp, i, j);
-            match self.road_cache.get(&key) { Some((h, r)) if *h == stamp => r.clone(), _ => { let r = self.road_route(net, ctx, i, j, 0); self.road_cache.insert(key, (stamp, r.clone())); r } }
-        } else { self.road_route(net, ctx, i, j, level) };
-        memo.insert((i, j, level), r.clone());
-        r
-    }
-
-    /// Lay the road from building `i` (the later one) to `j` along `pts`.
-    fn lay_road(&mut self, i: usize, j: usize, pts: Vec<(f32, f32)>) {
-        // graded segments: only the stretches over dry ground (a road across a moat or river must never fill it in)
-        let (ha, hb) = (self.buildings[i].pad_h, self.buildings[j].pad_h);
-        let total: f32 = pts.windows(2).map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1)).sum::<f32>().max(0.01);
-        let mut run = 0.0f32;
-        for w in pts.windows(2) {
-            let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
-            if self.leg_is_dry(w[0], w[1]) {
-                let (t0, t1) = (run / total, (run + l) / total);
-                self.roads.push([w[0].0, w[0].1, lerp(ha, hb, t0), w[1].0, w[1].1, lerp(ha, hb, t1)]);
-                self.road_links.push((i as u32, j as u32));
-            }
-            run += l;
+    /// The height of a road's centreline at each of its points: the ground it runs over, smoothed along the road (so it neither cuts into every hump nor floats over every dip),
+    /// eased to the heights of the pads at its two ends, and never steeper than `ROAD_MAX_SLOPE`. Pure function of the village's state (the same on every replica).
+    pub(crate) fn grade_line(&self, pts: &[(f32, f32)], ha: f32, hb: f32) -> Vec<f32> {
+        let n = pts.len();
+        if n == 0 { return vec![]; }
+        let mut s = vec![0.0f32; n];   // distance along the road
+        for k in 1..n { s[k] = s[k - 1] + (pts[k].0 - pts[k - 1].0).hypot(pts[k].1 - pts[k - 1].1); }
+        let total = s[n - 1];
+        let raw: Vec<f32> = pts.iter().map(|p| self.height_ground(p.0, p.1).max(0.25)).collect();
+        let mut h = vec![0.0f32; n];
+        for k in 0..n {
+            let (mut sum, mut cnt) = (0.0f32, 0.0f32);
+            let (mut j0, mut j1) = (k, k);
+            while j0 > 0 && s[k] - s[j0 - 1] <= ROAD_SMOOTH { j0 -= 1; }
+            while j1 + 1 < n && s[j1 + 1] - s[k] <= ROAD_SMOOTH { j1 += 1; }
+            for j in j0..=j1 { sum += raw[j]; cnt += 1.0; }
+            h[k] = sum / cnt;
         }
-        self.road_paths.push((i as u32, j as u32, pts));
+        // pin the ends to the pads: the difference is spread over the first and last stretch
+        let ease = (total * 0.5).min(9.0).max(0.01);
+        let (da, db) = (ha - h[0], hb - h[n - 1]);
+        for k in 0..n {
+            let (fa, fb) = (1.0 - smoothstep(0.0, ease, s[k]), 1.0 - smoothstep(0.0, ease, total - s[k]));
+            h[k] += da * fa + db * fb;
+        }
+        // a walkable slope: forward from the start, then back from the end (each end stays on its pad)
+        for k in 1..n { let m = ROAD_MAX_SLOPE * (s[k] - s[k - 1]); h[k] = h[k].clamp(h[k - 1] - m, h[k - 1] + m); }
+        h[n - 1] = hb;
+        for k in (0..n - 1).rev() { let m = ROAD_MAX_SLOPE * (s[k + 1] - s[k]); h[k] = h[k].clamp(h[k + 1] - m, h[k + 1] + m); }
+        h[0] = ha;
+        h
     }
 
     /// Is a straight leg of a route over dry, ordinary ground (not water and not a drawbridge deck)?
-    fn leg_is_dry(&self, a: (f32, f32), b: (f32, f32)) -> bool {
+    pub(crate) fn leg_is_dry(&self, a: (f32, f32), b: (f32, f32)) -> bool {
         let l = (b.0 - a.0).hypot(b.1 - a.1); let st = (l / 1.5).ceil().max(1.0) as i32;
         (0..=st).all(|q| { let t = q as f32 / st as f32; let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t); self.height_ground(x, y) >= 0.2 && !self.on_deck(x, y) })
     }
@@ -580,17 +621,6 @@ impl World {
             let (dx, dy) = (x - b.x, y - b.y); let along = dx * sx + dy * sy; let across = dx * sy - dy * sx;
             along.abs() <= 7.4 && across.abs() <= 1.9
         })
-    }
-
-    /// A fingerprint of everything that could change the route between two buildings: the stamp of the path network they are routed over (it covers what stands, the levelled ground, craters,
-    /// the state of gates and drawbridges, whether a battle is on, the terrain version and the chained paths out to other villages: `net_stamp`), and the two buildings themselves.
-    /// A route over the network depends on nothing else: felled trees and soldiers' bridges are not part of the network, and the roads themselves are made from it, not the other way round.
-    fn route_stamp(&self, base: u64, i: usize, j: usize) -> u64 {
-        let (a, b) = (&self.buildings[i], &self.buildings[j]);
-        let mut h: u64 = base;
-        let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
-        mix(i as u64); mix(j as u64); mix(a.x.to_bits() as u64); mix(a.y.to_bits() as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
-        h
     }
 
     /// Recompute derived data after the building list or tiers changed.
@@ -648,19 +678,32 @@ impl World {
         self.children = self.children.min(self.population); self.elders = self.elders.min(self.population - self.children);
         let workers = (self.adults().saturating_sub(self.sick)) * 7 / 10 * if self.tick < self.quarantine_until { 7 } else { 10 } / 10;
         self.eff = if self.jobs == 0 { 100 } else { (workers * 100 / self.jobs).min(100) };
-        // the hands go to food and wood first: those workplaces are staffed before anything else, and the rest share what is left
-        let first_jobs: u32 = self.buildings.iter().filter(|b| staffed_first(b.kind)).map(|b| DEFS[b.kind as usize].jobs * (b.tier as u32 + 1)).sum();
-        self.eff_first = if first_jobs == 0 { 100 } else { (workers * 100 / first_jobs).min(100) };
-        let left_hands = workers.saturating_sub(first_jobs * self.eff_first / 100); let rest_jobs = self.jobs - first_jobs;
+        // buildings the player gave a set number of workers are filled first (scaled down together when the hands do not suffice), the rest share what is left:
+        // food and wood first, then everything else
+        let mj = |b: &Building| DEFS[b.kind as usize].jobs * (b.tier as u32 + 1);
+        let want: Vec<u32> = self.buildings.iter().map(|b| if b.target >= 0 { (b.target as u32).min(mj(b)) } else { 0 }).collect();
+        let manual: u32 = want.iter().sum();
+        let mut given = want.clone();
+        if manual > workers {   // proportional, the rounding leftovers going to the earliest buildings
+            for g in given.iter_mut() { *g = (*g as u64 * workers as u64 / manual as u64) as u32; }
+            let mut spare = workers - given.iter().sum::<u32>();
+            for (g, w) in given.iter_mut().zip(&want) { if spare == 0 { break; } if *g < *w { *g += 1; spare -= 1; } }
+        }
+        let left_workers = workers.saturating_sub(manual);
+        let auto_first: u32 = self.buildings.iter().filter(|b| b.target < 0 && staffed_first(b.kind)).map(mj).sum();
+        let auto_jobs: u32 = self.buildings.iter().filter(|b| b.target < 0).map(mj).sum();
+        self.eff_first = if auto_first == 0 { 100 } else { (left_workers * 100 / auto_first).min(100) };
+        let left_hands = left_workers.saturating_sub(auto_first * self.eff_first / 100); let rest_jobs = auto_jobs - auto_first;
         self.eff_rest = if rest_jobs == 0 { 100 } else { (left_hands * 100 / rest_jobs).min(100) };
         let cap = self.capacity();
         let housed = self.population.min(cap);
         let mut left = housed;
         let (eff_first, eff_rest) = (self.eff_first, self.eff_rest);
-        for b in self.buildings.iter_mut() {
+        for (i, b) in self.buildings.iter_mut().enumerate() {
             let d = &DEFS[b.kind as usize];
-            let eff = if staffed_first(b.kind) { eff_first } else { eff_rest };
-            b.staff = (d.jobs * (b.tier as u32 + 1) * eff + 50) / 100;
+            let max = d.jobs * (b.tier as u32 + 1);
+            if b.target >= 0 { b.staff = given[i]; b.beff = if max == 0 { 100 } else { given[i] * 100 / max }; }
+            else { let eff = if staffed_first(b.kind) { eff_first } else { eff_rest }; b.staff = (max * eff + 50) / 100; b.beff = eff; }
             let c = d.housing * (b.tier as u32 + 1);
             let r = if cap == 0 { 0 } else { (c * housed / cap).min(left) };
             b.residents = r;
@@ -721,15 +764,21 @@ impl World {
             if fm > 0.0 && h > MOAT_BED { h += (MOAT_BED - h) * fm.min(1.0); }
             if fr > 0.0 && h > RIVER_BED { h += (RIVER_BED - h) * fr.min(1.0); }
         }
+        for f in &self.flats {   // ground the player levelled: after the ditches and earthworks, so it hides whatever was dug there
+            let (dx, dy) = (x - f[0], y - f[1]); let reach = f[2] + flatten::FLAT_SHOULDER;
+            if dx.abs() > reach || dy.abs() > reach { continue; }
+            let d = (dx * dx + dy * dy).sqrt();
+            if d < reach { h = lerp(h, f[3], 1.0 - smoothstep(f[2], reach, d)); }
+        }
         // the earth at each end of a drawbridge is levelled to the deck, in a strip that runs on from the deck's ends (after the ditch is dug, so the water stays between them):
         // the deck meets the ground flush, with no step and no slope to climb
         for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) {
             if (x - b.x).abs() > 24.0 || (y - b.y).abs() > 24.0 { continue; }
             let a = (b.rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();
-            if !(5.6..22.0).contains(&s) || c > 5.2 { continue; }
-            let w = smoothstep(5.6, 6.6, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
-            h = lerp(h, b.pad_h, w * smoothstep(-0.2, 0.6, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
+            if !(3.0..22.0).contains(&s) || c > 5.2 { continue; }
+            let w = smoothstep(3.0, 4.0, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
+            h = lerp(h, b.pad_h, w * smoothstep(-0.8, 0.0, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
         }
         if !built { return h; }
         for s in &self.roads {
@@ -741,7 +790,7 @@ impl World {
             let t = (((x - s[0]) * dx + (y - s[1]) * dy) / len2).clamp(0.0, 1.0);
             let (cx, cy) = (s[0] + dx * t, s[1] + dy * t);
             let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-            if d < ROAD_OUTER { h = lerp(h, lerp(s[2], s[5], t), 1.0 - smoothstep(ROAD_INNER, ROAD_OUTER, d)); }
+            if d < ROAD_OUTER { h = lerp(h, lerp(s[2], s[5], t), (1.0 - smoothstep(ROAD_INNER, ROAD_OUTER, d)) * smoothstep(-0.6, 0.0, h)); }   // (only dry ground is graded: a river or moat beside a road is never filled in)
         }
         for b in &self.buildings {
             let d = &DEFS[b.kind as usize];
@@ -750,6 +799,11 @@ impl World {
             let r0 = pad_inner(d);
             let r1 = r0 + 3.5;
             let (dx, dy) = (x - b.x, y - b.y);
+            // a farm's fields reach far past its circle once it is upgraded (up to 15 from its middle, and to one side): the ground is levelled under all of them, not just the circle
+            if b.kind == FARM && dx.abs() <= FARM_PAD_REACH && dy.abs() <= FARM_PAD_REACH {
+                let fd = pathnet::field_distance(b, x, y);
+                if fd < FARM_PAD_BLEND { h = lerp(h, b.pad_h, 1.0 - smoothstep(FARM_PAD_FLAT, FARM_PAD_BLEND, fd)); }
+            }
             if dx.abs() > r1 || dy.abs() > r1 { continue; }
             let dist = (dx * dx + dy * dy).sqrt();
             if matches!(b.kind, WALL | GATE | FENCE) {   // a wall builds the ground it stands on: earth is heaped up where it is missing (never dug away), so no wall hangs over a drop or a ditch
@@ -787,18 +841,20 @@ impl World {
         match b.kind {
             TOWN_HALL => self.build_radius() as f32,
             k if is_edit(k) => 0.0,
-            ROAD => 6.0,
+            ROAD => if b.status == 4 { roadline::ROAD_CLAIM } else { 0.0 },   // only a piece that is joined to the village's land (see `sync_road_conn`) claims any
             BRIDGE => 7.0,
             WALL | FENCE | GATE | DRAWBRIDGE => 5.0,
             k => 10.0 + 2.5 * ((DEFS[k as usize].weight * (b.tier as u32 + 1)) as f32).sqrt(),
         }
     }
     /// Is this spot inside the village's land: near the town hall, or near something built on its edge (never farther than TERRITORY_MAX from the hall)?
-    pub fn in_territory(&self, x: f32, y: f32) -> bool {
+    pub fn in_territory(&self, x: f32, y: f32) -> bool { self.in_territory_by(x, y, true) }
+    /// `in_territory`, with the claims of road pieces counted or not (a road piece is joined to the land when it stands in land that is not its own doing, or runs to a building).
+    pub(crate) fn in_territory_by(&self, x: f32, y: f32, roads: bool) -> bool {
         let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
         let dh = ((x - hx).powi(2) + (y - hy).powi(2)).sqrt();
         if dh > TERRITORY_MAX { return false; }
-        self.buildings.iter().any(|b| { let c = self.claim(b); c > 0.0 && (x - b.x).abs() <= c && (y - b.y).abs() <= c && ((x - b.x).powi(2) + (y - b.y).powi(2)) <= c * c })
+        self.buildings.iter().any(|b| { if !roads && b.kind == ROAD { return false; } let c = self.claim(b); c > 0.0 && (x - b.x).abs() <= c && (y - b.y).abs() <= c && ((x - b.x).powi(2) + (y - b.y).powi(2)) <= c * c })
     }
     /// The land the village holds, as discs [x, y, radius]: the hall's circle and a patch round every building. The border is the outline of their union.
     pub fn territory_flat(&self) -> Vec<f32> {
@@ -809,11 +865,17 @@ impl World {
     /// 0 = ok, otherwise: -1 bad kind, -2 outside radius, -3 overlaps, -4 water, -5 too steep,
     /// -6 cannot afford, -7 needs deposit, -8 needs forest, -9 not buildable (town hall)
     pub fn can_place(&self, kind: u8, dx: i32, dy: i32) -> i32 {
-        let Some(d) = DEFS.get(kind as usize) else { return -1 };
+        if DEFS.get(kind as usize).is_none() { return -1 };
         if kind == TOWN_HALL { return -9; }
         if kind == BRIDGE { return self.bridge_check(dx, dy, 0).0; }
-        let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
-        if !self.in_territory(x, y) { return -2; }
+        self.can_place_xy(kind, (self.ox + dx) as f32, (self.oy + dy) as f32)
+    }
+
+    /// `can_place` at a world position (road pieces snapped onto a node are not on the whole-number grid).
+    pub(crate) fn can_place_xy(&self, kind: u8, x: f32, y: f32) -> i32 {
+        let Some(d) = DEFS.get(kind as usize) else { return -1 };
+        if kind == TOWN_HALL { return -9; }
+        if kind == ROAD { if !self.road_in_reach(x, y) { return -2; } } else if !self.in_territory(x, y) { return -2; }
         if kind == GATE && !self.buildings.iter().any(|b| b.kind == WALL && (b.x - x).hypot(b.y - y) <= 9.0) { return -20; }   // a gate only ever stands in a wall
         for b in &self.buildings {
             let _bd = &DEFS[b.kind as usize];
@@ -833,9 +895,9 @@ impl World {
         if (hi - lo) / (fr * 2.0) > d.max_slope { return -5; }
         if d.req != 1 {   // nothing is built or dug on top of an ore or stone deposit (only mines and quarries stand beside one)
             let clear = if is_edit(kind) { 2.6 } else if matches!(kind, WALL | FENCE | GATE) { 0.6 } else { d.r + 1.6 };   // a wall may run over an outcrop (only its very middle is in the way)
-            if self.deposits.iter().any(|dep| dep.rem > 0 && (dep.x - x).powi(2) + (dep.y - y).powi(2) < clear * clear) { return -17; }
+            if self.deposits.iter().any(|dep| dep.max > 0 && (dep.x - x).powi(2) + (dep.y - y).powi(2) < clear * clear) { return -17; }
         }
-        if d.req == 1 && self.nearest_deposit(x, y, d.req_arg).is_none() { return -7; }
+        if d.req == 1 && self.nearest_deposit(x, y, d.req_arg, true).is_none() { return -7; }
         if d.req == 2 && self.forest_here(x, y, 12.0) < 0.12 { return -8; }
         if d.req == 3 && !self.water_near(x, y, d.r + 5.0) { return -16; }
         for &(res, n) in d.cost { if self.stock[res as usize] < n { return -6; } }
@@ -865,10 +927,11 @@ impl World {
         self.felled.push([x, y, 2.4]); self.map_ver += 1;
     }
 
-    fn nearest_deposit(&self, x: f32, y: f32, kind: u8) -> Option<usize> {
+    /// The nearest deposit of this kind within reach; with `dormant_too` a dormant one counts (a mine may be built beside it and wait for it to wake), else only one that can be worked now.
+    fn nearest_deposit(&self, x: f32, y: f32, kind: u8, dormant_too: bool) -> Option<usize> {
         let mut best: Option<(usize, f32)> = None;
         for (i, dep) in self.deposits.iter().enumerate() {
-            if dep.kind != kind || dep.rem <= 0 || self.height_at(dep.x, dep.y) < 0.3 { continue; }   // a deposit drowned by a river or lake cannot be worked
+            if dep.kind != kind || !(dep.active() || (dormant_too && dep.max > 0)) || self.height_at(dep.x, dep.y) < 0.3 { continue; }   // a deposit drowned by a river or lake cannot be worked
             let d2 = (dep.x - x).powi(2) + (dep.y - y).powi(2);
             if d2 <= 15.0 * 15.0 && best.map_or(true, |(_, b)| d2 < b) { best = Some((i, d2)); }
         }
@@ -878,11 +941,16 @@ impl World {
     /// Place a building at coordinates relative to the village origin. Returns index or the negative `can_place` code.
     pub fn place(&mut self, kind: u8, dx: i32, dy: i32, rot: u8) -> i32 {
         if kind == BRIDGE { return self.place_bridge(dx, dy); }
-        let code = self.can_place(kind, dx, dy);
-        if code != 0 { return code; }
-        if matches!(kind, WATERWHEEL | FISHING_HUT) && !self.wheel_in_water((self.ox + dx) as f32, (self.oy + dy) as f32, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
-        let d = &DEFS[kind as usize];
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        self.place_at(kind, x, y, rot, None)
+    }
+
+    /// `place` at a world position; a road piece also takes what it is joined to (a piece placed without them is joined to the nearest piece or node in reach, see `road_tgts_near`).
+    pub(crate) fn place_at(&mut self, kind: u8, x: f32, y: f32, rot: u8, tgts: Option<[roadline::Tgt; 2]>) -> i32 {
+        let code = self.can_place_xy(kind, x, y);
+        if code != 0 { return code; }
+        if matches!(kind, WATERWHEEL | FISHING_HUT) && !self.wheel_in_water(x, y, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
+        let d = &DEFS[kind as usize];
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
         let fr = d.r * 0.8;
         let samples = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
@@ -898,9 +966,10 @@ impl World {
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             pad_h = match gate { Some((d, h)) if d < 30.0 => h, _ => bank(sx, sy).max(bank(-sx, -sy)).max(0.8) };
         }
-        let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg).map_or(-1, |i| i as i32) } else { -1 };
-        let status = if d.cycle > 0 { 1 } else { 4 };
-        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
+        let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg, true).map_or(-1, |i| i as i32) } else { -1 };
+        let mut status = if d.cycle > 0 { 1 } else { 4 };
+        if kind == ROAD { let t = tgts.unwrap_or_else(|| self.road_tgts_near(x, y)); status = if self.road_piece_attached(x, y, &t) { 4 } else { 2 }; self.road_conn.push(roadline::RoadConn { x, y, to: t }); }
+        self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
         if is_edit(kind) { self.terrain_ver += 1; }   // the ground changed: everything standing on it must be re-fitted
         if kind == DRAWBRIDGE {   // clear a way through the trees on the far side so a path can run out from the gate
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
@@ -955,7 +1024,7 @@ impl World {
             // walk back from the water along the opposite of the wheel's way to the first dry bank
             let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
             for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
-                let back = t + WHEEL_FOOT + extra;   // the footing ends at the bank
+                let back = t + if kind == FISHING_HUT { HUT_FOOT } else { WHEEL_FOOT } + extra;   // the footing ends at the bank
                 let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
                 let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
                 let code = self.can_place(kind, cx as i32, cy as i32);
@@ -996,6 +1065,42 @@ impl World {
         if nx * (qx - self.ox as f32) + ny * (qy - self.oy as f32) < 0.0 { nx = -nx; ny = -ny; }
         let rot = Self::drawbridge_turn(nx, ny);
         vec![qx.round() - self.ox as f32, qy.round() - self.oy as f32, rot as f32]
+    }
+
+    /// Where a toll post clicked at (dx, dy) goes: pulled onto the nearest road and turned so that the road runs through its gate, along the axis between its two posts.
+    /// [x, y, turn] relative to the origin (the turn in 45-degree steps, as `place` takes it), or nothing when no road is near (within 14) or there is no room for the post along it.
+    pub fn toll_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        let (px, py) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
+        let mut best: Option<(f32, f32, f32, f32, f32)> = None;   // distance, x, y, direction x, direction y
+        for (s, l) in self.roads.iter().zip(&self.road_links) {
+            if l.0 == l.1 { continue; }   // (the short roads of the doors are not the village's roads)
+            let (sx, sy) = (s[3] - s[0], s[4] - s[1]); let sl = sx.hypot(sy); if sl < 0.3 { continue; }
+            let t = (((px - s[0]) * sx + (py - s[1]) * sy) / (sl * sl)).clamp(0.0, 1.0);
+            let (qx, qy) = (s[0] + sx * t, s[1] + sy * t); let d = (qx - px).hypot(qy - py);
+            if d <= 14.0 && best.map_or(true, |b| d < b.0 - 0.01) { best = Some((d, qx, qy, sx / sl, sy / sl)); }
+        }
+        let Some((_, qx, qy, ux, uy)) = best else { return vec![] };
+        let rot = Self::drawbridge_turn(ux, uy);
+        let net = self.net_base();
+        // the post may need to slide along the road a little to find room
+        for t in [0.0f32, 1.5, -1.5, 3.0, -3.0, 4.5, -4.5, 6.0, -6.0] {
+            let (sx, sy) = ((qx + ux * t).round(), (qy + uy * t).round());
+            let (cx, cy) = (sx - self.ox as f32, sy - self.oy as f32);
+            let code = self.can_place(TOLL, cx as i32, cy as i32);
+            if !(code == 0 || code == -6) { continue; }
+            // the way through must be free on both sides of the post: the road has to run on from both ends of its gate
+            let (wx, wy) = doors::to_world(rot as u8, (0.0, 1.0));
+            if ![-5.0f32, -3.5, 0.0, 3.5, 5.0].iter().all(|&t| net.ok_at(sx + wx * t, sy + wy * t)) { continue; }
+            // and the hut must not stand on the short road from somebody's door
+            let (hx, hy) = doors::to_world(rot as u8, (2.4, -0.2)); let (hx, hy) = (sx + hx, sy + hy);
+            let on_door = self.roads.iter().zip(&self.road_links).any(|(r, l)| {
+                if l.0 != l.1 { return false; }
+                let (dx, dy) = (r[3] - r[0], r[4] - r[1]); let l2 = (dx * dx + dy * dy).max(1e-6); let t = (((hx - r[0]) * dx + (hy - r[1]) * dy) / l2).clamp(0.0, 1.0);
+                (hx - (r[0] + dx * t)).hypot(hy - (r[1] + dy * t)) < 2.6
+            });
+            if !on_door { return vec![cx, cy, rot as f32]; }
+        }
+        vec![]
     }
 
     // ---------- bridges ----------
@@ -1052,7 +1157,7 @@ impl World {
         let (ux, uy) = (a.cos(), a.sin()); let (ha, hb) = (self.height_at(cx - ux * l / 2.0, cy - uy * l / 2.0), self.height_at(cx + ux * l / 2.0, cy + uy * l / 2.0));
         let deg = ((a.to_degrees().round() as i32) % 360 + 360) % 360; let aux = deg + 360 * ((l * 10.0).round() as i32);
         let rot = ((((ux).atan2(uy) / std::f32::consts::FRAC_PI_4).round() as i32 % 8) + 8) % 8;
-        self.buildings.push(Building { kind: BRIDGE, tier: 0, x: cx, y: cy, rot: rot as u8, pad_h: (ha + hb) / 2.0, progress: 0, status: 4, aux, staff: 0, residents: 0, hp: battle::max_hp(BRIDGE, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0 });
+        self.buildings.push(Building { kind: BRIDGE, tier: 0, x: cx, y: cy, rot: rot as u8, pad_h: (ha + hb) / 2.0, progress: 0, status: 4, aux, staff: 0, residents: 0, hp: battle::max_hp(BRIDGE, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
         self.after_change();
         (self.buildings.len() - 1) as i32
     }
@@ -1103,6 +1208,7 @@ impl World {
         let (k, t) = (self.buildings[idx as usize].kind, self.buildings[idx as usize].tier);
         self.buildings[idx as usize].hp = battle::max_hp(k, t);
         self.buildings[idx as usize].burning = 0.0;
+        if k == FARM { self.terrain_ver += 1; }   // a bigger farm works more fields: the ground is levelled under them too, so everything standing near must be fitted to it again
         self.after_change();
         0
     }
@@ -1155,7 +1261,7 @@ impl World {
         if self.buildings.iter().any(|b| b.aux == i as i32 && DEFS[b.kind as usize].req == 1) { return -4; }
         if self.stock[W as usize] < 40 || self.stock[TL as usize] < 10 { return -6; }
         self.stock[W as usize] -= 40; self.stock[TL as usize] -= 10;
-        let dep = &mut self.deposits[i as usize]; dep.rem = 0; dep.max = 0;
+        let dep = &mut self.deposits[i as usize]; dep.rem = 0; dep.max = 0; dep.asleep = false;
         self.map_ver += 1; self.after_change();
         0
     }
@@ -1216,12 +1322,12 @@ impl World {
             let ob = self.buildings[i].opts;
             let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } }
                 else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
-            let mut p = self.buildings[i].progress + (if staffed_first(kind) { self.eff_first } else { self.eff_rest }) * boost as u32 / 100;
+            let mut p = self.buildings[i].progress + self.buildings[i].beff * boost as u32 / 100;
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
             let soil = if kind == FARM { 500 + self.buildings[i].fert as i32 / 20 } else { 1000 };   // per mille: rich soil 100%, worn out 50%
-            let seasonal = if kind == FARM && season == 3 && ob & 2 != 0 { 45 } else { GRAIN_BY_SEASON[season as usize] };   // haystacks keep winter fields worth working
+            let seasonal = if kind == FARM && season == 3 && ob & 2 != 0 { WINTER_GRAIN_HAYSTACKS } else { GRAIN_BY_SEASON[season as usize] };   // haystacks keep winter fields worth working
             let yield_of = |r: u8, n: i32| { let q = scale(n); if r == GR { (q * seasonal * soil / 100_000).max(1) } else { q } };
             let mut status = self.buildings[i].status;
             while p >= need {
@@ -1236,22 +1342,24 @@ impl World {
                 let mut dep_idx: Option<usize> = None;
                 if d.req == 1 {
                     let a = self.buildings[i].aux;
-                    let ok = a >= 0 && self.deposits[a as usize].rem > 0;
+                    let ok = a >= 0 && self.deposits[a as usize].active();
                     if ok { dep_idx = Some(a as usize); } else {
                         let (bx, by) = (self.buildings[i].x, self.buildings[i].y);
-                        match self.nearest_deposit(bx, by, d.req_arg) {
+                        match self.nearest_deposit(bx, by, d.req_arg, false) {
                             Some(n) => { self.buildings[i].aux = n as i32; dep_idx = Some(n); }
-                            None => { status = 2; p = need; break; }
+                            None => { let sleeping = a >= 0 && self.deposits.get(a as usize).map_or(false, |dd| dd.max > 0); status = if sleeping { 7 } else { 2 }; p = need; break; }
                         }
                     }
                 }
-                if d.inputs.iter().any(|&(r, n)| self.stock[r as usize] < scale(n)) { status = 1; p = need; break; }
-                if d.outputs.iter().any(|&(r, n)| self.stock[r as usize] + yield_of(r, n) > cap) { status = 3; p = need; break; }
-                for &(r, n) in d.inputs { self.stock[r as usize] -= scale(n); self.ledger.note(kind as usize, r as usize, -scale(n)); }
-                for &(r, n) in d.outputs { self.stock[r as usize] += yield_of(r, n); self.ledger.note(kind as usize, r as usize, yield_of(r, n)); }
+                let (inputs, outputs) = if kind == SMOKEHOUSE && self.buildings[i].mode == 1 { (SMOKE_MEAT_IN, SMOKE_MEAT_OUT) } else { (d.inputs, d.outputs) };   // a smokehouse set to meat smokes meat
+                if inputs.iter().any(|&(r, n)| self.stock[r as usize] < scale(n)) { status = 1; p = need; break; }
+                if outputs.iter().any(|&(r, n)| self.stock[r as usize] + yield_of(r, n) > cap) { status = 3; p = need; break; }
+                for &(r, n) in inputs { self.stock[r as usize] -= scale(n); self.ledger.note(kind as usize, r as usize, -scale(n)); }
+                for &(r, n) in outputs { self.stock[r as usize] += yield_of(r, n); self.ledger.note(kind as usize, r as usize, yield_of(r, n)); }
                 if let Some(di) = dep_idx {
-                    let out: i32 = d.outputs.iter().map(|&(_, n)| scale(n)).sum();   // ore taken from the ground does not depend on the season
-                    self.deposits[di].rem = (self.deposits[di].rem - out).max(0);
+                    let out: i32 = outputs.iter().map(|&(_, n)| scale(n)).sum();   // ore taken from the ground does not depend on the season
+                    let dd = &mut self.deposits[di]; dd.rem = (dd.rem - out).max(0);
+                    if dd.rem == 0 { dd.asleep = true; }   // used up: dormant until it has regrown (see `Deposit::grow`)
                 }
                 status = 0;
                 p -= need;
@@ -1271,7 +1379,9 @@ impl World {
             let hap = self.happiness();
             if self.population < cap_pop && self.rng.range(if hap >= 70 { 4 } else if hap < 30 { 8 } else { 5 }) == 0 { self.arrive(1); }
         } else {
-            if self.population > 2 && self.rng.range(3) == 0 {
+            // famine takes a share of the village a day (about `HUNGER_PER_MILLE_DAY` per mille of the villagers), not a villager every few seconds
+            let one_in = ((1000 * DAY) / (HUNGER_PER_MILLE_DAY * (self.population as u64).max(1))).max(1) as u32;
+            if self.population > 2 && self.rng.range(one_in) == 0 {
                 self.kill(1, DIED_HUNGER, 0);
                 self.push_event(EV_STARVE, 1, 0);
             }
@@ -1311,6 +1421,7 @@ impl World {
             self.gain(ledger::EX_HARVEST, GR, n, cap);
             self.push_event(EV_HARVEST, n, 0);
         }
+        self.greed_step();
         // Bandits give a clear 30-second warning. The direction and strength are chosen at the warning,
         // not at arrival, so every peer sees the same countdown and the player can prepare.
         if self.raid_warning_ticks > 0 {
@@ -1319,7 +1430,7 @@ impl World {
                 if self.raid_warning_boss { self.begin_boss_raid(RAID_BOSS, self.raid_warning_angle, self.raid_warning_rf, self.raid_warning_name); }
                 else { let force = self.bandit_force(self.raid_warning_rf); self.begin_battle(force, self.raid_warning_angle, 0); }
             }
-        } else if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(RAID_ONE_IN) == 0 {
+        } else if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(self.raid_one_in()) == 0 {
             self.raid_warning_angle = self.rng.range(628) as f32 * 0.01;
             self.raid_warning_rf = self.rng.range(1000) as f32 / 1000.0;
             self.raid_warning_boss = self.boss_due();
@@ -1490,17 +1601,27 @@ impl World {
     }
     pub fn married_to(&self, tag: i32) -> bool { self.married.contains(&tag) }
 
+    /// Firewood the village wants per burn (every `WINTER_BURN_EVERY` ticks) at its present size.
+    pub(crate) fn winter_need(&self) -> i32 {
+        ((self.population + WINTER_HEADS_PER_WOOD - 1) / WINTER_HEADS_PER_WOOD) as i32 / if self.tick < self.share_until { 2 } else { 1 } - self.perks().woodsheds / WINTER_SHED_SAVES
+    }
+    /// Chance in percent that the cold takes someone today, after `cold_days` cold days (0 within the grace).
+    fn cold_death_chance(&self) -> u32 {
+        let grace = WINTER_COLD_GRACE + if self.hospital_beds() > 0 { WINTER_HOSPITAL_GRACE } else { 0 };
+        (self.cold_days.saturating_sub(grace) * WINTER_DEATH_STEP).min(WINTER_DEATH_MAX)
+    }
     /// Fires in winter, and once a day the generations turn: children grow up, the old pass away, couples have babies.
     fn household_step(&mut self) {
-        // winter: every ten ticks the village burns firewood, a tenth of a unit a head
+        // winter: the village burns firewood (see WINTER_*); the town hall's hearth keeps it warm while there is wood for a good part of what it wants
         if self.season() == 3 {
-            if self.tick % 10 == 0 {
-                let need = (((self.population + 9) / 10) as i32 / if self.tick < self.share_until { 2 } else { 1 } - self.perks().woodsheds / 6).max(0);
-                let used = need.min(self.stock[W as usize]); let c = self.ledger.extra(ledger::EX_WINTER); self.ledger.note(c, W as usize, -used);
-                if self.stock[W as usize] >= need { self.stock[W as usize] -= need; self.warm = true; } else { self.stock[W as usize] = 0; self.warm = false; }
+            if self.tick % WINTER_BURN_EVERY == 0 {
+                let need = self.winter_need().max(0);
+                let used = need.min(self.stock[W as usize].max(0)); let c = self.ledger.extra(ledger::EX_WINTER); self.ledger.note(c, W as usize, -used);
+                self.stock[W as usize] -= used; self.warm = used >= need.min(WINTER_HEARTH_WOOD);
             }
         } else { self.warm = true; }
         if self.tick % DAY != 0 { return; }
+        self.regrow_deposits();
         { let doves = self.perks().doves; if doves > 0 { let cap = self.storage_cap(); self.gain(ledger::EX_DOVES, GR, doves, cap); } }
         let now = self.tick; self.treaties.retain(|t| t.until > now);
         self.market_refill();
@@ -1525,9 +1646,11 @@ impl World {
             else if self.season() == 3 && day % (SEASON_DAYS * 4) == SEASON_DAYS * 3 { self.offer(CH_WINTER); }
         }
         let take = |rng: &mut Rng, n: u32, per: u32| -> u32 { let mut k = n / per; if rng.range(per) < n % per { k += 1; } k.min(n) };
-        // freezing kills the old and the young first
-        if !self.warm && self.population > 3 && self.rng.range(3) == 0 {
-            self.kill(1, DIED_COLD, 2); self.push_event(EV_COLD, 1, 0);
+        // the cold: first only unhappiness, deaths after a few cold days and with a growing chance (see WINTER_COLD_GRACE)
+        if self.warm { self.cold_days = 0; } else {
+            self.cold_days += 1;
+            let chance = self.cold_death_chance();
+            if self.population > 3 && chance > 0 && self.rng.range(100) < chance { self.kill(1, DIED_COLD, 0); self.push_event(EV_COLD, 1, 0); }
         }
         let grown = take(&mut self.rng, self.children, 30); self.children -= grown;
         let adults = self.adults(); let aged = take(&mut self.rng, adults, 90); self.elders += aged;
@@ -1600,7 +1723,7 @@ impl World {
         let ports: Vec<usize> = (0..self.buildings.len()).filter(|&i| self.buildings[i].kind == PORT && self.buildings[i].staff > 0).collect();
         for pi in ports {
             let tier = self.buildings[pi].tier as i32;
-            self.buildings[pi].progress += self.eff_rest;
+            self.buildings[pi].progress += self.buildings[pi].beff;
             if self.buildings[pi].progress < 3000 { continue; }
             self.buildings[pi].progress -= 3000;
             let mult = (4 + 5 * tier) / 4;
@@ -1696,13 +1819,6 @@ impl World {
         self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| [s[0], s[1], s[3], s[4], id(l.0), id(l.1)]).collect()
     }
 
-    /// How much free room each end of each road segment has (two numbers per segment of `roads_flat`, in the same order: at its start and at its end): the distance from the point to the
-    /// nearest ground that is not walkable (a building and its yard, a field, a wall, water), at most 6. The drawing rounds the corners of a road by no more than this lets it.
-    pub fn road_clear_flat(&self) -> Vec<f32> {
-        let net = self.net_base();
-        self.roads.iter().flat_map(|s| [net.clearance(s[0], s[1]), net.clearance(s[3], s[4])]).collect()
-    }
-
     /// The path network as [n, e, x, y (n times), a, b, road (e times)] (see pathnet.rs).
     pub fn net_flat(&self) -> Vec<f32> { self.net_flat_inner() }
     /// A route over the path network: [complete (1 or 0), x, y, x, y, ...], or empty when the network does not help (villagers walk it).
@@ -1728,14 +1844,26 @@ impl World {
     /// A walking route over the invisible lines (the grid of the world plus the village's paths), for villagers: [1, x, y, x, y, ...], or empty when there is no dry way.
     pub fn walk_route(&self, sx: f32, sy: f32, gx: f32, gy: f32) -> Vec<f32> { self.walk_route_inner(sx, sy, gx, gy) }
 
-    /// Walkable routes between linked buildings: [child, parent, n, x0, y0, x1, y1, ...] repeated. Unlike `roads_flat` these include the crossings of drawbridges.
-    pub fn road_paths_flat(&self) -> Vec<f32> {
-        let mut v = vec![];
-        for (c, p, pts) in &self.road_paths { v.extend_from_slice(&[*c as f32, *p as f32, pts.len() as f32]); for q in pts { v.extend_from_slice(&[q.0, q.1]); } }
-        v
+    /// Flat [kind, x, y, remaining, max, ...] (stride 5).
+    /// 1 for every deposit that lies dormant (used up, regrowing), 0 otherwise; one entry per deposit, in the order of `deposits_flat`.
+    pub fn deposits_asleep(&self) -> Vec<u8> { self.deposits.iter().map(|d| d.asleep as u8).collect() }
+    /// What the building at `idx` works: [deposit index, remaining, maximum, dormant 0/1, ore taken per day at its present staffing], or empty when it needs no deposit.
+    pub fn building_deposit(&self, idx: u32) -> Vec<f32> {
+        let Some(b) = self.buildings.get(idx as usize) else { return vec![] };
+        let d = &DEFS[b.kind as usize];
+        if d.req != 1 || b.aux < 0 { return vec![]; }
+        let Some(dep) = self.deposits.get(b.aux as usize) else { return vec![] };
+        let mult = 4 + 5 * b.tier as i32; let out: i32 = d.outputs.iter().map(|&(_, n)| ((n * mult + 2) / 4).max(n)).sum();
+        let eff = b.beff as f32 / 100.0;
+        vec![b.aux as f32, dep.rem as f32, dep.max as f32, dep.asleep as u8 as f32, out as f32 * DAY as f32 / d.cycle as f32 * eff]
+    }
+    /// Once a day every deposit regrows a little, faster when no working building stands at it; one used up and dormant wakes at `WAKE_PCT` of its maximum. Cleared deposits (`max == 0`) stay gone.
+    fn regrow_deposits(&mut self) {
+        let mut worked = vec![false; self.deposits.len()];
+        for b in &self.buildings { if DEFS[b.kind as usize].req == 1 && b.status == 0 && b.aux >= 0 { if let Some(w) = worked.get_mut(b.aux as usize) { *w = true; } } }
+        for (d, w) in self.deposits.iter_mut().zip(worked) { d.grow(w); }
     }
 
-    /// Flat [kind, x, y, remaining, max, ...] (stride 5).
     pub fn deposits_flat(&self) -> Vec<f32> {
         self.deposits.iter().flat_map(|d| [d.kind as f32, d.x, d.y, d.rem as f32, d.max as f32]).collect()
     }
@@ -1921,6 +2049,8 @@ impl World {
     /// Who is attacking: 0 bandits, otherwise the attacking player's tag.
     pub fn battle_tag(&self) -> i32 { self.battle.as_ref().map_or(0, |b| b.tag) }
     /// Direction the attackers came from, as an angle (atan2(dy, dx)) from the village centre; 0 when there is no battle.
+    /// Where the attackers formed up when the fight began: [x, y] in world coordinates, empty when there is no fight (or it is a lair fight, which has no raid line).
+    pub fn battle_spawn(&self) -> Vec<f32> { self.battle.as_ref().filter(|b| b.lair < 0).map_or(vec![], |b| b.spawn.to_vec()) }
     pub fn battle_angle(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.angle) }
     pub fn battle_time(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.t) }
     /// Ticks until the announced bandit raid arrives (zero when there is no warning).
@@ -1969,6 +2099,8 @@ impl World {
     pub fn building_health(&self) -> Vec<f32> { self.buildings.iter().flat_map(|b| [b.hp.max(0.0), battle::max_hp(b.kind, b.tier), b.burning]).collect() }
     /// Last battle report: [seq, won, tag, attackersLeft, defenderDead, buildingsLost, survivors x5, loot x12, attackersFled, defendersFled].
     pub fn last_report(&self) -> Vec<i32> { self.report.clone() }
+    /// Did the last battle end with the raiders paid off (see bribe.rs)?
+    pub fn last_report_bought(&self) -> bool { self.report_bought }
     /// Ignite a building (for fire arrows or testing).
     pub fn set_fire(&mut self, idx: u32) { self.ignite(idx as usize); }
     /// Villagers currently available to fight fires.
@@ -1997,7 +2129,7 @@ impl World {
             }
             8 => {   // reset the terrain: remove rivers, moats and earthworks, fill the craters and clear the scorch marks
                 self.buildings.retain(|b| !is_edit(b.kind));
-                self.craters.clear(); self.scorch.clear(); self.ruins.clear(); self.levels.clear(); self.terrain_ver += 1; self.map_ver += 1;
+                self.craters.clear(); self.scorch.clear(); self.ruins.clear(); self.levels.clear(); self.flats.clear(); self.terrain_ver += 1; self.map_ver += 1;
                 self.after_change(); true
             }
             _ => false,
@@ -2050,10 +2182,13 @@ impl World {
     /// Choose what a farm does with its field: 0 always sow, 1 let it lie fallow, 2 rotate (rest when the soil is worn, sow again when it is restored). 0 ok, -1 not a farm, -2 bad mode.
     pub fn set_field_mode(&mut self, idx: u32, mode: u8) -> i32 {
         let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
+        if b.kind == SMOKEHOUSE { if mode > 1 { return -2; } b.mode = mode; return 0; }   // a smokehouse: 0 smokes fish, 1 smokes meat
         if b.kind != FARM { return -1; }
         if mode > 2 { return -2; }
         b.mode = if mode == 2 && b.fert <= FERT_TIRED { 3 } else { mode }; 0
     }
+    /// What a smokehouse is set to smoke: 0 fish, 1 meat (-1 for anything that is not a smokehouse).
+    pub fn smoke_mode(&self, idx: u32) -> i32 { match self.buildings.get(idx as usize) { Some(b) if b.kind == SMOKEHOUSE => b.mode as i32, _ => -1 } }
     /// A farm's field: [soil in hundredths of a percent (10000 = rich), what it does (0 sow, 1 fallow, 2 rotate), resting right now (0/1)]; empty for anything that is not a farm.
     pub fn field_info(&self, idx: u32) -> Vec<i32> {
         match self.buildings.get(idx as usize) { Some(b) if b.kind == FARM => vec![b.fert as i32, if b.mode == 3 { 2 } else { b.mode as i32 }, (b.mode == 1 || b.mode == 3) as i32], _ => vec![] }
@@ -2069,7 +2204,7 @@ impl World {
             0 => {
                 let r = (a as f32).clamp(10.0, 200.0);
                 self.felled.push([hx, hy, r]); self.groves.clear();
-                for d in self.deposits.iter_mut() { if (d.x - hx).hypot(d.y - hy) < r { d.rem = 0; d.max = 0; } }
+                for d in self.deposits.iter_mut() { if (d.x - hx).hypot(d.y - hy) < r { d.rem = 0; d.max = 0; d.asleep = false; } }
                 self.map_ver += 1; self.terrain_ver += 1; 0
             }
             1 => {
@@ -2079,7 +2214,7 @@ impl World {
                     .or_else(|| self.deposits.iter().enumerate().filter(|(_, d)| d.kind == kind).min_by(|(_, p), (_, q)| (p.x - hx).hypot(p.y - hy).total_cmp(&(q.x - hx).hypot(q.y - hy))).map(|(i, _)| i));
                 let Some(i) = slot else { return -1 };
                 let amount = match kind { 0 => 1500, 1 => 1200, 2 => 900, _ => 320 };
-                self.deposits[i] = Deposit { kind, x, y, rem: amount, max: amount };
+                self.deposits[i] = Deposit { kind, x, y, rem: amount, max: amount, asleep: false };
                 self.map_ver += 1; self.terrain_ver += 1; i as i32
             }
             2 => { if !(-400..=400).contains(&a) || !(-400..=400).contains(&b) || self.groves.len() >= 16 { return -1; } self.groves.push([hx + a as f32, hy + b as f32, (c as f32).clamp(5.0, 60.0)]); self.map_ver += 1; 0 }
@@ -2130,6 +2265,27 @@ impl World {
     pub fn sick(&self) -> u32 { self.sick }
     pub fn efficiency(&self) -> u32 { self.eff }
 
+    /// Set how many workers the building at `idx` should have: -1 auto (the usual shares), 0 paused, up to its jobs (a better building employs more). 0 ok, -1 no such building or it employs nobody, -2 out of range.
+    pub fn set_workers(&mut self, idx: u32, n: i32) -> i32 {
+        let Some(b) = self.buildings.get_mut(idx as usize) else { return -1 };
+        let max = DEFS[b.kind as usize].jobs * (b.tier as u32 + 1);
+        if max == 0 { return -1; }
+        if n < -1 || n > max as i32 { return -2; }
+        b.target = n as i16; self.staffing(); 0
+    }
+    /// Per building, in the order of `buildings_flat`, five numbers: kind, most workers it can employ, how many the player wants (-1 auto), how many it has, 1 when it is scaled back below what was wanted.
+    pub fn staffing_flat(&self) -> Vec<i32> {
+        self.buildings.iter().flat_map(|b| { let max = DEFS[b.kind as usize].jobs * (b.tier as u32 + 1); let want = if b.target >= 0 { (b.target as u32).min(max) } else { max };
+            [b.kind as i32, max as i32, if b.target >= 0 { want as i32 } else { -1 }, b.staff as i32, (b.staff < want && b.target >= 0) as i32] }).collect()
+    }
+    /// The workforce in numbers: adults, workers (70% of the healthy adults, fewer in quarantine), children, elders, sick, jobs, workers placed, workers idle (placed nowhere), efficiency, workers promised by hand.
+    pub fn staffing_totals(&self) -> Vec<u32> {
+        let workers = (self.adults().saturating_sub(self.sick)) * 7 / 10 * if self.tick < self.quarantine_until { 7 } else { 10 } / 10;
+        let placed: u32 = self.buildings.iter().map(|b| b.staff).sum();
+        let promised: u32 = self.buildings.iter().filter(|b| b.target >= 0).map(|b| (b.target as u32).min(DEFS[b.kind as usize].jobs * (b.tier as u32 + 1))).sum();
+        vec![self.adults(), workers, self.children, self.elders, self.sick, self.jobs, placed, workers.saturating_sub(placed), self.eff, promised]
+    }
+
     /// How content the villagers are, 0..100: gardens, parks, chapels, markets, courts and wells lift it; hunger, plague, overcrowding and idle hands drag it down.
     /// Happy villages grow faster and pay more tax (x0.5 .. x1.5); unhappy ones grow slowly and pay little.
     pub fn happiness(&self) -> u32 {
@@ -2140,7 +2296,7 @@ impl World {
         if self.population > 0 { h -= (self.sick as i32 * 40) / self.population as i32; }
         if self.eff < 60 { h -= (60 - self.eff as i32) / 3; }
         if self.population > self.capacity() { h -= 10; }
-        if !self.warm { h -= 12; }
+        if !self.warm { h -= (4 + 4 * self.cold_days as i32).min(12); }
         h -= (self.unburied as i32 * 2).min(20);   // the dead lie unburied
         h += self.devotion / 10 + (2 * count(GRAVEYARD)).min(4) + (3 * self.buildings.iter().filter(|b| b.kind == HOSPITAL && b.staff > 0).count() as i32).min(6);
         h += self.perks().happy;
@@ -2153,6 +2309,21 @@ impl World {
     pub fn year(&self) -> u32 { (self.tick / DAY / SEASON_DAYS / 4) as u32 + 1 }
     /// Grain harvest now as a percentage of the usual (the season decides).
     pub fn grain_percent(&self) -> u32 { GRAIN_BY_SEASON[self.season() as usize] as u32 }
+    /// What winter means for this village right now, for the interface (read-only; every number comes from the rules above):
+    /// [0 grain %, 1 grain % with haystacks, 2 firewood burned per day at the present size (as if it were winter), 3 days of firewood left (x10; -1 when none is burned), 4 days cold in a row,
+    ///  5 warm (1/0), 6 cold days before anyone dies, 7 chance in percent that the cold takes someone today, 8 days until winter starts (0 in winter), 9 hospital beds, 10 woodsheds,
+    ///  11 hearth wood, 12 happiness lost to the cold now, 13 firewood in store, 14 days of winter left (0 outside winter), 15 firewood saved per day by woodsheds, 16 villagers per log, 17 death chance step %, 18 death chance cap %, 19 extra grace days with a hospital, 20 woodsheds that save one log per burn].
+    pub fn winter_numbers(&self) -> Vec<i32> {
+        let per_day = self.winter_need().max(0) * (DAY / WINTER_BURN_EVERY) as i32;
+        let left = if per_day > 0 { self.stock[W as usize].max(0) * 10 / per_day } else { -1 };
+        let into = (self.tick / DAY) % (SEASON_DAYS * 4); let winter = self.season() == 3;
+        let grace = WINTER_COLD_GRACE + if self.hospital_beds() > 0 { WINTER_HOSPITAL_GRACE } else { 0 };
+        let saved = (self.perks().woodsheds / WINTER_SHED_SAVES).min(((self.population + WINTER_HEADS_PER_WOOD - 1) / WINTER_HEADS_PER_WOOD) as i32) * (DAY / WINTER_BURN_EVERY) as i32;
+        vec![WINTER_GRAIN, WINTER_GRAIN_HAYSTACKS, per_day, left, self.cold_days as i32, self.warm as i32, grace as i32, if self.warm { 0 } else { self.cold_death_chance() as i32 },
+            if winter { 0 } else { ((SEASON_DAYS * 3 - into.min(SEASON_DAYS * 3)) as i32).max(0) }, self.hospital_beds() as i32, self.perks().woodsheds, WINTER_HEARTH_WOOD,
+            if self.warm { 0 } else { (4 + 4 * self.cold_days as i32).min(12) }, self.stock[W as usize], if winter { (SEASON_DAYS * 4 - into) as i32 } else { 0 }, saved,
+            WINTER_HEADS_PER_WOOD as i32, WINTER_DEATH_STEP as i32, WINTER_DEATH_MAX as i32, WINTER_HOSPITAL_GRACE as i32, WINTER_SHED_SAVES]
+    }
     /// Villagers of working age.
     pub fn adults(&self) -> u32 { self.population.saturating_sub(self.children + self.elders) }
     /// [children, adults, elders, couples]: the families behind the headcount.
@@ -2169,18 +2340,19 @@ impl World {
         let part = |f: &dyn Fn(&mut dyn FnMut(u64))| -> u64 { let mut h: u64 = 0xcbf29ce484222325 ^ self.seed; f(&mut |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); }); h };
         vec![
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
-                mix(self.tick); mix(self.rng.0); mix(self.raid_warning_ticks as u64); mix(self.raid_warning_angle.to_bits() as u64); mix(self.raid_warning_rf.to_bits() as u64); mix(self.raid_warning_boss as u64); mix(self.raid_warning_name as u64); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
+                mix(self.tick); mix(self.rng.0); mix(self.raid_warning_ticks as u64); mix(self.raid_warning_angle.to_bits() as u64); mix(self.raid_warning_rf.to_bits() as u64); mix(self.raid_warning_boss as u64); mix(self.raid_warning_name as u64); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.cold_days as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.greed as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
             part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } mix(self.meal_credit as i64 as u64); for s in &self.market_sold { mix(*s as i64 as u64); } }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
                 for b in &self.buildings {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
-                    mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64);
+                    mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64); mix(b.target as i64 as u64);
                     if matches!(b.kind, DRAWBRIDGE | GATE) { mix(b.status as u64); }
                 }
                 for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
+                for c in &self.road_conn { mix(c.x.to_bits() as u64); mix(c.y.to_bits() as u64); for t in &c.to { mix(t.x.to_bits() as u64); mix(t.y.to_bits() as u64); mix(t.k as u64); } }   // how the roads the player laid are joined
             }),
-            part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); } }),
+            part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); mix(d.asleep as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
             part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } }),
             part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); } } }),
@@ -2191,10 +2363,10 @@ impl World {
             part(&|mix| {   // the land the soldiers and the builders changed
                 for f in &self.felled { for v in f { mix(v.to_bits() as u64); } } mix(self.groves.len() as u64);
                 for b in &self.bridges { for v in b { mix(v.to_bits() as u64); } }
-                for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
+                for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for l in &self.flats { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
-            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8); mix(bt.lair as i64 as u64); } }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); mix(bt.lair as i64 as u64); } }),
         ]
     }
 
@@ -2238,9 +2410,21 @@ pub fn rules_fingerprint(seed: u64) -> String {
 }
 
 fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
+/// The ground under a farm is levelled flat out to FLAT from the edge of its fields, then eased into the land over the next stretch. The fields lie flat at the farm's pad height,
+/// so on a slope any field standing on ground higher than that would be buried.
+const FARM_PAD_FLAT: f32 = 0.9;
+const FARM_PAD_BLEND: f32 = 4.6;
+/// No field of a farm of any tier lies farther than this from its middle (plus the blend).
+const FARM_PAD_REACH: f32 = 22.0;
 
 #[cfg(test)]
+mod bribe_tests;
+#[cfg(test)]
+mod restart_tests;
+#[cfg(test)]
 mod lend_tests;
+#[cfg(test)]
+mod winter_tests;
 #[cfg(test)]
 mod ledger_tests;
 #[cfg(test)]
@@ -2248,6 +2432,8 @@ mod market_tests;
 
 #[cfg(test)]
 mod fish_tests;
+#[cfg(test)]
+mod workers_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2325,17 +2511,19 @@ mod tests {
     #[test]
     fn paths_connect_buildings_and_grade_terrain() {
         let mut w = World::new(1337, 0, 0);
+        w.stock = [3000; N_RES];
         w.place(HOUSE, 16, 0, 0);
         w.place(HOUSE, 28, 4, 0);
         let r = w.roads_flat();
-        assert_eq!(r.len(), 12, "two buildings, two path segments");
-        assert_eq!(r[5], 0.0, "first house links to the town hall");
-        // the middle of the path is graded to the line between the endpoint pads
+        assert!(r.chunks(6).all(|s| s[4] == s[5]), "nothing is laid by itself: only the stubs of the buildings");
+        assert_eq!(r.chunks(6).map(|s| s[4] as i32).collect::<std::collections::BTreeSet<_>>().len(), 3, "the hall and the two houses each have the path from their door");
+        // a road laid by hand from the hall's node to the first house's node is graded to the line between the pads
+        let (n0, n1) = (w.road_nodes_flat()[..2].to_vec(), w.road_nodes_flat()[4..6].to_vec());
+        assert_eq!(w.lay_road(&[n0[0] as i32 - w.ox, n0[1] as i32 - w.oy, 5, 7, 10, 7, n1[0] as i32 - w.ox, n1[1] as i32 - w.oy]), 0);
         let f = w.buildings_flat();
         let (a, b) = (f[10 + 5], f[0 + 5]);
         let mid = w.height_at(8.0, 0.0);
         assert!(mid >= a.min(b) - 0.8 && mid <= a.max(b) + 0.8, "path height {mid} between {a} and {b}");
-        // pads stay exactly flat even after paths were added
         let h = &DEFS[HOUSE as usize];
         for (px, py) in [(0.0, 0.0), (h.r, 0.0), (0.0, h.r)] { assert!((w.height_at(16.0 + px, py) - f[10 + 5]).abs() < 0.01); }
     }
@@ -2582,7 +2770,7 @@ mod tests {
 
     fn put(w: &mut World, kind: u8, x: f32, y: f32, rot: u8) {
         let pad_h = w.base(x, y);
-        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0 });
+        w.buildings.push(Building { kind, tier: 0, x, y, rot, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
     }
 
     #[test]
@@ -2933,21 +3121,12 @@ mod road_tests {
     }
 
     #[test]
-    fn every_building_is_chained_to_the_hall_by_roads() {
+    fn every_building_is_joined_to_the_hall_over_the_path_network() {
         let mut w = rich(); w.deposits.clear();
         let mut placed = 0;
         for (x, y) in [(16, 0), (28, 4), (22, 12), (40, -6), (-18, 8), (-30, 20), (-12, -20), (6, -26), (50, 30), (-60, -10), (70, -40), (30, 18), (33, 21)] { if w.place(HOUSE, x, y, 0) >= 0 { placed += 1; } }
         assert!(placed >= 8, "placed {placed}");
-        let n = w.buildings.len();
-        let mut comp: Vec<usize> = (0..n).collect();
-        fn find(c: &mut Vec<usize>, x: usize) -> usize { let mut r = x; while c[r] != r { r = c[r]; } r }
-        let mut links = 0;
-        for (c, p, _) in &w.road_paths { let (a, b) = (find(&mut comp, *c as usize), find(&mut comp, *p as usize)); if a != b { comp[a] = b; } links += 1; }
-        let h = find(&mut comp, 0);
-        for i in 0..n { assert_eq!(find(&mut comp, i), h, "building {i} is not chained to the hall"); }
-        assert!(links >= n - 1 && links <= n * 2, "links {links} for {n} buildings");
-        let mut seen = std::collections::HashSet::new();
-        for (c, p, _) in &w.road_paths { assert!(seen.insert((*c, *p)), "the same road twice"); }
+        for i in 0..w.buildings.len() { assert!(w.linked_to_hall(i), "building {i} is not joined to the hall over the path network"); }
     }
 
     #[test]
@@ -2956,7 +3135,7 @@ mod road_tests {
         ring(&mut w, 20.0, 44, MOAT);
         let outside = [(0, 36), (6, 38), (-8, 40), (12, 36), (-14, 36)].into_iter().map(|(x, y)| w.place(HOUSE, x, y, 0)).find(|&i| i >= 0).unwrap_or(-1);
         assert!(outside >= 0, "house outside the moat: {outside}");
-        let has_link = |w: &World, child: u32| { let v = w.road_paths_flat(); let mut i = 0; let mut found = false; while i < v.len() { let n = v[i + 2] as usize; if v[i] as u32 == child || v[i + 1] as u32 == child { found = true; } i += 3 + 2 * n; } found };
+        let has_link = |w: &World, child: u32| w.linked_to_hall(child as usize);
         assert!(!has_link(&w, outside as u32), "a house behind an unbroken moat gets no path at all");
         // no drawn segment may lie in water
         for s in w.roads_flat().chunks(6) { for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f); assert!(w.height_at(x, y) > 0.1, "path in water at {x},{y}"); } }
@@ -3087,7 +3266,7 @@ mod family_tests {
         let mut w = farm_world();
         assert_eq!(w.season(), 0);
         w.tick = DAY * SEASON_DAYS * 2; assert_eq!(w.season(), 2); assert_eq!(w.grain_percent(), 150);
-        w.tick = DAY * SEASON_DAYS * 3; assert_eq!(w.season(), 3); assert_eq!(w.grain_percent(), 25);
+        w.tick = DAY * SEASON_DAYS * 3; assert_eq!(w.season(), 3); assert_eq!(w.grain_percent(), WINTER_GRAIN as u32);
         w.tick = DAY * SEASON_DAYS * 4; assert_eq!((w.season(), w.year()), (0, 2));
         // the same farm makes more grain in autumn than in winter
         let make = |tick: u64| { let mut w = farm_world(); let i = [(-20, 14), (20, 14), (30, -20), (-30, -20)].into_iter().map(|(x, y)| w.place(FARM, x, y, 0)).find(|&i| i >= 0).expect("a farm site"); w.tick = tick; w.stock[GR as usize] = 0; w.population = 40; w.staffing(); for _ in 0..40 { w.step(); w.stock[W as usize] = 3000; w.stock[GR as usize] = w.stock[GR as usize].min(500); } let _ = i; w.stock[GR as usize] };
@@ -3132,6 +3311,19 @@ mod family_tests {
         let full = |i: usize| w.buildings[i].staff >= DEFS[w.buildings[i].kind as usize].jobs;
         assert!(full(f) && full(c), "the farm and the woodcutter are fully staffed first (eff first {}, rest {})", w.eff_first, w.eff_rest);
         assert!(w.eff_first >= w.eff_rest, "{} vs {}", w.eff_first, w.eff_rest);
+    }
+
+    #[test]
+    fn famine_takes_a_few_percent_a_day_not_a_villager_every_few_seconds() {
+        let mut w = farm_world(); w.population = 60; w.children = 0; w.elders = 0; w.stock = [0; N_RES];
+        let mut worst_day = 0;
+        for _day in 0..10 {
+            let before = w.died[DIED_HUNGER];
+            for _ in 0..(DAY as usize) { w.step(); w.stock = [0; N_RES]; w.population = w.population.max(20); }
+            worst_day = worst_day.max(w.died[DIED_HUNGER] - before);
+        }
+        assert!(w.died[DIED_HUNGER] >= 1, "a starving village does lose people");
+        assert!(worst_day <= 8, "famine takes a few percent of the village a day, not more than 8 of 60: {worst_day}");
     }
 
     #[test]
@@ -3726,31 +3918,6 @@ mod road_piece_tests {
     fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w }
 
     #[test]
-    fn road_pieces_link_into_the_path_network_like_the_automatic_roads() {
-        let mut w = rich(); let before = w.roads_flat().len();
-        let pieces: Vec<i32> = (0..8).map(|k| w.place(ROAD, 14 + k * 4, 6, 0)).collect();
-        assert!(pieces.iter().all(|&i| i >= 0), "the road can be laid: {pieces:?}");
-        assert!(w.roads_flat().len() >= before + 6 * 6, "each piece is joined to its neighbour by a stretch of path");
-        // the chain ends at the hall: every piece has a walkable route
-        let v = w.road_paths_flat(); let mut linked = std::collections::HashSet::new(); let mut i = 0;
-        while i < v.len() { linked.insert(v[i] as i32); i += 3 + 2 * v[i + 2] as usize; }
-        for &p in &pieces { assert!(linked.contains(&p), "piece {p} has a route"); }
-    }
-
-    #[test]
-    fn a_house_beyond_the_road_joins_it_and_roads_do_not_block_the_way() {
-        let mut w = rich();
-        for k in 0..6 { w.place(ROAD, 16 + k * 4, 4, 0); }
-        let h = w.place(HOUSE, 36, 12, 0); assert!(h >= 0);
-        let v = w.road_paths_flat(); let mut i = 0; let mut found = false;
-        while i < v.len() { if v[i] as i32 == h { found = true; } i += 3 + 2 * v[i + 2] as usize; }
-        assert!(found, "the house is connected through the road pieces");
-        // a field army walks straight over a road (nothing blocks it)
-        w.army = [10, 0, 0, 0, 0, 0]; let id = w.det_form(&[10, 0, 0, 0, 0, 0]); assert!(id > 0);
-        assert_eq!(w.det_march(id, 40.0, 4.0, false, 0.0, 0.0), 0, "a route over the road exists");
-    }
-
-    #[test]
     fn roads_are_cheap_cannot_go_in_water_and_are_not_raid_targets() {
         let mut w = rich(); let wood = w.stocks()[W as usize]; w.place(ROAD, 14, 4, 0);
         assert_eq!(w.stocks()[W as usize], wood - 1, "one wood a piece");
@@ -3834,7 +4001,7 @@ mod bridge_tests {
     fn people_and_armies_cross_a_bridge_and_so_do_raiders() {
         let mut w = with_moat();
         let out = w.place(HOUSE, 32, 0, 0); assert!(out >= 0, "a house outside the moat");
-        let has_link = |w: &World, c: i32| { let v = w.road_paths_flat(); let mut i = 0; let mut f = false; while i < v.len() { if v[i] as i32 == c { f = true; } i += 3 + 2 * v[i + 2] as usize; } f };
+        let has_link = |w: &World, c: i32| w.linked_to_hall(c as usize);
         assert!(!has_link(&w, out), "behind the moat with no way over: no path");
         let b = w.place(BRIDGE, 26, 0, 0); assert!(b >= 0, "bridge {b}");
         assert!(has_link(&w, out), "over the bridge the house is joined to the village");
@@ -4015,6 +4182,70 @@ mod deposit_tests {
         assert_ne!(w.can_place(HOUSE, (d.x - w.ox as f32) as i32, (d.y - w.oy as f32) as i32), -17, "nothing is in the way any more");
         assert_eq!(w.clear_deposit(99999), -1);
         let mut poor = World::new(1337, 0, 0); poor.stock = [0; N_RES]; assert_eq!(poor.clear_deposit(i), -6);
+    }
+
+    /// A quarry (6), clay pit (7), iron mine (9) or gold mine (10) beside the nearest deposit of its kind that lies within reach; returns the building index.
+    fn mine(w: &mut World, kind: u8) -> usize {
+        for r in [10i32, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50] { for a in 0..24 {
+            let t = a as f32 * 0.2618; let (dx, dy) = ((t.cos() * r as f32) as i32, (t.sin() * r as f32) as i32);
+            let i = w.place(kind, dx, dy, 0); if i >= 0 { return i as usize; }
+        } }
+        panic!("no place for kind {kind}")
+    }
+    fn rich() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.population = 400; w }
+
+    #[test]
+    fn a_tier_zero_mine_takes_weeks_to_empty_even_the_poorest_deposit() {
+        for (kind, bkind) in [(0usize, 6usize), (1, 7), (2, 9), (3, 10)] {
+            let d = &DEFS[bkind]; let per_day = d.outputs.iter().map(|&(_, n)| n).sum::<i32>() as f32 * DAY as f32 / d.cycle as f32;
+            for seed in [1u64, 7, 1337, 99] {
+                let deps = terrain::deposits(seed);
+                let poorest = deps.iter().filter(|x| x.kind as usize == kind).map(|x| x.max).min().expect("every kind exists");
+                assert!(poorest as f32 / per_day >= terrain::MIN_DAYS_TO_EMPTY as f32, "kind {kind} seed {seed}: {poorest} lasts only {} days", poorest as f32 / per_day);
+            }
+        }
+    }
+
+    #[test]
+    fn a_used_up_deposit_goes_dormant_stops_production_and_wakes_after_regrowing() {
+        let mut w = rich(); let b = mine(&mut w, 6); let di = w.buildings[b].aux as usize;
+        w.stock[ST as usize] = 0; let max = w.deposits[di].max;
+        for _ in 0..400 { w.step(); }
+        assert_eq!(w.buildings[b].status, 0, "working"); assert!(w.deposits[di].rem < max, "it is being worked");
+        w.deposits[di].rem = 1; w.stock[ST as usize] = 0;
+        for _ in 0..200 { w.step(); }
+        let dep = w.deposits[di]; assert!(dep.asleep && dep.rem * 100 < dep.max * terrain::WAKE_PCT && dep.max > 0, "dormant but still on the map");
+        assert_eq!(w.buildings[b].status, 7, "the building says its deposit is dormant");
+        let made = w.stock[ST as usize]; for _ in 0..100 { w.step(); } assert_eq!(w.stock[ST as usize], made, "nothing is produced");
+        let bd = w.building_deposit(b as u32); assert_eq!(bd[3], 1.0); assert_eq!(bd[2] as i32, dep.max);
+        // a day at a time: 2% of the maximum, awake from 15%
+        let mut days = 0;
+        while w.deposits[di].asleep && days < 40 { let t = w.tick; while w.tick / DAY == t / DAY { w.step(); } days += 1; w.stock[ST as usize] = 0; }
+        let need = (max * terrain::WAKE_PCT + 99) / 100; assert!(w.deposits[di].rem >= need, "woke at the threshold");
+        assert!((7..=9).contains(&days), "2% a day to 15% takes 8 days, took {days}");
+        for _ in 0..300 { w.step(); } assert!(w.stock[ST as usize] > 0, "working again");
+        assert_eq!(w.buildings[b].status, 0);
+    }
+
+    #[test]
+    fn a_cleared_deposit_never_regrows_and_a_worked_one_regrows_slower() {
+        let mut w = rich(); let b = mine(&mut w, 7); let di = w.buildings[b].aux as usize;
+        let other = (0..w.deposits.len()).find(|&i| i != di && w.deposits[i].max > 0).unwrap();
+        w.deposits[other].rem = 0; w.deposits[other].max = 0;   // cleared
+        w.deposits[di].rem = w.deposits[di].max / 2;
+        let idle = (0..w.deposits.len()).find(|&i| i != di && i != other && w.deposits[i].max > 0).unwrap(); w.deposits[idle].rem = w.deposits[idle].max / 2;
+        for _ in 0..(3 * DAY) { w.step(); }
+        assert_eq!(w.deposits[other].rem, 0, "cleared stays cleared");
+        assert!(w.deposits[idle].rem > w.deposits[idle].max / 2, "an idle deposit recovers");
+        let mut d = w.deposits[idle]; d.rem = 0; d.asleep = true; let mut e = d;
+        d.grow(false); e.grow(true); assert!(d.rem > e.rem, "nobody working it: faster");
+    }
+
+    #[test]
+    fn dormancy_and_regrowth_replay_the_same_and_change_the_hash() {
+        let run = || { let mut w = rich(); let b = mine(&mut w, 6); let di = w.buildings[b].aux as usize; w.deposits[di].rem = 40; for _ in 0..(12 * DAY) { w.step(); w.stock[W as usize] = 30000; } (w.state_hash(), w.deposits[di].rem, w.deposits[di].asleep) };
+        let (a, b) = (run(), run()); assert_eq!(a, b, "two replicas agree after dormancy and regrowth");
+        let mut w = rich(); let h = w.state_hash_parts()[3]; w.deposits[0].asleep = !w.deposits[0].asleep; assert_ne!(w.state_hash_parts()[3], h, "the deposits section sees the dormant flag");
     }
 }
 
@@ -4201,12 +4432,13 @@ mod pathnet_tests {
 
     #[test]
     fn the_network_has_roads_and_a_ring_round_every_building_and_stays_clear_of_them() {
-        let w = village(); let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize);
+        let mut w = village(); let nodes = w.road_nodes_flat(); assert_eq!(w.lay_road(&[nodes[0] as i32 - w.ox, nodes[1] as i32 - w.oy, 5, 8, 9, 8, nodes[4] as i32 - w.ox, nodes[5] as i32 - w.oy]), 0);
+        let v = w.net_flat(); let (n, e) = (v[0] as usize, v[1] as usize);
         assert!(n > 40 && e > n, "nodes {n}, edges {e}");
         let ed = edges(&w); assert!(ed.iter().any(|e| e.2), "road edges"); assert!(ed.iter().any(|e| !e.2), "ring and link edges");
-        for k in 0..n { let (x, y) = (v[2 + 2 * k], v[3 + 2 * k]); for b in &w.buildings { assert!((b.x - x).hypot(b.y - y) > footprint(b.kind, b.tier) * 0.9, "node ({x:.1},{y:.1}) inside a {}", DEFS[b.kind as usize].name); } }
+        for k in 0..n { let (x, y) = (v[2 + 2 * k], v[3 + 2 * k]); for b in w.buildings.iter().filter(|b| b.kind != ROAD) { assert!((b.x - x).hypot(b.y - y) > footprint(b.kind, b.tier) * 0.9, "node ({x:.1},{y:.1}) inside a {}", DEFS[b.kind as usize].name); } }
         // every edge is walkable: never through a building's footprint
-        for (a, b, _) in ed { let (pa, pb) = ((v[2 + 2 * a], v[3 + 2 * a]), (v[2 + 2 * b], v[3 + 2 * b])); for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f); for q in &w.buildings { assert!((q.x - x).hypot(q.y - y) > footprint(q.kind, q.tier) * 0.9, "edge crosses a {}", DEFS[q.kind as usize].name); } } }
+        for (a, b, _) in ed { let (pa, pb) = ((v[2 + 2 * a], v[3 + 2 * a]), (v[2 + 2 * b], v[3 + 2 * b])); for t in 0..=10 { let f = t as f32 / 10.0; let (x, y) = (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f); for q in w.buildings.iter().filter(|q| q.kind != ROAD) { assert!((q.x - x).hypot(q.y - y) > footprint(q.kind, q.tier) * 0.9, "edge crosses a {}", DEFS[q.kind as usize].name); } } }
     }
 
     #[test]
@@ -4370,6 +4602,32 @@ mod pathnet_tests {
         let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
         assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
         let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
+    }
+
+    #[test]
+    fn a_drawbridge_over_a_moat_stands_at_deck_height_not_on_the_moat_bed() {
+        // the building's height (what the model, its pick volume and its selection ring are placed at) is the deck, well above the moat's floor, at every angle round the ring
+        let mut seen = std::collections::BTreeSet::new();
+        for k in 0..16 {
+            let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+            for i in 0..56 { let a = i as f32 / 56.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
+            let a = k as f32 / 16.0 * std::f32::consts::TAU;
+            let s = w.drawbridge_snap((a.cos() * 18.0).round() as i32, (a.sin() * 18.0).round() as i32);
+            if s.len() != 3 { continue; }
+            let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); if br < 0 { continue; }
+            let b = &w.buildings[br as usize]; seen.insert(b.rot);
+            let bed = w.height_ground(b.x, b.y);   // the ditch's bed under the middle of the deck
+            assert!(b.pad_h > bed + 2.5, "rot {}: deck {} must lie well above the bed {}", b.rot, b.pad_h, bed);
+            assert!(b.pad_h >= 0.7, "rot {}: the deck is above the water surface: {}", b.rot, b.pad_h);
+            assert!(w.on_deck(b.x, b.y), "rot {}: soldiers walk on the deck", b.rot);
+            // the shore runs flush to both ends of the deck: dry ground under its last metres is at deck level (no gap, no step)
+            let ang = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (ang.sin(), ang.cos());
+            for sgn in [-1.0f32, 1.0] { for d in [6.0f32, 7.0, 9.0] {
+                let (px, py) = (b.x + sgn * sx * d, b.y + sgn * sy * d);
+                if w.base(px, py) > 0.6 { let g = w.height_ground(px, py); assert!((g - b.pad_h).abs() < 0.3, "rot {} end {sgn} at {d}: ground {g} vs deck {}", b.rot, b.pad_h); }
+            } }
+        }
+        assert!(seen.len() >= 2, "several rotations covered: {seen:?}");
     }
 
     #[test]

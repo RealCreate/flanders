@@ -1,18 +1,23 @@
 import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
-import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, type BuildingDef } from '../data';
+import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, tierName, type BuildingDef } from '../data';
 import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
+import { group, workNote, verdict, understaffed, kindOutputs, FILTERS, SORTS, type WorkRow, type WorkTotals, type Filter, type Sort } from '../workview';
 
 /** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
-const FOOD_KEYS = ['grain', 'fish', 'smokedfish', 'bread'];
+const FOOD_KEYS = ['grain', 'fish', 'smokedfish', 'bread', 'meat', 'smokedmeat'];
 const FOOD_ID = -2, CLOSED = -1;   // (the breakdown panel shows resource `i`, or all the foods at once)
 const bi = (name: string, size = 16) => icon(name, size, { mono: true });
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
 import { mountFlagDesigner, paintFlag } from './flagdesigner';
 import { mountSettings } from './settingsui';
+import { mountRestart, type RestartHooks } from './restartui';
+import { downloadBackup } from '../backup';
 import { loadFlag, saveFlag } from '../flag';
+import { versionLabel } from '../version';
+import { renderNotes } from '../releasenotes';
 
 /** The keys bound to an action, as they are now (after any rebinding), e.g. "W / Z / ↑". */
 export const keyNames = (a: Action) => keys.binds[a].map(k => `<kbd>${prettyKey(k).toUpperCase()}</kbd>`).join(' ');
@@ -31,12 +36,21 @@ export const WORLDS = ['flanders', 'brabant', 'hainaut', 'limburg', 'ardennes', 
 const worldOptions = (cur: string) => [...new Set([...WORLDS, cur])].map(w => `<option value="${esc(w)}" ${w === cur ? 'selected' : ''}>${esc(w.charAt(0).toUpperCase() + w.slice(1))}</option>`).join('') + '<option value="__custom">Custom…</option>';
 
 export interface Handlers {
+  /** Start the village again (see restart.ts): what the dialog shows, doing it, and bringing the archived village back. */
+  restartInfo: RestartHooks['info']; restartRun: RestartHooks['run']; restartRestore: RestartHooks['restore'];
   start(world: string, name: string): void;
   select(kind: number | null): void;
   act(name: string): void;
   upgradeHover(on: boolean): void;
+  /** The pointer is on (sign 1 / -1) or has left (0) the rate of these resources: light up the buildings behind it. */
+  stockHover(res: number[], sign: number): void;
+  /** One tooltip line per building kind behind the rate, plus the non-building sources. */
+  stockInfo(res: number[], sign: number): { kind: number; html: string }[];
+  /** Centre the camera on the next building behind the rate (of one kind, or of any). Returns false when there is none. */
+  stockGo(res: number[], sign: number, kind?: number): boolean;
   speed(n: number): void;
   toggleResources(): void;
+  toggleCoverage(): void;
   minimapClick(x: number, z: number): void;
   train(kind: number, n: number): void;
   attack(peerKey: string, units: number[]): void;
@@ -51,18 +65,28 @@ export interface Handlers {
   toggleMute(): void;
   muster(units: number[]): void;
   detAction(action: string, id: number): void;
+  /** Set how many workers a building should have (-1 auto, 0 paused). */
+  setWorkers(idx: number, n: number): void;
+  /** Bulk changes from the work overview: 'auto' every building, 'auto:K' / 'pause:K' every building of kind K. */
+  workAll(action: string): void;
+  /** Centre the camera on a building and select it. */
+  goBuilding(idx: number): void;
 }
 
 export interface Hud {
   tick: number; stocks: number[]; rates: number[]; flow?: FlowData; kinds?: number[]; food?: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
   radius: number; buildings: number; storage: number;
   vitals?: number[]; beds?: number; devotion?: number;
+  /** Everybody's work, only filled while the work overview is open. */
+  work?: { rows: WorkRow[]; totals: WorkTotals };
+  winter?: number[];   // the core's winter_numbers()
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
 }
 
 export interface PeerRow { key: string; name: string; where?: string; online?: boolean; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
 
+import { parseWinter, winterTip, winterWarning, winterLines } from '../winter';
 const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
 const BUILDABLE = defs.filter(d => d.id !== 15).sort((a, b) => a.cat - b.cat || a.id - b.id);
 
@@ -106,7 +130,7 @@ export class UI {
     <span class="pill" id="v-army" title="Soldiers in your army"><span class="ic">${icon('army', 16)}</span><b>0</b></span>
     <span class="pill" id="v-sick" title="Villagers sick with plague"><span class="ic">${icon('plague', 16)}</span><b>0</b></span>
     <span class="pill" id="v-joy" title="Happiness: gardens, parks, chapels, markets and courts lift it; hunger, plague and overcrowding lower it. Happy villages grow faster and pay more tax."><span class="ic">${icon('happy', 16)}</span><b>50</b></span>
-    <span class="pill" id="v-work" title="Workforce efficiency: jobs vs. available workers"><span class="ic">${icon('work', 16)}</span><b>100%</b></span>
+    <span class="pill" id="v-work" title="Workforce efficiency: jobs vs. available workers. Click for the work overview, where you can assign villagers."><span class="ic">${icon('work', 16)}</span><b>100%</b></span>
   </div>
   <div class="tools">
   <div class="speed" id="speed">
@@ -116,6 +140,7 @@ export class UI {
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
   <button class="btn" id="btn-mp" title="Players in this world">${bi('globe')} <span id="mp-count">Online</span></button>
   <button class="btn" id="btn-map" title="Full-screen map (M)">${bi('map')} Map</button>
+  <button class="btn" id="btn-cov" aria-pressed="false" title="Show how far wells and towers reach, and what they leave unprotected (C)">${bi('coverage')} Show coverage</button>
   <div class="menuwrap">
     <button class="btn" id="btn-menu" title="Menu: display settings, sound, deposits, full screen, help" aria-haspopup="true" aria-expanded="false">${bi('menu')} Menu</button>
     <div id="menu" hidden>
@@ -179,8 +204,8 @@ export class UI {
       ${icon('ironore', 16)} Iron ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Smelter <span class="arrow">→</span> ${icon('iron', 16)} Iron<br>
       ${icon('iron', 16)} Iron + ${icon('charcoal', 16)} <span class="arrow">→</span> Blacksmith <span class="arrow">→</span> ${icon('tools', 16)} Tools<br>
       ${icon('goldore', 16)} Gold ore + ${icon('charcoal', 16)} <span class="arrow">→</span> Mint <span class="arrow">→</span> ${icon('gold', 16)} Gold<br>
-      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('grain', 16)} Venison<br>
-      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish<br>
+      ${icon('deer', 16)} Hunters <span class="arrow">→</span> Hunter's Lodge <span class="arrow">→</span> ${icon('meat', 16)} Meat<br>
+      Fishing Hut <span class="arrow">→</span> ${icon('fish', 16)} Fish + ${icon('wood', 16)} <span class="arrow">→</span> Smokehouse <span class="arrow">→</span> ${icon('smokedfish', 16)} Smoked fish (or ${icon('meat', 16)} Meat + ${icon('wood', 16)} <span class="arrow">→</span> ${icon('smokedmeat', 16)} Smoked meat, when set to meat)<br>
       Farm <span class="arrow">→</span> ${icon('grain', 16)} Grain + ${icon('wood', 16)} <span class="arrow">→</span> Bakery <span class="arrow">→</span> ${icon('bread', 16)} Bread. Cooked food fills more than raw: the village eats from all its stores together.</div>
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
@@ -209,7 +234,12 @@ export class UI {
     <div class="btnrow"><button class="pbtn primary" id="found">Enter the world</button></div>
     <p class="muted">There is no game server: every player runs a copy of the game and your browsers connect to each other. Your village is saved in this browser and keeps growing while you are away.</p>
     <div class="btnrow"><button class="pbtn" id="home-keys-btn">${bi('keys')} Controls and keybindings</button><button class="pbtn" id="home-display-btn">${bi('gear')} Display settings</button></div>
+    <p class="muted tiny verline"><span id="home-version" title="The build you are running. The rules fingerprint to compare with other players is under The shared world, once you are in.">${esc(versionLabel())}</span> · <a href="#" id="home-notes-btn">Release notes</a></p>
   </div>
+</div>
+<div class="overlay" id="notes" hidden style="z-index:21">
+  <div class="sheet wide"><h2>Release notes</h2><p class="muted tiny">${esc(versionLabel())}</p><div id="notes-body">${renderNotes()}</div>
+    <div class="btnrow"><button class="pbtn primary" data-close="notes">Back</button></div></div>
 </div>
 <div class="overlay" id="flag-page" hidden style="z-index:21">
   <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. You can change it later from the Village tab.</p><div id="intro-flag"></div>
@@ -219,6 +249,9 @@ export class UI {
   <div class="sheet wide"><h2>Display settings</h2><p class="muted">Saved in this browser. These only change how the game looks on your screen, never the game itself.</p>
     <div id="display-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="display">Done</button></div></div>
+</div>
+<div class="overlay" id="restart" hidden style="z-index:39">
+  <div class="sheet wide"></div>
 </div>
 <div class="overlay" id="confirm" hidden style="z-index:40">
   <div class="sheet"><h2 id="confirm-title">Are you sure?</h2><p id="confirm-text"></p>
@@ -255,10 +288,19 @@ export class UI {
   <div class="sheet flowsheet"><h2 id="flow-title"></h2><div id="flow-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="flow">Close</button></div></div>
 </div>
+<div class="overlay clear" id="work" hidden>
+  <div class="sheet flowsheet worksheet"><h2 id="work-title">${icon('work', 26)} Work</h2><div id="work-body"></div>
+    <div class="btnrow"><button class="pbtn primary" data-close="work">Close</button></div></div>
+</div>
+<div class="overlay clear" id="winter" hidden>
+  <div class="sheet flowsheet"><h2 id="winter-title"></h2><div id="winter-body"></div>
+    <div class="btnrow"><button class="pbtn primary" data-close="winter">Close</button></div></div>
+</div>
 <div class="overlay clear" id="mp" hidden>
   <div class="sheet">
     <h2>The shared world</h2>
     <p class="muted">Everyone who enters world <b id="mp-world"></b> lives on the same map. Your browser connects directly to the other players — nothing is stored on a server, and commands are signed so nobody can forge your moves.</p>
+    <p class="muted tiny" id="mp-build" title="Players with a different rules fingerprint run different game rules and will see different villages for each other">${esc(versionLabel())}</p>
     <div class="netstat" id="net-status">Looking for other players…</div>
     <ul class="log" id="mp-peers"></ul>
     <div class="btnrow"><button class="pbtn" id="mp-copy">${bi('copy')} Copy invite link</button><button class="pbtn primary" data-close="mp">Close</button></div>
@@ -277,6 +319,7 @@ export class UI {
     const mini = $('flag-mini').querySelector('canvas') as HTMLCanvasElement; paintFlag(mini, loadFlag());
     mountFlagDesigner($('intro-flag'), loadFlag(), f => { saveFlag(f); paintFlag(mini, f); });
     $('flag-mini').onclick = () => { $('flag-page').hidden = false; }; $('flag-done').onclick = () => { $('flag-page').hidden = true; };
+    $('home-notes-btn').onclick = e => { e.preventDefault(); this.modal('notes', true); };
     $('home-keys-btn').onclick = () => this.modal('help', true); $('home-display-btn').onclick = () => this.modal('display', true);   // separate pages, also before the game starts
     // rebinding a key must work on the start page too, before the game's own key handler exists
     document.addEventListener('keydown', e => { this.captureKey(e); }, true);
@@ -289,7 +332,7 @@ export class UI {
       const c = (e.target as HTMLElement).dataset.c; if (c === undefined) return;
       this.filter = Number(c);
       $('cats').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', (x as HTMLElement).dataset.c === c));
-      this.cards.forEach((el, id) => { const road = id === 37 || id === 38; el.hidden = this.filter >= 0 && (this.filter === 7 ? !road : road || defs[id].cat !== this.filter); });
+      this.cards.forEach((el, id) => { el.hidden = this.filter >= 0 && (defs[id]?.cat ?? CATS.length - 1) !== this.filter; });
     };
     $('speed').onclick = e => { const s = (e.target as HTMLElement).dataset.s; if (s !== undefined) this.h.speed(Number(s)); };
     { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
@@ -298,12 +341,26 @@ export class UI {
       document.addEventListener('pointerdown', e => { if (!menu.hidden && !(e.target as HTMLElement).closest('.menuwrap')) close(); });
       addEventListener('keydown', e => { if (e.key === 'Escape') close(); }); }
     $('btn-res').onclick = () => this.h.toggleResources();
+    $('btn-cov').onclick = () => this.h.toggleCoverage();
     $('btn-sound').onclick = () => this.h.toggleMute();
     this.initTitleTips();
+    $('sub').onclick = () => { this.modal('winter', true); if (this.lastHud) this.renderWinter(this.lastHud); };
     $('btn-help').onclick = () => this.modal('help', true);
-    $('btn-display').onclick = () => this.modal('display', true);
+    const restart = mountRestart($('restart'), { info: () => this.h.restartInfo(), run: () => this.h.restartRun(), restore: () => this.h.restartRestore(), backup: () => downloadBackup(), toast: (t, k) => this.toast(t, k) });
+    $('btn-display').onclick = () => { this.modal('display', true); void restart.drawSection($('restart-section')); };
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
+    $('v-work').onclick = () => this.openWork();
+    $('work-body').onclick = e => this.workClick(e); $('work-body').onchange = e => this.workChange(e);
+    for (const id of ['work-body', 'pane-sel']) $(id).addEventListener('pointerdown', e => { if ((e.target as HTMLElement).matches?.('input[type=range]')) this.sliding = true; });
+    addEventListener('pointerup', () => { setTimeout(() => (this.sliding = false), 0); });
+    $('pane-sel').oninput = e => { const t = e.target as HTMLInputElement; if (t.dataset.wk !== undefined) { const o = t.parentElement?.querySelector('.wkval'); if (o) o.textContent = t.value; } };
+    $('pane-sel').addEventListener('change', e => { const t = e.target as HTMLInputElement; if (t.dataset.wk !== undefined) this.h.act(`wk:set:${t.value}`); });
+    $('flow-body').onclick = e => {   // "Show on map": close the breakdown and look at the next building of that kind
+      const b = (e.target as HTMLElement).closest<HTMLElement>('[data-show]'); if (!b) return;
+      const [res, sign, kind] = b.dataset.show!.split(':').map(Number);
+      this.modal('flow', false); this.h.stockGo([res], sign, kind);
+    };
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => this.modal(b.dataset.close!, false));
     $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').innerHTML = `${bi('check')} Copied`; setTimeout(() => ($('mp-copy').innerHTML = `${bi('copy')} Copy invite link`), 1800); };
     { const up = (e: Event) => this.h.upgradeHover(!!(e.target as HTMLElement).closest('[data-act="upgrade"]'));   // hovering Upgrade outlines the bigger building
@@ -334,8 +391,9 @@ export class UI {
 
   // ---- loading screen ----
   private tips = ['Hunters keep the larder full if a forest is near.', 'Stone buildings shrug off fire; thatch does not.', 'Wells and chapels keep the plague away. When it comes it lasts 10 to 20 days: it spreads, peaks and fades, and a hospital, a chapel, a graveyard and a quarantine save lives.', 'Paths appear on their own between your buildings.', 'Press V to reveal ore and stone deposits.', 'Your village keeps growing while you are away.', 'Walls link up by themselves when placed close together.'];
+  private lastPhase = '';   // (each phase of the loading screen leaves a performance mark, so a slow start can be read off the timeline)
   beginLoading() { $('intro').hidden = true; $('loader').hidden = false; $('ltip').textContent = this.tips[Math.floor(Math.random() * this.tips.length)]; this.progress(1, 'Preparing the world…'); }
-  progress(p: number, text: string) { ($('lbar-i') as HTMLElement).style.width = p + '%'; $('ltext').textContent = text; }
+  progress(p: number, text: string) { if (text !== this.lastPhase) { this.lastPhase = text; performance.mark('load: ' + text); } ($('lbar-i') as HTMLElement).style.width = p + '%'; $('ltext').textContent = text; }
   private finishLoading() { ($('lbar-i') as HTMLElement).style.width = '100%'; const l = $('loader'); l.style.transition = 'opacity .5s'; l.style.opacity = '0'; setTimeout(() => { l.hidden = true; l.style.opacity = ''; l.style.transition = ''; }, 520); }
 
   // ---- collapsible panels (remembered between visits) ----
@@ -451,6 +509,8 @@ export class UI {
     $('cheats').onclick = e => { const target = e.target as HTMLElement; const flat = target.closest<HTMLElement>('[data-flat-radius]'); if (flat) { const radius = Number(flat.dataset.flatRadius); const height = Number(($('flat-height') as HTMLInputElement).value); if (Number.isFinite(height) && height >= 0 && height <= 24) this.h.cheat(102, radius, Math.round(height * 10)); return; } const b = target.closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
   }
 
+  /** Show the rules fingerprint (the hash other players compare) next to the build in The shared world and in the home page tooltip. */
+  setRules(fp: string) { const t = `${versionLabel()} · rules ${fp}`; $('mp-build').textContent = t; $('home-version').title = `Rules fingerprint ${fp}: players with the same one play by the same rules.`; }
   modal(id: string, show: boolean) { $(id).hidden = !show; }
 
   /** The game's own yes/no question (in place of the browser's confirm box). Resolves true on yes; Esc, the backdrop and Cancel mean no. */
@@ -507,6 +567,20 @@ export class UI {
       c.onclick = () => this.h.select(d.id);
       el.appendChild(c); this.cards.set(d.id, c);
     });
+    // the level-ground tool sits last, with the other tools of the Land category
+    const lc = document.createElement('div');
+    lc.className = 'card'; lc.dataset.id = String(LEVEL_TOOL);
+    lc.innerHTML = `<div class="ico">${icon('levelground', 30)}</div><div><div class="nm"><span>Level Ground</span></div>
+      <div class="ds">Levels a round patch of ground to the land just outside it: fills pits and cuts bumps, and takes away any ditch or earthworks inside. R changes the size. Buildings in the patch must already stand at that height.</div><div class="cost level-cost"></div></div>`;
+    lc.onclick = () => this.h.select(LEVEL_TOOL);
+    el.appendChild(lc); this.cards.set(LEVEL_TOOL, lc);
+  }
+
+  /** The cost line of the level-ground card for the patch size now chosen: flat [resource, amount, ...]. */
+  setLevelCost(flat: number[]) {
+    const c = this.cards.get(LEVEL_TOOL)?.querySelector('.cost'); if (!c) return;
+    const parts: string[] = []; for (let i = 0; i + 1 < flat.length; i += 2) parts.push(`<span data-r="${flat[i]}" data-n="${flat[i + 1]}">${resIcon(flat[i])} ${flat[i + 1]}</span>`);
+    c.innerHTML = parts.join('');
   }
 
   private buildUnits() {
@@ -546,17 +620,73 @@ export class UI {
     RES.forEach((r, i) => {
       const p = document.createElement('span'); p.className = 'pill'; p.dataset.i = String(i);
       p.innerHTML = `<span class="ic">${icon(r.key, 18)}</span><b>0</b><span class="d"></span>`;
-      p.onmouseenter = () => { this.hoverPill = i; this.tipFor(i); };
-      p.onclick = () => this.openFlow(i); p.title = '';
-      p.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
+      p.onmouseenter = () => { this.hoverPill = i; this.stockOn(i); this.tipFor(i); };
+      p.onclick = e => { if (this.rateClick(e, i)) return; this.openFlow(i); }; p.title = '';
+      p.onmouseleave = () => { this.hoverPill = -1; this.stockOff(); this.lastTip = ''; $('tooltip').hidden = true; };
       t.appendChild(p); this.pills.push(p);
       if (FOOD_KEYS.includes(r.key)) p.hidden = true;   // the foods are one pill: Food
     });
     const fp = document.createElement('span'); fp.className = 'pill'; fp.dataset.i = String(RES.length);
     fp.innerHTML = `<span class="ic">${icon('food', 18)}</span><b>0</b><span class="d"></span>`;
-    fp.onmouseenter = () => { this.hoverPill = RES.length; this.tipFor(RES.length); }; fp.onclick = () => this.openFlow(FOOD_ID);
-    fp.onmouseleave = () => { this.hoverPill = -1; this.lastTip = ''; $('tooltip').hidden = true; };
+    fp.onmouseenter = () => { this.hoverPill = RES.length; this.stockOn(RES.length); this.tipFor(RES.length); }; fp.onclick = e => { if (this.rateClick(e, RES.length)) return; this.openFlow(FOOD_ID); };
+    fp.onmouseleave = () => { this.hoverPill = -1; this.stockOff(); this.lastTip = ''; $('tooltip').hidden = true; };
     t.insertBefore(fp, this.pills[RES.findIndex(r => r.key === 'grain')]); this.pills.push(fp);
+  }
+  /** The resources behind a pill (the Food pill stands for all the foods) and the side of the rate the pointer is on: what makes it (+) or what uses it (-). */
+  private pillRes(i: number): number[] { return i === RES.length ? Array.from({ length: Math.floor((this.lastHud?.food?.length ?? 0) / 2) }, (_, k) => this.lastHud!.food![k * 2]) : [i]; }
+  private pillSign(_i: number): number { return 2; }   // the pill stands for both sides: what makes the resource and what uses it
+  private stockOn(i: number) { this.h.stockHover(this.pillRes(i), this.pillSign(i)); }
+  private stockOff() { this.h.stockHover([], 0); }
+  /** A click on the number or the rate steps the camera through the buildings behind it; elsewhere on the pill it opens the breakdown. */
+  private rateClick(e: MouseEvent, i: number): boolean {
+    if (!(e.target as HTMLElement).closest('.d, b')) return false;
+    this.h.stockGo(this.pillRes(i), this.pillSign(i)); return true;
+  }
+  private sliding = false;
+  private workFilter: Filter = 'all'; private workSort: Sort = 'kind';
+  /** True while the work overview is showing (the game then hands it the workers every update). */
+  get workOpen() { return !$('work').hidden; }
+  openWork() { this.modal('work', true); this.h.act('wk:refresh'); }
+  private workClick(e: Event) {
+    const t = e.target as HTMLElement;
+    const f = t.closest<HTMLElement>('[data-wf]'); if (f) { this.workFilter = f.dataset.wf as Filter; if (this.lastHud) this.renderWork(this.lastHud); return; }
+    const s = t.closest<HTMLElement>('[data-ws]'); if (s) { this.workSort = s.dataset.ws as Sort; if (this.lastHud) this.renderWork(this.lastHud); return; }
+    const a = t.closest<HTMLButtonElement>('[data-wa]'); if (a && !a.disabled) { this.h.workAll(a.dataset.wa!); return; }
+    const b = t.closest<HTMLButtonElement>('[data-wset]'); if (b && !b.disabled) { const [i, n] = b.dataset.wset!.split(':').map(Number); this.h.setWorkers(i, n); return; }
+    const g = t.closest<HTMLElement>('[data-wgo]'); if (g && !t.closest('button, input')) { this.modal('work', false); this.h.goBuilding(Number(g.dataset.wgo)); }
+  }
+  private workChange(e: Event) { const t = e.target as HTMLInputElement; if (t.dataset.wslide !== undefined) this.h.setWorkers(Number(t.dataset.wslide), Number(t.value)); }
+  /** The work overview: every workplace by kind with who works there, the totals of the village's hands, and the controls to assign them. */
+  private renderWork(h: Hud) {
+    if (!h.work || this.sliding) return;
+    const { rows, totals: t } = h.work, flow = h.flow;
+    const producesOf = (k: number) => (defs[k]?.cycle ?? 0) > 0;
+    const groups = group(rows, this.workFilter, this.workSort, producesOf);
+    const chips = (list: { id: string; label: string }[], cur: string, attr: string) => list.map(c => `<button class="pbtn chip ${c.id === cur ? 'on' : ''}" data-${attr}="${c.id}">${c.label}</button>`).join('');
+    const stat = (n: number | string, label: string, tip = '') => `<div class="stat" title="${esc(tip)}"><b>${n}</b><span>${label}</span></div>`;
+    const housekeeping = Math.max(0, t.adults - t.sick - t.workers);
+    let html = `<div class="stats">${stat(t.adults, 'Adults')}${stat(t.workers, 'Workers', 'Seven in ten healthy adults work (fewer under quarantine)')}${stat(t.jobs, 'Jobs')}${stat(t.placed, 'At work')}${stat(t.idle, 'Idle workers')}${stat(t.jobs ? `${t.eff}%` : '–', 'Efficiency')}</div>
+      <p class="muted">Not working: ${t.children} children, ${t.elders} elders, ${t.sick} sick and ${housekeeping} adults who keep house. ${esc(workNote(t))}</p>
+      <div class="btnrow wrap"><button class="pbtn" data-wa="auto" title="Hand every building back to automatic staffing">Auto-assign all</button></div>
+      <div class="btnrow wrap chips">${chips(FILTERS, this.workFilter, 'wf')}</div><div class="btnrow wrap chips">${chips(SORTS, this.workSort, 'ws')}</div>`;
+    if (!groups.length) html += `<p class="muted">${rows.length ? 'Nothing matches that filter.' : 'No workplaces yet.'}</p>`;
+    for (const g of groups) {
+      const out = flow ? kindOutputs(flow.lines, flow.covered, g.kind) : [];
+      const outs = out.length ? out.map(([r, n]) => `${resIcon(r, 14)} +${n}/day`).join(' ') : '';
+      const nm = esc(defs[g.kind]?.name ?? '?');
+      html += `<h3 class="workh">${kindIcon(g.kind, 18)} ${nm} <span class="muted">× ${g.rows.length} · ${g.staff}/${g.max} workers${outs ? ` · ${outs}` : ''}</span></h3>
+        <div class="btnrow wrap workacts"><button class="pbtn" data-wa="auto:${g.kind}">Auto</button><button class="pbtn" data-wa="pause:${g.kind}" ${g.paused === g.rows.length ? 'disabled' : ''} title="Pause every ${nm}: nobody works there">Pause all</button></div>`;
+      for (const r of g.rows) {
+        const v = verdict(r, producesOf(r.kind)), wanted = r.want < 0 ? r.max : Math.min(r.want, r.max);
+        html += `<div class="workrow ${understaffed(r) ? 'short' : ''} ${v === 'paused' ? 'paused' : ''}" data-wgo="${r.idx}" title="Click to look at it on the map">
+          <span class="wn">${esc(tierName(r.kind, r.tier) ?? nm)}</span>
+          <span class="wc"><button class="pbtn" data-wset="${r.idx}:${Math.max(0, wanted - 1)}" ${wanted <= 0 ? 'disabled' : ''} aria-label="Fewer workers">−</button><input type="range" min="0" max="${r.max}" value="${wanted}" data-wslide="${r.idx}" aria-label="Workers"><button class="pbtn" data-wset="${r.idx}:${Math.min(r.max, wanted + 1)}" ${wanted >= r.max ? 'disabled' : ''} aria-label="More workers">+</button>
+          <button class="pbtn ${r.want < 0 ? 'on' : ''}" data-wset="${r.idx}:-1" title="Let the village decide">Auto</button></span>
+          <span class="wt"><b>${r.staff}</b> / ${wanted}${r.want < 0 ? '' : ` of ${r.max}`}${r.scaled ? ' <span class="neg" title="Not enough workers: scaled back">▾</span>' : ''}</span>
+          <span class="ws ${v === 'working' ? 'ok' : 'bad'}">${v}</span></div>`;
+      }
+    }
+    const body = $('work-body'), keep = body.parentElement!.scrollTop; body.innerHTML = html; body.parentElement!.scrollTop = keep;
   }
   private flowOpen = CLOSED; private lastHud: Hud | null = null;
   /** The breakdown of one resource: what makes it and what uses it, per day (from the core's ledger of the last day). */
@@ -568,7 +698,9 @@ export class UI {
       return `<tr title="${esc(x.hint)}"><td>${icon(x.ic as IconName, 18)}</td><td>${esc(x.label)}${r.count > 1 ? ` <span class="muted">× ${r.count}</span>` : ''}</td><td class="r">${sign}${Math.round(r.perDay)}/day</td></tr>`;
     }).join('') : `<tr><td></td><td class="muted">Nothing</td><td></td></tr>`;
     const b = breakdown(h.flow!, i, c => (c < h.flow!.nk ? h.kinds?.[c] ?? 0 : 0));
-    return { b, html: `<h3>Comes in</h3><table class="flowtab">${rows(b.sources, '+')}</table><h3>Goes out</h3><table class="flowtab">${rows(b.sinks, '\u2212')}</table>` };
+    const mine = (sign: number) => this.h.stockInfo([i], sign).filter(l => l.kind >= 0).map(l => `<tr><td></td><td>${l.html}</td><td class="r"><button class="pbtn" data-show="${i}:${sign}:${l.kind}">Show on map</button></td></tr>`).join('');
+    const sb = mine(1), kb = mine(-1);
+    return { b, html: `<h3>Comes in</h3><table class="flowtab">${rows(b.sources, '+')}</table>${sb ? `<table class="flowtab flowbld">${sb}</table>` : ''}<h3>Goes out</h3><table class="flowtab">${rows(b.sinks, '\u2212')}</table>${kb ? `<table class="flowtab flowbld">${kb}</table>` : ''}` };
   }
   private renderFlow(h: Hud) {
     const i = this.flowOpen; if (i === CLOSED || !h.flow) return;
@@ -589,12 +721,25 @@ export class UI {
     $('flow-title').innerHTML = `${resIcon(i, 26)} ${RES[i].name}`;
     $('flow-body').innerHTML = `<p class="muted">${v} / ${h.storage} stored · steady rate <b class="${b.steady < 0 ? 'neg' : b.steady > 0 ? 'pos' : ''}">${fmtRate(b.steady)}</b>${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)}</b>` : ''}</p>${html}${foot(b.covered, b.net, b.steady)}`;
   }
+  private warnedDay = '';
+  /** What winter does here, with this village's numbers (the panel behind the season in the top bar). */
+  private renderWinter(h: Hud) {
+    if (!h.winter) return;
+    const season = Math.floor((Math.floor(h.tick / 240)) / 10) % 4, lines = winterLines(parseWinter(h.winter), h.pop, season);
+    $('winter-title').innerHTML = `${icon('cold', 26)} Winter`;
+    $('winter-body').innerHTML = `<table class="flowtab winter">${lines.map(l => `<tr><td>${icon(l.icon as IconName, 22)}</td><td><b class="${l.tone === 'bad' ? 'neg' : l.tone === 'good' ? 'pos' : ''}">${esc(l.title)}</b><div class="muted">${esc(l.text)}</div></td></tr>`).join('')}</table>`;
+  }
   private lastTip = '';
   private pillText: string[] = [];
   /** Show the resource tooltip under its pill. The DOM is only touched when the text really changed, so it never flickers. */
   private tipFor(i: number) {
-    const el = $('tooltip'), html = this.pillText[i] ?? '';
+    const el = $('tooltip');
+    let html = this.pillText[i] ?? '';
     if (!html) return;
+    for (const sg of [1, -1]) {
+      const lines = this.h.stockInfo(this.pillRes(i), sg);
+      if (lines.length) html += `<small class="hlhead">${sg > 0 ? 'Made by' : 'Used by'}${sg > 0 ? ' (lit on the map; click the number to look at each)' : ''}</small>` + lines.map(l => `<small class="hlline">${l.html}</small>`).join('');
+    }
     if (html !== this.lastTip || el.hidden) { this.lastTip = html; el.innerHTML = html; el.hidden = false; }
     const r = this.pills[i].getBoundingClientRect(); el.style.left = Math.min(innerWidth - 280, r.left) + 'px'; el.style.top = (r.bottom + 6) + 'px';
   }
@@ -607,7 +752,13 @@ export class UI {
     const day = Math.floor(h.tick / 240) + 1, season = SEASONS[Math.floor((day - 1) / 10) % 4];
     const ph = dayPhase(h.tick);
     $('sub').textContent = `${this.owner ? this.owner + ' · ' : ''}Day ${day} · ${season} · ${clockText(ph)} `; $('sub').insertAdjacentHTML('beforeend', icon(nightFactor(ph) > 0.5 ? 'moon' : 'sun', 14));
+    if (h.winter) {
+      const wn = parseWinter(h.winter), si = Math.floor((day - 1) / 10) % 4; $('sub').title = winterTip(wn, si);
+      const key = `${Math.floor((day - 1) / 40)}:${day}`; if (key !== this.warnedDay) { this.warnedDay = key; const m = winterWarning(wn, si, (day - 1) % 10 + 1); if (m) this.toast(m.text, m.tone, 'cold'); }
+      if (!$('winter').hidden) this.renderWinter(h);
+    }
     this.lastHud = h; if (this.flowOpen >= 0 && !$('flow').hidden) this.renderFlow(h);
+    if (!$('work').hidden) this.renderWork(h);
     if (h.food) {
       const t = foodTotals(h.stocks, h.rates, h.food), p = this.pills[RES.length], left = daysLeft(t.meals, t.rate);
       p.querySelector('b')!.textContent = String(Math.floor(t.meals));
@@ -700,18 +851,18 @@ export class UI {
 
   /** The red banner while a fight is on. */
   /** The attack banner. With `onClick` it is a button (e.g. to look at where the attackers are). */
-  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string }[] = []) {
+  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = []) {
     const b = $('battle'); b.hidden = !text;
     if (!text) return;
     let body = document.getElementById('battle-text'), bar = document.getElementById('battle-acts');
     if (!body || !bar) { b.innerHTML = '<div id="battle-text"></div><div id="battle-acts"></div>'; body = $('battle-text'); bar = $('battle-acts'); }
     body.innerHTML = text;   // (the text changes every second; the buttons are only rebuilt when they change, so a click is never lost to a refresh)
-    const sig = actions.map(a => a.label).join('|');
+    const sig = actions.map(a => a.label + (a.disabled ? '!' : '')).join('|');
     if (bar.dataset.sig !== sig) {
       bar.dataset.sig = sig; bar.innerHTML = '';
-      for (const a of actions) { const btn = document.createElement('button'); btn.className = 'pbtn'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.dataset.label = a.label; bar.appendChild(btn); }
+      for (const a of actions) { const btn = document.createElement('button'); btn.className = 'pbtn'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.disabled = !!a.disabled; btn.dataset.label = a.label; bar.appendChild(btn); }
     }
-    bar.onclick = e => { const t = (e.target as HTMLElement).closest('button'); if (!t) return; e.stopPropagation(); actions.find(a => a.label === t.dataset.label)?.run(); };
+    bar.onclick = e => { const t = (e.target as HTMLElement).closest('button'); if (!t) return; e.stopPropagation(); const act = actions.find(a => a.label === t.dataset.label); if (act && !act.disabled) act.run(); };
     b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
   }
   private armyNow: number[] = [];
@@ -720,6 +871,7 @@ export class UI {
   setSelectedPane(html: string | null) {
     const tab = $('tab-sel');
     if (html === null) { tab.hidden = true; if (this.tab === 'sel') this.setTab('build'); if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); } return; }
+    if (this.sliding) return;   // a slider is being dragged: do not pull it from under the pointer
     $('pane-sel').innerHTML = html; tab.hidden = false;
   }
   showSelectedTab() { if (this.pref.ledger && !this.tempOpen) { this.tempOpen = true; this.applyPanels(); } this.setTab('sel'); }
@@ -740,6 +892,7 @@ export class UI {
     t.innerHTML = html; t.style.left = Math.min(innerWidth - 280, x + 16) + 'px'; t.style.top = (y + 18) + 'px';
   }
   setSpeed(n: number) { $('speed').querySelectorAll('.btn').forEach(b => b.classList.toggle('on', Number((b as HTMLElement).dataset.s) === n)); }
+  setCoverageToggle(on: boolean) { $('btn-cov').setAttribute('aria-pressed', String(on)); $('btn-cov').classList.toggle('on', on); }
   setResourcesToggle(on: boolean) { $('btn-res').setAttribute('aria-pressed', String(on)); $('btn-res').classList.toggle('on', on); }
   netStatus(s: string) { $('net-status').textContent = s; }
   get labels() { return $('labels'); }

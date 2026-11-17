@@ -57,3 +57,51 @@ test('the watermill footing ends before the wheel starts, at every tier', async 
     assert.ok(fb.max.y < 0.5 && wb.min.y < 0, `tier ${tier}: the wheel dips below the footing's level`);
   }
 });
+
+// The fishing hut: its stone footing ends at 1.5 from the middle at most, the core stands the hut HUT_FOOT (3.8) from the bank, and the jetty carries on over the water.
+test('the fishing hut footing stays well short of the bank, at every tier', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) {
+    const g = B.buildModel(41, tier, 0x2f5fa8, 1, 0, undefined, false); g.updateMatrixWorld(true);
+    const foot = g.getObjectByName('footing');
+    assert.ok(foot, `tier ${tier}: footing is named`);
+    const fb = new THREE.Box3().setFromObject(foot);
+    assert.ok(fb.max.x <= 1.5 + 1e-3, `tier ${tier}: the footing ends at ${fb.max.x}, short of the bank (3.8 out)`);
+    assert.ok(Math.abs(fb.max.z) <= 1.45 + 1e-3 && Math.abs(fb.min.z) <= 1.45 + 1e-3, `tier ${tier}: the footing's sides stay within 1.45`);
+  }
+});
+
+test('the fishing hut jetty starts where the footing ends and the drying rack stays behind the footing front', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) {
+    const g = B.buildModel(41, tier, 0x2f5fa8, 1, 0, undefined, false); g.updateMatrixWorld(true);
+    const fb = new THREE.Box3().setFromObject(g.getObjectByName('footing'));
+    let planks = 0;
+    g.traverse(o => { if (!o.isMesh) return; const bb = new THREE.Box3().setFromObject(o), s = bb.getSize(new THREE.Vector3());
+      if (Math.abs(s.x - 0.44) < 1e-3 && Math.abs(s.y - 0.1) < 1e-3) { planks++; assert.ok(bb.min.x >= fb.max.x - 1e-3, `tier ${tier}: a jetty plank (from ${bb.min.x}) lies over the footing (to ${fb.max.x})`); } });
+    assert.ok(planks >= 6, `tier ${tier}: the jetty planks are found`);
+  }
+});
+
+test('the fishing hut design options stay on the land side, off the jetty', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) for (const seed of [0, 1, 2, 3, 4, 5]) for (let bit = 0; bit < 4; bit++) {
+    const base = B.buildModel(41, tier, 0x2f5fa8, seed, 0, undefined, false), on = B.buildModel(41, tier, 0x2f5fa8, seed, 1 << bit, undefined, false);
+    base.updateMatrixWorld(true); on.updateMatrixWorld(true);
+    const landX = (3.0 + tier * 0.3) / 2 - 0.45;
+    on.traverse(o => { if (!o.isMesh || o.parent === null) return; let p = o, opt = false; while (p) { if (p.userData && p.userData.part === 'option') opt = true; p = p.parent; }
+      if (!opt) return; const bb = new THREE.Box3().setFromObject(o); assert.ok(bb.max.x <= landX + 0.13, `tier ${tier} seed ${seed} option ${bit}: a part reaches x ${bb.max.x}, past the land (${landX})`); });
+  }
+});
+
+test('the watermill\'s stone-footing option lies under the house only, clear of the wheel', async () => {
+  const THREE = await import('three');
+  for (const tier of [0, 1, 2, 3]) for (const opts of [8, 15]) {
+    const g = B.buildModel(29, tier, 0x2f5fa8, 1, opts, undefined, false); g.updateMatrixWorld(true);
+    const foot = g.getObjectByName('optfooting'), wheel = g.getObjectByName('wheel');
+    assert.ok(foot && wheel, `tier ${tier} options ${opts}: footing option and wheel exist`);
+    const fb = new THREE.Box3().setFromObject(foot), wb = new THREE.Box3().setFromObject(wheel);
+    assert.ok(fb.max.x <= 3.2 + 1e-3 && wb.min.x - fb.max.x >= 1.0, `tier ${tier} options ${opts}: footing ends at ${fb.max.x}, the wheel starts at ${wb.min.x}`);
+    g.traverse(o => { if (o.isMesh && o !== foot && !(() => { let q = o; while (q && q !== wheel) q = q.parent; return !!q; })() && o.material?.color?.getHex?.() === foot.material.color.getHex() && o.geometry.type === 'BoxGeometry') { const bb = new THREE.Box3().setFromObject(o); if (bb.max.y - bb.min.y < 0.5 && bb.max.y <= 0.45) assert.ok(bb.max.x <= 3.2 + 1e-3 || bb.min.x > wb.max.x, `tier ${tier}: a stone slab runs to ${bb.max.x}`); } });
+  }
+});

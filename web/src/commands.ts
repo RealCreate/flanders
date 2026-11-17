@@ -16,16 +16,20 @@ export function applyCmd(w: World, c: Cmd) {
     case 'garrison': w.garrison_set(c.idx!, c.kind ?? 0); break;
     case 'bridge': w.drawbridge_set(c.idx!, (c.kind ?? 0) === 1); break;
     case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
+    case 'level': w.level_ground(c.x!, c.y!, c.kind ?? 0); break;   // x, y the middle, kind the radius: levels the ground to the land round it
     case 'flatten': w.flatten(c.x ?? 60, c.y === undefined ? 5 : c.y / 10); break;
     case 'batch': w.place_batch(Int32Array.from(c.units ?? [])); break;   // [kind, dx, dy, rot] per piece, rebuilt once
+    case 'road': w.lay_road(Int32Array.from(c.units ?? [])); break;   // [dx, dy] per point of a road the player drew: pieces joined into one curve, the ends snapped onto nodes
     case 'visit': w.visit_neutral(c.idx!); break;
     case 'hero': w.hero_hire(); break;
     case 'field': w.set_field_mode(c.idx!, c.kind ?? 0); break;
+    case 'workers': w.set_workers(c.idx!, c.kind ?? -1); break;   // idx the building, kind the workers wanted (-1 auto, 0 paused)
     case 'style': w.set_style(c.kind ?? 0); break;
     case 'goods': break;   // a notice that a caravan arrived: the receiver acts on it (see onCmd), nothing to replay
     case 'accept': w.receive_goods(c.kind ?? 0, c.x ?? 0); break;
     case 'settle': w.settle(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;
     case 'choose': w.choose(c.kind ?? 0); break;
+    case 'bribe': w.bribe(); break;   // the raiders are paid to turn back (the core checks it is allowed and affordable at this tick)
     case 'treaty': if ((c.y ?? 1) === 0) w.treaty_end(c.idx!, c.kind ?? 0); else w.treaty_set(c.idx!, c.kind ?? 0, c.x ?? 10); break;
     case 'buy': w.buy(c.kind ?? 0, c.idx ?? 0); break;   // kind = the good, idx = how many
     case 'envoy': w.envoy(c.idx!); break;
@@ -49,6 +53,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'retreat': if (c.tag) w.battle_retreat(c.tag); break;   // (the attacker's own call has no `tag`: it is only a request, which the defender's village carries out and records with the tag)
     case 'reinforce': if (c.tag) w.battle_reinforce(c.tag, Uint32Array.from(c.units ?? [])); break;
     case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
+    case 'restart': w.restart(); break;   // the village starts again from nothing (the first command of a new epoch: see restart.ts)
     case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;
     default: break; // 'refuse' has no effect on the issuer's own world
   }
@@ -60,11 +65,14 @@ export const stepTo = (w: World, t: number) => { let n = 0; while (w.tick() < Bi
 /** The saved history of your own village, read back carefully: a damaged or edited save must not crash the game. Testing-tool commands are your own and stay. */
 export function validSavedLog(log: unknown): { signed: Signed; cmd: Cmd }[] {
   if (!Array.isArray(log)) return [];
-  const out: { signed: Signed; cmd: Cmd }[] = []; let n = -1, t = 0;
+  const out: { signed: Signed; cmd: Cmd }[] = []; let n = -1, t = 0, epoch = 0;
   for (const s of log.slice(0, 60000)) {
     if (!s || typeof s.cmd !== 'string' || typeof s.sig !== 'string') break;
     const cmd = parseCmd(s.cmd, true) as Cmd | null;
-    if (!cmd || cmd.n <= n || cmd.tick < t) break;
+    if (!cmd || cmd.n <= n && out.length || cmd.tick < t) break;
+    // a history is one epoch (see restart.ts): epoch 0 has no restart command, a later one starts with its own and nothing of another epoch follows
+    if (!out.length) epoch = cmd.e ?? 0;
+    if ((cmd.e ?? 0) !== epoch || (cmd.op === 'restart') !== (!out.length && epoch > 0)) break;
     n = cmd.n; t = cmd.tick; out.push({ signed: { cmd: s.cmd, sig: s.sig }, cmd });
   }
   return out;

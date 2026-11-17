@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { HAT, TOOL, buildCatapult, buildRam, type Crowd, type Draw } from './crowd';
+import { HAT, TOOL, ARM_REST, buildCatapult, buildRam, type Crowd, type Draw } from './crowd';
 
 export interface Obstacle { x: number; z: number; r: number }
 export interface TreeQuery { countTrees(x: number, z: number, r: number): number; nearTrees(x: number, z: number, r: number, out: { x: number; z: number }[]): void }
@@ -301,7 +301,7 @@ export class FieldView {
         g.position.y = Math.max(g.userData.sy as number, d.state === 4 ? 0.3 : Math.min(yF, yB, yC));   // (never below the lowest ground under it)
         g.rotation.y += (() => { let da = face - g.rotation.y; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; return da; })() * Math.min(1, dt * 3);
         g.rotation.x = d.state === 4 ? 0 : -Math.atan2(yF - yB, SIEGE_LEN) * 0.8;
-        if (g.userData.arm) (g.userData.arm as THREE.Object3D).rotation.x = -0.9;
+        if (g.userData.arm) (g.userData.arm as THREE.Object3D).rotation.x = ARM_REST;
       });
       // boats while crossing wide water
       if (d.state === 4) {

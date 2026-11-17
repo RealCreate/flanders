@@ -14,6 +14,7 @@ export interface Cmd {
   /** `cheat` and `flatten` are testing tools: they can be signed into your own history but other players never accept them. */
   op: PeerOp | 'cheat' | 'flatten' | 'demo';
   tick: number; n: number;
+  e?: number;             // epoch of the history (absent = 0): see restart.ts
   kind?: number; x?: number; y?: number; rot?: number; idx?: number;
   to?: string;            // attack/refuse: pub key of the village concerned
   from?: string;          // raid/return: pub key of the attacking village
@@ -132,7 +133,8 @@ export class Room {
       if (!st.cmds.take()) return this.strike(peerId, st, 'too many commands');
       const c = await this.check(peerId, st, d); if (!c || c === 'skip') return;
       const k = st.seq.classify(c);
-      if (k === 'dup') return;   // we have it already (it came in their history too)
+      if (k === 'dup') return;   // we have it already (it came in their history too), or it is from before their restart
+      if (k === 'gap') { if (st.wants.take()) this.requestLog(peerId); return; }   // a command from after a restart we never saw: their history tells us
       if (k === 'bad') return this.strike(peerId, st, 'a command out of order');
       h.onCmd(peerId, c);
     }));
@@ -184,6 +186,7 @@ export class Room {
     const out: Cmd[] = [];
     for (const s of d) { const c = await this.check(peerId, st, s); if (c === 'skip') continue; if (c) out.push(c); else break; }   // the first bad entry ends the history: what follows it cannot be trusted
     const kept = Sequence.checkLog(out); if (kept.length !== out.length) this.strike(peerId, st, 'a history out of order');
+    if (Sequence.epochOf(kept) < st.seq.epoch) return;   // the history of a life they have restarted away from: replaying it must not bring that village back
     st.seq.resetTo(kept); this.h.onLog(peerId, kept);
   }
 
@@ -199,6 +202,8 @@ export class Room {
 
   announce() { for (const p of this.peers) void this.helloTo(p); }
   broadcastCmd(s: Signed) { if (this.peers.size) this.sendCmd(s).catch(() => { /* peers left */ }); }
+  /** Send our whole history to everybody (after the history was replaced: a restart that was undone). */
+  pushLog() { if (this.peers.size) this.sendLog(this.log()).catch(() => { /* peers left */ }); }
   broadcastHash(msg: WireHash) { if (this.peers.size) this.sendHash(msg).catch(() => { /* peers left */ }); }
   /** Ask a player for their whole history again (our copy of their village went wrong). */
   requestLog(peerId: string) { this.sendWant({ t: 1 }, { target: peerId }).catch(() => { /* peer left */ }); }

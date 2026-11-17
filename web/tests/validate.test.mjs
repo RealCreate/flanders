@@ -9,7 +9,7 @@ test('a normal command passes and comes back with only known fields', () => {
   const c = ok({ op: 'place', kind: 3, x: -12, y: 40, rot: 2, evil: '<script>' });
   assert.deepEqual(c, { op: 'place', tick: 5, n: 1, kind: 3, x: -12, y: 40, rot: 2 });
 });
-test('every op the client sends is accepted', () => { for (const op of PEER_OPS) assert.ok(ok({ op }), op); });
+test('every op the client sends is accepted', () => { for (const op of PEER_OPS) assert.ok(ok(op === 'level' ? { op, x: 0, y: 0, kind: 8 } : op === 'restart' ? { op, e: 1, tick: 0, n: 0 } : op === 'workers' ? { op, idx: 3, kind: 2 } : { op }), op); });
 test('testing tools are refused from the network but can be recognised', () => {
   assert.equal(ok({ op: 'cheat', kind: 0, x: 1, y: 1000 }), null);
   assert.equal(ok({ op: 'flatten', x: 200 }), null);
@@ -69,4 +69,17 @@ test('names are made safe to show', () => {
   assert.equal(cleanName('a‮b\u0000c'), 'abc');
   assert.equal(cleanName(''), 'Traveller'); assert.equal(cleanName(null), 'Traveller');
   assert.equal(cleanName('x'.repeat(100)).length, 20);
+});
+
+test('workers commands: a building and -1 (auto) .. a sane count, nothing else', () => {
+  for (const kind of [-1, 0, 1, 8, 1000]) assert.ok(ok({ op: 'workers', idx: 5, kind }), `kind ${kind}`);
+  for (const bad of [{ idx: 5, kind: -2 }, { idx: 5, kind: 1001 }, { idx: 5, kind: 1.5 }, { idx: -1, kind: 1 }, { idx: 100001, kind: 1 }, { kind: 1 }, { idx: 5 }, { idx: 5, kind: '3' }, { idx: 5, kind: null }])
+    assert.equal(ok({ op: 'workers', ...bad }), null, JSON.stringify(bad));
+});
+
+test('a bribe command carries nothing but its op: stray fields are dropped', () => {
+  assert.deepEqual(ok({ op: 'bribe', kind: 5, units: [1], evil: 1 }), { op: 'bribe', tick: 5, n: 1, kind: 5, units: [1] });
+  assert.ok(PEER_OPS.includes('bribe'));
+  assert.equal(ok({ op: 'bribe', tick: -1 }), null);
+  assert.equal(ok({ op: 'bribe', x: Infinity }), null);
 });

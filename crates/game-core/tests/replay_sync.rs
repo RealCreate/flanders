@@ -7,7 +7,7 @@ use game_core::World;
 enum C {
     Place(u8, i32, i32, u8), Upgrade(u32), Demolish(u32), Train(u8, u32), Cheat(u8, i32, i32), Form([u32; 5]), March(u32, f32, f32), Recall(u32), Halt(u32),
     Link(f32, f32), Bridge(u32, bool), Gate(u32, bool), Raid(f32, [u32; 5], i32), Batch(Vec<i32>), Split(u32, [u32; 5]), Defend(u32), Choose(u8),
-    Buy(u8, i32), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32),
+    Buy(u8, i32), Road(Vec<i32>), Rel(i32, i32), Journey(u8, i32, i32, f32), Caravan(u8, i32, i32, f32, u32), Restart, Workers(u32, i32), Bribe,
 }
 
 fn apply(w: &mut World, c: &C) {
@@ -30,9 +30,13 @@ fn apply(w: &mut World, c: &C) {
         C::Defend(id) => { w.det_defend(*id); }
         C::Choose(o) => { w.choose(*o); }
         C::Buy(r, n) => { w.buy(*r, *n); }
+        C::Road(v) => { w.lay_road(v); }
         C::Rel(t, d) => { w.rel_add(*t, *d); }
         C::Journey(k, t, a, d) => { w.journey_start(*k, *t, *a, *d); }
         C::Caravan(r, a, t, d, e) => { w.caravan_send(*r, *a, *t, *d, *e); }
+        C::Restart => w.restart(),
+        C::Workers(i, n) => { w.set_workers(*i, *n); }
+        C::Bribe => { w.bribe(); }
     }
 }
 
@@ -45,7 +49,7 @@ impl Rng {
 
 /// Everything a client's renderer asks the core every tick. These calls fill the core's caches (paths, overlays) at moments of the host's choosing.
 fn look(w: &mut World) -> usize {
-    let mut n = w.det_flat().len() + w.buildings_flat().len() + w.roads_flat().len() + w.road_paths_flat().len() + w.felled_flat().len() + w.bridges_flat().len();
+    let mut n = w.det_flat().len() + w.buildings_flat().len() + w.roads_flat().len() + w.road_lines_flat().len() + w.felled_flat().len() + w.bridges_flat().len();
     n += w.journeys_flat().len() + w.link_points(400.0, 0.0).len() + w.take_arrivals().len() + w.take_delivered().len();
     let f = w.det_flat(); for o in (0..f.len()).step_by(16) { n += w.det_path(f[o] as u32).len(); }
     n + w.net_route(-30.0, -30.0, 60.0, 40.0).len() + w.walk_route(10.0, 10.0, -50.0, 80.0).len()
@@ -61,7 +65,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if t % 25 == 0 { issue(&mut w, &mut log, C::Cheat(3, 0, 0)); }   // keep the store full: the test is about replay, not about the economy
         if t % 6 == 0 {
             let n = w.building_count().max(1) as u64;
-            let c = match rng.below(30) {
+            let c = match rng.below(34) {
                 0..=5 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(10, 70) as f32; C::Place([0u8, 1, 4, 28, 19, 18, 1, 25, 2, 3][rng.below(10) as usize], (ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.below(8) as u8) }
                 6 => C::Upgrade(rng.below(n) as u32),
                 7 => C::Demolish(rng.below(n) as u32 + 1),
@@ -80,6 +84,8 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
                 24 | 25 => C::Rel(rng.range(5, 8), rng.range(10, 40)),
                 26 | 27 => C::Journey(rng.below(6) as u8, rng.range(5, 8), 20, rng.range(20, 400) as f32),
                 28 => C::Caravan(rng.range(0, 3) as u8, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
+                29..=31 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(6, 40) as f32; let n = rng.range(2, 6); C::Road((0..n).flat_map(|i| { let a = ang + i as f32 * 0.25; let rr = r + i as f32 * 6.0; [(a.cos() * rr) as i32, (a.sin() * rr) as i32] }).collect()) }   // a curved road, laid outwards
+                32 => C::Workers(rng.below(n) as u32, rng.range(-2, 5)),   // some of these are out of range on purpose
                 _ => C::Raid(rng.below(628) as f32 / 100.0, [3, 2, 1, 0, 0], 7),
             };
             issue(&mut w, &mut log, c);
@@ -88,8 +94,8 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
         if watch { let _ = look(&mut w); }
         hashes.push(w.state_hash());
     }
-    if std::env::var("STATS").is_ok() { eprintln!("seed {seed}: {} commands, {} buildings, {} felled, {} armies, {} road paths, pop {}", log.len(), w.building_count(), w.felled_flat().len() / 3, w.det_flat().len() / 16, w.road_paths_flat().len(), w.population()); }
-    (log, hashes, w.road_paths_flat())
+    if std::env::var("STATS").is_ok() { eprintln!("seed {seed}: {} commands, {} buildings, {} felled, {} armies, {} road paths, pop {}", log.len(), w.building_count(), w.felled_flat().len() / 3, w.det_flat().len() / 16, w.road_lines_flat().len(), w.population()); }
+    (log, hashes, w.road_lines_flat())
 }
 
 /// Replay `log` into a fresh world; `habit` runs after every tick (the host doing whatever it does); returns the first tick whose hash differs from `want`.
@@ -100,9 +106,9 @@ fn replay_roads(seed: u64, ox: i32, oy: i32, log: &[(u64, C)], want: &[u64], hab
     for t in 0..want.len() as u64 {
         while i < log.len() && log[i].0 <= w.tick() { apply(&mut w, &log[i].1); i += 1; }
         w.step(); habit(&mut w, t);
-        if w.state_hash() != want[t as usize] { return (Some((t as usize + 1, i)), w.road_paths_flat()); }
+        if w.state_hash() != want[t as usize] { return (Some((t as usize + 1, i)), w.road_lines_flat()); }
     }
-    (None, w.road_paths_flat())
+    (None, w.road_lines_flat())
 }
 
 fn check(seed: u64, ox: i32, oy: i32, ticks: u64) {
@@ -299,4 +305,62 @@ fn market_buys_replay_identically() {
     let (a, changes) = run(false); let (b, _) = run(true);
     assert_eq!(a, b, "a copy that looks around every tick must still match");
     assert!(changes > 10, "the buys and the daily refills changed the stock section ({changes} different values)");
+}
+
+/// A restart in the middle of a long, busy history: the owner lived it in one world, a replica gets the same commands (the restart live, between two ticks), and a newcomer replays the
+/// whole log in one go with other habits. All three agree tick by tick, and the new epoch is exactly a fresh village (the hashes are those of a session that never saw the old one).
+#[test]
+fn a_restart_in_the_middle_of_a_history_replays_identically() {
+    game_core::warm_navigation(1337);
+    let (log1, hashes1, _) = session(1337, 0, 0, 800, Rng(0x1234_5678_9ABC), true);
+    let (log2, hashes2, _) = session(1337, 0, 0, 600, Rng(0x0BAD_CAFE_5EED), false);   // the life after the restart: the clock starts again at 0
+    // the owner: lives the first epoch, restarts, lives the second in the same world
+    let mut owner = World::new(1337, 0, 0); let mut i = 0;
+    for t in 0..hashes1.len() as u64 { while i < log1.len() && log1[i].0 <= owner.tick() { apply(&mut owner, &log1[i].1); i += 1; } owner.step(); assert_eq!(owner.state_hash(), hashes1[t as usize]); }
+    let (mut after, mut j) = (vec![], 0);
+    apply(&mut owner, &C::Restart);
+    assert_eq!(owner.tick(), 0);
+    assert_eq!(owner.state_hash(), World::new(1337, 0, 0).state_hash(), "right after the restart the village is a new one");
+    for _ in 0..hashes2.len() { while j < log2.len() && log2[j].0 <= owner.tick() { apply(&mut owner, &log2[j].1); j += 1; } owner.step(); after.push(owner.state_hash()); }
+    assert_eq!(after, hashes2, "the second epoch plays exactly like a village that never had a first one");
+    // a newcomer replays the whole log: epoch one, the restart, epoch two (with a look at everything every tick)
+    let mut whole: Vec<(u64, C)> = log1.clone(); whole.push((hashes1.len() as u64, C::Restart));
+    let mut w = World::new(1337, 0, 0); let (mut k, mut at) = (0usize, vec![]);
+    let mut life = 0;   // 0: first epoch, 1: second
+    let mut ticks_left_in_epoch = hashes1.len();
+    loop {
+        if life == 0 {
+            while k < whole.len() - 1 && whole[k].0 <= w.tick() { apply(&mut w, &whole[k].1); k += 1; }
+            if ticks_left_in_epoch == 0 { apply(&mut w, &C::Restart); life = 1; k = 0; continue; }
+            w.step(); look(&mut w); ticks_left_in_epoch -= 1;
+        } else {
+            while k < log2.len() && log2[k].0 <= w.tick() { apply(&mut w, &log2[k].1); k += 1; }
+            if at.len() == hashes2.len() { break; }
+            w.step(); look(&mut w); at.push(w.state_hash());
+        }
+    }
+    assert_eq!(at, hashes2, "a newcomer replaying both epochs ends in the same second life");
+}
+
+/// A raid is bought off: the payment, the raiders walking away and the greed that follows are part of the state, so an owner and a replica agree tick by tick, however the replica is looked at.
+#[test]
+fn a_bought_off_raid_replays_tick_by_tick() {
+    game_core::warm_navigation(1337);
+    let seed = 1337u64;
+    let script: Vec<(u64, C)> = vec![
+        (0, C::Cheat(3, 0, 0)), (1, C::Place(0, 14, 4, 0)), (1, C::Place(0, 18, 4, 0)), (2, C::Place(19, 0, 18, 0)), (4, C::Cheat(2, 0, 12)),
+        (10, C::Cheat(4, 150, 500)), (14, C::Bribe), (15, C::Bribe), (60, C::Cheat(10, 400, 700)), (63, C::Bribe), (100, C::Cheat(4, 250, 300)), (180, C::Bribe),
+    ];
+    let mut w = World::new(seed, 0, 0); let mut log: Vec<(u64, C)> = vec![]; let mut hashes = vec![]; let mut i = 0;
+    let (mut bought, mut greed_seen) = (false, false);
+    for _ in 0..260u64 {
+        while i < script.len() && script[i].0 <= w.tick() { apply(&mut w, &script[i].1); log.push((w.tick(), script[i].1.clone())); i += 1; }
+        w.step();
+        if w.last_report_bought() { bought = true; } if w.bribe_greed() > 0 { greed_seen = true; }
+        hashes.push(w.state_hash());
+    }
+    assert!(bought && greed_seen, "the script really buys a raid off");
+    let said = |what: &str, r: Option<(usize, usize)>| if let Some((t, c)) = r { panic!("bribe, replay ({what}) diverged at tick {t} after {c} of {} commands", log.len()) };
+    said("silent", replay(seed, 0, 0, &log, &hashes, &mut |_, _| {}));
+    said("drawn every tick", replay(seed, 0, 0, &log, &hashes, &mut |w, _| { look(w); let _ = (w.battle_units_flat(), w.bribe_price()); }));
 }

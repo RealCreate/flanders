@@ -6,3 +6,4 @@ target/
 web/dist/
 mcp/wasm/
 web/icon-sheet.html
+web/tests/.tmp/

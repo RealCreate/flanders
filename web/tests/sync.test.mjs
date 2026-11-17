@@ -80,8 +80,8 @@ test('builds are the same only when protocol and rules fingerprint agree; an old
 
 test('hash messages are rebuilt field by field', () => {
   const ok = sanitizeHash({ tick: 5, hash: '123', c: 4, p: ['1', '2'], tools: true, junk: 1 });
-  assert.deepEqual(ok, { tick: 5, hash: '123', c: 4, p: ['1', '2'], tools: true });
-  assert.deepEqual(sanitizeHash({ tick: 5, hash: '123' }), { tick: 5, hash: '123', c: -1, p: [], tools: false }, 'an older build');
+  assert.deepEqual(ok, { tick: 5, hash: '123', c: 4, p: ['1', '2'], tools: true, e: 0 });
+  assert.deepEqual(sanitizeHash({ tick: 5, hash: '123' }), { tick: 5, hash: '123', c: -1, p: [], tools: false, e: 0 }, 'an older build');
   for (const bad of [null, [], 'x', { tick: -1, hash: '1' }, { tick: 1.5, hash: '1' }, { tick: 1e9, hash: '1' }, { tick: 1, hash: 'abc' }, { tick: 1, hash: '1'.repeat(21) },
     { tick: 1, hash: '1', c: -2 }, { tick: 1, hash: '1', c: 1e9 }, { tick: 1, hash: '1', c: '3' }, { tick: 1, hash: '1', p: 'x' }, { tick: 1, hash: '1', p: new Array(17).fill('1') }, { tick: 1, hash: '1', p: [1] }, { tick: 1, hash: '1', p: ['<b>'] }])
     assert.equal(sanitizeHash(bad), null, JSON.stringify(bad));

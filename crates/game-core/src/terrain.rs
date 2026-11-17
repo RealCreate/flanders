@@ -225,10 +225,13 @@ fn neutrals_uncached(seed: u64) -> Vec<(u8, f32, f32)> {
 pub fn base_height(seed: u64, x: f32, y: f32) -> f32 { base_height_s(seed, &sites(seed), x, y) }
 
 /// Row-major grid of nx*ny heights starting at (x0,y0) with spacing `step`.
-pub fn grid(seed: u64, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> {
+pub fn grid(seed: u64, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> { grid_rows(seed, x0, y0, nx, step, 0, ny) }
+
+/// Rows `j0..j1` of `grid` (the same numbers, whatever the slicing), so a big grid can be built a few rows at a time.
+pub fn grid_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> {
     let s = sites(seed);
-    let mut out = Vec::with_capacity((nx * ny) as usize);
-    for j in 0..ny {
+    let mut out = Vec::with_capacity(((j1 - j0) * nx) as usize);
+    for j in j0..j1 {
         for i in 0..nx {
             out.push(base_height_s(seed, &s, x0 + i as f32 * step, y0 + j as f32 * step));
         }
@@ -259,11 +262,19 @@ pub fn tree_density(seed: u64, x: f32, y: f32, h: f32, slope: f32, sites: &[(f32
 
 /// Trees in a rectangle: [x, y, type, scale, rotation] per tree (type 0 = conifer, 1 = oak, 2 = birch).
 pub fn trees(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> {
-    let s = sites(seed);
-    let cell = 2.6f32;
-    let mut out = vec![];
+    let cell = TREE_CELL;
     let (cx0, cx1) = ((x0 / cell).floor() as i32, (x1 / cell).ceil() as i32);
     let (cy0, cy1) = ((y0 / cell).floor() as i32, (y1 / cell).ceil() as i32);
+    trees_cells(seed, cx0, cx1, cy0, cy1)
+}
+
+pub const TREE_CELL: f32 = 2.6;
+
+/// The trees of the cells `cx0..cx1` by `cy0..cy1` (cell indices, not coordinates), so the whole map can be done a strip of rows at a time.
+pub fn trees_cells(seed: u64, cx0: i32, cx1: i32, cy0: i32, cy1: i32) -> Vec<f32> {
+    let s = sites(seed);
+    let cell = TREE_CELL;
+    let mut out = vec![];
     for cy in cy0..cy1 {
         for cx in cx0..cx1 {
             let x = (cx as f32 + h01(seed ^ 0xA1, cx, cy)) * cell;
@@ -312,15 +323,38 @@ pub fn forest_near(seed: u64, x: f32, y: f32, rad: f32) -> f32 {
     sum / n
 }
 
-#[derive(Clone, Copy)]
-pub struct Deposit { pub kind: u8, pub x: f32, pub y: f32, pub rem: i32, pub max: i32 }
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct Deposit { pub kind: u8, pub x: f32, pub y: f32, pub rem: i32, pub max: i32, #[serde(default)] pub asleep: bool }
+
+/// How much a deposit holds when the map is made: `(base, spread)` per kind (0 stone, 1 clay, 2 iron ore, 3 gold ore); a deposit holds `base + r * spread`, r in [0, 1).
+/// Target: one tier-0 building of the matching kind at full staffing (stone 90, clay 160, iron 48, gold ~17 a day) takes at least `MIN_DAYS_TO_EMPTY` days to empty even the poorest deposit
+/// (stone 66, clay 62, iron 83, gold 93 days), so a village lives off a deposit for a whole season of play, and a better tier still takes weeks. Tested in `deposit_tests`.
+pub const DEPOSIT_SIZE: [(i32, i32); 4] = [(6000, 6000), (10000, 8000), (4000, 4000), (1600, 2400)];
+#[allow(dead_code)]   // read by the tests
+pub const MIN_DAYS_TO_EMPTY: i32 = 60;
+/// A deposit that is used up goes dormant (it stays on the map, but nobody can work it) and regrows: each day by this share of its maximum (percent) when nobody works it,
+/// by this many thousandths when a building does work it; it wakes up once it holds `WAKE_PCT` percent of its maximum again.
+pub const REGROW_IDLE_PCT: i32 = 2;
+pub const REGROW_WORKED_PERMILLE: i32 = 5;
+pub const WAKE_PCT: i32 = 15;
+impl Deposit {
+    /// Can a building take ore from it right now?
+    pub fn active(&self) -> bool { self.max > 0 && !self.asleep && self.rem > 0 }
+    /// One day passes: regrow (never for a deposit the villagers cleared, `max == 0`), and wake when enough has come back.
+    pub fn grow(&mut self, worked: bool) {
+        if self.max <= 0 || self.rem >= self.max { return; }
+        let add = if worked { self.max * REGROW_WORKED_PERMILLE / 1000 } else { self.max * REGROW_IDLE_PCT / 100 }.max(1);
+        self.rem = (self.rem + add).min(self.max);
+        if self.asleep && self.rem * 100 >= self.max * WAKE_PCT { self.asleep = false; }
+    }
+}
 
 /// Deposit kinds: 0 stone, 1 clay, 2 iron ore, 3 gold ore.
 /// Every village site gets all four nearby (stone/clay close, iron further, gold furthest) plus scattered ones.
 pub fn deposits(seed: u64) -> Vec<Deposit> {
     let s = sites(seed);
     let mut out: Vec<Deposit> = vec![];
-    let amount = |kind: u8, r: f32| -> i32 { match kind { 0 => 900 + (r * 900.0) as i32, 1 => 700 + (r * 700.0) as i32, 2 => 500 + (r * 500.0) as i32, _ => 160 + (r * 240.0) as i32 } };
+    let amount = |kind: u8, r: f32| -> i32 { let (b, sp) = DEPOSIT_SIZE[kind as usize]; b + (r * sp as f32) as i32 };
     let dist_range = [(20.0f32, 30.0f32), (22.0, 34.0), (30.0, 42.0), (40.0, 52.0)];
     for (si, &(sx, sy)) in s.iter().enumerate() {
         for kind in 0..4u8 {
@@ -335,7 +369,7 @@ pub fn deposits(seed: u64) -> Vec<Deposit> {
                 if out.iter().any(|o| (o.x - x).powi(2) + (o.y - y).powi(2) < 18.0 * 18.0) { continue; }
                 let r = h01(seed ^ 0xD2, si as i32 * 7 + kind as i32, attempt);
                 let m = amount(kind, r);
-                out.push(Deposit { kind, x, y, rem: m, max: m });
+                out.push(Deposit { kind, x, y, rem: m, max: m, asleep: false });
                 break;
             }
         }
@@ -356,7 +390,7 @@ pub fn deposits(seed: u64) -> Vec<Deposit> {
             let kind: u8 = if h > 28.0 { if p < 0.45 { 2 } else if p < 0.7 { 3 } else { 0 } } else if h < 8.0 { if p < 0.6 { 1 } else { 0 } } else if p < 0.4 { 0 } else if p < 0.7 { 2 } else { 1 };
             let r = h01(seed ^ 0xD9, cx, cy);
             let m = amount(kind, r);
-            out.push(Deposit { kind, x, y, rem: m, max: m });
+            out.push(Deposit { kind, x, y, rem: m, max: m, asleep: false });
         }
     }
     out

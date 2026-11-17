@@ -3,14 +3,21 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {
   op: PeerOp; tick: number; n: number;
+  /** The epoch of the village's history this command belongs to (see restart.ts): absent (0) until the owner first restarts. */
+  e?: number;
   kind?: number; x?: number; y?: number; rot?: number; idx?: number; tag?: number; angle?: number; ax?: number; ay?: number;
   to?: string; from?: string; units?: number[]; loot?: number[];
 }
+
+/** The radii a patch of ground may be levelled to (the game core refuses any other). */
+/** The most workers one building can ever be given a target for (far above any building's jobs). */
+export const WORKERS_MAX = 1000;
+export const LEVEL_RADIUS = { min: 3, max: 14 } as const;
 
 export const LIMITS = {
   /** A single signed message: a batch of 400 pieces is about 20 kB of JSON. */
@@ -32,6 +39,8 @@ const KEY = /^[A-Za-z0-9+/_=-]{20,100}$/;
 const INT_FIELDS = ['kind', 'rot', 'idx', 'tag'] as const;
 const FLOAT_FIELDS = ['x', 'y', 'angle', 'ax', 'ay'] as const;
 const BIG = 1e7;
+/** Most restarts a village can have had. */
+export const MAX_EPOCH = 100_000;
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && Math.abs(v) <= 2 ** 31 - 1;
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= BIG;
@@ -55,6 +64,16 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
   const out: WireCmd = { op: r.op as PeerOp, tick: r.tick, n: r.n };   // (a testing op is only let through for your own saved history)
   for (const f of INT_FIELDS) if (r[f] !== undefined) { if (!isInt(r[f])) return null; out[f] = r[f] as number; }
   for (const f of FLOAT_FIELDS) if (r[f] !== undefined) { if (!isNum(r[f])) return null; out[f] = r[f] as number; }
+  if (r.e !== undefined) { if (!isInt(r.e) || r.e < 0 || r.e > MAX_EPOCH) return null; out.e = r.e; }
+  if (r.op === 'restart') {   // the first command of a new epoch: always at the very start of the new life
+    if (!(isInt(out.e) && out.e >= 1) || out.n !== 0 || out.tick !== 0) return null;
+  }
+  if (r.op === 'level') {   // level the ground: x, y the middle (relative to the village origin), kind the radius
+    if (!(isInt(out.kind) && out.kind >= LEVEL_RADIUS.min && out.kind <= LEVEL_RADIUS.max) || !(isInt(out.x) && isInt(out.y)) || Math.abs(out.x) > 2000 || Math.abs(out.y) > 2000) return null;
+  }
+  if (r.op === 'workers') {   // idx the building, kind how many workers it should have: -1 auto, 0 paused, up to what its jobs allow (the core bounds-checks it too)
+    if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 100_000) || !(isInt(out.kind) && out.kind >= -1 && out.kind <= WORKERS_MAX)) return null;
+  }
   for (const f of ['to', 'from'] as const) if (r[f] !== undefined) { if (!isKey(r[f])) return null; out[f] = r[f] as string; }
   for (const f of ['units', 'loot'] as const) if (r[f] !== undefined) { const a = numbers(r[f]); if (!a) return null; out[f] = a; }
   return out;
@@ -78,9 +97,9 @@ export function isSigned(v: unknown): v is { cmd: string; sig: string } {
     && (v as { cmd: string }).cmd.length <= LIMITS.maxCmdChars && (v as { sig: string }).sig.length <= LIMITS.maxSigChars;
 }
 
-/** The state hash a player broadcasts every tick: the clock, the hash of the whole state, how many commands their history holds so far, the hashes of its sections, and whether
+/** The state hash a player broadcasts every tick: the epoch of their history (how many times they have restarted), the clock, the hash of the whole state, how many commands their history holds so far, the hashes of its sections, and whether
  *  they have used testing tools (which change their village without leaving a command that others could replay). */
-export interface WireHash { tick: number; hash: string; c: number; p: string[]; tools: boolean }
+export interface WireHash { tick: number; hash: string; c: number; p: string[]; tools: boolean; e: number }
 const DIGITS = /^[0-9]{1,20}$/;
 /** Check a hash message. An older build sends only `tick` and `hash`: those come back with `c` of -1, which means "cannot be compared". */
 export function sanitizeHash(raw: unknown): WireHash | null {
@@ -91,7 +110,9 @@ export function sanitizeHash(raw: unknown): WireHash | null {
   if (r.c !== undefined) { if (!isInt(r.c) || r.c < 0 || r.c > 1_000_000) return null; c = r.c; }
   let p: string[] = [];
   if (r.p !== undefined) { if (!Array.isArray(r.p) || r.p.length > 16 || !r.p.every(x => typeof x === 'string' && DIGITS.test(x))) return null; p = r.p as string[]; }
-  return { tick: r.tick, hash: r.hash, c, p, tools: r.tools === true };
+  let e = 0;
+  if (r.e !== undefined) { if (!isInt(r.e) || r.e < 0 || r.e > MAX_EPOCH) return null; e = r.e; }
+  return { tick: r.tick, hash: r.hash, c, p, tools: r.tools === true, e };
 }
 
 /** The build a peer says it runs: the message protocol and the fingerprint of its simulation rules. Missing (an older build) gives protocol 0 and no fingerprint. */
@@ -103,26 +124,45 @@ export function sanitizeBuild(raw: unknown): { v: number; rules: string } | null
   return { v, rules };
 }
 
-/** What we remember about each player's stream of commands, to refuse replays and absurd jumps. */
+/** What we remember about each player's stream of commands, to refuse replays and absurd jumps.
+ *  A village's history is cut into epochs by `restart` commands (see restart.ts): each epoch starts a new life with its own clock and numbering, so inside an epoch the
+ *  numbers and ticks only grow, and the epoch itself only grows. A command of an older epoch is a replay of something already superseded and is dropped; one of a newer
+ *  epoch than the restart we have seen means we missed the restart (`gap`: ask for the history, nothing to punish). */
 export class Sequence {
-  lastN = -1; lastTick = 0;
+  lastN = -1; lastTick = 0; epoch = 0;
   /** A live command must be newer than the last one and not jump absurdly far ahead. */
   acceptLive(c: { n: number; tick: number }): boolean {
     if (c.n <= this.lastN || c.tick < this.lastTick || c.tick > this.lastTick + LIMITS.maxLiveJump) return false;
     this.lastN = c.n; this.lastTick = c.tick; return true;
   }
-  /** `dup` is a command we already have (a history and the live copy of its last command can both arrive): it is dropped quietly, not punished. */
-  classify(c: { n: number; tick: number }): 'ok' | 'dup' | 'bad' {
+  /** `dup` is a command we already have (a history and the live copy of its last command can both arrive) or one of an epoch that is over: it is dropped quietly, not punished.
+   *  `gap`: it belongs to a newer epoch than we know. */
+  classify(c: { n: number; tick: number; e?: number; op?: string }): 'ok' | 'dup' | 'bad' | 'gap' {
+    const e = c.e ?? 0;
+    if (c.op === 'restart') {
+      if (e <= this.epoch) return 'dup';   // a restart we have already seen (or an older one): replaying it does nothing
+      this.epoch = e; this.lastN = c.n; this.lastTick = c.tick; return 'ok';
+    }
+    if (e < this.epoch) return 'dup';
+    if (e > this.epoch) return 'gap';
     if (c.n <= this.lastN) return 'dup';
     return this.acceptLive(c) ? 'ok' : 'bad';
   }
-  /** A whole log replaces what we knew: it must itself be in order. Returns the entries to keep (up to the first one out of order). */
-  static checkLog<T extends { n: number; tick: number }>(cmds: T[]): T[] {
-    const out: T[] = []; let n = -1, t = 0;
-    for (const c of cmds) { if (c.n <= n || c.tick < t) break; n = c.n; t = c.tick; out.push(c); }
+  /** A whole log replaces what we knew: it must itself be in order. Returns the entries to keep (up to the first one out of order). A log is one epoch: epoch 0 has no restart,
+   *  a later one begins with its `restart` command and every other entry carries the same epoch. */
+  static checkLog<T extends { n: number; tick: number; e?: number; op?: string }>(cmds: T[]): T[] {
+    const out: T[] = []; let n = -1, t = 0; const e = cmds.length ? (cmds[0].e ?? 0) : 0;
+    for (let i = 0; i < cmds.length; i++) {
+      const c = cmds[i];
+      if ((c.e ?? 0) !== e || (c.op === 'restart') !== (i === 0 && e > 0)) break;
+      if (i > 0 && (c.n <= n || c.tick < t)) break;
+      n = c.n; t = c.tick; out.push(c);
+    }
     return out;
   }
-  resetTo(cmds: { n: number; tick: number }[]) { const l = cmds[cmds.length - 1]; this.lastN = l ? l.n : -1; this.lastTick = l ? l.tick : 0; }
+  /** The epoch a (checked) log belongs to. */
+  static epochOf(cmds: { e?: number }[]): number { return cmds.length ? cmds[0].e ?? 0 : 0; }
+  resetTo(cmds: { n: number; tick: number; e?: number }[]) { const l = cmds[cmds.length - 1]; this.lastN = l ? l.n : -1; this.lastTick = l ? l.tick : 0; this.epoch = Sequence.epochOf(cmds); }
 }
 
 /** A token bucket: `rate` messages a second on average, bursts up to `burst`. */

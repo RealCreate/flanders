@@ -265,7 +265,7 @@ const farm: Model = b => {
   b.box(10.4, 0.1, 8.4, m.field, 0, 0.02, 1.4);
   const bm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
   b.box(4, 2.4, 3, bm, -1.2, 0.2, -2.6); b.gable(4, 3, 1.8 + t * 0.2, t >= 1 ? m.tile : m.thatch, -1.2, 2.6, -2.6, 0.45);
-  b.box(1.5, 1.7, 0.12, m.door, -1.2, 0.2, -1.05);
+  b.box(1.5, 1.7, 0.12, m.door, -1.2, 0.2, -4.16);   // the door is in the back wall of the barn, away from the fields: the farm's road leaves from there (see doors.rs)
   b.cyl(0.8, 0.8, 0.9, m.hay, 3.2, 0.1, -3, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.3, 0.1, -2.4, 10);
   if (t >= 1) { b.cyl(0.95, 1.0, 4.2, t >= 2 ? m.stone : m.wood, 2.8, 0.1, -3.4, 14); b.cone(1.1, 1.0, m.slate, 2.8, 4.3, -3.4, 14); }
   if (t >= 2) {
@@ -870,18 +870,36 @@ const port: Model = b => {
 };
 
 /** A toll post: a keeper's hut beside the road and a striped barrier pole across it; better tiers add a stone gatehouse and a flag. */
+// Toll post: the road runs through it. Two posts stand either side of the road (along the model's z axis; the core snaps the building onto a road so that this axis lies along it, see toll_snap),
+// a striped barrier arm is swung up over the road, and the toll keeper's hut stands beside it. The ground between the posts is left bare: the road is drawn through (crates/game-core/src/lib.rs).
 const toll: Model = b => {
   const t = b.t, m = M();
-  b.box(2.2, 1.9, 1.8, t >= 2 ? m.stone : m.wood, 1.8, 0.1, -0.2); b.gable(2.4, 2.0, 0.9, t >= 1 ? m.tile : m.thatch, 1.8, 2.0, -0.2, 0.25);
-  b.box(0.5, 1.0, 0.1, m.door, 1.8, 0.1, 0.72);
-  b.box(0.3, 1.5, 0.3, m.darkwood, -0.6, 0, 0.6); b.box(0.3, 1.5, 0.3, m.darkwood, 0.2, 0, 0.6);
-  for (let i = 0; i < 6; i++) b.box(0.6, 0.18, 0.18, i % 2 ? m.shutterRed : m.plaster, -0.6 + 0.1 + i * 0.12 - 0.3, 1.25, 0.6);
-  b.cyl(0.07, 0.07, 1.8, m.darkwood, -2.0, 0, 0.6, 6);
-  if (t >= 2) b.flag(2.9, 2.0, 0.5, 1.8);
+  b.box(1.8, 1.9, 1.6, t >= 2 ? m.stone : m.wood, 2.4, 0.1, -0.2); b.gable(2.0, 1.8, 0.9, t >= 1 ? m.tile : m.thatch, 2.4, 2.0, -0.2, 0.25);
+  b.box(0.1, 1.4, 0.5, m.door, 1.5, 0.1, -0.2);   // the keeper's door looks onto the road
+  for (const x of [-1.3, 1.3]) b.box(0.32, 1.7, 0.32, m.darkwood, x, 0, 0);
+  b.box(0.1, 0.5, 0.5, m.plaster, 1.3, 1.0, 0.2);   // the board with the tariff
+  // the barrier arm, swung up from the left post: striped red and white, with a counterweight behind the post
+  const ang = 0.7;
+  for (let i = 0; i < 6; i++) { const seg = b.box(0.5, 0.16, 0.16, i % 2 ? m.shutterRed : m.plaster, -1.3 + Math.cos(ang) * (0.3 + 0.5 * i), 1.45 + Math.sin(ang) * (0.3 + 0.5 * i), 0); seg.rotation.z = ang; }
+  b.box(0.35, 0.35, 0.35, m.stone, -1.3 - 0.35, 1.3, 0);
+  b.cyl(0.07, 0.07, 1.8, m.darkwood, 3.4, 0, 0.9, 6);
+  if (t >= 2) b.flag(3.4, 2.0, 0.9, 1.8);
 };
 
 /** The ghost shown while placing a bridge (the real bridge is drawn by spans.ts): ten units of deck with posts, stretched to the real length. */
 /** The ghost of a road piece: a patch of beaten earth. */
+/** A plaza: a paved square with a node on each of its four sides (a post on either hand of each) where roads join it, and a medallion in the middle. Its benches, trees, fountain and lanterns are options. */
+const plaza: Model = b => {
+  const m = M(), paving = new THREE.MeshStandardMaterial({ color: 0xb9b2a0, roughness: 1 }), slab = new THREE.MeshStandardMaterial({ color: 0xcfc8b4, roughness: 1 });
+  b.box(10.2, 0.12, 10.2, m.stone, 0, 0, 0);                               // the kerb all round
+  b.box(9.6, 0.16, 9.6, paving, 0, 0, 0);
+  b.box(2.6, 0.2, 9.6, slab, 0, 0, 0); b.box(9.6, 0.2, 2.6, slab, 0, 0, 0);   // the cross of lighter slabs between the nodes
+  b.cyl(1.2, 1.2, 0.24, m.stone, 0, 0, 0, 24); b.cyl(0.9, 0.9, 0.28, slab, 0, 0, 0, 24);   // the medallion
+  for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {   // the node of this side: a low post on either hand, where the road comes in
+    const px = x ? x * 5.3 : 0, pz = z ? z * 5.3 : 0, sx = x ? 0 : 1.5, sz = z ? 1.5 : 0;
+    for (const s of [-1, 1]) { b.box(0.5, 0.7, 0.5, m.stone, px + sx * s, 0, pz + sz * s); b.box(0.62, 0.12, 0.62, m.darkstone, px + sx * s, 0.7, pz + sz * s); }
+  }
+};
 const roadPiece: Model = b => { b.box(2.2, 0.12, 2.2, M().mud, 0, 0.02, 0); };
 
 const bridgeGhost: Model = b => {
@@ -935,18 +953,18 @@ function fish(b: B, mat: THREE.Material, x: number, y: number, z: number, len = 
 const fishingHut: Model = b => {
   const t = b.t, m = M(), f = fishMats();
   const W = 3.0 + t * 0.3, D = 2.6, h = 1.9 + t * 0.2, wm = t >= 2 ? m.timber : m.wood;
-  b.box(W + 0.3, 0.3, D + 0.3, m.stone, -0.6, -0.12, 0); b.box(W, h, D, wm, -0.6, 0.18, 0);
+  b.box(W + 0.3, 0.3, D + 0.3, m.stone, -0.6, -0.12, 0).name = 'footing'; b.box(W, h, D, wm, -0.6, 0.18, 0);   // the footing ends at -0.6 + W/2 + 0.15 <= 1.5, well short of the bank (the core's HUT_FOOT = 3.8 from the middle)
   b.gable(W + 0.2, D, 1.3 + t * 0.2, t >= 1 ? m.tile : m.thatch, -0.6, h + 0.18, 0, 0.4);
   b.box(0.8, 1.5, 0.12, m.door, -0.6, 0.18, D / 2 + 0.04); b.window(-0.6 + W * 0.3, 1.1, D / 2 + 0.02);
   if (t >= 2) b.chimney(-1.5, h + 0.9, -0.5, 1.1);
   // the jetty: planks on piles, from the house out over the water
-  const J0 = W / 2 - 0.5, J1 = 5.6, JW = 1.5, n = Math.round((J1 - J0) / 0.5);
+  const J0 = W / 2 - 0.45, J1 = 5.6, JW = 1.5, n = Math.round((J1 - J0) / 0.5);
   for (let i = 0; i < n; i++) b.box(0.44, 0.1, JW, i % 2 ? m.wood : m.log, J0 + 0.25 + i * 0.5, 0.0, 0);
   for (const x of [J0 + 0.5, J0 + 2.0, J0 + 3.5, J1 - 0.2]) for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.11, 0.13, 2.0, m.darkwood, x, -1.7, z, 6);
   for (const z of [-JW / 2, JW / 2]) b.box(J1 - J0, 0.1, 0.14, m.darkwood, (J0 + J1) / 2, -0.12, z);
   for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.13, 0.14, 0.9, m.darkwood, J1 - 0.1, 0.1, z, 6);   // the mooring bollards
   // a rowboat tied alongside: a hull, thwarts, an oar and the catch
-  const bx = J0 + 2.4, bz = JW / 2 + 1.0;
+  const bx = J0 + 3.0, bz = JW / 2 + 1.0;
   b.box(2.3, 0.14, 0.9, m.wood, bx, -0.55, bz);
   for (const sz of [-1, 1]) { b.box(2.1, 0.4, 0.08, m.wood, bx, -0.5, bz + sz * 0.45); b.box(0.5, 0.4, 0.08, m.wood, bx + 1.25, -0.42, bz + sz * 0.2, sz * 0.5); }
   for (const dx of [-0.5, 0.4]) b.box(0.1, 0.07, 0.8, m.darkwood, bx + dx, -0.2, bz);
@@ -957,12 +975,12 @@ const fishingHut: Model = b => {
   for (const z of [-2.3, -0.9]) b.cyl(0.07, 0.09, 2.2, m.darkwood, nx, 0, z, 6);
   b.box(0.1, 0.1, 1.7, m.darkwood, nx, 2.0, -1.6);
   for (let i = 0; i < 6; i++) b.box(0.05, 1.3 - (i % 3) * 0.2, 0.2, f.net, nx, 0.7 + (i % 3) * 0.1, -2.2 + i * 0.28);
-  for (const x of [-1.8, 0.2]) b.cyl(0.06, 0.07, 1.5, m.darkwood, x, 0, D / 2 + 0.9, 6);
-  b.box(2.4, 0.07, 0.07, m.darkwood, -0.8, 1.35, D / 2 + 0.9);
-  for (let i = 0; i < 6; i++) b.box(0.1, 0.3, 0.12, i % 2 ? f.silver : f.smoked, -1.6 + i * 0.34, 1.0, D / 2 + 0.9);
+  for (const x of [-2.6, -0.6]) b.cyl(0.06, 0.07, 1.5, m.darkwood, x, 0, D / 2 + 0.9, 6);   // the drying rack stands back by the house, well clear of the jetty and the water
+  b.box(2.4, 0.07, 0.07, m.darkwood, -1.6, 1.35, D / 2 + 0.9);
+  for (let i = 0; i < 6; i++) b.box(0.1, 0.3, 0.12, i % 2 ? f.silver : f.smoked, -2.4 + i * 0.34, 1.0, D / 2 + 0.9);
   // creels and a barrel
   b.box(0.5, 0.45, 0.5, m.hay, 1.0, 0.1, -D / 2 - 0.5); b.box(0.45, 0.4, 0.45, m.hay, 1.5, 0.1, -D / 2 - 0.4, 0.5);
-  b.cyl(0.35, 0.35, 0.7, m.log, -2.6, 0, 1.3, 9);
+  b.cyl(0.35, 0.35, 0.7, m.log, -3.2, 0, 0.6, 9);
   if (t >= 1) for (const z of [-0.3, 0.3]) b.cyl(0.05, 0.05, 1.4, m.darkwood, J1 - 1.4, 0.1, z * 3, 5).rotation.x = 0.35;   // rods leaning on the rail
   if (t >= 3) b.flag(-0.6 + W / 2 - 0.2, h + 1.0, -D / 2 + 0.3, 2.0);
 };
@@ -1016,7 +1034,7 @@ const bakery: Model = b => {
   if (t >= 2) b.box(W + 0.6, 0.2, 0.5, m.timber, 0, h + 0.1, D / 2 + 0.3);   // an awning over the counter
   if (t >= 3) b.flag(-W / 2 + 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery];
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,
@@ -1162,6 +1180,8 @@ interface OptionCtx { solid: THREE.Box3[]; all: THREE.Box3; cx: number; cz: numb
 /** Which slot of the base model an option takes the place of, and which options an option's look depends on (it is drawn again when one of them is switched). */
 const REPLACES: Record<number, Record<number, string>> = { 3: { 2: 'roof' } };
 const DEPENDS: Record<number, Record<number, number[]>> = { 3: { 0: [2] } };
+/** Where the fishing hut's land ends in its model frame (+x is towards the water): the jetty starts here, so nothing but the jetty goes past it. */
+const hutLandX = (tier: number) => (3.0 + tier * 0.3) / 2 - 0.45;
 function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const m = M(), { all, cx, cz, hw, hd, reach, seed } = c, solid = c.solid;
   const top = c.top;
@@ -1171,6 +1191,8 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       const a = seed * 0.83 + bit * 1.7 + k * 0.62, rad = Math.max(hw, hd) * 0.55 + k * 0.1;
       if (rad > reach * 1.25 + 2.2) break;
       const x = cx + Math.cos(a) * rad, z = cz + Math.sin(a) * rad, bb = new THREE.Box3(new THREE.Vector3(x - w / 2 - 0.12, y0, z - d / 2 - 0.12), new THREE.Vector3(x + w / 2 + 0.12, y0 + h, z + d / 2 + 0.12));
+      if (kind === 29 && x + w / 2 + 0.4 > 3.0) continue;   // the watermill's extras stay on the land side, never by the wheel
+      if (kind === 41 && x + w / 2 + 1.0 > hutLandX(c.tier)) continue;   // the fishing hut's extras stay on the land side, behind the jetty's start (never on the jetty or over the water)
       if (solid.some(s => s.intersectsBox(bb))) continue;
       solid.push(bb); return [x, z];
     }
@@ -1181,7 +1203,8 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const pole = (h: number) => { const p = spot(0.5, 0.5, h); if (p) b.flag(p[0], 0, p[1], h); };
   const lantern = () => { const p = spot(0.4, 0.4, 1.7); if (p) { b.cyl(0.05, 0.06, 1.5, m.darkwood, p[0], 0, p[1], 6); b.box(0.24, 0.3, 0.24, m.glow, p[0], 1.45, p[1]); b.pyramid(0.34, 0.34, 0.2, m.iron, p[0], 1.75, p[1]); } };
   const awning = () => { const p = spot(2.2, 1.5, 2.2); if (p) { b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] - 1.0, 0, p[1] - 0.6, 6); b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] + 1.0, 0, p[1] - 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] - 1.0, 0, p[1] + 0.6, 6); b.cyl(0.04, 0.04, 1.4, m.darkwood, p[0] + 1.0, 0, p[1] + 0.6, 6); const c = b.box(2.3, 0.07, 1.5, m.shutterRed, p[0], 1.95, p[1]); c.rotation.x = 0.12; } };
-  const footing = () => { b.box(hw * 2 + 0.5, 0.3, hd * 2 + 0.5, m.stone, cx, 0, cz); };
+  const footing = () => { if (kind === 29) { const W = 4.2 + c.tier * 0.5; b.box(W + 0.5, 0.3, 3.6 + 0.5, m.stone, 0, 0, 0).name = 'optfooting'; return; }   // the watermill's stone footing lies under the house only, never on towards the wheel
+    if (kind === 41) { const W = 3.0 + c.tier * 0.3, back = -0.6 - (W + 0.7) / 2; b.box(hutLandX(c.tier) - back, 0.3, 2.6 + 0.7, m.stone, (hutLandX(c.tier) + back) / 2, 0, 0); return; } b.box(hw * 2 + 0.5, 0.3, hd * 2 + 0.5, m.stone, cx, 0, cz); };
   const ring = (rad: number, y: number, h: number, mat: THREE.Material, n = 16) => { for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; const p = b.box(2 * Math.PI * rad / n + 0.1, h, 0.35, mat, cx + Math.cos(a) * rad, y, cz + Math.sin(a) * rad); p.rotation.y = -a + Math.PI / 2; } };
   const generic = (bit: number) => { if (bit === 0) pole(2.8); else if (bit === 1) { lantern(); lantern(); } else if (bit === 2) awning(); else if (bit === 3) footing(); };
   const has = (n: number) => n === bit;
@@ -1272,6 +1295,14 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(2)) { const leaf = new THREE.MeshStandardMaterial({ color: 0x23472a, roughness: 0.95 }); for (let i = 0; i < 2; i++) { const p = spot(2.0, 2.0, 3.4); if (p) { b.cyl(0.2, 0.3, 1.6, m.log, p[0], 0, p[1], 7); b.cone(1.0, 3.0, leaf, p[0], 0.9, p[1], 9); } } }
       if (has(3)) { const p = spot(2.4, 1.8, 1.8); if (p) { b.box(2.2, 1.2, 1.6, m.darkstone, p[0], 0, p[1]); b.gable(2.4, 1.8, 0.7, m.slate, p[0], 1.2, p[1], 0.2); b.box(0.7, 0.9, 0.1, m.door, p[0], 0, p[1] + 0.84); }
       }
+      break;
+    }
+    case 44: { // plaza: benches, trees, a fountain, lanterns (at fixed places, clear of the roads that come in at the middle of each side)
+      const leaf = new THREE.MeshStandardMaterial({ color: 0x4a8a38, roughness: 0.95 });
+      if (has(0)) for (const [x, z, r] of [[0, 4.3, 0], [0, -4.3, Math.PI], [4.3, 0, Math.PI / 2], [-4.3, 0, -Math.PI / 2]] as const) for (const o of [-2.6, 2.6]) { const px = x ? x : o, pz = z ? z : o; const bn = b.box(1.4, 0.12, 0.45, m.wood, px, 0.4, pz); bn.rotation.y = r; const bk = b.box(1.4, 0.4, 0.08, m.wood, px + (x ? Math.sign(x) * 0.2 : 0), 0.5, pz + (z ? Math.sign(z) * 0.2 : 0)); bk.rotation.y = r; b.box(0.12, 0.4, 0.12, m.stone, px, 0, pz); }
+      if (has(1)) for (const sx of [-1, 1]) for (const sz of [-1, 1]) { b.cyl(0.2, 0.28, 1.8, m.log, sx * 3.9, 0, sz * 3.9, 7); b.sphere(1.3, leaf, sx * 3.9, 2.4, sz * 3.9); }
+      if (has(2)) { b.cyl(1.7, 1.8, 0.45, m.stone, 0, 0.3, 0, 20); b.cyl(1.45, 1.45, 0.12, new THREE.MeshStandardMaterial({ color: 0x4a8ab0, roughness: 0.15 }), 0, 0.7, 0, 20); b.cyl(0.18, 0.24, 1.4, m.stone, 0, 0.7, 0, 8); b.sphere(0.34, m.stone, 0, 2.2, 0); }   // (it stands on the medallion, not through it)
+      if (has(3)) for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const s of [-1, 1]) { const px = x ? x * 5.3 : s * 1.5, pz = z ? z * 5.3 : s * 1.5; b.cyl(0.05, 0.06, 1.5, m.darkwood, px, 0.8, pz, 6); b.box(0.24, 0.3, 0.24, m.glow, px, 2.3, pz); b.pyramid(0.34, 0.34, 0.2, m.iron, px, 2.6, pz); }
       break;
     }
     default: for (let bit = 0; bit < 4; bit++) if (has(bit)) generic(bit);
@@ -1367,10 +1398,24 @@ export class VillageView {
   /** flat = World.buildings_flat() (stride 8). Returns discs [x, z, r] that should be cleared of trees. */
   sync(flat: Float32Array, radii: number[], health?: Float32Array, options?: ArrayLike<number>) {
     const n = flat.length / 10, clear: { x: number; z: number; r: number }[] = [];
+    // A building is told from the others by what it is (kind, tier, place, turn), not by its index: the core's list shifts when one is pulled down, burnt or lost in a raid, and every later
+    // building would otherwise look new and play its build animation again. Each existing item is claimed by a building with the same signature (the one at its old index first).
+    const sigAt = (i: number) => `${flat[i * 10]}:${flat[i * 10 + 1]}:${flat[i * 10 + 2]}:${flat[i * 10 + 3]}:${flat[i * 10 + 4]}`;
+    const pool = new Map<string, number[]>(), claimed = new Map<number, Item>();
+    for (const [j, it] of this.items) { const l = pool.get(it.sig); if (l) l.push(j); else pool.set(it.sig, [j]); }
+    const taken = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      const l = pool.get(sigAt(i)); if (!l?.length) continue;
+      const k = l.includes(i) ? i : l[0]; l.splice(l.indexOf(k), 1); taken.add(k); claimed.set(i, this.items.get(k)!);
+    }
+    // what is left over at an index that still has a building (a changed tier: an upgrade) is rebuilt in place; the rest is gone
+    for (const [j, it] of [...this.items]) if (!taken.has(j)) { if (j < n && !claimed.has(j)) claimed.set(j, it); else { this.endBuild(it); this.dispose(it.group); this.touch(it.cell); } }
+    this.items = claimed;
     for (let i = 0; i < n; i++) {
       const [kind, tier, x, z, rot, pad, status] = [flat[i * 10], flat[i * 10 + 1], flat[i * 10 + 2], flat[i * 10 + 3], flat[i * 10 + 4], flat[i * 10 + 5], flat[i * 10 + 6]];
       const opt = options?.[i] ?? 0, sig = `${kind}:${tier}:${x}:${z}:${rot}`;
       let it = this.items.get(i);
+      if (it) it.group.userData.idx = i;
       const prevTier = it && it.sig.split(':')[0] === String(kind) && it.sig.split(':')[2] === String(x) ? 1 : 0;   // (same building, new tier: an upgrade, built a little quicker)
       if (it && it.sig === sig && it.opt !== opt && it.model) {
         // only the optional upgrades changed: the bare building stays as it is, and only the new item is built (and drawn up with its own scaffold)
@@ -1397,7 +1442,6 @@ export class VillageView {
       }
       clear.push({ x, z, r: radii[kind] * 1.15 + 3.5 });
     }
-    for (const [i, it] of [...this.items]) if (i >= n) { this.endBuild(it); this.dispose(it.group); this.items.delete(i); this.touch(it.cell); }
     return clear;
   }
 

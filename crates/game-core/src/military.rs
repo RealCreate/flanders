@@ -23,7 +23,7 @@ pub struct UnitDef {
 
 pub static UNITS: [UnitDef; N_UNITS] = [
     UnitDef { name: "Spearman", hp: 70.0, dmg: 10.0, range: 2.6, speed: 3.2, cd: 1.2, armor: 1.0, cost: &[(W, 4), (TL, 1)], tier: 0, time: 12, desc: "Cheap line infantry. Holds the line against knights." },
-    UnitDef { name: "Archer", hp: 45.0, dmg: 8.0, range: 22.0, speed: 3.4, cd: 1.6, armor: 0.0, cost: &[(PL, 3), (W, 2)], tier: 0, time: 12, desc: "Shoots from range; fire arrows set thatched roofs alight." },
+    UnitDef { name: "Archer", hp: 45.0, dmg: 8.0, range: crate::radii::ARCHER_RANGE, speed: 3.4, cd: 1.6, armor: 0.0, cost: &[(PL, 3), (W, 2)], tier: 0, time: 12, desc: "Shoots from range; fire arrows set thatched roofs alight." },
     UnitDef { name: "Swordsman", hp: 115.0, dmg: 17.0, range: 2.4, speed: 3.0, cd: 1.0, armor: 3.0, cost: &[(IR, 2), (TL, 1), (CH, 1)], tier: 1, time: 18, desc: "Mail-clad heavy infantry." },
     UnitDef { name: "Knight", hp: 170.0, dmg: 24.0, range: 2.8, speed: 7.0, cd: 1.2, armor: 4.0, cost: &[(IR, 5), (GD, 3), (GR, 12)], tier: 2, time: 30, desc: "Mounted shock cavalry. Devastating charge." },
     UnitDef { name: "Catapult", hp: 130.0, dmg: 55.0, range: 38.0, speed: 1.6, cd: 5.0, armor: 0.0, cost: &[(PL, 20), (IR, 4), (TL, 3)], tier: 3, time: 45, desc: "Siege engine. Smashes walls, digs craters and starts fires." },
@@ -113,7 +113,7 @@ pub fn unit_stat(u: &Unit) -> Stat {
     Stat { hp: u.maxhp, dmg: b.dmg * dm, range: b.range, speed: b.speed * sp, cd: b.cd, armor: b.armor }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     pub side: u8, // 0 defenders, 1 attackers
     pub kind: u8,
@@ -152,13 +152,14 @@ impl Unit {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Battle {
     pub units: Vec<Unit>,
     pub t: f32,
     pub pillage: f32,
     pub tag: i32, // 0 = bandits, otherwise id of the attacking player
     pub angle: f32, // direction (from the village centre) the attackers came from
+    pub spawn: [f32; 2], // where the line of attackers formed up (the middle of its front), fixed when the fight began
     #[allow(dead_code)] pub atk_start: [u32; NK],
     pub atk_dead: u32,
     pub def_dead: u32,
@@ -178,7 +179,9 @@ pub struct Battle {
     pub lair_at: [f32; 2],      // where that place is
     pub boss: u8,               // the boss in the fight (0 none) and its name, for the report
     pub bname: u8,
+    #[serde(default)] pub bought: bool,      // the raiders were paid to leave (see bribe.rs): they walk off and nobody fights
+    #[serde(default)] pub bought_t: f32,    // seconds since they were paid
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Wildfire { pub x: f32, pub y: f32, pub r: f32, pub life: f32, pub scorch: usize }
