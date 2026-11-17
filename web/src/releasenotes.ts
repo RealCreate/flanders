@@ -47,6 +47,7 @@ export const RELEASES: Release[] = [
       'Plagues last longer.',
     ],
     fixed: [
+      'Moat water no longer floats: on a slope, at a hill or beside a lowered or levelled patch the water of a moat used to stand above the lower bank and hang in the air; it now never rises above the lowest ground round a moat piece and changes level only gently along the moat.',
       'Finished buildings no longer start rebuilding for no reason: when another building was pulled down, burnt or lost in a raid, every building after it in the list played its construction animation again.',
       'Waterwheels and watermills stand at the visible water level of a moat and sit on the bank, with the wheel dipping into the water.',
       'Fishing hut, gold mine and iron mine footings no longer glitch against the bank or the door pad.',
