@@ -16,7 +16,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'garrison': w.garrison_set(c.idx!, c.kind ?? 0); break;
     case 'bridge': w.drawbridge_set(c.idx!, (c.kind ?? 0) === 1); break;
     case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
-    case 'flatten': w.flatten(c.x ?? 60); break;
+    case 'flatten': w.flatten(c.x ?? 60, c.y === undefined ? 5 : c.y / 10); break;
     case 'batch': w.place_batch(Int32Array.from(c.units ?? [])); break;   // [kind, dx, dy, rot] per piece, rebuilt once
     case 'visit': w.visit_neutral(c.idx!); break;
     case 'hero': w.hero_hire(); break;

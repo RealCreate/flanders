@@ -97,7 +97,7 @@ export class Paths {
     // junction patches
     rb = -1e6; rs = 0.5; rp = 1;
     for (const [dx, dz] of discs.values()) {
-      const c = vert(dx, dz, 0.95, 0.5, 0.5), n = 14, R = half * EDGE, first = pos.length / 3;
+      const c = vert(dx, dz, 0.95, 0.5, 0.5), n = 24, R = half * EDGE * 1.18, first = pos.length / 3;
       for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2; vert(dx + Math.cos(a) * R, dz + Math.sin(a) * R, 0, 0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5); }
       for (let k = 0; k < n; k++) idx.push(c, first + k, first + (k + 1) % n);
     }

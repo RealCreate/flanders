@@ -83,7 +83,7 @@ const ui: UI = new UI({
   upgradeHover: on => showUpgradeOutline(on),
   speed: n => setSpeed(n),
   toggleResources: () => toggleResources(),
-  muster: u => doMuster(u),
+  muster: u => doMuster(u, true),
   detAction: (a, id) => detAction(a, id),
   toggleMute: () => { sound.setMuted(!sound.muted); ui.setMuteIcon(sound.muted); },
   minimapClick: (x, z) => rig?.focus(x, z),
@@ -151,7 +151,7 @@ let obstCache: { x: number; z: number; r: number }[] = [];
 let selectedDet: number | null = null;
 let selectedRuin: number | null = null;
 const attackTargets = new Map<number, string>();   // field army id -> the rival it is marching on
-let ghostRing!: THREE.Mesh, previewKey = '', previewKey2 = '';
+let ghostRing!: THREE.Mesh, builderRangeRing!: THREE.Mesh, placementNet!: THREE.Group, placementNetVersion = -1, previewKey = '', previewKey2 = '';
 
 /** Bumped whenever the map generator changes: every world gets a fresh map and old saves are discarded. */
 const MAP_VERSION = 7;
@@ -435,7 +435,7 @@ function doCheat(action: number, a: number, b: number) {
   if (showroom) toggleShowroom();   // any other test action takes you back to your village first (the hall is only a drawing)
   if (action === 100) { runModelVillage(true); return; }
   if (action === 101) { fullReset(); return; }
-  if (action === 102) { if (lv.world.flatten(a) === 0) { commit({ op: 'flatten', x: a }); afterLocalChange(); refreshTerrain(lv.world); ui.toast('The ground is levelled.', 'good'); } return; }
+  if (action === 102) { const height = b > 0 ? b / 10 : 5; if (lv.world.flatten(a, height) === 0) { commit({ op: 'flatten', x: a, y: height * 10 }); afterLocalChange(); refreshTerrain(lv.world); ui.toast('The ground is levelled.', 'good'); } return; }
   if (action === 5) a = selectedIdx ?? -1;           // "burn selected building"
   if (action === 5 && a < 0) { ui.toast('Select a building first.', 'info'); return; }
   if (!lv.world.cheat(action, a, b)) return;
@@ -576,10 +576,10 @@ function doAttackSelected(key: string) {
 // ---------- field armies: muster, select, order ----------
 const MARCH_ERRORS: Record<number, string> = { [-1]: 'That army no longer exists.', [-2]: 'There is no way through to there.', [-3]: 'Catapults need spearmen or swordsmen with them to cut a way through the forest.', [-5]: 'That water is too wide to cross.' };
 
-function doMuster(u: number[]) {
+function doMuster(u: number[], selectAllArmies = false) {
   const id = lv.world.det_form(Uint32Array.from(u));
   if (!id) { ui.toast('You do not have that many soldiers in the barracks.', 'bad'); return; }
-  commit({ op: 'form', units: u }); lv.afterTick(); selectDet(id); updateHud(); ui.toast('Field army mustered. Right-click the ground to send it somewhere.', 'good');
+  commit({ op: 'form', units: u }); lv.afterTick(); if (selectAllArmies) selectDets(lv.field.ids()); else selectDet(id); updateHud(); ui.toast(selectAllArmies ? 'Field army mustered. All field armies are selected.' : 'Field army mustered. Right-click the ground to send it somewhere.', 'good');
 }
 
 let multiDets: number[] = [];   // every selected army; selectedDet is the first
@@ -848,6 +848,9 @@ async function startGame(name: string, username: string) {
   minimap = new Minimap(ui.minimap, terrain); bigMap = new Minimap(ui.bigmap, terrain, 900); minimap.tunnels = bigMap.tunnels = tunnels.list;
   ghostRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 56).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x66ff88, transparent: true, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
   ghostRing.visible = false; ghostRing.renderOrder = 9; scene.add(ghostRing);
+  builderRangeRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 96).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x8fd6ff, transparent: true, opacity: 0.58, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }));
+  builderRangeRing.visible = false; builderRangeRing.renderOrder = 8; scene.add(builderRangeRing);
+  placementNet = new THREE.Group(); placementNet.visible = false; placementNet.renderOrder = 31; scene.add(placementNet);
 
   shared = {
     scene, terrain, wildlife, fx, radii, forest, obstacles: () => obstCache,
@@ -1024,18 +1027,34 @@ function updateHud() {
 
 /** Was a fight going on in each village at the last look (to notice the start of one). */
 const fightSeen = new Map<string, boolean>();
+const raidWarningSeen = new Map<string, boolean>();
 
 /** The red banner while a fight is on, for the first village with one: who attacks from where, which side you are on, a click to look at the attackers, and what you can do about it. The same
  *  options exist for both sides (see defence.ts). A raid on your own village also takes the camera there at once when "Jump to raiders" is on. */
 function battleBanner() {
   const list: { v: Village; who: string; mine: boolean; key: string }[] = [{ v: lv, who: 'your village', mine: true, key: 'me' }, ...[...rivals.values()].map(r => ({ v: r.village, who: r.name + "'s village", mine: false, key: r.key }))];
-  for (const { v, mine, key } of list) {   // (every village is watched for the start of a fight, not only the one the banner shows)
+  for (const { v, mine, key } of list) {   // every village is watched, including during the warning period
     const on = v.world.battle_active(), was = fightSeen.get(key) ?? false; fightSeen.set(key, on);
+    const warning = v.world.raid_warning_ticks() > 0, warned = raidWarningSeen.get(key) ?? false; raidWarningSeen.set(key, warning);
+    if (warning && !warned) {
+      const dir = compassWord(Math.cos(v.world.raid_warning_angle()), Math.sin(v.world.raid_warning_angle()));
+      const msg = `Bandits are gathering to attack ${mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village"} from the ${dir}. You have 30 seconds to prepare.`;
+      ui.toast(msg, 'bad'); ui.log(msg, 'bad', Number(v.world.tick()));
+    }
     if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
     if (on && !was) announceBoss(v, mine, key);
   }
   for (const { v, who, mine, key } of list) {
     const w = v.world;
+    if (!w.battle_active() && w.raid_warning_ticks() > 0) {
+      const seconds = w.raid_warning_ticks();
+      const dir = compassWord(Math.cos(w.raid_warning_angle()), Math.sin(w.raid_warning_angle()));
+      const bossWarning = w.raid_warning_boss() ? ' A warlord leads them.' : '';
+      const text = `Raid approaching from the ${dir} in ${seconds}s.${bossWarning} Muster troops, man towers and prepare your defences.`;
+      const f = foeFocus(w.raid_warning_angle(), v.ox, v.oz, w.build_radius());
+      ui.battle(`${icon('attack', 18, { mono: true })} Raiders approaching<small>${esc(text)}</small><small>Countdown · ${seconds}s · Direction · ${dir}</small>`, () => rig.focus(f.x, f.z, 65), []);
+      return;
+    }
     if (!w.battle_active()) continue;
     const u = w.battle_units_flat(); let d = 0, a = 0;
     for (let i = 0; i < u.length; i += BATTLE_STRIDE) if (u[i + 6] > 0) { if (u[i] === 0) d++; else a++; }
@@ -1161,7 +1180,7 @@ function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r =>
 function selectKind(k: number | null) {
   selectedKind = k; ui.markSelected(k); penReset(); drawPenBar();
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
-  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false;
+  terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; if (builderRangeRing) builderRangeRing.visible = false; if (placementNet) placementNet.visible = false;
   if (k !== null) {
     selectedIdx = null; updateSelection();
     // the ghost is the real building (same textures and shape), tinted green or red, so what you see is what you get
@@ -1474,7 +1493,7 @@ function openContext(e: PointerEvent) {
       for (const id of lv.field.ids()) items.push({ label: `March Army ${id} here`, run: () => { selectDet(id); orderMarch(id, hit.x, hit.z); } });
     }
     const soldiers = Array.from(lv.world.army()).slice(0, 6);
-    if (soldiers.some(n => n > 0)) items.push('-', { label: 'Muster every soldier', sub: 'F', run: () => doMuster(soldiers) });
+    if (soldiers.some(n => n > 0)) items.push('-', { label: 'Muster every soldier', sub: 'F', run: () => doMuster(soldiers, true) });
   }
   // the world may change while the menu is open (a fire, a raid): then the building indices have moved, so do nothing rather than act on the wrong one
   const cnt = lv.world.building_count();
@@ -1513,17 +1532,38 @@ function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: nu
   return { dx: Math.round(nx + ux * off - lv.ox), dy: Math.round(nz + uz * off - lv.oz), rot: ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8 };
 }
 
+function updatePlacementNet(valid: boolean) {
+  if (!placementNet) return;
+  const w = lv.world, version = w.terrain_version();
+  if (placementNetVersion !== version) {
+    placementNetVersion = version;
+    for (const child of [...placementNet.children]) { const m = child as THREE.Mesh | THREE.LineSegments | THREE.Points; m.geometry?.dispose(); const mat = m.material; if (Array.isArray(mat)) mat.forEach(x => x.dispose()); else mat?.dispose(); }
+    placementNet.clear();
+    const flat = w.net_flat(), n = flat[0] | 0, e = flat[1] | 0, edges: number[] = [], nodes: number[] = [];
+    const at = (i: number) => { const x = lv.ox + flat[2 + i * 2], z = lv.oz + flat[3 + i * 2]; return [x, terrain.walkAt(x, z) + 0.7, z]; };
+    for (let i = 0; i < n; i++) nodes.push(...at(i));
+    for (let i = 0; i < e; i++) { const o = 2 + n * 2 + i * 3, a = at(flat[o] | 0), b = at(flat[o + 1] | 0); edges.push(...a, ...b); }
+    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(edges, 3));
+    const pg = new THREE.BufferGeometry(); pg.setAttribute('position', new THREE.Float32BufferAttribute(nodes, 3));
+    placementNet.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x77e8ff, transparent: true, opacity: 0.75, depthTest: false })));
+    placementNet.add(new THREE.Points(pg, new THREE.PointsMaterial({ color: 0x9cecff, size: 5, sizeAttenuation: false, transparent: true, opacity: 0.95, depthTest: false })));
+  }
+  const color = valid ? 0x65ff91 : 0xff5b55;
+  for (const child of placementNet.children) { const mat = (child as THREE.LineSegments | THREE.Points).material as THREE.LineBasicMaterial | THREE.PointsMaterial; mat.color.setHex(color); }
+  placementNet.visible = true;
+}
+
 function updateGhost(e: { clientX: number; clientY: number }) {
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
-  if (!hit) { ghost.visible = false; return; }
+  if (!hit) { ghost.visible = false; ghostRing.visible = false; builderRangeRing.visible = false; placementNet.visible = false; return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
   if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
     const bp = w.bridge_preview(dx, dy), code = bp[0];
-    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
+    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; builderRangeRing.visible = false; placementNet.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
     const [, cx, cz, ang, len, span, planks, wood] = Array.from(bp), ux = Math.cos(ang), uz = Math.sin(ang), hA = terrain.heightAt(cx - ux * len / 2, cz - uz * len / 2), hB = terrain.heightAt(cx + ux * len / 2, cz + uz * len / 2);
     terrain.clearPreview(); previewKey = '';
-    ghost.visible = true; ghostRing.visible = false; ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
+    ghost.visible = true; ghostRing.visible = false; builderRangeRing.visible = false; updatePlacementNet(code === 0); ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
     const key = `${code}:${cx.toFixed(1)}:${cz.toFixed(1)}`;
     if (key !== previewKey2) {
       previewKey2 = key; ghostCode = code;
@@ -1547,6 +1587,8 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   if (!pad) h = terrain.heightAt(x, z);
   ghost.visible = true; ghost.position.set(x, h, z); ghost.rotation.y = grot * Math.PI / 4;
   ghostRing.visible = true; ghostRing.position.set(x, h + 0.14, z); ghostRing.scale.setScalar(d.r * 1.05);
+  builderRangeRing.visible = selectedKind === 20; builderRangeRing.position.set(x, h + 0.12, z); builderRangeRing.scale.setScalar(70);
+  updatePlacementNet(code === 0);
   if (code !== ghostCode) {
     ghostCode = code;
     ghost.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) { const mm = m.material as THREE.MeshStandardMaterial; mm.emissive.setHex(code === 0 ? 0x22cc55 : 0xdd2a1a); mm.emissiveIntensity = code === 0 ? 0.32 : 0.55; } });
@@ -1681,7 +1723,7 @@ function bindInput() {
       case 'fullMap': ui.toggleMap(); break;
       case 'fullscreen': e.preventDefault(); toggleFullscreen(); break;
       case 'photo': e.preventDefault(); togglePhotoMode(renderer.domElement, () => perf.render(renderer, scene, rig.cam), t => ui.toast(t, 'info')); break;
-      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 6); if (a.some(n => n > 0)) doMuster(a); else ui.toast('There are no soldiers in the barracks.', 'info'); break; }
+      case 'musterAll': { const a = Array.from(lv.world.army()).slice(0, 6); if (a.some(n => n > 0)) doMuster(a, true); else if (lv.field.ids().length) selectDets(lv.field.ids()); else ui.toast('There are no soldiers available to muster.', 'info'); break; }
       case 'toggleMinimap': ui.toggleMinimap(); break;
       default: break;
     }

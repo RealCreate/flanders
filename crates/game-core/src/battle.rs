@@ -117,6 +117,7 @@ impl World {
     /// Start a fight at the village. `boss` (0 none) leads the attackers at strength `scale`: only ever on a raid of bandits (tag 0).
     pub(crate) fn begin_battle_boss(&mut self, atk: [u32; NK], angle: f32, tag: i32, boss: u8, bname: u8, scale: f32) -> bool {
         if self.battle.is_some() { return false; }
+        self.raid_warning_ticks = 0;
         let boss = if tag == 0 && (boss as usize) <= N_BOSSES { boss } else { 0 };
         let (cx, cy) = (self.ox as f32, self.oy as f32);
         let dist = self.build_radius() as f32 + 22.0;
@@ -423,7 +424,10 @@ impl World {
                 } else {
                     let (mx, my) = ((tx - u.x) / d_enemy.max(0.1), (ty - u.y) / d_enemy.max(0.1));
                     if u.side == 1 {
-                        if let Some(blk) = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet) { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
+                        let before = self.felled.len();
+                        let blocked = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet, self.seed, &mut self.felled);
+                        if self.felled.len() > before { self.map_ver += 1; }
+                        if let Some(blk) = blocked { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
                     } else { let _ = (mx, my); Self::own_walk(&mut b, i, tx, ty, ud.speed * dt, &wet, &cr, &mut want); }
                 }
                 acted = true;
@@ -459,8 +463,10 @@ impl World {
                     }
                 } else {
                     let (mx, my) = ((bx - u.x) / d.max(0.1), (by - u.y) / d.max(0.1));
-                    if siege { b.units[i].x += mx * ud.speed * dt; b.units[i].y += my * ud.speed * dt; b.units[i].face = my.atan2(mx); }
-                    else if let Some(blk) = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet) { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
+                    let before = self.felled.len();
+                    let blocked = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet, self.seed, &mut self.felled);
+                    if self.felled.len() > before { self.map_ver += 1; }
+                    if let Some(blk) = blocked { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
                 }
             } else {
                 // defenders drift back to their post
@@ -587,7 +593,7 @@ impl World {
 
     /// Move an attacker one step. Walls, fences and gates stop it (it may only move away from them). A moat or river does not: raiders wade or float across on rafts and ladders laid
     /// over the water, but only at a crawl (see WADE_SPEED), unable to fight, and hit twice as hard. A bridge or lowered drawbridge is a dry way over. Returns what stopped it.
-    pub(crate) fn attacker_step(b: &mut Battle, i: usize, mx: f32, my: f32, step: f32, bars: &[(usize, f32, f32, f32, u8)], wet: &[(f32, f32, f32)]) -> Option<Block> {
+    pub(crate) fn attacker_step(b: &mut Battle, i: usize, mx: f32, my: f32, step: f32, bars: &[(usize, f32, f32, f32, u8)], wet: &[(f32, f32, f32)], seed: u64, felled: &mut Vec<[f32; 3]>) -> Option<Block> {
         let (ox, oy) = (b.units[i].x, b.units[i].y);
         let slow = if b.units[i].wading { if b.units[i].kind == 3 || b.units[i].kind == RAM { WADE_KNIGHT } else { WADE_SPEED } } else if b.units[i].soak > 0.0 { SOAK_SPEED } else { 1.0 };
         let (nx, ny) = (ox + mx * step * slow, oy + my * step * slow);
@@ -596,6 +602,17 @@ impl World {
             if dn < r + 0.6 && dn < d0 { b.units[i].face = (by - oy).atan2(bx - ox); return Some(Block::Bar(bi)); }
         }
         b.units[i].x = nx; b.units[i].y = ny; b.units[i].face = my.atan2(mx);
+        // Raiders clear a broad corridor as they advance, rather than ghosting through an intact forest.
+        if felled.len() < 4000 {
+            let ts = terrain::trees(seed, ox.min(nx) - 6.5, oy.min(ny) - 6.5, ox.max(nx) + 6.5, oy.max(ny) + 6.5);
+            let vx = nx - ox; let vy = ny - oy; let vv = (vx * vx + vy * vy).max(1e-4);
+            for k in (0..ts.len()).step_by(5) {
+                let (tx, ty) = (ts[k], ts[k + 1]);
+                let t = (((tx - ox) * vx + (ty - oy) * vy) / vv).clamp(0.0, 1.0);
+                let d = (tx - (ox + vx * t)).hypot(ty - (oy + vy * t));
+                if d <= 6.0 && !felled.iter().any(|q| (q[0] - tx).hypot(q[1] - ty) < q[2]) { felled.push([tx, ty, 3.0]); }
+            }
+        }
         let was = b.units[i].wading;
         b.units[i].wading = Self::in_water(b, wet, nx, ny, if b.units[i].wading { 0.8 } else { 0.0 });   // (once in, a raider stays "in the water" a little past the rim, so it does not flicker in and out)
         if was && !b.units[i].wading { b.units[i].soak = SOAK_SECS; }
