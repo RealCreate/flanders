@@ -92,6 +92,8 @@ export class Crowd {
   private uArmL: THREE.InstancedMesh; private uArmR: THREE.InstancedMesh; private foreL: THREE.InstancedMesh; private foreR: THREE.InstancedMesh;
   private dress: THREE.InstancedMesh; private horse: THREE.InstancedMesh; private horseLeg: THREE.InstancedMesh;
   private hats: THREE.InstancedMesh[]; private tools: THREE.InstancedMesh[]; private shields: THREE.InstancedMesh[];
+  private distantBody: THREE.InstancedMesh; private distantHead: THREE.InstancedMesh;
+  private distant = 0;
   private n = { torso: 0, leg: 0, arm: 0, dress: 0, horse: 0, hleg: 0, hats: [] as number[], tools: [] as number[], shields: [] as number[] };
   private e = new THREE.Euler(); private q = new THREE.Quaternion(); private v = new THREE.Vector3(); private s = new THREE.Vector3(); private col = new THREE.Color();
   private t4 = new THREE.Matrix4(); private B = new THREE.Matrix4(); private Tm = new THREE.Matrix4(); private Pm = new THREE.Matrix4(); private Hm = new THREE.Matrix4();
@@ -108,16 +110,27 @@ export class Crowd {
     this.dress = mk(geoDress()); this.horse = mk(horseGeo()); this.horseLeg = mk(horseLegGeo(), MAX * 4);
     for (const m of [this.head, this.shinL, this.shinR, this.foreL, this.foreR]) m.castShadow = false;   // too small to matter in the shadow pass
     this.hats = HATS.map(h => mk(h())); this.tools = TOOLS.map(t => mk(t())); this.shields = SHIELDS.map(s => mk(s()));
+    this.n.hats = new Array(this.hats.length).fill(0);
+    this.n.tools = new Array(this.tools.length).fill(0);
+    this.n.shields = new Array(this.shields.length).fill(0);
+    this.distantBody = mk(merge([
+      box(0.43, 0.67, 0.27, 0xffffff, 0, 1.04, 0),
+      box(0.14, 0.68, 0.16, 0x6c6864, -0.11, 0.35, -0.045),
+      box(0.14, 0.68, 0.16, 0x6c6864, 0.11, 0.35, 0.045),
+    ]));
+    this.distantHead = mk(cyl(0.14, 0.15, 0.27, 0xffffff, 0, 1.51, 0, 5));
+    this.distantBody.castShadow = this.distantHead.castShadow = false;
   }
 
   begin() {
     this.n.torso = this.n.leg = this.n.arm = this.n.dress = this.n.horse = this.n.hleg = 0;
-    this.n.hats = this.hats.map(() => 0); this.n.tools = this.tools.map(() => 0); this.n.shields = this.shields.map(() => 0);
+    this.distant = 0;
+    this.n.hats.fill(0); this.n.tools.fill(0); this.n.shields.fill(0);
   }
 
   end() {
-    const all = [this.torso, this.head, this.thighL, this.thighR, this.shinL, this.shinR, this.uArmL, this.uArmR, this.foreL, this.foreR, this.dress, this.horse, this.horseLeg, ...this.hats, ...this.tools, ...this.shields];
-    const n = this.n, counts = [n.torso, n.torso, n.leg, n.leg, n.leg, n.leg, n.arm, n.arm, n.arm, n.arm, n.dress, n.horse, n.hleg, ...n.hats, ...n.tools, ...n.shields];
+    const all = [this.torso, this.head, this.thighL, this.thighR, this.shinL, this.shinR, this.uArmL, this.uArmR, this.foreL, this.foreR, this.dress, this.horse, this.horseLeg, this.distantBody, this.distantHead, ...this.hats, ...this.tools, ...this.shields];
+    const n = this.n, counts = [n.torso, n.torso, n.leg, n.leg, n.leg, n.leg, n.arm, n.arm, n.arm, n.arm, n.dress, n.horse, n.hleg, this.distant, this.distant, ...n.hats, ...n.tools, ...n.shields];
     all.forEach((mesh, i) => {
       const c = counts[i], prev = (mesh.userData.prev as number | undefined) ?? -1;
       mesh.count = c; mesh.userData.prev = c;
@@ -125,6 +138,18 @@ export class Crowd {
       mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, Math.max(1, c) * 16); mesh.instanceMatrix.needsUpdate = true;   // upload only the instances in use
       if (mesh.instanceColor) { mesh.instanceColor.clearUpdateRanges(); mesh.instanceColor.addUpdateRange(0, Math.max(1, c) * 3); mesh.instanceColor.needsUpdate = true; }
     });
+  }
+
+  /** Distant villagers are two rigid instances rather than a full joint rig. */
+  addVillager(d: Draw, detailed: boolean) {
+    if (detailed) { this.add(d); return; }
+    if (this.distant >= MAX) return;
+    const bob = d.pose === 1 ? Math.abs(Math.sin(d.phase)) * 0.075 : 0;
+    this.v.set(d.x, d.y + bob, d.z); this.s.setScalar(d.scale ?? 1);
+    this.e.set(d.pose === 1 ? 0.055 : 0, d.yaw, 0, 'YXZ'); this.q.setFromEuler(this.e);
+    this.m.compose(this.v, this.q, this.s);
+    this.put(this.distantBody, this.distant, this.m, d.body);
+    this.put(this.distantHead, this.distant++, this.m, d.skin);
   }
 
   /** out = parent * translate(x,y,z) * rotate(rx, ry, rz) */

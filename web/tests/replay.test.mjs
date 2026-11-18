@@ -53,3 +53,20 @@ test('the callback fires when a rewind replaces the world', () => {
   const { cmds, final } = live(); const r = new Replay(source(cmds), final); let seen = 0; r.onWorld = () => seen++;
   r.advanceTo(final); assert.equal(seen, 0); r.advanceTo(10); assert.equal(seen, 1);
 });
+
+test('a history preserves both chosen heights and older automatic earthworks', () => {
+  const RAISE = 33, LOWER = 34;
+  const cmds = [
+    { op: 'cheat', kind: 3 },
+    { op: 'flatten', x: 55, y: 60 },
+    { op: 'place', kind: RAISE, x: 28, y: 24, h: 9.5 },
+    { op: 'batch', units: [LOWER, 28, -22, 0, LOWER, 36, -22, 0], h: 3.5 },
+    { op: 'place', kind: RAISE, x: -26, y: -24 },
+  ].map((cmd, tick) => ({ ...cmd, tick, n: tick }));
+  const r = new Replay(source(cmds), cmds.length);
+  assert.ok(r.advanceTo(cmds.length).reached);
+  assert.equal(r.world.height_at(28, 24), 9.5);
+  assert.equal(r.world.height_at(28, -22), 3.5);
+  assert.equal(r.world.height_at(36, -22), 3.5);
+  assert.ok(Math.abs(r.world.height_at(-26, -24) - 8.2) < 0.01);
+});

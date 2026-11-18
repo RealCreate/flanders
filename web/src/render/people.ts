@@ -70,9 +70,15 @@ export class People {
   /** The invisible lines of the world (the grid plus the village paths, see march.rs): a dry route from one point to another as [1, x, z, x, z, ...], or empty when there is none. */
   router: ((sx: number, sz: number, gx: number, gz: number) => ArrayLike<number>) | null = null;
   private roadGrid = new Map<string, number[]>();
+  private layout: Float32Array = new Float32Array(0);
+  private terrainVersion = -1;
+  private routes = new Map<string, THREE.Vector2[]>();
+  private commuteBudget = 0;
+  private stores: number[] = [];
   /** Dirt roads as [ax, az, bx, bz, ...] segments (World.roads_flat() without the buildings): people walk them faster. */
   setRoads(flat: ArrayLike<number>) {
     this.roadGrid.clear();
+    this.routes.clear();
     for (let i = 0; i + 5 < flat.length; i += 6) {
       const x0 = Math.floor((Math.min(flat[i], flat[i + 2]) - 2) / 8), x1 = Math.floor((Math.max(flat[i], flat[i + 2]) + 2) / 8), z0 = Math.floor((Math.min(flat[i + 1], flat[i + 3]) - 2) / 8), z1 = Math.floor((Math.max(flat[i + 1], flat[i + 3]) + 2) / 8);
       for (let a = x0; a <= x1; a++) for (let b = z0; b <= z1; b++) { const k = a + ':' + b; let l = this.roadGrid.get(k); if (!l) this.roadGrid.set(k, l = []); l.push(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]); }
@@ -109,22 +115,31 @@ export class People {
 
   private rand(a: Agent, k: number) { const x = Math.sin(a.seed * 12.9898 + k * 78.233) * 43758.5453; return x - Math.floor(x); }
 
-  sync(buildings: Float32Array, paths: Float32Array, radii: number[], population: number) {
+  sync(buildings: Float32Array, paths: Float32Array, radii: number[], population: number, terrainVersion: number) {
     const n = buildings.length / S;
-    this.radii = radii; this.bld = []; this.parent = new Array(n).fill(-1);
-    for (let i = 0; i < n; i++) this.bld.push({ kind: buildings[i * S], x: buildings[i * S + 2], z: buildings[i * S + 3] });
-    this.wells = this.bld.filter(b => b.kind === 16).map(b => ({ x: b.x, z: b.z }));
-    this.link.clear();
-    for (let o = 0; o < paths.length;) { const c = paths[o], p = paths[o + 1], m = paths[o + 2], pts: [number, number][] = []; for (let k = 0; k < m; k++) pts.push([paths[o + 3 + 2 * k], paths[o + 4 + 2 * k]]); this.parent[c] = p; this.link.set(c, pts); o += 3 + 2 * m; }
-    // the side of each building its stub path leaves from (the node at the edge of its plot): where people stand when they arrive. (A random spot all round the building could be on the far side of a wall that stands beside it.)
-    this.doorAngle.clear();
-    for (let i = 0; i < n; i++) {
-      const kind = buildings[i * S], tier = buildings[i * S + 1], rot = buildings[i * S + 4];
-      if (kind === 2 || kind === 21 || kind === 22 || kind === 23 || kind === 24 || kind === 32 || kind === 33 || kind === 34 || kind === 36 || kind === 37 || kind === 38 || kind === 44) continue;
-      const d = door_info(kind, tier), th = (rot & 7) * Math.PI / 4, c = Math.cos(th), sn = Math.sin(th), ex = d[4], ez = d[5];
-      this.doorAngle.set(i, Math.atan2(-ex * sn + ez * c, ex * c + ez * sn));
+    const layoutChanged = terrainVersion !== this.terrainVersion || this.layout.length !== buildings.length || this.layout.some((v, i) => {
+      const col = i % S;
+      return (col < 5 || (col === 6 && (buildings[i - 6] === 22 || buildings[i - 6] === 23))) && v !== buildings[i];
+    });
+    if (layoutChanged) {
+      this.layout = buildings;
+      this.terrainVersion = terrainVersion;
+      this.routes.clear();
+      this.radii = radii; this.bld = []; this.parent = new Array(n).fill(-1);
+      for (let i = 0; i < n; i++) this.bld.push({ kind: buildings[i * S], x: buildings[i * S + 2], z: buildings[i * S + 3] });
+      this.stores = this.bld.flatMap((b, i) => b.kind === 25 ? [i] : []);
+      this.wells = this.bld.filter(b => b.kind === 16).map(b => ({ x: b.x, z: b.z }));
+      this.link.clear();
+      for (let o = 0; o < paths.length;) { const c = paths[o], p = paths[o + 1], m = paths[o + 2], pts: [number, number][] = []; for (let k = 0; k < m; k++) pts.push([paths[o + 3 + 2 * k], paths[o + 4 + 2 * k]]); this.parent[c] = p; this.link.set(c, pts); o += 3 + 2 * m; }
+      // the side of each building its stub path leaves from (the node at the edge of its plot): where people stand when they arrive. (A random spot all round the building could be on the far side of a wall that stands beside it.)
+      this.doorAngle.clear();
+      for (let i = 0; i < n; i++) {
+        const kind = buildings[i * S], tier = buildings[i * S + 1], rot = buildings[i * S + 4];
+        if (kind === 2 || kind === 21 || kind === 22 || kind === 23 || kind === 24 || kind === 32 || kind === 33 || kind === 34 || kind === 36 || kind === 37 || kind === 38 || kind === 44) continue;
+        const d = door_info(kind, tier), th = (rot & 7) * Math.PI / 4, c = Math.cos(th), sn = Math.sin(th), ex = d[4], ez = d[5];
+        this.doorAngle.set(i, Math.atan2(-ex * sn + ez * c, ex * c + ez * sn));
+      }
     }
-
     const homes: number[] = [], works: number[] = [];
     for (let i = 0; i < n; i++) {
       const res = buildings[i * S + 9], staff = buildings[i * S + 8];
@@ -137,8 +152,8 @@ export class People {
     const total = Math.min(MAX, population, Math.max(homes.length, 0));
     const roster: { home: number; work: number }[] = [];
     for (let i = 0; i < total; i++) roster.push({ home: homes[(i * 7) % Math.max(1, homes.length)] ?? 0, work: i < works.length ? works[i] : 0 });
-    const sig = roster.map(r => r.home * 64 + r.work).join(',') + '|' + n + '|' + paths.length;
-    if (sig === this.sig) return;
+    const sig = roster.map(r => r.home + ':' + r.work).join(',') + '|' + n + '|' + paths.length;
+    if (!layoutChanged && sig === this.sig) return;
     this.sig = sig;
 
     while (this.agents.length > roster.length) this.agents.pop();
@@ -151,7 +166,7 @@ export class People {
       }
       const changed = a.home !== r.home || a.work !== r.work;
       a.home = r.home; a.work = r.work;
-      if (changed) { a.route = []; a.dwell = this.rand(a, 2) * 3; a.stage = 0; a.target = null; a.carry = false; a.haul = 0; }
+      if (changed || layoutChanged) { a.route = []; a.dwell = this.rand(a, 2) * 3; a.stage = 0; a.target = null; a.carry = false; a.haul = 0; }
       this.dress(a);
     });
   }
@@ -195,14 +210,25 @@ export class People {
     const goal = this.spot(to, 1), r = this.router(fromPos.x, fromPos.y, goal.x, goal.y);
     if (r.length < 3 || r[0] !== 1) return null;
     const out = [fromPos.clone()]; for (let k = 1; k + 1 < r.length; k += 2) out.push(new THREE.Vector2(r[k], r[k + 1]));
-    out.push(goal);
     return this.wades(out) ? null : out;
   }
 
-  private route(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] {
-    const net = this.viaNet(from, to, fromPos); if (net) return net;
-    const r = this.routeRaw(from, to, fromPos);
-    return this.wades(r) ? [fromPos.clone()] : r;   // no dry way (no bridge where one is needed): they stay where they are rather than wade
+  private route(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[];
+  private route(from: number, to: number, fromPos: THREE.Vector2, defer: true): THREE.Vector2[] | null;
+  private route(from: number, to: number, fromPos: THREE.Vector2, defer = false): THREE.Vector2[] | null {
+    const key = `${from}:${to}:${fromPos.x}:${fromPos.y}`;
+    const cached = this.routes.get(key);
+    if (cached) return cached;
+    if (defer) {
+      if (!this.commuteBudget) return null;
+      this.commuteBudget--;
+    }
+    const net = this.viaNet(from, to, fromPos);
+    const fallback = net ?? this.routeRaw(from, to, fromPos);
+    const route = net || !this.wades(fallback) ? fallback : [fromPos.clone()];
+    if (this.routes.size >= 512) this.routes.delete(this.routes.keys().next().value!);
+    this.routes.set(key, route);
+    return route;
   }
 
   private routeRaw(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] {
@@ -300,6 +326,7 @@ export class People {
 
   update(dt: number, speed: number) {
     this.t += dt;
+    this.commuteBudget = 1; // spread first-time route searches out when many people change shifts together
     // builders from a Builders' Yard go to work on damaged buildings and ruins while there is something to mend
     for (const a of this.agents) {
       const isBuilder = this.bld[a.work]?.kind === 20 && !a.fight;
@@ -343,15 +370,23 @@ export class People {
         a.dwell -= step * Math.max(1, speed);
         if (a.hunter && a.goingToWork && a.shift > 0 && a.dwell <= 0) { this.hunt(a, step, speed); continue; }
         if (a.dwell <= 0 && this.bld.length) {
-          a.goingToWork = !a.goingToWork;
-          const from = a.goingToWork ? a.home : a.work, to = a.goingToWork ? a.work : a.home;
-          a.route = this.route(from, to, new THREE.Vector2(a.x, a.z)); a.at = 1;
-          if (a.hunter && !a.goingToWork) { a.stage = 0; a.carry = false; a.target = null; }
-          // leaving work with a full cart: take it to the nearest storehouse (or the hall) before going home
-          if (!a.goingToWork && !a.hunter && !a.crew && HAULS[this.bld[a.work]?.kind]) {
-            let best = 0, bd = 1e9; this.bld.forEach((q, i) => { if (q.kind === 25 || (i === 0 && best === 0)) { const d = Math.hypot(q.x - this.bld[a.work].x, q.z - this.bld[a.work].z); if (q.kind === 25 ? d < bd : bd === 1e9) { bd = d; best = i; } } });
-            if (best !== a.work && bd > 7) { a.haul = 1; a.store = best; a.route = this.route(a.work, best, new THREE.Vector2(a.x, a.z)); a.at = 1; }
+          const going = !a.goingToWork;
+          const from = going ? a.home : a.work;
+          let to = going ? a.work : a.home, haul = 0;
+          const work = this.bld[a.work];
+          if (!going && !a.hunter && HAULS[work?.kind]) {
+            let best = 0, distance = (this.bld[0].x - work.x) ** 2 + (this.bld[0].z - work.z) ** 2;
+            for (const i of this.stores) {
+              const q = this.bld[i], d = (q.x - work.x) ** 2 + (q.z - work.z) ** 2;
+              if (d < distance) { best = i; distance = d; }
+            }
+            if (best !== a.work && distance > 49) { to = best; haul = 1; }
           }
+          const route = this.route(from, to, new THREE.Vector2(a.x, a.z), true);
+          if (!route) continue;
+          a.goingToWork = going; a.route = route; a.at = 1; a.haul = haul;
+          if (haul) a.store = to;
+          if (a.hunter && !going) { a.stage = 0; a.carry = false; a.target = null; }
         }
       }
     }
@@ -381,24 +416,27 @@ export class People {
 
   /** Queue everyone for drawing. */
   /** Queue everyone near the view for drawing (people far outside the screen are skipped). */
-  draw(crowd: Crowd, cx = 0, cz = 0, radius = 1e9) {
+  draw(crowd: Crowd, cx = 0, cz = 0, radius = 1e9, camera?: THREE.Vector3, detailRange = Infinity) {
     if (this.hidden) { this.cartBody.count = this.cartLoad.count = this.cartShaft.count = this.cartWheel.count = 0; return; }
-    const r2 = radius * radius; this.drawCarts(cx, cz, r2); this.drawStations(crowd, cx, cz, r2);
+    const r2 = radius * radius, detail2 = detailRange ** 2;
+    const detailed = (x: number, y: number, z: number) => !camera || (x - camera.x) ** 2 + (y - camera.y) ** 2 + (z - camera.z) ** 2 <= detail2;
+    this.drawCarts(cx, cz, r2); this.drawStations(crowd, cx, cz, r2, detailed);
     for (const a of this.agents) {
       if ((a.x - cx) ** 2 + (a.z - cz) ** 2 > r2) continue;
       const walking = a.route.length > 0 && a.at < a.route.length;
       const pose: Draw['pose'] = walking ? 1 : a.fight && a.fs === 4 ? 3 : a.aim ? 3 : a.fight ? 0 : a.crew ? (a.cs === 2 ? 2 : 0) : a.goingToWork && a.tool && !a.hunter ? 2 : 0;
-      crowd.add({
-        x: a.x, y: this.terrain.walkAt(a.x, a.z), z: a.z, yaw: a.yaw + (walking ? 0 : Math.sin(this.t * 0.9 + a.seed) * 0.35), pose, phase: walking ? a.gait : this.t + a.seed, speed: walking ? a.pace : 0,
+      const y = this.terrain.walkAt(a.x, a.z);
+      crowd.addVillager({
+        x: a.x, y, z: a.z, yaw: a.yaw + (walking ? 0 : Math.sin(this.t * 0.9 + a.seed) * 0.35), pose, phase: walking ? a.gait : this.t + a.seed, speed: walking ? a.pace : 0,
         body: a.body, skin: a.skin, hat: a.hat, tool: a.fight ? TOOL.BUCKET : a.tool || undefined, dress: a.dress, scale: a.scale, swing: a.aim ? 0 : a.fight && a.fs === 4 ? Math.max(0.05, a.fsT / 0.7) : undefined,
         legs: a.dress ? a.body : 0x4a3a2a,
-      });
+      }, detailed(a.x, y, a.z));
     }
   }
 
   /** Workers stand at their workplace for only part of the day (the rest they walk or are at home), and there are fewer walking villagers than workers, so a busy building could look
    *  empty. Every workplace with workers always shows at least one (up to two) of them at work beside it, in addition to any who are really there. */
-  drawStations(crowd: Crowd, cx: number, cz: number, r2: number) {
+  private drawStations(crowd: Crowd, cx: number, cz: number, r2: number, detailed: (x: number, y: number, z: number) => boolean) {
     const present = new Map<number, number>();
     for (const a of this.agents) {
       if (a.route.length && a.at < a.route.length) continue;
@@ -411,11 +449,12 @@ export class People {
       for (let k = 0; k < need; k++) {
         const p = this.spot(b, 7 + k * 5), look = LOOKS[B.kind], seed = b * 13 + k * 7, r = (j: number) => { const x = Math.sin(seed * 12.9898 + j * 78.233) * 43758.5453; return x - Math.floor(x); };
         const woman = !look && r(1) < 0.5;
-        crowd.add({
-          x: p.x, y: this.terrain.walkAt(p.x, p.y), z: p.y, yaw: Math.atan2(B.x - p.x, B.z - p.y) + Math.sin(this.t * 0.7 + seed) * 0.25, pose: 2, phase: this.t * 1.1 + seed, speed: 0,
+        const y = this.terrain.walkAt(p.x, p.y);
+        crowd.addVillager({
+          x: p.x, y, z: p.y, yaw: Math.atan2(B.x - p.x, B.z - p.y) + Math.sin(this.t * 0.7 + seed) * 0.25, pose: 2, phase: this.t * 1.1 + seed, speed: 0,
           body: look ? look[2][Math.floor(r(2) * look[2].length)] : woman ? DRESS[Math.floor(r(2) * DRESS.length)] : PLAIN[Math.floor(r(2) * PLAIN.length)], skin: SKIN[Math.floor(r(3) * SKIN.length)],
           hat: look?.[0], tool: look ? look[1] || undefined : undefined, dress: woman, scale: 1 + (r(4) - 0.5) * 0.1, legs: woman ? DRESS[0] : 0x4a3a2a,
-        });
+        }, detailed(p.x, y, p.y));
       }
     }
   }

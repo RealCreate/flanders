@@ -183,7 +183,7 @@ impl World {
     pub(crate) fn net_stamp(&self) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
-        for b in &self.buildings { mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64); mix(b.rot as u64); mix(b.aux as u64); if matches!(b.kind, DRAWBRIDGE | GATE | ROAD) { mix(b.status as u64); } }
+        for b in &self.buildings { mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64); mix(b.rot as u64); mix(b.aux as u64); if matches!(b.kind, DRAWBRIDGE | GATE | ROAD) { mix(b.status as u64); } if b.kind == PLAZA { mix((b.opts & 4) as u64); } }
         for c in &self.road_conn { mix(c.x.to_bits() as u64); mix(c.y.to_bits() as u64); for t in &c.to { mix(t.x.to_bits() as u64); mix(t.y.to_bits() as u64); mix(t.k as u64); } }
         for l in &self.levels { for v in l { mix(v.to_bits() as u64); } }
         for l in &self.flats { for v in l { mix(v.to_bits() as u64); } }
@@ -382,6 +382,18 @@ impl World {
         }
         // the roads the player laid: a node at every point of the curve (the pieces and the samples between them), joined as road edges, so people and soldiers prefer them; the end of a road
         // that runs into a building's node is joined to the ring node there (the end of the building's stub), and into a square to its node on that side
+        let remote_obstacles = std::cell::OnceCell::new();
+        let remote_clear = |a: (f32, f32), b: (f32, f32)| {
+            let o = remote_obstacles.get_or_init(|| self.obst());
+            if !o.solid_clear(a, b, crate::members::FOOT_MARGIN) { return false; }
+            let length = (b.0 - a.0).hypot(b.1 - a.1);
+            let steps = (length / 0.5).ceil().max(1.0) as u32;
+            (0..=steps).all(|i| {
+                let t = i as f32 / steps as f32;
+                let (x, y) = (lerp(a.0, b.0, t), lerp(a.1, b.1, t));
+                self.height_ground(x, y) >= self.march_waterline(x, y) || o.on_deck(x, y, false)
+            })
+        };
         let mut at: BTreeMap<(u32, u32), u32> = BTreeMap::new();
         for e in self.road_edges() {
             let mut prev = u32::MAX;
@@ -393,8 +405,14 @@ impl World {
                     let nodes = Self::nodes_in(&self.buildings[e.b], e.b, &doors);
                     let which = nodes.iter().position(|q| q.0.to_bits() == px.to_bits() && q.1.to_bits() == py.to_bits());
                     id = match (self.buildings[e.b].kind, which) { (PLAZA, Some(w)) => ring[e.b].get(w).copied().unwrap_or(u32::MAX), (GATE | TOLL | BRIDGE | DRAWBRIDGE, Some(w)) => ring[e.b].get(w).copied().filter(|&n| n != u32::MAX).or_else(|| net.door_node(e.b)).unwrap_or(u32::MAX), _ => net.door_node(e.b).unwrap_or(u32::MAX) };
-                } else if id == u32::MAX && net.ok_at(px, py) { id = net.add(px, py); at.insert(key, id); road_pre.push(id); }
-                if prev != u32::MAX && id != u32::MAX && prev != id && net.clear(net.nodes[prev as usize], net.nodes[id as usize], 0.0) { net.link(prev, id, true); }
+                } else if id == u32::MAX && (net.ok_at(px, py) || (net.cell(px, py).is_none() && remote_clear((px, py), (px, py)))) {
+                    id = net.add(px, py); at.insert(key, id); road_pre.push(id);
+                }
+                if prev != u32::MAX && id != u32::MAX && prev != id {
+                    let (a, b) = (net.nodes[prev as usize], net.nodes[id as usize]);
+                    let clear = if net.cell(a.0, a.1).is_none() || net.cell(b.0, b.1).is_none() { remote_clear(a, b) } else { net.clear(a, b, 0.0) };
+                    if clear { net.link(prev, id, true); }
+                }
                 prev = id;
             }
         }

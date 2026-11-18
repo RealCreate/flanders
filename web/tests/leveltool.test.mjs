@@ -31,3 +31,15 @@ test('the target height: Auto is the default, a chosen height is kept to half un
   assert.deepEqual(sanitizeCmd({ ...ok, h: -1 }), { ...ok, h: -1 });
   for (const h of [0.5, 24.5, 1000, 'a', null, NaN]) assert.equal(sanitizeCmd({ ...ok, h }), null, `h ${h}`);
 });
+
+test('raise and lower preserve height in placements and pen strokes', () => {
+  const place = { op: 'place', tick: 4, n: 2, kind: 33, x: 20, y: 16, rot: 0 };
+  const batch = { op: 'batch', tick: 4, n: 3, units: [34, 20, 16, 0, 34, 24, 16, 0] };
+  assert.deepEqual(sanitizeCmd({ ...place, h: 9.5 }), { ...place, h: 9.5 });
+  assert.deepEqual(sanitizeCmd({ ...batch, h: 3.5 }), { ...batch, h: 3.5 });
+  assert.deepEqual(sanitizeCmd(place), place);
+  assert.deepEqual(sanitizeCmd(batch), batch);
+  assert.equal(sanitizeCmd({ ...place, h: 25 }), null);
+  assert.equal(sanitizeCmd({ ...place, kind: 0, h: 8 }), null);
+  assert.equal(sanitizeCmd({ ...batch, units: [34, 20, 16, 0, 24, 24, 16, 0], h: 8 }), null);
+});

@@ -5,7 +5,10 @@ import type { Cmd, Signed } from './net/p2p.ts';
 
 export function applyCmd(w: World, c: Cmd) {
   switch (c.op) {
-    case 'place': w.place(c.kind!, c.x!, c.y!, c.rot ?? 0); break;
+    case 'place':
+      if (c.h === undefined) w.place(c.kind!, c.x!, c.y!, c.rot ?? 0);
+      else w.place_earthwork(c.kind!, c.x!, c.y!, c.rot ?? 0, c.h);
+      break;
     case 'upgrade': w.upgrade(c.idx!); break;
     case 'demolish': w.demolish(c.idx!); break;
     case 'train': w.train(c.kind!, c.x!); break;
@@ -18,7 +21,10 @@ export function applyCmd(w: World, c: Cmd) {
     case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
     case 'level': w.level_ground(c.x!, c.y!, c.kind ?? 0, c.h ?? -1); break;   // x, y the middle, kind the radius, h the height (absent in older logs: Auto, the land round it)
     case 'flatten': w.flatten(c.x ?? 60, c.y === undefined ? -1 : c.y / 10); break;
-    case 'batch': w.place_batch(Int32Array.from(c.units ?? [])); break;   // [kind, dx, dy, rot] per piece, rebuilt once
+    case 'batch':
+      if (c.h === undefined) w.place_batch(Int32Array.from(c.units ?? []));
+      else w.place_batch_height(Int32Array.from(c.units ?? []), c.h);
+      break;
     case 'road': w.lay_road(Int32Array.from(c.units ?? [])); break;   // [dx, dy] per point of a road the player drew: pieces joined into one curve, the ends snapped onto nodes
     case 'visit': w.visit_neutral(c.idx!); break;
     case 'hero': w.hero_hire(); break;

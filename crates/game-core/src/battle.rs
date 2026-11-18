@@ -341,6 +341,9 @@ impl World {
         let bars: Vec<(usize, f32, f32, f32, u8)> = self.buildings.iter().enumerate().filter(|(_, x)| x.hp > 0.0 && matches!(x.kind, WALL | FENCE | GATE)).map(|(k, x)| (k, x.x, x.y, if x.kind == FENCE { 1.9 } else { 2.6 }, x.kind)).collect();
         let wet: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|x| matches!(x.kind, MOAT | RIVER)).map(|x| (x.x, x.y, if x.kind == MOAT { MOAT_FLOOR * moat_scale(x) + 0.5 } else { RIVER_FLOOR + 0.5 })).collect();
         let cr = self.crossings(); let mut want: Vec<u32> = vec![];   // the ways over water for our own soldiers, and the drawbridges they are waiting for
+        let tower_guards: Vec<bool> = b.units.iter().map(|u| u.side == 0 && u.kind == 1 && !u.from_army && u.det == 0 && self.buildings.iter().any(|t| {
+            matches!(t.kind, TOWER | KEEP) && t.hp > 0.0 && (t.x, t.y) == (u.hx, u.hy)
+        })).collect();
         for u in b.units.iter().filter(|u| u.side == 0 && u.alive) { for c in cr.iter().filter(|c| c.db >= 0 && c.on(u.x, u.y)) { want.push(c.db as u32); } }   // (a drawbridge with one of ours on it stays down, however busy he is)
         for si in 0..b.spots.len() { let busy = b.units.iter().any(|q| q.alive && q.climb > 0.0 && q.spot == si as i32); b.spots[si][3] = if busy { 1.0 } else { 0.0 }; }
         for i in 0..n {
@@ -356,7 +359,7 @@ impl World {
                 if b.rout[i] <= 0.0 { b.units[i].alive = false; b.units[i].escaped = true; b.fled[u.side as usize] += 1; if u.side == 1 && (u.kind as usize) < NK { b.fled_kinds[u.kind as usize] += 1; } }
                 continue;
             }
-            if u.kind != 4 && u.kind != 3 && u.kind != RAM && u.boss == 0 && !(u.held && u.pelev > 0.0) {
+            if !tower_guards[i] && u.kind != 4 && u.kind != 3 && u.kind != RAM && u.boss == 0 && !(u.held && u.pelev > 0.0) {
                 let hpf = u.hp / ud.hp;
                 let broken = if u.side == 1 { let limit = if b.tag == 0 { 0.6 } else { 0.45 }; (ratio[1] < limit && hpf < 0.5 && self.rf() < 0.03) || (ratio[1] < 0.3 && self.rf() < 0.02) } else { ratio[0] < if self.hero.is_some() { 0.15 } else { 0.3 } && hpf < 0.4 && self.rf() < 0.02 };
                 if broken { b.rout[i] = 7.0; continue; }
@@ -378,10 +381,12 @@ impl World {
                 continue;
             }
             // nearest enemy
+            let tower_guard = tower_guards[i];
+            let (from_x, from_y) = if tower_guard { (u.hx, u.hy) } else { (u.x, u.y) };
             let (mut best, mut bd) = (usize::MAX, f32::MAX);
             for j in 0..n {
                 if !b.units[j].alive || b.units[j].side == u.side { continue; }
-                let d = (b.units[j].x - u.x).powi(2) + (b.units[j].y - u.y).powi(2);
+                let d = (b.units[j].x - from_x).powi(2) + (b.units[j].y - from_y).powi(2);
                 if d < bd { bd = d; best = j; }
             }
             let d_enemy = bd.sqrt();
@@ -389,9 +394,9 @@ impl World {
             if u.held && u.pelev > 0.0 && !bars.iter().any(|q| (q.1 - u.hx).powi(2) + (q.2 - u.hy).powi(2) < 3.2 * 3.2) { b.units[i].pelev = 0.0; b.units[i].elev = 0.0; }   // the wall they stood on is gone
             let u = b.units[i].clone();
             if u.held && u.pelev > 0.0 { let (dx, dy) = (u.hx - u.x, u.hy - u.y); b.units[i].elev = if (dx * dx + dy * dy).sqrt() < 1.8 { u.pelev } else { 0.0 }; }
-            let rng = ud.range * if b.units[i].elev > 0.0 { radii::WALL_HEIGHT_RANGE } else { 1.0 };      // a wall gives height: archers on it shoot further
-            let aggro = if u.side == 1 { 26.0 } else if u.held { rng.max(ud.range + 5.0) } else { 34.0 };
-            let pinned = b.units[i].elev > 0.0 && d_enemy > rng;                       // on the wall: they do not leave it to chase
+            let rng = if tower_guard { radii::TOWER_RANGE } else if b.units[i].elev > 0.0 { ud.range * radii::WALL_HEIGHT_RANGE } else { ud.range };
+            let aggro = if tower_guard { rng } else if u.side == 1 { 26.0 } else if u.held { rng.max(ud.range + 5.0) } else { 34.0 };
+            let pinned = (tower_guard || b.units[i].elev > 0.0) && d_enemy > rng;
             // catapults on the defending side lob stones at whoever comes into range
             if siege && u.side == 0 {
                 if best != usize::MAX && d_enemy <= ud.range && b.units[i].cd <= 0.0 {
@@ -433,7 +438,7 @@ impl World {
                 }
                 acted = true;
             }
-            if acted { continue; }
+            if acted || tower_guard { continue; }
             if u.side == 1 && b.lair < 0 {
                 // attackers go for the nearest building
                 let mut tb = usize::MAX; let mut td = f32::MAX;
@@ -485,8 +490,8 @@ impl World {
                 if d2 < 0.8 && d2 > 0.0001 {
                     let d = d2.sqrt(); let push = (0.9 - d) * 0.5;
                     let (ni, nj) = ((b.units[i].x - dx / d * push, b.units[i].y - dy / d * push), (b.units[j].x + dx / d * push, b.units[j].y + dy / d * push));
-                    if b.units[i].side == 1 || !Self::own_wet(&b, &wet, &cr, ni.0, ni.1) { b.units[i].x = ni.0; b.units[i].y = ni.1; }   // (our own soldiers are not shoved into the water)
-                    if b.units[j].side == 1 || !Self::own_wet(&b, &wet, &cr, nj.0, nj.1) { b.units[j].x = nj.0; b.units[j].y = nj.1; }
+                    if !tower_guards[i] && (b.units[i].side == 1 || !Self::own_wet(&b, &wet, &cr, ni.0, ni.1)) { b.units[i].x = ni.0; b.units[i].y = ni.1; }
+                    if !tower_guards[j] && (b.units[j].side == 1 || !Self::own_wet(&b, &wet, &cr, nj.0, nj.1)) { b.units[j].x = nj.0; b.units[j].y = nj.1; }
                 }
             }
         }
@@ -749,7 +754,7 @@ impl World {
             while k > 0 { k -= 1; if b.units[k].det == id { if b.units[k].side == 0 && b.units[k].alive { b.start_side[0] = b.start_side[0].saturating_sub(1); } b.units.remove(k); if k < b.rout.len() { b.rout.remove(k); } } }
             self.dets[i].units = n;
         }
-        let d = &mut self.dets[i]; d.state = march::S_IDLE; d.defend = false; d.path.clear(); d.grp.clear();
+        let d = &mut self.dets[i]; d.state = march::S_IDLE; d.defend = false; d.path.clear(); d.grp.clear(); d.file = Default::default();
         if d.units.iter().sum::<u32>() == 0 { self.dets.remove(i); }
     }
 

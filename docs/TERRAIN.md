@@ -15,6 +15,8 @@ Water follows: `compute_moat_water` samples the ground without ditches (layers 1
 
 `level` commands carry `h` (negative or absent: Auto, the median of the dry land in a ring just outside the patch; otherwise 1 to 24, rounded to 1/16). `flatten` keeps its own height (`y / 10`, negative: the average of the land).
 
+Raise Ground and Lower Ground also accept target heights from 1 to 24. An explicit height blends from the center of the piece into the surrounding ground and leaves standing ditches intact. It applies to a single placement or an entire pen stroke. Auto raises or lowers by 2.2 units, including when replaying commands without a height.
+
 ## What changed for old saves
 
 Terrain is identical for every log that has no Level ground patch beside a standing ditch and no flatten over standing buildings (both were bugs). A ditch beside a patch used to be half-filled by the patch's shoulder; it is now intact. Moats on ground above height 9 now have a bed that rises with the ground (shallower than the old fixed bed); natural land that high is rare near a village.

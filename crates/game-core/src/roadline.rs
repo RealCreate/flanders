@@ -7,11 +7,9 @@
 //! The curve is a cubic Hermite spline through the pieces (a Catmull-Rom spline where a piece has two neighbours), sampled at a fixed step with plain `f32` arithmetic: the same pieces give
 //! the same points on every replica, and the points feed the path network (roads are cheap to walk), so nothing here may depend on the machine.
 //!
-//! Where a road may go: a piece may stand inside the village's land, or up to `EDGE_PROBE` beyond its edge, and a piece that is joined (through other pieces) to a building or to the land claims
-//! `ROAD_CLAIM` round itself, so buildings may be put up beside a joined road. Never farther than `TERRITORY_MAX` from the hall.
+//! Roads can be laid across the map. A road connected to a building or the village's land claims `ROAD_CLAIM` around it, within the territory limit.
 use super::*;
 use std::collections::BTreeMap;
-use wasm_bindgen::prelude::*;
 
 /// A road end this close to a node (or to a piece of another road) snaps onto it.
 pub const SNAP: f32 = 4.0;
@@ -19,8 +17,6 @@ pub const SNAP: f32 = 4.0;
 pub const REACH: f32 = 10.0;
 /// What a joined road piece claims round itself for building.
 pub const ROAD_CLAIM: f32 = 9.0;
-/// A road piece may stand this far beyond the edge of the village's land.
-pub const EDGE_PROBE: f32 = 6.0;
 /// Distance between the points a curve is sampled at.
 const STEP: f32 = 1.5;
 /// How far outside the paved edge of a square its nodes stand.
@@ -114,15 +110,6 @@ impl World {
         [self.road_snap_target(x, y, REACH, None).map_or(Tgt::default(), |t| t.0), Tgt::default()]
     }
 
-    /// Is this a place a road piece may be put: inside the land, or just beyond its edge (a road leads out of the village), and never beyond the territory's limit?
-    pub(crate) fn road_in_reach(&self, x: f32, y: f32) -> bool {
-        let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
-        if (x - hx).hypot(y - hy) > TERRITORY_MAX { return false; }
-        if self.in_territory(x, y) { return true; }
-        let e = EDGE_PROBE; let d = e * 0.7;
-        [(e, 0.0), (-e, 0.0), (0.0, e), (0.0, -e), (d, d), (d, -d), (-d, d), (-d, -d)].iter().any(|&(dx, dy)| self.in_territory(x + dx, y + dy))
-    }
-
     /// Is the land under building `i`'s road piece the village's own, or is it joined (through other road pieces, or directly) to a building or to the land?
     pub(crate) fn road_piece_attached(&self, x: f32, y: f32, to: &[Tgt; 2]) -> bool {
         if self.in_territory_by(x, y, false) { return true; }
@@ -197,8 +184,9 @@ impl World {
     /// The road a player drew, as points relative to the village's origin ([dx, dy] each, at least two): a piece is put at every point, each joined to the one before. The first and the last
     /// snap onto a node or a road piece within `SNAP`, and are joined to it. Returns the code of `can_place` for the first piece that could not be put (0: all of them were), or -21 for a gap longer than `REACH`.
     pub fn lay_road(&mut self, flat: &[i32]) -> i32 {
-        let pts: Vec<(f32, f32)> = flat.chunks_exact(2).take(64).map(|c| ((self.ox + c[0]) as f32, (self.oy + c[1]) as f32)).collect();
+        let pts: Vec<(f32, f32)> = flat.chunks_exact(2).take(64).map(|c| (self.ox as f32 + c[0] as f32, self.oy as f32 + c[1] as f32)).collect();
         if pts.len() < 2 { return -1; }
+        if pts.iter().any(|&(x, y)| !Self::infrastructure_in_bounds(x, y)) { return -2; }
         let n = pts.len();
         // the two ends snap onto a node or a piece of another road: they are not pieces themselves, the road is joined to what they snapped to
         let start = self.road_snap_target(pts[0].0, pts[0].1, SNAP, None);
@@ -234,7 +222,7 @@ impl World {
         }
     }
 
-    /// Can a road piece stand at (dx, dy) (inside the land or just beyond it, on dry level ground, clear of buildings)? The `can_place` code.
+    /// Can a road piece stand at (dx, dy)? Returns the `can_place` code.
     pub fn road_can(&self, dx: i32, dy: i32) -> i32 { self.can_place(ROAD, dx, dy) }
 
     fn push_run(v: &mut Vec<f32>, born: u32, run: &[(f32, f32)]) {

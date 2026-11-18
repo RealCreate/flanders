@@ -8,6 +8,29 @@ const defs = JSON.parse(createRequire(import.meta.url)('./.wasm/game_core.js').c
 const B = await loadBuildings();
 test.after(() => closeModels());
 
+test('batched buildings remain pickable and skip distant detail triangles', async () => {
+  const THREE = await import('three');
+  const view = new B.VillageView(0x2f5fa8);
+  const flat = Float32Array.of(0, 2, 20, 20, 0, 0, 4, 0, 0, 0);
+  view.sync(flat, defs.map(d => d.r), Float32Array.of(100, 100, 0), [0]);
+  view.root.updateMatrixWorld(true);
+  const ray = new THREE.Raycaster(new THREE.Vector3(20, 30, 20), new THREE.Vector3(0, -1, 0));
+  assert.equal(view.pick(ray), 0);
+  view.update(0.2, new THREE.Vector3(20, 20, 20), 40);
+  assert.ok(view.isBatched);
+  assert.equal(view.pick(ray), 0, 'the original geometry is still selectable');
+  const total = () => view.batchRoot.children.reduce((n, mesh) => n + Math.min(mesh.geometry.attributes.position.count, mesh.geometry.drawRange.count), 0);
+  const near = total();
+  view.update(0.01, new THREE.Vector3(200, 60, 200), 40);
+  assert.ok(total() < near, 'distant rendering omits fine detail');
+  assert.equal(view.pick(ray), 0);
+  view.update(0.01, new THREE.Vector3(20, 20, 20), 40);
+  assert.equal(total(), near);
+  view.syncState(flat, defs.map(d => d.r), Float32Array.of(30, 100, 0), [0]);
+  view.root.updateMatrixWorld(true);
+  assert.equal(view.pick(ray), 0, 'damage restores and recolors the individual model');
+});
+
 test('every kind, tier and option set builds with materials that take a tint', () => {
   for (let kind = 0; kind < defs.length; kind++) for (const tier of [0, 1, 2, 3]) for (const opts of [0, 15]) {
     const g = B.buildModel(kind, tier, 0x2f5fa8, 1, opts, undefined, false);

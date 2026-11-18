@@ -79,7 +79,9 @@ impl World {
             if b.status == DB_UP && b.progress > 0 { self.buildings[i].progress -= 1; }
             let travelling = |s: u8| matches!(s, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
             let needed = want.contains(&(i as u32)) || self.dets.iter().any(|d| {
-                if !travelling(d.state) { return false; }
+                if !travelling(d.state) && d.state != S_BLOCKED { return false; }
+                let on = |x, y| Self::needs_deck(&b, x, y, &[], true, 0.0);
+                if d.file.near_deck(&Self::head_units(d), on) || d.grp.iter().any(|g| g.file.near_deck(&g.units, on)) { return true; }
                 (d.wi < d.path.len() && Self::needs_deck(&b, d.x, d.y, &d.path[d.wi..], true, LOOKAHEAD))
                     || d.grp.iter().any(|g| g.wi < g.path.len() && Self::needs_deck(&b, g.x, g.y, &g.path[g.wi..], true, LOOKAHEAD))
             });
