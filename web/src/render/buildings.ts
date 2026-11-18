@@ -1041,7 +1041,8 @@ const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, 
  *  windmill sails) stay separate. */
 function bake(g: THREE.Group, animated: Set<THREE.Object3D>) {
   g.updateMatrixWorld(true);
-  const per = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; base: THREE.Material | undefined }>(), old: THREE.Mesh[] = [];
+  const per = new Map<THREE.Material, { structure: THREE.BufferGeometry[]; details: THREE.BufferGeometry[]; base: THREE.Material | undefined }>(), old: THREE.Mesh[] = [];
+  const size = new THREE.Vector3();
   g.traverse(o => {
     const m = o as THREE.Mesh;
     if (!m.isMesh || animated.has(m) || !m.visible || Array.isArray(m.material)) return;
@@ -1052,13 +1053,17 @@ function bake(g: THREE.Group, animated: Set<THREE.Object3D>) {
     if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
     if (!geo.attributes.color) geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3));
     geo.applyMatrix4(m.matrixWorld);
-    let e = per.get(m.material); if (!e) { e = { geos: [], base: m.userData.base }; per.set(m.material, e); }
-    e.geos.push(geo); old.push(m);
+    geo.computeBoundingBox(); geo.boundingBox!.getSize(size);
+    let e = per.get(m.material); if (!e) { e = { structure: [], details: [], base: m.userData.base }; per.set(m.material, e); }
+    (size.lengthSq() <= 1.8 ? e.details : e.structure).push(geo);
+    old.push(m);
   });
   old.forEach(m => { m.parent?.remove(m); m.geometry.dispose(); });
-  for (const [mat, e] of per) {
-    const merged = mergeGeometries(e.geos); e.geos.forEach(x => x.dispose()); if (!merged) continue;
-    const mesh = new THREE.Mesh(merged, mat); mesh.castShadow = mesh.receiveShadow = true; mesh.userData.baked = true; mesh.userData.base = e.base;
+  for (const [mat, e] of per) for (const [parts, detail] of [[e.structure, false], [e.details, true]] as const) {
+    if (!parts.length) continue;
+    const merged = mergeGeometries(parts); parts.forEach(x => x.dispose()); if (!merged) continue;
+    const mesh = new THREE.Mesh(merged, mat); mesh.castShadow = !detail; mesh.receiveShadow = true;
+    mesh.userData.baked = true; mesh.userData.base = e.base; mesh.userData.detail = detail;
     g.add(mesh);
   }
 }
@@ -1343,7 +1348,13 @@ class Smoke {
 }
 
 // ---------- scene sync ----------
-interface Item { sig: string; opt: number; model?: BuildingModel; group: THREE.Group; status: number; pop?: number; cell: string; build?: Construction }
+interface Item { sig: string; opt: number; tier: number; rotation: number; model?: BuildingModel; group: THREE.Group; status: number; pop?: number; cell: string; build?: Construction }
+interface BuildingBatch {
+  original: { mesh: THREE.Mesh; parent: THREE.Object3D; group: THREE.Group }[];
+  merged: THREE.Mesh[];
+  bounds: THREE.Box3;
+  detail: boolean;
+}
 
 /** A building going up: it is cut into storeys that rise out of the ground one after another as the builders get to them, inside a scaffold that climbs with them. Purely visual: the
  *  building exists in the game at once. */
@@ -1383,8 +1394,11 @@ export class VillageView {
   batchRoot = new THREE.Group();
   /** Drawbridges are drawn up while a battle is on. */
   raised = false;
-  private cells = new Map<string, { hidden: THREE.Mesh[]; merged: THREE.Mesh[] }>();
-  private dirtyCells = new Set<string>(); private idle = 0;
+  private cells = new Map<string, BuildingBatch>();
+  private dirtyCells = new Map<string, number>();
+  private clock = 0;
+  private animating = new Set<Item>();
+  readonly effects = new Set<THREE.Group>();
   /** New buildings pop into place with a little overshoot once the village has finished loading. */
   animateNew = false;
   private items = new Map<number, Item>();
@@ -1392,7 +1406,14 @@ export class VillageView {
   constructor(private banner: number) {}
   private flag: Flag | undefined;
   /** Change the flag every banner flies (or go back to the plain colour with null): the buildings are rebuilt with it. */
-  setFlag(f: Flag | null, color: number) { const key = f ? packFlag(f) : 0, old = this.flag ? packFlag(this.flag) : 0; if (key === old && color === this.banner) return; this.flag = f ?? undefined; this.banner = color; for (const it of this.items.values()) this.dispose(it.group); this.items.clear(); this.touchAll(); }
+  setFlag(f: Flag | null, color: number) {
+    const key = f ? packFlag(f) : 0, old = this.flag ? packFlag(this.flag) : 0;
+    if (key === old && color === this.banner) return;
+    this.flag = f ?? undefined; this.banner = color;
+    for (const c of this.cells.keys()) this.unbatch(c);
+    for (const it of this.items.values()) { this.endBuild(it); this.dispose(it.group); }
+    this.items.clear(); this.animating.clear(); this.dirtyCells.clear();
+  }
   get bannerColor() { return this.banner; }
 
   /** flat = World.buildings_flat() (stride 8). Returns discs [x, z, r] that should be cleared of trees. */
@@ -1409,7 +1430,7 @@ export class VillageView {
       const k = l.includes(i) ? i : l[0]; l.splice(l.indexOf(k), 1); taken.add(k); claimed.set(i, this.items.get(k)!);
     }
     // what is left over at an index that still has a building (a changed tier: an upgrade) is rebuilt in place; the rest is gone
-    for (const [j, it] of [...this.items]) if (!taken.has(j)) { if (j < n && !claimed.has(j)) claimed.set(j, it); else { this.endBuild(it); this.dispose(it.group); this.touch(it.cell); } }
+    for (const [j, it] of [...this.items]) if (!taken.has(j)) { if (j < n && !claimed.has(j)) claimed.set(j, it); else { this.touch(it.cell); this.endBuild(it); this.dispose(it.group); this.animating.delete(it); } }
     this.items = claimed;
     for (let i = 0; i < n; i++) {
       const [kind, tier, x, z, rot, pad, status] = [flat[i * 10], flat[i * 10 + 1], flat[i * 10 + 2], flat[i * 10 + 3], flat[i * 10 + 4], flat[i * 10 + 5], flat[i * 10 + 6]];
@@ -1422,8 +1443,9 @@ export class VillageView {
         this.touch(it.cell); this.endBuild(it);
         const { added } = it.model.setOptions(opt); it.opt = opt;
         for (const g of added) if (this.animateNew && !NO_SCAFFOLD.has(kind)) { it.build = this.startBuild(it.group, radii[kind] ?? 3, tier, true, g); break; }
+        this.updateEffects(it.group);
       } else if (!it || it.sig !== sig) {
-        if (it) { this.touch(it.cell); this.endBuild(it); this.dispose(it.group); }
+        if (it) { this.touch(it.cell); this.endBuild(it); this.dispose(it.group); this.animating.delete(it); }
         // walls are drawn by the Walls renderer as one connected structure; keep an empty placeholder so indices line up
         const model = PLAIN.has(kind) ? undefined : new BuildingModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), this.flag);
         model?.setOptions(opt);
@@ -1431,18 +1453,42 @@ export class VillageView {
         g.userData.variant = Math.floor(Math.abs(x * 7.3 + z * 13.1)) % 4;
         g.position.set(x, pad, z); g.rotation.y = rot * Math.PI / 4;
         g.userData.idx = i; g.userData.kind = kind;
-        this.root.add(g); it = { sig, opt, model, group: g, status, cell: cellOf(x, z) };
+        this.root.add(g); it = { sig, opt, tier, rotation: rot, model, group: g, status, cell: cellOf(x, z) };
         this.items.set(i, it); this.touch(it.cell);
         if (this.animateNew) { if (NO_SCAFFOLD.has(kind) || PLAIN.has(kind)) { g.scale.setScalar(0.02); it.pop = 0; } else it.build = this.startBuild(g, radii[kind] ?? 3, tier, !!prevTier); }
+        this.updateEffects(g);
       }
-      it.status = status; it.group.userData.status = status;
-      if (health) {
-        const burning = health[i * 3 + 2] > 0, hurt = health[i * 3 + 1] > 0 && health[i * 3] / health[i * 3 + 1] < 0.4, ch = burning || hurt;
-        if (!!it.group.userData.charred !== ch) { it.group.userData.charred = ch; setCharred(it.group, ch, it.group.userData.variant ?? 0); this.touch(it.cell); }
-      }
+      if (it.build || it.pop !== undefined) this.animating.add(it);
+      this.status(it, status, pad, health, i);
       clear.push({ x, z, r: radii[kind] * 1.15 + 3.5 });
     }
     return clear;
+  }
+
+  private updateEffects(g: THREE.Group) {
+    if (g.userData.spin.length || g.userData.smoke.length) this.effects.add(g); else this.effects.delete(g);
+  }
+
+  /** Most ticks change staffing and damage only, so avoid matching and rebuilding the building roster. */
+  syncState(flat: Float32Array, radii: number[], health: Float32Array, options: ArrayLike<number>) {
+    for (const [i, it] of this.items) {
+      const o = i * 10, g = it.group;
+      if (flat[o] !== g.userData.kind || flat[o + 1] !== it.tier || flat[o + 2] !== g.position.x || flat[o + 3] !== g.position.z || flat[o + 4] !== it.rotation || options[i] !== it.opt) {
+        this.sync(flat, radii, health, options);
+        return;
+      }
+      this.status(it, flat[o + 6], flat[o + 5], health, i);
+    }
+  }
+
+  private status(it: Item, status: number, pad: number, health: Float32Array | undefined, i: number) {
+    const g = it.group;
+    it.status = status; g.userData.status = status;
+    if (g.position.y !== pad) { this.touch(it.cell); g.position.y = pad; g.updateMatrix(); }
+    if (health) {
+      const charred = health[i * 3 + 2] > 0 || (health[i * 3 + 1] > 0 && health[i * 3] / health[i * 3 + 1] < 0.4);
+      if (!!g.userData.charred !== charred) { this.touch(it.cell); g.userData.charred = charred; setCharred(g, charred, g.userData.variant ?? 0); }
+    }
   }
 
   /** Cut a new model into storeys and put a scaffold round it: see `Construction`. */
@@ -1508,66 +1554,96 @@ export class VillageView {
   }
 
   /** Something changed in this square: its merged meshes give way to the individual parts again, and it is merged afresh once things have been quiet for a moment. */
-  private touch(cell: string) { this.unbatch(cell); this.dirtyCells.add(cell); this.idle = 0; }
-  private touchAll() { for (const c of [...this.cells.keys()]) this.unbatch(c); for (const it of this.items.values()) this.dirtyCells.add(it.cell); this.dirtyCells.add('*'); this.idle = 0; }
+  private touch(cell: string) { this.unbatch(cell); this.dirtyCells.set(cell, this.clock + 0.15); }
 
   /** Call every frame. */
-  update(dt: number) {
-    for (const it of this.items.values()) {
-      if (it.pop === undefined) continue;
-      it.pop += dt / 0.6; const t = Math.min(1, it.pop), c1 = 1.70158, c3 = c1 + 1, k = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);   // ease-out-back
-      it.group.scale.set(k, Math.max(0.02, k * (1 + 0.1 * Math.sin(t * Math.PI))), k);
-      if (t >= 1) { it.group.scale.setScalar(1); it.pop = undefined; this.idle = Math.min(this.idle, 0.9); }
-    }
-    for (const it of this.items.values()) if (it.build) this.stepBuild(it, dt);
-    if (this.dirtyCells.size) {
-      this.idle += dt;
-      if (this.idle > 1.5) {   // at most a few squares a frame, so a whole new village does not stall one frame
-        let n = 0; for (const c of this.dirtyCells) { this.dirtyCells.delete(c); if (c !== '*') this.batchCell(c); if (++n >= 3) break; }
+  update(dt: number, camera?: THREE.Vector3, detailRange = Infinity) {
+    this.clock += dt;
+    for (const it of this.animating) {
+      if (it.pop !== undefined) {
+        it.pop += dt / 0.6;
+        const t = Math.min(1, it.pop), k = 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2;
+        it.group.scale.set(k, Math.max(0.02, k * (1 + 0.1 * Math.sin(t * Math.PI))), k);
+        if (t >= 1) { it.group.scale.setScalar(1); it.pop = undefined; this.touch(it.cell); }
       }
+      if (it.build) this.stepBuild(it, dt);
+      if (!it.build && it.pop === undefined) this.animating.delete(it);
+    }
+    for (const [cell, ready] of this.dirtyCells) {
+      if (this.clock < ready) continue;
+      this.dirtyCells.delete(cell);
+      this.batchCell(cell);
+      break;
+    }
+    if (!camera) return;
+    for (const batch of this.cells.values()) {
+      const detail = batch.bounds.distanceToPoint(camera) <= detailRange * (batch.detail ? 1.1 : 1);
+      if (detail === batch.detail) continue;
+      batch.detail = detail;
+      for (const mesh of batch.merged) mesh.geometry.setDrawRange(0, detail ? Infinity : mesh.userData.structure);
     }
   }
 
   private batchCell(cell: string) {
-    const per = new Map<THREE.Material, THREE.BufferGeometry[]>(), hidden: THREE.Mesh[] = [];
+    const per = new Map<THREE.Material, { structure: THREE.BufferGeometry[]; details: THREE.BufferGeometry[] }>();
+    const original: BuildingBatch['original'] = [];
     for (const it of this.items.values()) {
       if (it.cell !== cell) continue;
       const g = it.group; if (PLAIN.has(g.userData.kind) || g.userData.charred || it.pop !== undefined || it.build) continue;
-      g.updateMatrixWorld(true);
+      g.updateMatrix(); g.matrixAutoUpdate = false; g.updateMatrixWorld(true);
       g.traverse(o => {
         const m = o as THREE.Mesh;
         if (!m.isMesh || !m.userData.baked || !m.visible) return;
         const geo = m.geometry.clone(); geo.applyMatrix4(m.matrixWorld);
-        let list = per.get(m.material as THREE.Material); if (!list) { list = []; per.set(m.material as THREE.Material, list); }
-        list.push(geo); hidden.push(m);
+        const mat = m.material as THREE.Material;
+        let parts = per.get(mat);
+        if (!parts) per.set(mat, parts = { structure: [], details: [] });
+        (m.userData.detail ? parts.details : parts.structure).push(geo);
+        original.push({ mesh: m, parent: m.parent!, group: g });
       });
     }
-    const merged: THREE.Mesh[] = [];
-    for (const [mat, geos] of per) {
+    if (!original.length) return;
+    const merged: THREE.Mesh[] = [], bounds = new THREE.Box3();
+    for (const [mat, parts] of per) {
+      const geos = [...parts.structure, ...parts.details];
+      const structure = parts.structure.reduce((count, g) => count + g.attributes.position.count, 0);
       const geo = mergeGeometries(geos); geos.forEach(x => x.dispose()); if (!geo) continue;
-      geo.computeBoundingSphere();
-      const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = mesh.receiveShadow = true; this.batchRoot.add(mesh); merged.push(mesh);   // frustum culling stays on: off-screen squares cost nothing
+      geo.computeBoundingSphere(); geo.computeBoundingBox(); bounds.union(geo.boundingBox!);
+      const mesh = new THREE.Mesh(geo, mat); mesh.receiveShadow = true; mesh.castShadow = structure > 0;
+      mesh.userData.structure = structure; mesh.matrixAutoUpdate = false;
+      this.batchRoot.add(mesh); merged.push(mesh);
     }
-    hidden.forEach(m => (m.visible = false));   // still pickable: raycasting ignores visibility
-    this.cells.set(cell, { hidden, merged });
+    if (!merged.length) return;
+    for (const { mesh, parent } of original) parent.remove(mesh);
+    this.cells.set(cell, { original, merged, bounds, detail: true });
   }
 
   private unbatch(cell: string) {
     const c = this.cells.get(cell); if (!c) return;
-    c.hidden.forEach(m => (m.visible = true));
+    for (const { mesh, parent } of c.original) parent.add(mesh);
     for (const m of c.merged) { this.batchRoot.remove(m); m.geometry.dispose(); }
     this.cells.delete(cell);
   }
-  private dispose(g: THREE.Group) { (g.userData.model as BuildingModel | undefined)?.dispose(); this.root.remove(g); g.traverse(o => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); }); }
+  private dispose(g: THREE.Group) { this.effects.delete(g); (g.userData.model as BuildingModel | undefined)?.dispose(); this.root.remove(g); g.traverse(o => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); }); }
   groupOf(i: number) { return this.items.get(i)?.group; }
   pick(ray: THREE.Raycaster): number | null { return this.pickHit(ray)?.idx ?? null; }
   pickHit(ray: THREE.Raycaster): { idx: number; d: number } | null {
+    let result: { idx: number; d: number } | null = null;
     for (const hit of ray.intersectObjects(this.root.children, true)) {
       let o: THREE.Object3D | null = hit.object;
       while (o && o.userData.idx === undefined) o = o.parent;
-      if (o) return { idx: o.userData.idx, d: hit.distance };
+      if (o) { result = { idx: o.userData.idx, d: hit.distance }; break; }
     }
-    return null;
+    const hits: THREE.Intersection[] = [];
+    for (const { original, bounds } of this.cells.values()) {
+      if (!ray.ray.intersectsBox(bounds)) continue;
+      for (const { mesh, group } of original) {
+        hits.length = 0;
+        mesh.raycast(ray, hits);
+        for (const hit of hits) if (!result || hit.distance < result.d) result = { idx: group.userData.idx, d: hit.distance };
+      }
+    }
+    return result;
   }
 }
 
@@ -1575,10 +1651,11 @@ export class Effects {
   smoke = new Smoke();
   private acc = 0;
   private v = new THREE.Vector3();
-  update(dt: number, t: number, views: VillageView[]) {
+  update(dt: number, t: number, views: VillageView[], x: number, z: number, range: number) {
     this.acc += dt;
     const emit = this.acc > 0.28; if (emit) this.acc = 0;
-    for (const view of views) for (const g of view.root.children) {
+    for (const view of views) for (const g of view.effects) {
+      if ((g.position.x - x) ** 2 + (g.position.z - z) ** 2 > range ** 2) continue;
       const sp: THREE.Object3D[] = g.userData.spin;
       for (const o of sp) {
         if (o.parent === g || o.parent?.parent === g || o.parent?.parent?.parent === g) {

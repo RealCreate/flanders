@@ -33,8 +33,7 @@ export function connectedFlags(terrain: Terrain, pts: { x: number; z: number }[]
   return pts.map((_, i) => !!wet.get(find(i)));
 }
 
-/** Flowing water: light ripples that run along every river piece in the direction it was dug, and a flat water surface over any moat or river that is
- *  sealed off from the sea (connected channels show the tidal sea itself). The channel is part of the terrain. */
+/** Flowing water for rivers. Moats participate in the connection check and have their own water surface. */
 export class RiverFlow {
   group = new THREE.Group();
   mesh: THREE.InstancedMesh;     // ripples
@@ -76,13 +75,14 @@ export class RiverFlow {
     const flags = connectedFlags(this.terrain, items), dir = this.mesh.geometry.getAttribute('aDir') as THREE.InstancedBufferAttribute, m = new THREE.Matrix4(), sc = new THREE.Vector3();
     let nr = 0, np = 0; this.ripple = [];
     items.forEach((q, i) => {
+      if (q.kind !== RIVER) return;
       // a channel that is sealed off from the sea is a trench with its water close to the brim: the surface is the lowest of the surrounding land, less a hand's breadth, so the banks
       // are not left standing bare. Where the bank is a step the water sits behind it, and the terrain hides the rest, so it never spills over the edge.
-      const floor = q.kind === MOAT ? CHANNEL.moatFloor * (1 + 0.13 * (q.rot & 7)) : CHANNEL.riverFloor, level = flags[i] ? SEALED_LEVEL : channelLevel(this.terrain, q.x, q.z, floor);
-      if (q.kind === RIVER && nr < MAXP) { const a = q.rot * Math.PI / 4; dir.setXY(nr, Math.cos(a), -Math.sin(a)); this.ripple.push({ x: q.x, z: q.z, connected: flags[i], level }); nr++; }
+      const floor = CHANNEL.riverFloor, level = flags[i] ? SEALED_LEVEL : channelLevel(this.terrain, q.x, q.z, floor);
+      if (nr < MAXP) { const a = q.rot * Math.PI / 4; dir.setXY(nr, Math.cos(a), -Math.sin(a)); this.ripple.push({ x: q.x, z: q.z, connected: flags[i], level }); nr++; }
       // a river that reaches the sea still holds its water well above the sea's low level, up to a point (about a metre above it), so it is not a dry trench with a puddle in the bottom
-      const surface = flags[i] ? (q.kind === RIVER ? Math.min(channelLevel(this.terrain, q.x, q.z, floor), 1.0) : null) : level;
-      if (surface !== null && np < MAXP) { const r = floor + 1.1; sc.set(r, 1, r); m.compose(new THREE.Vector3(q.x, surface, q.z), new THREE.Quaternion(), sc); this.pond.setMatrixAt(np++, m); }
+      const surface = flags[i] ? Math.min(channelLevel(this.terrain, q.x, q.z, floor), 1.0) : level;
+      if (np < MAXP) { const r = floor + 1.1; sc.set(r, 1, r); m.compose(new THREE.Vector3(q.x, surface, q.z), new THREE.Quaternion(), sc); this.pond.setMatrixAt(np++, m); }
     });
     this.mesh.count = nr; this.pond.count = np; this.pond.instanceMatrix.needsUpdate = true; dir.needsUpdate = true;
     this.placeRipples(this.level, true);

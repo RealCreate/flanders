@@ -43,7 +43,8 @@ export class Terrain {
   water: THREE.Mesh;
   geo: THREE.PlaneGeometry;
   /** Ground height, one texel per vertex (half floats): the water shader reads it to tell how deep the water is, so shallows are pale and the shore foams. */
-  heightTex!: THREE.DataTexture; private heightData!: Uint16Array; private heightDirty = false; private heightAt0 = -1;
+  heightTex!: THREE.DataTexture; private heightData!: Uint16Array; private heightAt0 = -1;
+  private dirtyHeightRows = new Map<number, [number, number]>();
   readonly waterTime = { value: 0 };
   readonly waterTex = waterNormalTexture();
   private pos: THREE.BufferAttribute;
@@ -64,6 +65,7 @@ export class Terrain {
     this.pos = this.geo.attributes.position as THREE.BufferAttribute;
     this.nor = this.geo.attributes.normal as THREE.BufferAttribute;
     this.col = new THREE.BufferAttribute(new Float32Array(NV * NV * 3), 3);
+    for (const attr of [this.pos, this.nor, this.col]) attr.setUsage(THREE.DynamicDrawUsage);
     this.geo.setAttribute('color', this.col);
     const uv = this.geo.attributes.uv as THREE.BufferAttribute;
     for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (HALF * 0.4583), uv.getY(i) * (HALF * 0.4583));
@@ -93,7 +95,7 @@ export class Terrain {
    *  full mirror coat turned every bridge and wall into a bright glare on the water. */
   makeWaterMaterial(solid = false) {
     const wm = new THREE.MeshPhysicalMaterial({
-      color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: true, opacity: 1, depthWrite: false,
+      color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: !solid, opacity: 1, depthWrite: solid,
       normalMap: this.waterTex, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.35, clearcoatRoughness: 0.22, envMapIntensity: 0.8,
     });
     patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, this.waterTime, false, solid);
@@ -102,15 +104,41 @@ export class Terrain {
 
   /** Surfaces people and soldiers can stand on above the ground: the decks of bridges and lowered drawbridges. `owner` is whoever registers them (a village). */
   private decks = new Map<unknown, Deck[]>();
-  setDecks(owner: unknown, list: Deck[]) { this.decks.set(owner, list); }
+  private deckCells = new Map<number, Deck[]>();
+  private deckKey(i: number, j: number) { return i * 4096 + j; }
+  setDecks(owner: unknown, list: Deck[]) {
+    const old = this.decks.get(owner);
+    if (old?.length === list.length && old.every((d, i) => {
+      const q = list[i];
+      return d.ax === q.ax && d.az === q.az && d.bx === q.bx && d.bz === q.bz && d.half === q.half && d.ya === q.ya && d.yb === q.yb;
+    })) return;
+    if (list.length) this.decks.set(owner, list); else this.decks.delete(owner);
+    this.deckCells.clear();
+    for (const list of this.decks.values()) for (const d of list) {
+      for (let i = Math.floor(d.minx / 16); i <= Math.floor(d.maxx / 16); i++) {
+        for (let j = Math.floor(d.minz / 16); j <= Math.floor(d.maxz / 16); j++) {
+          const k = this.deckKey(i, j);
+          let cell = this.deckCells.get(k);
+          if (!cell) this.deckCells.set(k, cell = []);
+          cell.push(d);
+        }
+      }
+    }
+  }
   /** The height somebody standing at this spot stands at: the ground, or a deck if one is under their feet (a deck over water is far above the bed of the ditch under it). */
   walkAt(x: number, z: number): number {
-    let y = this.heightAt(x, z);
-    for (const list of this.decks.values()) for (const d of list) {
+    return this.deckHeight(x, z, this.heightAt(x, z));
+  }
+
+  private deckHeight(x: number, z: number, y: number) {
+    if (!this.deckCells.size) return y;
+    const list = this.deckCells.get(this.deckKey(Math.floor(x / 16), Math.floor(z / 16)));
+    if (!list) return y;
+    for (const d of list) {
       if (x < d.minx || x > d.maxx || z < d.minz || z > d.maxz) continue;
       const dx = d.bx - d.ax, dz = d.bz - d.az, l2 = dx * dx + dz * dz || 1, t = ((x - d.ax) * dx + (z - d.az) * dz) / l2;
       if (t < 0 || t > 1) continue;
-      if (Math.hypot(x - (d.ax + dx * t), z - (d.az + dz * t)) > d.half) continue;
+      if ((x - (d.ax + dx * t)) ** 2 + (z - (d.az + dz * t)) ** 2 > d.half ** 2) continue;
       const dy = d.ya + (d.yb - d.ya) * t; if (dy > y) y = dy;
     }
     return y;
@@ -131,17 +159,26 @@ export class Terrain {
   }
 
   /** Is this spot water that somebody on foot would sink into: below the shore line, and with no bridge or lowered drawbridge deck over it? */
-  wetAt(x: number, z: number): boolean { return this.heightAt(x, z) < 0.25 && this.walkAt(x, z) - this.heightAt(x, z) < 0.3; }
+  wetAt(x: number, z: number): boolean {
+    const ground = this.heightAt(x, z);
+    return ground < 0.25 && this.deckHeight(x, z, ground) - ground < 0.3;
+  }
 
   animate(t: number) {
     this.waterTime.value = t;
-    if (this.heightDirty && t - this.heightAt0 > 0.4) this.uploadHeights(t);   // building changes the ground; refresh the depth texture a few times a second at most
+    if (this.dirtyHeightRows.size && t - this.heightAt0 > 0.4) this.uploadHeights(t);
   }
 
   /** Copy the current ground heights into the depth texture. */
   private uploadHeights(t = 0) {
-    for (let k = 0; k < this.heights.length; k++) this.heightData[k] = THREE.DataUtils.toHalfFloat(this.heights[k]);
-    this.heightTex.needsUpdate = true; this.heightDirty = false; this.heightAt0 = t;
+    if (this.heightAt0 < 0) {
+      for (let k = 0; k < this.heights.length; k++) this.heightData[k] = THREE.DataUtils.toHalfFloat(this.heights[k]);
+    } else {
+      for (const [row, [lo, hi]] of this.dirtyHeightRows) {
+        for (let k = row * NV + lo; k <= row * NV + hi; k++) this.heightData[k] = THREE.DataUtils.toHalfFloat(this.heights[k]);
+      }
+    }
+    this.dirtyHeightRows.clear(); this.heightTex.needsUpdate = true; this.heightAt0 = t;
   }
 
   /** Recompute vertices in grid index rectangle [i0,i1]x[j0,j1] from heights (and refresh colours/normals). */
@@ -186,6 +223,10 @@ export class Terrain {
       this.col.setXYZ(k, col.r * 1.18, col.g * 1.18, col.b * 1.18);
     }
     this.pos.needsUpdate = this.nor.needsUpdate = this.col.needsUpdate = true;
+    for (const attr of [this.pos, this.nor, this.col]) {
+      if (i0 === 0 && i1 === NV - 1) attr.addUpdateRange(j0 * NV * 3, (j1 - j0 + 1) * NV * 3);
+      else for (let j = j0; j <= j1; j++) attr.addUpdateRange((j * NV + i0) * 3, (i1 - i0 + 1) * 3);
+    }
     if (this.chunks.length) this.fitChunks(i0, j0, i1, j1);
   }
 
@@ -217,7 +258,12 @@ export class Terrain {
       const k = (b + j) * NV + (a + i);
       const x = -HALF + (a + i) * STEP, z = -HALF + (b + j) * STEP;
       if (others.length) { const own = Math.hypot(x - cx, z - cz); if (others.some(o => Math.hypot(x - o.x, z - o.z) < own)) continue; } // belongs to a neighbouring village
-      this.heights[k] = out[j * nx + i]; this.heightDirty = true;
+      const height = out[j * nx + i];
+      if (this.heights[k] === height) continue;
+      this.heights[k] = height;
+      const row = b + j, col = a + i, dirty = this.dirtyHeightRows.get(row);
+      if (dirty) { dirty[0] = Math.min(dirty[0], col); dirty[1] = Math.max(dirty[1], col); }
+      else this.dirtyHeightRows.set(row, [col, col]);
     }
     this.updateRegion(a - 1, b - 1, c + 1, d + 1);
   }
@@ -256,15 +302,19 @@ export class Terrain {
     return this.base[j * NV + i];
   }
 
-  resetPads() { this.preview = null; this.heights.set(this.base); this.updateRegion(0, 0, NV - 1, NV - 1); }
+  resetPads() {
+    this.preview = null; this.heights.set(this.base); this.updateRegion(0, 0, NV - 1, NV - 1);
+    for (let j = 0; j < NV; j++) this.dirtyHeightRows.set(j, [0, NV - 1]);
+  }
 
-  /** Bilinear visual height. */
+  /** Height on the same two triangles the renderer uses for this terrain cell. */
   heightAt(x: number, z: number) {
     const fx = (x + HALF) / STEP, fz = (z + HALF) / STEP;
     const i = Math.min(NV - 2, Math.max(0, Math.floor(fx))), j = Math.min(NV - 2, Math.max(0, Math.floor(fz)));
     const tx = Math.min(1, Math.max(0, fx - i)), tz = Math.min(1, Math.max(0, fz - j)), H = this.heights;
     const a = H[j * NV + i], b = H[j * NV + i + 1], c = H[(j + 1) * NV + i], d = H[(j + 1) * NV + i + 1];
-    return (a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz;
+    if (tx + tz <= 1) return a + (b - a) * tx + (c - a) * tz;
+    return d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
   }
 
   /** Ray vs heightfield by marching, then bisection. */

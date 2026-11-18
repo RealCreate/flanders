@@ -24,7 +24,7 @@ import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
 import { auditModel, setNightLight } from './render/buildings';
 import { subdivide, curve, type Pt } from './roadtool';
-import { LEVEL_SIZES, DEFAULT_LEVEL_SIZE, nextLevelSize, LEVEL_AUTO, LEVEL_HEIGHT_STEP, clampLevelHeight, levelHeightLabel, levelWork } from './leveltool';
+import { LEVEL_SIZES, DEFAULT_LEVEL_SIZE, nextLevelSize, LEVEL_AUTO, LEVEL_HEIGHT_STEP, clampLevelHeight, levelHeightLabel, levelWork, isEarthwork } from './leveltool';
 import { LEVEL_HEIGHT } from './net/validate';
 import { SHAPES, isFigure, figureOutline, samplePath, snap45, rotOf, closesPath, type Shape, type P } from './penshapes';
 import { WorldShips } from './render/ships';
@@ -168,7 +168,7 @@ const byPeer = new Map<string, string>();   // peerId -> pub
 let sites: { x: number; z: number }[] = [];
 let mySite = 0, myName = 'Traveller';
 let perf!: Perf;
-let levelR = DEFAULT_LEVEL_SIZE, levelCode = 99, levelH = LEVEL_AUTO, levelHintKey = '', levelDisc!: THREE.Mesh;   // the level-ground tool: the radius of the patch and the last answer for it (to say it once)
+let levelR = DEFAULT_LEVEL_SIZE, levelCode = 99, levelH = LEVEL_AUTO, earthworkH = LEVEL_AUTO, levelHintKey = '', levelDisc!: THREE.Mesh;
 let selectedKind: number | null = null, rot = 0, ghost: THREE.Group | null = null, ghostCode = 99;
 let selectedIdx: number | null = null;
 let selRing!: SelectionMark, growRing!: SelectionMark; const blockRings: SelectionMark[] = [];
@@ -181,7 +181,6 @@ let LEDGER_EXTRAS: string[] = [];
 const depLabels: HTMLElement[] = [];
 const hallLabels = new Map<string, HTMLElement>();
 let pathLine!: PathLine;
-let obstCache: { x: number; z: number; r: number }[] = [];
 let selectedDet: number | null = null;
 let selectedRuin: number | null = null;
 const attackTargets = new Map<number, string>();   // field army id -> the rival it is marching on
@@ -1017,7 +1016,7 @@ async function startGame(name: string, username: string) {
   anchorGhost = new AnchorGhost(terrain); scene.add(anchorGhost.group);
 
   shared = {
-    scene, terrain, wildlife, fx, radii, forest, obstacles: () => obstCache,
+    scene, terrain, wildlife, fx, radii, forest,
     terrainChanged: v => { refreshTerrain(v.world); },
     forestDirty: () => { forestDirtyFlag = true; },
   };
@@ -1102,7 +1101,7 @@ async function warmUp() {
   const view = Math.max(90, rig.dist * 1.7 + 50);
   for (let i = 0; i < 4; i++) {
     rig.update(0.016); atmo.follow(rig.target); forest.tick(0, rig.cam.position);
-    crowd.begin(); lv.draw(crowd, rig.target.x, rig.target.z, view); crowd.end();
+    crowd.begin(); lv.draw(crowd, rig.target.x, rig.target.z, view, rig.cam.position, Infinity); crowd.end();
     renderer.shadowMap.needsUpdate = true; renderer.render(scene, rig.cam);   // the first frames compile and fill the shadow map
     (renderer.getContext() as WebGL2RenderingContext).finish();
     ui.progress(86 + i * 3, i < 3 ? 'Baking shadows…' : 'Almost ready…'); await nextFrame();
@@ -1118,13 +1117,16 @@ function rebuildForest(later = false) {
   const clear = [...all.flatMap(v => v.clear), ...rocks], lines = all.flatMap(v => v.clearLines), keep = all.flatMap(v => v.keep);
   if (later) forest.rebuildLater(clear, lines, keep); else forest.rebuild(clear, lines, keep);
   forestDirtyFlag = false;
-  obstCache = all.flatMap(v => v.obstacles);
 }
 
 function allScorch() {
   const parts = [lv, ...[...rivals.values()].map(r => r.village)].map(v => v.world.scorch_flat()), n = parts.reduce((a, p) => a + p.length, 0), out = new Float32Array(n);
   let o = 0; for (const p of parts) { out.set(p, o); o += p.length; } return out;
 }
+
+// Remote terrain edits are refreshed in local tiles. Remember old tiles so demolition also restores the ground.
+const remoteTerrainTiles = new WeakMap<World, Set<string>>();
+const REMOTE_TILE = 32;
 
 /** Re-level the ground of a whole village: pads, graded paths, craters and burn scars. */
 function refreshTerrain(w: World, box: [number, number, number, number] | null = null) {
@@ -1133,6 +1135,22 @@ function refreshTerrain(w: World, box: [number, number, number, number] | null =
   const others = [...rivals.values()].map(r => ({ x: r.village.ox, z: r.village.oz })).concat(lv ? [{ x: lv.ox, z: lv.oz }] : []).filter(p => Math.hypot(p.x - ox, p.z - oz) > 1);
   if (box) terrain.refreshBox(w, box[0], box[1], box[2], box[3], ox, oz, others);
   else terrain.refresh(w, ox, oz, w.build_radius() + 12, others);
+  const city = w.build_radius() + 12, old = remoteTerrainTiles.get(w), remote = new Set<string>();
+  const buildings = w.buildings_flat();
+  for (let i = 0; i + 9 < buildings.length; i += 10) {
+    const kind = buildings[i], x = buildings[i + 2], z = buildings[i + 3];
+    if (kind !== 23 && kind !== 24 && kind !== 35 && kind !== 37 && kind !== 38) continue;
+    const reach = kind === 38 ? 38 : kind === 23 ? 25 : 16;
+    if (Math.max(Math.abs(x - ox), Math.abs(z - oz)) + reach <= city) continue;
+    for (let ix = Math.floor((x - reach) / REMOTE_TILE); ix <= Math.floor((x + reach) / REMOTE_TILE); ix++) {
+      for (let iz = Math.floor((z - reach) / REMOTE_TILE); iz <= Math.floor((z + reach) / REMOTE_TILE); iz++) remote.add(ix + ',' + iz);
+    }
+  }
+  for (const key of new Set([...remote, ...(old ?? [])])) {
+    const [ix, iz] = key.split(',').map(Number), x = ix * REMOTE_TILE, z = iz * REMOTE_TILE;
+    terrain.refreshBox(w, x, z, x + REMOTE_TILE, z + REMOTE_TILE, ox, oz, others);
+  }
+  remoteTerrainTiles.set(w, remote);
   deposits?.refit();
 }
 /** The ground that changes when this building is put up or upgraded: the building and its levelled pad, and the paths that run to it. (Everything else is brought up to date a moment later: see `settleTerrain`.) */
@@ -1415,6 +1433,7 @@ function scaled(a: [number, number][], tier: number): [number, number][] { retur
 function placeHint(k: number) {
   if (k === LEVEL_TOOL) return `Level ground, ${levelR} wide, to ${levelH < 0 ? 'the land round it (Auto)' : 'height ' + levelH.toFixed(1)} — click to level the patch: pits are filled, bumps cut, ditches and earthworks inside taken away · set the Target height in the bar · R changes the size · Esc cancels`;
   if (k === 24) return `Moat ${(1 + 0.13 * moatWidth).toFixed(1)}× wide — press R to make it thinner or broader · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Alt = any angle · Esc cancels`;
+  if (isEarthwork(k)) return `${defs[k].name} · ${earthworkH < 0 ? 'Auto (' + (k === 33 ? '+2.2' : '−2.2') + ')' : 'target height ' + levelHeightLabel(earthworkH)} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Esc cancels`;
   if (PEN_SPACING[k]) return `${defs[k].name} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · hold Alt for any angle · Esc cancels`;
   if (k === 37) return 'Road — click the points of the road: it runs in a smooth curve through them · its ends snap onto nodes (the rings at the edge of a building, the four sides of a plaza) and onto other roads · double-click or Enter to build · right-click takes the last point back · Esc cancels';
   if (k === 22) return 'Gate — click a wall piece to turn it into a gate · Esc cancels';
@@ -1472,7 +1491,7 @@ function penOutline(a: P | null, to: P, free: boolean): { pts: P[]; closed: bool
 function penPreviewUpdate(kind: number, o: { pts: P[]; closed: boolean }) {
   const pieces = penBuild(kind, o.pts, o.closed).slice(0, 400), w = lv.world, stocks = Array.from(w.stocks());
   const afford = Math.min(...defs[kind].cost.map(([r, n]) => Math.floor(stocks[r] / Math.max(1, n))), 9999);
-  let good = 0; const view = pieces.map((p, i) => { const ok = i < afford && w.can_place(kind, p.dx, p.dy) === 0; if (ok) good++; return { x: p.x, z: p.z, ok }; });
+  let good = 0; const view = pieces.map((p, i) => { const ok = i < afford && placementCheck(w, kind, p.dx, p.dy) === 0; if (ok) good++; return { x: p.x, z: p.z, ok }; });
   penPreview.set(view, o.closed ? [...o.pts, o.pts[0]] : o.pts);
   const cost = defs[kind].cost.map(([r, n]) => `${n * good} ${RES[r].name.toLowerCase()}`).join(', ');
   ui.hint(`${defs[kind].name}: ${good} of ${pieces.length} pieces can be laid${good ? ' · ' + cost : ''} · ${penShape === 'path' ? 'double-click or Enter to build' : 'release to build'} · Alt = any angle`, good === 0);
@@ -1481,9 +1500,11 @@ function penPreviewUpdate(kind: number, o: { pts: P[]; closed: boolean }) {
 function penCommit(kind: number, o: { pts: P[]; closed: boolean }) {
   const pieces = penBuild(kind, o.pts, o.closed).slice(0, 400); let placed = 0, blocked = 0, broke = false;   // one stroke lays at most 400 pieces
   // the whole stroke is one batch: the paths are worked out once at the end, and it is sent as one signed command
-  const items = pieces.flatMap(p => [kind, p.dx, p.dy, p.rot]), codes = lv.world.place_batch(Int32Array.from(items));
+  const items = pieces.flatMap(p => [kind, p.dx, p.dy, p.rot]), flat = Int32Array.from(items);
+  const manual = isEarthwork(kind) && earthworkH >= 0;
+  const codes = manual ? lv.world.place_batch_height(flat, earthworkH) : lv.world.place_batch(flat);
   for (const code of codes) { if (code >= 0) placed++; else if (code === -6) broke = true; else blocked++; }
-  if (placed) commit({ op: 'batch', units: items });
+  if (placed) commit(manual ? { op: 'batch', units: items, h: earthworkH } : { op: 'batch', units: items });
   if (placed) { afterLocalChange(); sound.place(2); const last = pieces[pieces.length - 1]; placedFx(kind, last.x, last.z); updateHud(); }
   ui.toast(placed ? `${placed} × ${defs[kind].name.toLowerCase()} built${broke ? ' — you ran out of materials' : blocked ? ` (${blocked} blocked)` : ''}.` : broke ? 'Not enough resources.' : 'Nothing could be built there.', placed ? 'good' : 'bad');
 }
@@ -1849,7 +1870,9 @@ function onAct(a: string) {
   }
   if (a === 'bridge') {
     const up = lv.world.buildings_flat()[selectedIdx * 10 + 6] === 5;   // status 5 = drawn up
-    if (lv.world.drawbridge_set(selectedIdx, !up) === 0) { commit({ op: 'bridge', idx: selectedIdx, kind: up ? 0 : 1 }); sound.click(); ui.toast(up ? 'The drawbridge is lowered.' : 'The drawbridge is drawn up.', 'info'); afterLocalChange(); }
+    const code = lv.world.drawbridge_set(selectedIdx, !up);
+    if (code === 0) { commit({ op: 'bridge', idx: selectedIdx, kind: up ? 0 : 1 }); sound.click(); ui.toast(up ? 'The drawbridge is lowered.' : 'The drawbridge is drawn up.', 'info'); afterLocalChange(); }
+    else if (code === -3) ui.toast('Soldiers are still crossing the drawbridge.', 'bad');
     return;
   }
   if (a.startsWith('opt:')) {
@@ -1959,7 +1982,7 @@ function roadPreview(hover: { x: number; z: number; snapped: boolean } | null) {
   let bad = 0; const posts = pieces.map((q, i) => { const ok = snappedAt(i) || w.road_can(Math.round(q.x - lv.ox), Math.round(q.z - lv.oz)) === 0; if (!ok) bad++; return { x: q.x, z: q.z, ok }; });
   penPreview.set(posts, line);
   const wood = Math.max(0, pieces.length - (roadSnapped[0] ? 1 : 0) - (hover?.snapped ? 1 : 0));
-  ui.hint(ctrl.length < 2 ? placeHint(37) : `Road: ${pieces.length} points, ${wood} wood${stocks[0] < wood ? ' — not enough wood' : ''}${bad ? ` · ${bad} of the points cannot be laid (outside your land, in water or in the way)` : ''} · double-click or Enter to build`, bad > 0 || stocks[0] < wood);
+  ui.hint(ctrl.length < 2 ? placeHint(37) : `Road: ${pieces.length} points, ${wood} wood${stocks[0] < wood ? ' — not enough wood' : ''}${bad ? ` · ${bad} of the points cannot be laid (check the map edge, water and obstructions)` : ''} · double-click or Enter to build`, bad > 0 || stocks[0] < wood);
 }
 function roadHover(e: { clientX: number; clientY: number }) {
   if (ghost) ghost.visible = false; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null);
@@ -1988,11 +2011,23 @@ function roadCommit() {
 
 function setLevelRadius(r: number) { levelR = r; levelCode = 99; levelHintKey = ''; ui.setLevelCost(Array.from(World.level_cost_flat(r))); drawLevelBar(); ui.hint(placeHint(LEVEL_TOOL)); updateHud(); }
 /** Choose the height the level-ground tool levels to: a number (kept to half-unit steps) or Auto (the land round the patch). */
-function setLevelHeight(h: number) { levelH = h < 0 ? LEVEL_AUTO : clampLevelHeight(h); levelCode = 99; levelHintKey = ''; drawLevelBar(); ui.hint(placeHint(LEVEL_TOOL)); if (lastGhostE) levelHover(lastGhostE); }
+function setLevelHeight(h: number) {
+  const value = h < 0 ? LEVEL_AUTO : clampLevelHeight(h), kind = selectedKind;
+  if (isEarthwork(kind)) earthworkH = value;
+  else if (kind === LEVEL_TOOL) levelH = value;
+  else return;
+  levelCode = 99; levelHintKey = ''; ghostCode = 99;
+  drawLevelBar(); ui.hint(placeHint(kind)); if (lastGhostE) updateGhost(lastGhostE);
+}
+
+function placementCheck(w: World, kind: number, dx: number, dy: number) {
+  return isEarthwork(kind) && earthworkH >= 0 ? w.earthwork_check(kind, dx, dy, earthworkH) : w.can_place(kind, dx, dy);
+}
 /** The level-ground tool's bar at the bottom: the patch sizes and the Target height (Auto or a number, with the ground height under the pointer). */
 function drawLevelBar() {
   let bar = document.getElementById('levelbar');
-  if (selectedKind !== LEVEL_TOOL) { bar?.remove(); return; }
+  const raisingOrLowering = isEarthwork(selectedKind);
+  if (!raisingOrLowering && selectedKind !== LEVEL_TOOL) { bar?.remove(); return; }
   const btn = 'cursor:pointer;border-radius:5px;border:1px solid #6d5a38;background:#2a2014;color:#f1e4c3;font:12px system-ui,sans-serif';
   if (!bar) {
     bar = document.createElement('div'); bar.id = 'levelbar';
@@ -2000,7 +2035,7 @@ function drawLevelBar() {
     bar.innerHTML = `<div id="level-sizes" style="display:flex;gap:4px"></div>
       <div id="level-height" style="display:flex;flex-direction:column;gap:3px;justify-content:center;min-width:230px;border-left:1px solid #6d5a38;padding-left:10px">
         <div style="display:flex;gap:6px;align-items:center"><b>Target height</b><span id="lh-val" style="color:#ffe08a"></span><button id="lh-auto" title="Level to the land just outside the patch" style="${btn};margin-left:auto;padding:2px 8px">Auto</button></div>
-        <div style="display:flex;gap:6px;align-items:center"><input id="lh-range" type="range" min="${LEVEL_HEIGHT.min}" max="${LEVEL_HEIGHT.max}" step="${LEVEL_HEIGHT_STEP}" style="flex:1"><input id="lh-num" type="number" min="${LEVEL_HEIGHT.min}" max="${LEVEL_HEIGHT.max}" step="${LEVEL_HEIGHT_STEP}" title="Height to level to (${LEVEL_HEIGHT.min} to ${LEVEL_HEIGHT.max})" style="width:56px"></div>
+        <div style="display:flex;gap:6px;align-items:center"><input id="lh-range" aria-label="Target height" type="range" min="${LEVEL_HEIGHT.min}" max="${LEVEL_HEIGHT.max}" step="${LEVEL_HEIGHT_STEP}" style="flex:1"><input id="lh-num" aria-label="Target height in units" type="number" min="${LEVEL_HEIGHT.min}" max="${LEVEL_HEIGHT.max}" step="${LEVEL_HEIGHT_STEP}" style="width:56px"></div>
         <div id="lh-ground" style="opacity:.8"></div></div>`;
     bar.onclick = e => {
       const t = e.target as HTMLElement; const b = t.closest<HTMLElement>('[data-r]'); if (b) { setLevelRadius(Number(b.dataset.r)); return; }
@@ -2012,13 +2047,23 @@ function drawLevelBar() {
     num.onkeydown = e => e.stopPropagation(); num.onkeyup = e => e.stopPropagation();   // (typing a height must not trigger the game's keys)
     document.body.appendChild(bar);
   }
-  bar.querySelector('#level-sizes')!.innerHTML = LEVEL_SIZES.map(r => `<button data-r="${r}" title="Level a patch ${r} wide" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${r === levelR ? '#ffe08a' : '#6d5a38'};background:${r === levelR ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon('levelground', 24, { mono: true })}</span><span style="font-size:10px">${r}</span></button>`).join('');
-  const auto = levelH < 0;
-  bar.querySelector('#lh-val')!.textContent = auto ? 'Auto (the land round it)' : levelHeightLabel(levelH);
+  bar.style.bottom = raisingOrLowering ? '67px' : '16px';
+  bar.querySelector<HTMLElement>('#level-height')!.style.borderLeftWidth = raisingOrLowering ? '0' : '1px';
+  bar.querySelector<HTMLElement>('#level-height')!.style.paddingLeft = raisingOrLowering ? '0' : '10px';
+  bar.querySelector('#level-sizes')!.innerHTML = raisingOrLowering ? '' : LEVEL_SIZES.map(r => `<button data-r="${r}" title="Level a patch ${r} wide" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${r === levelR ? '#ffe08a' : '#6d5a38'};background:${r === levelR ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon('levelground', 24, { mono: true })}</span><span style="font-size:10px">${r}</span></button>`).join('');
+  const height = raisingOrLowering ? earthworkH : levelH, auto = height < 0;
+  const autoText = raisingOrLowering ? `Auto (${selectedKind === 33 ? '+2.2' : '−2.2'})` : 'Auto (the land round it)';
+  bar.querySelector('#lh-val')!.textContent = auto ? autoText : levelHeightLabel(height);
+  bar.querySelector('#lh-ground')!.textContent = '';
   const range = bar.querySelector<HTMLInputElement>('#lh-range')!, num = bar.querySelector<HTMLInputElement>('#lh-num')!, ab = bar.querySelector<HTMLElement>('#lh-auto')!;
-  if (document.activeElement !== num) num.value = auto ? '' : String(levelH);
-  num.placeholder = 'Auto'; range.value = String(auto ? 5 : levelH); range.style.opacity = auto ? '.55' : '1';
+  if (document.activeElement !== num) num.value = auto ? '' : String(height);
+  num.placeholder = 'Auto'; ab.title = autoText; range.value = String(auto ? 5 : height); range.style.opacity = auto ? '.55' : '1';
   ab.style.background = auto ? '#7a5a22' : '#2a2014'; ab.style.borderColor = auto ? '#ffe08a' : '#6d5a38';
+}
+
+function placementError(kind: number, code: number) {
+  if (code === -2 && [23, 24, 35, 37, 38].includes(kind)) return 'Outside the buildable map';
+  return PLACE_ERRORS[code] ?? 'Cannot build here';
 }
 /** Hover with the level-ground tool: a ring and a flat disc at the height the patch would be levelled to (ring green when it can be done, red with the reason when not; disc blue where
  *  earth is added, orange where it is cut away), and what it costs. */
@@ -2071,7 +2116,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
   if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
     const bp = w.bridge_preview(dx, dy), code = bp[0];
-    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; builderRangeRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(PLACE_ERRORS[code] ?? 'Cannot build here', true); } return; }
+    if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; builderRangeRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(placementError(38, code), true); } return; }
     const [, cx, cz, ang, len, span, planks, wood] = Array.from(bp), ux = Math.cos(ang), uz = Math.sin(ang), hA = terrain.heightAt(cx - ux * len / 2, cz - uz * len / 2), hB = terrain.heightAt(cx + ux * len / 2, cz + uz * len / 2);
     terrain.clearPreview(); previewKey = '';
     ghost.visible = true; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; showAnchors(`38:${cx.toFixed(1)}:${cz.toFixed(1)}:${code}`, Array.from(bp).slice(8, 12), null, code === 0); ghost.position.set(cx, (hA + hB) / 2, cz); ghost.rotation.set(0, -ang, 0); ghost.scale.set(len / 10, 1, 1);
@@ -2084,7 +2129,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
     return;
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
-  let code = w.can_place(selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
+  let code = placementCheck(w, selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
   { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (selectedKind === 29 || selectedKind === 41) code = -16; }   // a mine or quarry snaps onto its deposit; a waterwheel with no bank to snap to cannot be built
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
@@ -2096,6 +2141,15 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
   if (!pad) h = selectedKind === 23 ? drawbridgeDeckAt(w, x, z, grot) : terrain.heightAt(x, z);   // (a drawbridge hangs at deck height over the water, not on the bed)
+  if (isEarthwork(selectedKind)) {
+    const ground = document.getElementById('lh-ground');
+    if (ground) ground.textContent = `Ground here: ${w.height_at(x, z).toFixed(1)}`;
+    levelDisc.visible = earthworkH >= 0 && code === 0;
+    if (levelDisc.visible) {
+      levelDisc.position.set(x, earthworkH + 0.08, z); levelDisc.scale.setScalar(1.2);
+      (levelDisc.material as THREE.MeshBasicMaterial).color.setHex(selectedKind === 33 ? 0x5fb3ff : 0xffa940);
+    }
+  }
   ghost.visible = true; ghost.position.set(x, h, z); ghost.rotation.y = grot * Math.PI / 4; covGhost({ x, z });
   { const di = selectedKind !== 23 ? door_info(selectedKind, 0) : null; showAnchors(`${selectedKind}:${x}:${z}:${grot}:${code}`, Array.from(w.node_preview(selectedKind, 0, x, z, grot & 7)), di ? doorInWorld(di, x, z, grot) : null, code === 0); }
   ghostRing.visible = true; ghostRing.position.set(x, h + 0.14, z); if (selectedKind === 23) { ghostRing.scale.set(2.4, 1, 7.4); ghostRing.rotation.y = grot * Math.PI / 4; } else { ghostRing.scale.setScalar(d.r * 1.05); ghostRing.rotation.y = 0; }   // (a drawbridge's outline is long: it covers the whole deck)
@@ -2104,7 +2158,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
     ghostCode = code;
     ghost.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh) { const mm = m.material as THREE.MeshStandardMaterial; mm.emissive.setHex(code === 0 ? 0x22cc55 : 0xdd2a1a); mm.emissiveIntensity = code === 0 ? 0.32 : 0.55; } });
     (ghostRing.material as THREE.MeshBasicMaterial).color.setHex(code === 0 ? 0x66ff88 : 0xff6655);
-    ui.hint(code === 0 ? placeHint(selectedKind) : PLACE_ERRORS[code] ?? 'Cannot build here', code !== 0);
+    ui.hint(code === 0 ? placeHint(selectedKind) : placementError(selectedKind, code), code !== 0);
   }
 }
 
@@ -2183,9 +2237,14 @@ function bindInput() {
         return;
       }
       const sn = depositSnap(kind, dx, dy), px = sn ? sn.dx : dx, py = sn ? sn.dy : dy, prot = sn ? sn.rot : rot;
-      const res = lv.world.place(kind, px, py, prot);
-      if (res >= 0) { commit({ op: 'place', kind, x: px, y: py, rot: prot }); ghostCode = 99; previewKey = ''; afterLocalChange(res); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e); }
-      else { ui.hint(PLACE_ERRORS[res] ?? 'Cannot build here', true); sound.error(); }
+      const manual = isEarthwork(kind) && earthworkH >= 0;
+      const res = manual ? lv.world.place_earthwork(kind, px, py, prot, earthworkH) : lv.world.place(kind, px, py, prot);
+      if (res >= 0) {
+        const cmd = { op: 'place' as const, kind, x: px, y: py, rot: prot };
+        commit(manual ? { ...cmd, h: earthworkH } : cmd);
+        ghostCode = 99; previewKey = ''; afterLocalChange(res); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e);
+      }
+      else { ui.hint(placementError(kind, res), true); sound.error(); }
     } else {
       const det = pickArmy(e) ?? lv.field.pick(pointerRay(e));
       if (det !== null) {
@@ -2309,7 +2368,7 @@ function updateHallLabels(all: Village[]) {
   for (const v of all) {
     let el = hallLabels.get(v.key);
     if (!el) { el = document.createElement('div'); el.className = 'lbl hall'; ui.labels.appendChild(el); hallLabels.set(v.key, el); }
-    const hf = v.world.buildings_flat(), hx = hf[2], hz = hf[3], tier = hf[1];
+    const { x: hx, z: hz, tier } = v.hall;
     vtmp.set(hx, terrain.heightAt(hx, hz) + 7 + tier * 3.5, hz).project(rig.cam);
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist > 28;
     el.hidden = !on; if (!on) continue;
@@ -2361,13 +2420,15 @@ function applySettings(s: Settings) {
 }
 
 // ---------- adaptive resolution: when frames run long, draw fewer pixels; when there is room again, win them back ----------
-let resScale = 1, slowMs = 0, resFrames = 0, shadowFrame = 0;
+let resScale = 1, slowMs = 0, resFrames = 0, lastShadow = -Infinity;
+const shadowFocus = new THREE.Vector3();
 function adaptResolution(frameMs: number) {
   if (!settings().adaptive) return;
   slowMs = slowMs * 0.94 + frameMs * 0.06;
   if (++resFrames < 90 || resFrames % 45 !== 0) return;   // let things settle after loading, then adjust a little at a time
   const was = resScale;
-  if (slowMs > 24 && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.15);
+  const budget = settings().fpsCap === 30 ? 34 : 17.5;
+  if (slowMs > budget && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.1);
   else if (slowMs < 13 && resScale < 1) resScale = Math.min(1, resScale + 0.1);
   if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
 }
@@ -2415,29 +2476,39 @@ function frame(now: number) {
   if (replay?.target !== lv && speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
   perf.stop('simulation');
   const all = allVillages();
+  const s = settings(), drawCrowd = s.crowds && !showroom;
   { // the time of day: the light follows the village clock, smoothly between ticks
     const ph = dayPhase(Number(lv.world.tick()) + (replay ? 0 : acc));
     if (Math.abs(ph - lastPhase) > 0.0008 || lastPhase < 0) { lastPhase = ph; atmo.setClock(ph); setNightLight(atmo.night); for (const v of all) v.props.setNight(atmo.night); }
   }
   lightLamps(all, now);
-  { const on = settings().crowds; for (const v of all) v.people.group.visible = v.army.group.visible = on; }
+  for (const v of all) v.people.group.visible = v.army.group.visible = drawCrowd;
   perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) { v.boats.level = tideLevel; v.rivers.setTide(tideLevel); }   // open water ebbs and flows; sealed moats stay full
   forest.tick(now / 1000, rig.cam.position); perf.stop('camera + world');
-  perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1)); perf.stop('villages (people, army)');
+  const detailRange = innerHeight * 1.65 / (2 * Math.tan(THREE.MathUtils.degToRad(rig.cam.fov / 2)) * 36);
+  perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd)); perf.stop('villages (people, army)');
   perf.start('animals');
   deposits.cull(rig.target.x, rig.target.z, Math.max(160, rig.dist * 1.7 + 120));   // deposits far from the camera are not drawn or traversed
   if (now - scareT > 250) { scareT = now; scares = all.flatMap(v => [...v.people.positions(), ...v.army.positions()]); }
   const view = Math.max(90, rig.dist * 1.7 + 50);        // simulate and draw crowds and animals only around the camera
   wildlife.update(dt, scares, rig.target.x, rig.target.z, view);
   perf.stop('animals');
-  perf.start('crowd upload'); crowd.begin(); all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view)); worldShips?.draw(crowd, rig.target.x, rig.target.z, view); travellers.update(dt, now / 1000, travellerVillages()); travellers.draw(crowd, rig.target.x, rig.target.z, view); crowd.end(); perf.stop('crowd upload');
+  perf.start('crowd upload');
+  travellers.update(dt, now / 1000, travellerVillages());
+  if (drawCrowd && crowd.group.visible) {
+    crowd.begin();
+    all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view, rig.cam.position, detailRange));
+    worldShips?.draw(crowd, rig.target.x, rig.target.z, view);
+    travellers.draw(crowd, rig.target.x, rig.target.z, view); crowd.end();
+  }
+  perf.stop('crowd upload');
   perf.start('fire + particles');
   let nf = 0; for (const v of all) nf += v.fireData.length;
   if (fireBuf.length < nf) fireBuf = new Float32Array(Math.max(nf, fireBuf.length * 2));   // one buffer reused every frame
   { let o = 0; for (const v of all) { fireBuf.set(v.fireData, o); o += v.fireData.length; } }
   const fires = fireBuf.subarray(0, nf);
   fx.update(dt, fires, rig.cam.position);
-  effects.update(dt, now / 1000, all.map(v => v.view));
+  effects.update(dt, now / 1000, all.map(v => v.view), rig.target.x, rig.target.z, view);
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }
@@ -2458,7 +2529,9 @@ function frame(now: number) {
   }
   perf.stop('labels + minimap');
   perf.start('render (CPU side)');
-  renderer.shadowMap.needsUpdate = (shadowFrame++ & 1) === 0;   // shadows drift slowly: redraw them every other frame
+  const shadowElapsed = now - lastShadow;
+  renderer.shadowMap.needsUpdate = atmo.sun.castShadow && (shadowElapsed >= 90 || (shadowElapsed >= 32 && shadowFocus.distanceToSquared(rig.target) > 4));
+  if (renderer.shadowMap.needsUpdate) { shadowFocus.copy(rig.target); lastShadow = now; }
   perf.render(renderer, scene, rig.cam);
   perf.stop('render (CPU side)');
   if (perf.open && now - noteT > 500) { noteT = now; perf.netNotes(syncNotes()); }

@@ -189,13 +189,33 @@ fn a_joined_road_extends_the_build_range_and_the_extension_is_bounded() {
     assert!(spots(&w, reach_x + 30).iter().all(|&c| c == -2), "but not far beyond its end");
     // the land can never run farther than the territory's limit from the hall
     assert_eq!(w.can_place(HOUSE, TERRITORY_MAX as i32 + 20, 0), -2);
-    assert_eq!(w.can_place(ROAD, TERRITORY_MAX as i32 + 4, 0), -2, "no road piece beyond the limit");
-    // a road far outside the range, joined to nothing, cannot be laid at all
+    assert_eq!(w.can_place(ROAD, INFRASTRUCTURE_LIMIT as i32 + 1, 0), -2, "roads stop at the map edge");
+    // An isolated road can be laid beyond the town's claim.
     let mut v = rich(); let r2 = v.build_radius() as i32;
-    assert_eq!(v.lay_road(&[r2 + 60, 0, r2 + 66, 3]), -2);
-    // a loose piece just beyond the edge may be put down (a road leads out of the village) but claims no land of its own
+    let (x, y) = (180..240).step_by(3).flat_map(|x| (-30..30).step_by(3).map(move |y| (x, y)))
+        .find(|&(x, y)| v.road_can(x, y) == 0 && v.road_can(x + 6, y) == 0).expect("dry land outside city range");
+    assert_eq!(v.lay_road(&[x, y, x + 6, y]), 0);
+    assert_eq!(v.can_place(HOUSE, x + 3, y + 5), -2, "an isolated road does not claim land");
+    // A loose piece claims no land of its own.
     let p = v.place(ROAD, r2 + 3, 40, 0);
     if p >= 0 && v.buildings[p as usize].status != 4 { assert_eq!(v.can_place(HOUSE, r2 + 14, 40), -2, "a loose piece claims nothing"); }
+}
+
+#[test]
+fn moats_bridges_and_ports_can_be_built_outside_the_city_claim() {
+    let mut w = rich();
+    w.levels.push([210.0, 80.0, 36.0, 6.0]);
+    w.after_change();
+    for x in (196..=224).step_by(4) {
+        assert!(!w.in_territory(x as f32, 80.0));
+        assert!(w.place(MOAT, x, 80, 0) >= 0, "remote moat at {x}");
+    }
+    assert_eq!(w.bridge_preview(210, 80)[0], 0.0);
+    assert!(w.place(BRIDGE, 210, 80, 0) >= 0);
+    let coast = (180..440).step_by(4).flat_map(|x| (-150..150).step_by(4).map(move |y| (x, y)))
+        .find(|&(x, y)| w.can_place(PORT, x, y) == 0).expect("a suitable port site outside city range");
+    assert!(!w.in_territory(coast.0 as f32, coast.1 as f32));
+    assert!(w.place(PORT, coast.0, coast.1, 0) >= 0);
 }
 
 /// Taking away a piece in the middle of a road cuts the land beyond it off again.

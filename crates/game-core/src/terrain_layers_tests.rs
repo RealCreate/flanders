@@ -1,5 +1,24 @@
 //! Terrain layering (docs/TERRAIN.md): natural land -> flatten discs and level-tool patches (later wins) -> raise/lower, moats and rivers relative to that surface -> drawbridge banks -> roads -> pads.
 use super::*;
+
+#[test]
+fn directional_earthworks_accept_an_absolute_target_and_keep_old_auto_placements() {
+    let mut w = World::new(1337, 0, 0);
+    w.stock = [30_000; N_RES];
+    assert_eq!(w.flatten(55, 6.0), 0);
+    assert_eq!(w.earthwork_check(RAISE, 28, 24, 4.0), -29);
+    assert_eq!(w.earthwork_check(LOWER, 28, -22, 9.0), -29);
+    assert_eq!(w.earthwork_check(LOWER, 28, -22, f32::INFINITY), -28);
+    assert!(w.place_earthwork(RAISE, 28, 24, 0, 9.5) >= 0);
+    assert_eq!(w.height_ground(28.0, 24.0), 9.5);
+    let placed = w.place_batch_height(&[LOWER as i32, 28, -22, 0, LOWER as i32, 36, -22, 0], 3.5);
+    assert!(placed.iter().all(|&i| i >= 0), "batch lowering: {placed:?}");
+    assert_eq!(w.height_ground(28.0, -22.0), 3.5);
+    assert_eq!(w.height_ground(36.0, -22.0), 3.5);
+    assert!(w.place(RAISE, -26, -24, 0) >= 0);
+    assert!((w.height_ground(-26.0, -24.0) - 8.2).abs() < 0.01);
+    assert_eq!(world_restore(&w.snapshot()).unwrap().height_ground(28.0, 24.0), 9.5);
+}
 use crate::flatten::level_cost;
 
 fn world() -> World { let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0); w }

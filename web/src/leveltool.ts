@@ -14,6 +14,7 @@ export const levelSizesValid = () => LEVEL_SIZES.every(r => r >= LEVEL_RADIUS.mi
 
 /** Target height of the tool: Auto (the land round the patch, sent as -1) or a chosen height, in steps of half a unit. */
 export const LEVEL_AUTO = -1;
+export const isEarthwork = (kind: number | null | undefined): kind is 33 | 34 => kind === 33 || kind === 34;
 export const LEVEL_HEIGHT_STEP = 0.5;
 export const clampLevelHeight = (h: number): number => !Number.isFinite(h) ? LEVEL_AUTO : Math.min(LEVEL_HEIGHT.max, Math.max(LEVEL_HEIGHT.min, Math.round(h / LEVEL_HEIGHT_STEP) * LEVEL_HEIGHT_STEP));
 export const levelHeightLabel = (h: number): string => h < 0 ? 'Auto' : h.toFixed(1);

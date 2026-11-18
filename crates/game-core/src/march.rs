@@ -23,10 +23,131 @@ pub const S_ARRIVED: u8 = 5;
 pub const S_WAIT: u8 = 6;
 pub const S_HOME: u8 = 7;
 pub const S_FIGHT: u8 = 8;   // its soldiers are in the battle (see battle::det_join)
+pub const S_BLOCKED: u8 = 9;
+
+#[derive(PartialEq, Eq)]
+enum Leg { Clear, WaitingForDeck, Blocked }
 
 /// A waypoint; `mode` describes the leg that ends here: 0 walk, 1 fell trees, 2 cross water.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Wp { pub x: f32, pub y: f32, pub mode: u8 }
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct FilePoint { wp: Wp, dist: f32 }
+
+/// A verified track shared by the soldiers in a file. Each soldier has a dispatch distance based on its place in line.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct MarchFile {
+    points: Vec<FilePoint>,
+    approaches: Vec<Vec<FilePoint>>,
+    pub(crate) dispatch: f32,
+    #[serde(skip)] checked_stamp: Option<u64>,
+}
+
+impl MarchFile {
+    fn record(&mut self, x: f32, y: f32, mode: u8) {
+        let wp = Wp { x, y, mode };
+        let dist = match self.points.last() {
+            None => 0.0,
+            Some(p) => {
+                let step = (x - p.wp.x).hypot(y - p.wp.y);
+                if step < 1e-4 { return; }
+                p.dist + step
+            }
+        };
+        self.points.push(FilePoint { wp, dist });
+        self.dispatch = self.dispatch.max(dist);
+    }
+
+    fn gap(units: &[u32; NK]) -> f32 {
+        if units[4] + units[5] > 0 { 3.5 } else if units[3] > 0 { 1.9 } else { 1.05 }
+    }
+
+    fn lag(units: &[u32; NK]) -> f32 { units.iter().sum::<u32>().saturating_sub(1) as f32 * Self::gap(units) }
+
+    fn assign_approaches(&mut self, approaches: Vec<Vec<FilePoint>>, units: &[u32; NK]) {
+        let gap = Self::gap(units);
+        self.dispatch = approaches.iter().enumerate().filter_map(|(rank, p)| p.first().map(|p| p.dist + rank as f32 * gap))
+            .fold(0.0, f32::min);
+        self.approaches = approaches;
+        self.checked_stamp = None;
+    }
+
+    fn release(&mut self, speed: f32) -> bool {
+        if self.dispatch >= 0.0 { return true; }
+        self.dispatch = (self.dispatch + speed).min(0.0);
+        false
+    }
+
+    fn finish(&mut self, units: &[u32; NK], speed: f32) -> bool {
+        let end = self.points.last().map_or(0.0, |p| p.dist);
+        self.dispatch = (self.dispatch + speed).min(end + Self::lag(units));
+        self.dispatch >= end + Self::lag(units)
+    }
+
+    pub(crate) fn in_flight(&self, units: &[u32; NK]) -> bool {
+        self.dispatch < 0.0 || self.points.last().is_some_and(|p| p.dist > 0.0 && self.dispatch < p.dist + Self::lag(units))
+    }
+
+    fn trim(&mut self, units: &[u32; NK]) {
+        if self.dispatch >= Self::lag(units) + 16.0 { self.approaches.clear(); }
+        let behind = self.dispatch - Self::lag(units) - 32.0; // retain several steps for rendering between ticks
+        let cut = self.points.partition_point(|p| p.dist < behind).saturating_sub(1);
+        if cut > 0 { self.points.drain(..cut); }
+    }
+
+    pub(crate) fn near_deck(&self, units: &[u32; NK], on: impl Fn(f32, f32) -> bool) -> bool {
+        let behind = self.dispatch - Self::lag(units);
+        self.points.iter().rev().take_while(|p| p.dist >= behind - 9.0).any(|p| p.wp.mode != 2 && on(p.wp.x, p.wp.y))
+    }
+
+    pub(crate) fn write_flat(&self, id: u32, kind: u8, units: &[u32; NK], out: &mut Vec<f32>) {
+        if self.points.is_empty() { return; }
+        out.extend([id as f32, kind as f32, self.dispatch, Self::gap(units), self.points.len() as f32]);
+        for p in &self.points { out.extend([p.wp.x, p.wp.y, p.wp.mode as f32, p.dist]); }
+    }
+
+    pub(crate) fn mustered(&self) -> bool { self.points.len() == 1 && !self.approaches.is_empty() }
+
+    pub(crate) fn write_approaches(&self, id: u32, kind: u8, out: &mut Vec<f32>) {
+        for (rank, path) in self.approaches.iter().enumerate().filter(|(_, p)| p.len() > 1) {
+            out.extend([id as f32, kind as f32, rank as f32, path.len() as f32]);
+            for p in path { out.extend([p.wp.x, p.wp.y, 0.0, p.dist]); }
+        }
+    }
+
+    fn check(&mut self, stamp: u64, units: &[u32; NK], walk: impl Fn(Wp, Wp) -> bool) -> bool {
+        if self.checked_stamp == Some(stamp) { return true; }
+        let behind = self.dispatch - Self::lag(units);
+        let start = self.points.partition_point(|p| p.dist < behind).saturating_sub(1);
+        let clear = self.points[start..].windows(2).all(|p| p[1].dist <= behind || walk(p[0].wp, p[1].wp))
+            && self.approaches.iter().enumerate().all(|(rank, path)| {
+                let at = self.dispatch - rank as f32 * Self::gap(units);
+                path.windows(2).all(|p| p[1].dist <= at || walk(p[0].wp, p[1].wp))
+            });
+        if clear { self.checked_stamp = Some(stamp); }
+        clear
+    }
+
+    fn occupied(&self, units: &[u32; NK], on: impl Fn(f32, f32) -> bool) -> bool {
+        let Some(last) = self.points.last() else { return false; };
+        let gap = Self::gap(units);
+        for rank in 0..units.iter().sum::<u32>() {
+            let d = self.dispatch - gap * rank as f32;
+            if d > last.dist { continue; }
+            let path = if d < 0.0 { self.approaches.get(rank as usize).map_or(&[][..], Vec::as_slice) } else { &self.points };
+            let Some(first) = path.first() else { continue };
+            let i = path.partition_point(|p| p.dist < d);
+            let point = if i == 0 { (first.wp.x, first.wp.y) } else {
+                let a = path[i - 1]; let b = path.get(i).copied().unwrap_or(a);
+                let t = if b.dist > a.dist { (d - a.dist) / (b.dist - a.dist) } else { 0.0 };
+                (lerp(a.wp.x, b.wp.x, t), lerp(a.wp.y, b.wp.y, t))
+            };
+            if on(point.0, point.1) { return true; }
+        }
+        false
+    }
+}
 
 /// Knights, catapults and other riders and engines that travel apart from the foot soldiers of an army, each at their own pace and heading straight for the place the army was sent to.
 /// They look for their own way (roads and bridges first, as everybody does); where theirs would need felling or a crossing that only the soldiers can make, they keep to the army's route
@@ -40,6 +161,8 @@ pub struct Grp {
     pub heading: f32,
     pub speed: f32,
     pub tied: bool,
+    #[serde(skip)] pub(crate) file: MarchFile,
+    #[serde(skip)] delay: u8,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -62,6 +185,39 @@ pub struct Det {
     pub since_fell: f32,
     pub grp: Vec<Grp>,      // riders and engines marching apart (see Grp); their soldiers are still counted in `units`
     pub defend: bool,       // sent to fight in the battle at home: joins it as soon as it is close to an attacker
+    #[serde(skip)] pub(crate) file: MarchFile,
+    #[serde(skip)] destination: Option<(f32, f32)>,
+    #[serde(skip)] blocked_stamp: u64,
+}
+
+/// The march fields appended to a world snapshot, separate from the original detachment layout.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct SavedMarch {
+    file: MarchFile,
+    destination: Option<(f32, f32)>,
+    blocked_stamp: u64,
+    groups: Vec<(MarchFile, u8)>,
+}
+
+impl Det {
+    pub(crate) fn occupied(&self, on: impl Fn(f32, f32) -> bool) -> bool {
+        if self.state == S_FIGHT { return false; }
+        on(self.x, self.y) || self.file.occupied(&World::head_units(self), &on)
+            || self.grp.iter().any(|g| on(g.x, g.y) || g.file.occupied(&g.units, &on))
+    }
+
+    pub(crate) fn save_march(&self) -> SavedMarch {
+        SavedMarch { file: self.file.clone(), destination: self.destination, blocked_stamp: self.blocked_stamp, groups: self.grp.iter().map(|g| (g.file.clone(), g.delay)).collect() }
+    }
+
+    pub(crate) fn restore_march(&mut self, saved: SavedMarch) -> Option<()> {
+        if saved.groups.len() != self.grp.len() { return None; }
+        self.file = saved.file;
+        self.destination = saved.destination;
+        self.blocked_stamp = saved.blocked_stamp;
+        for (g, (file, delay)) in self.grp.iter_mut().zip(saved.groups) { g.file = file; g.delay = delay; }
+        Some(())
+    }
 }
 
 pub struct NavStatic { h: Vec<f32>, slope: Vec<f32>, dens: Vec<u8>, tun: Vec<bool> }
@@ -162,7 +318,7 @@ impl NavStatic {
 fn cell_xy(i: usize) -> (f32, f32) { ((i as i32 % NC) as f32 * CELL + ORG + CELL / 2.0, (i as i32 / NC) as f32 * CELL + ORG + CELL / 2.0) }
 
 /// Per-request overlays: buildings, felled trees and bridges rasterised onto the grid.
-pub(crate) struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool>, road: Vec<bool>, deck_up: Vec<bool> }
+pub(crate) struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, bridge: Vec<bool>, moat: Vec<bool>, road: Vec<bool>, deck_up: Vec<bool>, edited: Vec<bool>, ground: Vec<f32> }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Cl { Block, Free(f32), Water }
@@ -197,22 +353,17 @@ impl World {
 
     fn overlays(&self) -> Ov {
         let n = (NC * NC) as usize;
-        let mut ov = Ov { blocked: vec![false; n], soft: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n], road: vec![false; n], deck_up: vec![false; n] };
+        let mut ov = Ov { blocked: vec![false; n], soft: vec![false; n], cleared: vec![false; n], bridge: vec![false; n], moat: vec![false; n], road: vec![false; n], deck_up: vec![false; n], edited: vec![false; n], ground: vec![] };
         for b in &self.buildings {
+            if matches!(b.kind, MOAT | RIVER | RAISE | LOWER | DRAWBRIDGE) {
+                let r = if b.kind == DRAWBRIDGE { 27.0 } else { 13.0 };
+                stamp(&mut ov.edited, b.x, b.y, r);
+            }
             match b.kind {
                 GATE if self.gate_shut(b) => stamp(&mut ov.blocked, b.x, b.y, 3.4),   // a barred gate: no way through
                 GATE | ROAD => {}                                             // an opening in the wall, or a road: nothing blocks it
-                BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); let st = (l / 1.0).ceil() as i32; for k in 0..=st { let t = k as f32 - l / 2.0; stamp(&mut ov.bridge, b.x + ux * t, b.y + uy * t, 1.8); } }   // a way over the water
-                MOAT | RIVER => {   // water to cross: every cell round the piece whose real ground is below the shore line (the discs alone leave gaps between pieces)
-                    let reach = if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + CHANNEL_BANK + 1.0;
-                    let (i0, i1) = ((((b.x - reach - ORG) / CELL).floor() as i32).max(0), (((b.x + reach - ORG) / CELL).ceil() as i32).min(NC - 1));
-                    let (j0, j1) = ((((b.y - reach - ORG) / CELL).floor() as i32).max(0), (((b.y + reach - ORG) / CELL).ceil() as i32).min(NC - 1));
-                    for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cell_xy((j * NC + i) as usize); if (cx - b.x).hypot(cy - b.y) <= reach {
-                        let hh = CELL / 2.0;   // a cell is water if any part of it is (its middle and its four corners are looked at): a thin ditch must not slip between the cells
-                        if [(0.0, 0.0), (hh, hh), (-hh, hh), (hh, -hh), (-hh, -hh)].iter().any(|(ox, oy)| self.height_ground(cx + ox, cy + oy) < 0.2) { ov.moat[(j * NC + i) as usize] = true; }
-                    } } }
-                }
-                RAISE | LOWER => {}
+                BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); let st = l.ceil().max(1.0) as i32; for k in 0..=st { let t = (k as f32 / st as f32 - 0.5) * l; stamp(&mut ov.bridge, b.x + ux * t, b.y + uy * t, 1.8); } }
+                MOAT | RIVER | RAISE | LOWER => {}
                 DRAWBRIDGE if self.drawn_up(b) => {                           // drawn up: no way across, unless an army lowers it for itself
                     if self.db_lendable(b) { let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos()); for k in -9..=9 { let t = k as f32 * 0.8; stamp(&mut ov.deck_up, b.x + sx * t, b.y + sy * t, 1.6); } }
                 }
@@ -226,7 +377,7 @@ impl World {
                         let (j0, j1) = ((((b.y - 18.0 - ORG) / CELL).floor() as i32).max(0), (((b.y + 18.0 - ORG) / CELL).ceil() as i32).min(NC - 1));
                         for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cell_xy((j * NC + i) as usize); if crate::pathnet::in_fields(b, cx, cy, 0.9) { ov.blocked[(j * NC + i) as usize] = true; } } }
                     }
-                    stamp(&mut ov.blocked, b.x, b.y, crate::solid_radius(b.kind, b.tier));   // the solid part: no way through
+                    if !matches!(b.kind, PLAZA | TOLL) { stamp(&mut ov.blocked, b.x, b.y, crate::solid_radius(b.kind, b.tier)); }
                     if !matches!(b.kind, WALL | FENCE) { stamp(&mut ov.soft, b.x, b.y, crate::footprint(b.kind, b.tier) + 0.7); }   // the margin round it: allowed, but avoided
                 }
             }
@@ -245,6 +396,15 @@ impl World {
             let (dx, dy) = (br[2] - br[0], br[3] - br[1]); let l = (dx * dx + dy * dy).sqrt().max(0.1); let steps = (l / 1.0).ceil() as i32;
             for k in 0..=steps { let t = k as f32 / steps as f32; stamp(&mut ov.bridge, br[0] + dx * t, br[1] + dy * t, 1.6); }
         }
+        for l in &self.levels { stamp(&mut ov.edited, l[0], l[1], l[2] + LEVEL_BLEND + 5.0); }
+        for l in &self.flats { stamp(&mut ov.edited, l[0], l[1], l[2] + flatten::FLAT_SHOULDER + 5.0); }
+        let ns = nav_static(self.seed);
+        ov.ground = ns.h.clone();
+        for (i, h) in ov.ground.iter_mut().enumerate().filter(|(i, _)| ov.edited[*i]) {
+            let (x, y) = cell_xy(i);
+            *h = self.height_from(x, y, true, false, *h);
+            ov.moat[i] = *h < self.march_waterline(x, y);
+        }
         ov
     }
 
@@ -259,7 +419,7 @@ impl World {
             let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { return Cl::Block; }
             let k = (b * NC + a) as usize;
             if ov.bridge[k] { continue; }
-            if ns.h[k] < 0.2 || ov.moat[k] || ns.slope[k] > 0.85 { return Cl::Block; }
+            if ov.ground[k] < 0.2 || ov.moat[k] || (!ov.edited[k] && ns.slope[k] > 0.85) { return Cl::Block; }
             if lvl >= 3 && ov.blocked[k] { return Cl::Block; }
         }
         c
@@ -269,8 +429,8 @@ impl World {
         let (x, y) = cell_xy(i);
         if x.abs() > 1192.0 || y.abs() > 1192.0 || ov.blocked[i] { return Cl::Block; }
         if ns.tun[i] && !ov.moat[i] { return Cl::Free(1.3); }
-        if (ns.h[i] < 0.2 || ov.moat[i]) && !ov.bridge[i] { return Cl::Water; }
-        if ns.slope[i] > if siege { 0.85 } else { 1.6 } { return Cl::Block; }
+        if (ov.ground[i] < 0.2 || ov.moat[i]) && !ov.bridge[i] { return Cl::Water; }
+        if !ov.bridge[i] && !ov.edited[i] && ns.slope[i] > if siege { 0.85 } else { 1.6 } { return Cl::Block; }
         let d = if ov.cleared[i] { 0.0 } else { ns.dens[i] as f32 };
         if siege && d >= 2.0 { return Cl::Free(8.0 + d); }               // dense forest: needs felling
         let c = 1.0 + 0.2 * d + ns.slope[i] * 1.2 + if ov.soft[i] { 0.3 } else { 0.0 };
@@ -283,9 +443,42 @@ impl World {
         for r in 0..8i32 { for dj in -r..=r { for di in -r..=r {
             if di.abs().max(dj.abs()) != r { continue; }
             let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { continue; }
-            let k = (b * NC + a) as usize; if let Cl::Free(_) = self.classify(ns, ov, k, siege) { return Some(k); }
+            let k = (b * NC + a) as usize;
+            if matches!(self.classify(ns, ov, k, siege), Cl::Free(_)) {
+                let (x, y) = cell_xy(k);
+                if !self.member_blocked_inner(x, y, if siege > 0 { 3 } else { 0 }) { return Some(k); }
+            }
         } } }
         None
+    }
+
+    pub(crate) fn march_waterline(&self, x: f32, y: f32) -> f32 {
+        self.moat_water.iter().filter(|p| (p[0] - x).abs() < p[2] && (p[1] - y).abs() < p[2] && (p[0] - x).hypot(p[1] - y) < p[2])
+            .map(|p| p[3]).fold(0.2, f32::max)
+    }
+
+    fn walk_segment(&self, ns: &NavStatic, obst: &members::Obst, a: (f32, f32), b: (f32, f32), room: f32, slope: f32, lend: bool) -> bool {
+        if !obst.solid_clear(a, b, room) { return false; }
+        let distance = (b.0 - a.0).hypot(b.1 - a.1);
+        let steps = (distance / 0.5).ceil().max(1.0) as u32;
+        let mut previous = None;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            let (x, y) = (lerp(a.0, b.0, t), lerp(a.1, b.1, t));
+            if obst.on_deck(x, y, lend) {
+                previous = None;
+                continue;
+            }
+            let h = self.height_ground(x, y);
+            if h < self.march_waterline(x, y) { return false; }
+            if ns.idx(x, y).is_some_and(|k| ns.tun[k]) { previous = None; continue; }
+            if slope < 1.0 && [(CELL, 0.0), (-CELL, 0.0), (0.0, CELL), (0.0, -CELL)].iter().any(|&(dx, dy)| {
+                (self.height_ground(x + dx, y + dy) - h).abs() > 1.05 * CELL
+            }) { return false; }
+            if previous.is_some_and(|p: f32| (p - h).abs() > slope * (distance / steps as f32) + 0.025) { return false; }
+            previous = Some(h);
+        }
+        true
     }
 
     /// Find a route. Err codes: -2 unreachable, -3 siege engines need soldiers to clear the forest, -5 water too wide.
@@ -298,6 +491,20 @@ impl World {
 
     /// The same for somebody on foot who will not wade (villagers): [1, x, y, x, y, ...] or empty when there is no dry way.
     pub(crate) fn walk_route_inner(&self, sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> {
+        let start = (sx, sy); let goal = (tx, ty);
+        if let Some((mut route, true)) = self.net().route(start, goal) {
+            route.push(goal);
+            let ns = nav_static(self.seed); let obst = self.obst();
+            let mut prev = start;
+            if route.iter().all(|&p| {
+                let clear = self.walk_segment(&ns, &obst, prev, p, members::FOOT_MARGIN, 1.6, false);
+                prev = p;
+                clear
+            }) {
+                let mut out = vec![1.0]; out.extend(route.into_iter().flat_map(|(x, y)| [x, y]));
+                return out;
+            }
+        }
         match self.route_on_graph(&[1, 0, 0, 0, 0, 0], sx, sy, tx, ty, true) {
             Ok(p) => { let mut v = vec![1.0]; for w in p.iter().skip(1) { v.extend_from_slice(&[w.x, w.y]); } v }
             Err(_) => vec![],
@@ -305,102 +512,188 @@ impl World {
     }
 
     pub(crate) fn route_on_graph(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
+        if !Self::infrastructure_in_bounds(sx, sy) || !Self::infrastructure_in_bounds(tx, ty) { return Err(-2); }
         let margins: [f32; 3] = if no_water { [30.0, 90.0, 500.0] } else { [45.0, 180.0, 2500.0] };
         let mut last = Err(-2);
         // a siege engine looks for a road wide enough for it first, and only if there is none makes do with a narrower one
-        let levels: &[u8] = if units[4] > 0 { &[3, 2, 1] } else { &[0] };
+        let levels: &[u8] = if units[4] + units[5] > 0 { &[3, 2, 1] } else { &[0] };
         'search: for &lvl in levels {
             for m in margins {
                 last = self.route_in_window(units, sx, sy, tx, ty, m, no_water, lvl);
                 if !matches!(last, Err(-2)) { break 'search; }
             }
         }
-        last.map(|p| self.through_doors(p, !no_water))
+        last
     }
 
     fn route_in_window(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, margin: f32, no_water: bool, siege: u8) -> Result<Vec<Wp>, i32> {
-        let ns = nav_static(self.seed); let ov = self.ov(); let net = self.net();
+        let ns = nav_static(self.seed); let ov = self.ov(); let net = self.net(); let obst = self.obst();
+        let room = if siege >= 3 { members::ENGINE_MARGIN } else { members::FOOT_MARGIN };
+        let slope = if siege > 0 { 0.85 } else { 1.6 };
+        let walk = |a, b| self.walk_segment(&ns, &obst, a, b, room, slope, !no_water);
         // how a cell can be crossed; for an army (which does not wade) the deck of a drawbridge that is drawn up counts as dry ground, because the army lowers it for itself (see `drawbridge_step`)
         let cl = |k: usize| -> Cl { match self.classify(&ns, &ov, k, siege) { Cl::Water if !no_water && ov.deck_up[k] => Cl::Free(1.5), c => c } };
         let workers = units[0] + units[2];
-        let (Some(s), Some(g)) = (self.near_free(&ns, &ov, sx, sy, siege), self.near_free(&ns, &ov, tx, ty, siege)) else { return Err(-2) };
+        let start = (sx, sy); let goal = (tx, ty);
+        let walkable_start = walk(start, start); let walkable_goal = walk(goal, goal);
+        let nearest = |p: (f32, f32), exact| {
+            let k = ns.idx(p.0, p.1)?;
+            let (i, j) = (k as i32 % NC, k as i32 / NC);
+            let mut best = None;
+            for r in 0..8i32 {
+                for dy in -r..=r { for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r { continue; }
+                    let (x, y) = (i + dx, j + dy);
+                    if !(0..NC).contains(&x) || !(0..NC).contains(&y) { continue; }
+                    let k = (y * NC + x) as usize;
+                    if !matches!(cl(k), Cl::Free(_)) { continue; }
+                    let q = cell_xy(k);
+                    let d = (p.0 - q.0).hypot(p.1 - q.1);
+                    if best.is_none_or(|(distance, _)| d < distance) && walk(q, if exact { p } else { q }) { best = Some((d, k)); }
+                } }
+                if best.is_some_and(|(d, _)| d <= (r as f32 + 0.5) * CELL) { break; }
+            }
+            best.map(|(_, k)| k)
+        };
+        let (Some(s), Some(g)) = (nearest(start, walkable_start), nearest(goal, walkable_goal)) else { return Err(-2) };
         let ((scx, scy), (gcx, gcy)) = (cell_xy(s), cell_xy(g));
         let i0 = (((scx.min(gcx) - margin - ORG) / CELL).floor() as i32).max(0); let i1 = (((scx.max(gcx) + margin - ORG) / CELL).ceil() as i32).min(NC - 1);
         let j0 = (((scy.min(gcy) - margin - ORG) / CELL).floor() as i32).max(0); let j1 = (((scy.max(gcy) + margin - ORG) / CELL).ceil() as i32).min(NC - 1);
-        let (w, h) = (i1 - i0 + 1, j1 - j0 + 1); let ncell = (w * h) as usize; let nn = net.nodes.len();
+        let (w, h) = (i1 - i0 + 1, j1 - j0 + 1); let ncell = (w * h) as usize;
         let local = |i: usize| -> Option<usize> { let (ci, cj) = (i as i32 % NC, i as i32 / NC); if ci < i0 || ci > i1 || cj < j0 || cj > j1 { None } else { Some(((cj - j0) * w + (ci - i0)) as usize) } };
         let global = |l: usize| -> usize { let (a, b) = (l as i32 % w + i0, l as i32 / w + j0); (b * NC + a) as usize };
-        // where the village's path network touches the grid
-        let mut at_cell: std::collections::HashMap<usize, Vec<u32>> = Default::default(); let mut node_cell: Vec<Option<usize>> = vec![None; nn];
-        for (k, p) in net.nodes.iter().enumerate() { if let Some(l) = ns.idx(p.0, p.1).and_then(|gi| local(gi)) { at_cell.entry(l).or_default().push(k as u32); node_cell[k] = Some(l); } }
+        // Explicit deck edges join dry banks even when a coarse grid centre misses a slender deck.
+        let mut deck_nodes = Vec::new();
+        for c in self.crossings().into_iter().filter(|c| c.down || (!no_water && c.lendable)) {
+            let (a, b) = ((c.ax, c.ay), (c.bx, c.by));
+            if [a, b].iter().all(|&(x, y)| self.height_ground(x, y) >= self.march_waterline(x, y)) && walk(a, b) { deck_nodes.extend([a, b]); }
+        }
+        let net_count = net.nodes.len(); let nn = net_count + deck_nodes.len();
+        let node = |n: usize| if n < net_count { net.nodes[n] } else { deck_nodes[n - net_count] };
+        let mut at_cell: std::collections::HashMap<usize, Vec<(usize, f32)>> = Default::default();
+        let mut node_cells = vec![Vec::new(); nn];
+        for n in 0..nn {
+            if siege > 0 && n < net_count { continue; }
+            let p = node(n);
+            let Some(k) = ns.idx(p.0, p.1) else { continue };
+            let (i, j) = (k as i32 % NC, k as i32 / NC);
+            for dy in -1..=1 { for dx in -1..=1 {
+                let (x, y) = (i + dx, j + dy);
+                if !(0..NC).contains(&x) || !(0..NC).contains(&y) { continue; }
+                let k = (y * NC + x) as usize;
+                let Some(l) = local(k) else { continue };
+                let q = cell_xy(k); let d = (q.0 - p.0).hypot(q.1 - p.1);
+                if d <= CELL && matches!(cl(k), Cl::Free(_)) && walk(p, q) {
+                    let cost = d / CELL + 0.15;
+                    at_cell.entry(l).or_default().push((ncell + n, cost));
+                    node_cells[n].push((l, cost));
+                }
+            } }
+        }
         let (Some(sl), Some(gl)) = (local(s), local(g)) else { return Err(-2) };
         let total = ncell + nn;
         let mut gc = vec![f32::MAX; total]; let mut from = vec![u32::MAX; total];
         let mut heap = BinaryHeap::new();
-        let pos = |i: usize| -> (f32, f32) { if i < ncell { cell_xy(global(i)) } else { net.nodes[i - ncell] } };
-        let hfn = |i: usize| { let p = pos(i); ((p.0 - gcx).hypot(p.1 - gcy)) / CELL * 0.7 };
-        gc[sl] = 0.0; heap.push(Node { f: hfn(sl), i: sl as u32 });
+        let pos = |i: usize| if i < ncell { cell_xy(global(i)) } else { node(i - ncell) };
+        let hfn = |i: usize| { let p = pos(i); (p.0 - gcx).hypot(p.1 - gcy) / CELL * 0.7 };
+        let source = if siege == 0 {
+            net.nodes.iter().position(|&p| p == start && walkable_start).map_or(sl, |n| ncell + n)
+        } else { sl };
+        gc[source] = 0.0; heap.push(Node { f: hfn(source), i: source as u32 });
         let mut found = false; let mut next: Vec<(usize, f32)> = vec![];
-        while let Some(Node { i, .. }) = heap.pop() {
+        while let Some(Node { f, i }) = heap.pop() {
             let i = i as usize;
             if i == gl { found = true; break; }
+            if f > gc[i] + hfn(i) + 1e-4 { continue; }
             next.clear();
             if i < ncell {
-                let gi = global(i); let (ci, cj) = (gi as i32 % NC, gi as i32 / NC);
+                let gi = global(i); let (ci, cj) = (gi as i32 % NC, gi as i32 / NC); let p = cell_xy(gi);
                 for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                     let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { continue; }
                     let k = (b * NC + a) as usize; let Some(kl) = local(k) else { continue };
                     let step = match cl(k) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 16.0 } };
                     if di != 0 && dj != 0 {   // no cutting corners through blocked cells
-                        if cl((cj * NC + a) as usize) == Cl::Block || cl((b * NC + ci) as usize) == Cl::Block { continue; }
+                        if [(cj * NC + a) as usize, (b * NC + ci) as usize].iter().any(|&k| cl(k) == Cl::Block || (no_water && cl(k) == Cl::Water)) { continue; }
                     }
+                    let q = cell_xy(k);
+                    let simple = [gi, k].iter().all(|&k| !ov.edited[k] && ov.ground[k] >= 2.0 && ns.slope[k] <= 0.38);
+                    let clear = if simple || cl(gi) == Cl::Water || cl(k) == Cl::Water { obst.solid_clear(p, q, room) } else { walk(p, q) };
+                    if !clear { continue; }
                     next.push((kl, step * if di != 0 && dj != 0 { 1.414 } else { 1.0 }));
                 }
-                if siege == 0 { if let Some(v) = at_cell.get(&i) { for &n in v { next.push((ncell + n as usize, 0.4)); } } }   // (the village's footpaths are for people: an engine keeps to open ground)
+                if let Some(v) = at_cell.get(&i) { next.extend(v.iter().copied()); }
             } else {
                 let n = i - ncell;
-                for &(to, l, road) in &net.adj[n] { next.push((ncell + to as usize, l / CELL * if road { crate::pathnet::ROAD_COST } else { 1.0 })); }
-                if let Some(l) = node_cell[n] { next.push((l, 0.4)); }
+                if n < net_count {
+                    for &(to, l, road) in &net.adj[n] {
+                        if walk(node(n), node(to as usize)) { next.push((ncell + to as usize, l / CELL * if road { pathnet::ROAD_COST } else { 0.8 })); }
+                    }
+                } else {
+                    let to = net_count + ((n - net_count) ^ 1);
+                    let (p, q) = (node(n), node(to));
+                    next.push((ncell + to, (p.0 - q.0).hypot(p.1 - q.1) / CELL * pathnet::ROAD_COST));
+                }
+                next.extend(node_cells[n].iter().copied());
             }
             for &(k, c) in &next { let ng = gc[i] + c; if ng < gc[k] { gc[k] = ng; from[k] = i as u32; heap.push(Node { f: ng + hfn(k), i: k as u32 }); } }
         }
         if !found { return Err(-2); }
         let mut chain = vec![gl]; let mut c = gl; while from[c] != u32::MAX { c = from[c] as usize; chain.push(c); } chain.reverse();
-        let mode_of = |gi: usize| -> u8 { match cl(gi) { Cl::Water => 2, Cl::Free(c) if c >= 8.0 => 1, _ => 0 } };
-        // the lines the route runs along: grid cells (merged where a straight line stays on them) and the village network's own nodes (kept exactly)
-        struct It { x: f32, y: f32, mode: u8, fixed: bool, cell: usize }
-        let items: Vec<It> = chain.iter().map(|&l| if l < ncell { let gi = global(l); let p = cell_xy(gi); It { x: p.0, y: p.1, mode: mode_of(gi), fixed: false, cell: gi } } else { let p = net.nodes[l - ncell]; It { x: p.0, y: p.1, mode: 0, fixed: true, cell: usize::MAX } }).collect();
-        let mut wps: Vec<Wp> = vec![Wp { x: sx, y: sy, mode: 0 }];
-        let mut start = 0usize;
-        while start < items.len() {
-            if items[start].fixed { wps.push(Wp { x: items[start].x, y: items[start].y, mode: 0 }); start += 1; continue; }
-            let m = items[start].mode; let mut end = start; while end + 1 < items.len() && !items[end + 1].fixed && items[end + 1].mode == m { end += 1; }
-            let run: Vec<(f32, f32)> = items[start..=end].iter().map(|it| (it.x, it.y)).collect();
-            let los = |a: (f32, f32), b: (f32, f32), between: &[(f32, f32)]| -> bool {
-                let l = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt(); let st = (l / (CELL * 0.5)).ceil().max(1.0) as i32;
-                if !(0..=st).all(|q| { let t = q as f32 / st as f32; ns.idx(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t).map_or(false, |k| mode_of(k) == m && cl(k) != Cl::Block) }) { return false; }
-                // and it stays on the lines it replaces (never a long cut across open ground)
-                let (dx, dy) = (b.0 - a.0, b.1 - a.1); let l2 = (dx * dx + dy * dy).max(1e-6);
-                between.iter().all(|p| { let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0); (p.0 - (a.0 + dx * t)).hypot(p.1 - (a.1 + dy * t)) <= 1.3 })
-            };
-            let mut a = 0usize; let mut pts: Vec<(f32, f32)> = vec![];
-            while a < run.len() - 1 { let mut b = run.len() - 1; while b > a + 1 && !los(run[a], run[b], &run[a + 1..b]) { b -= 1; } pts.push(run[b]); a = b; }
-            if run.len() == 1 { pts.push(run[0]); }
-            for p in pts { wps.push(Wp { x: p.0, y: p.1, mode: m }); }
-            start = end + 1;
+        let mode_of = |k: usize| -> u8 {
+            if k >= ncell { return 0; }
+            match cl(global(k)) { Cl::Water => 2, Cl::Free(c) if c >= 8.0 => 1, _ => 0 }
+        };
+        let mut path = vec![Wp { x: sx, y: sy, mode: 0 }];
+        let mut i = 0;
+        while i < chain.len() {
+            let k = chain[i];
+            let mode = mode_of(k);
+            if mode == 2 {
+                while i < chain.len() && mode_of(chain[i]) == 2 { i += 1; }
+                let Some(&bank) = chain.get(i) else { return Err(-2) };
+                let a = path.last().unwrap();
+                let q = pos(bank);
+                if (q.0 - a.x).hypot(q.1 - a.y) > MAX_FERRY { return Err(-5); }
+                if !obst.solid_clear((a.x, a.y), q, room) || !walk(q, q) { return Err(-2); }
+                path.push(Wp { x: q.0, y: q.1, mode: 2 });
+            } else {
+                if mode == 1 && workers == 0 { return Err(-3); }
+                let a = path.last().unwrap();
+                // The grid contributes straight off-network legs. Keep real network nodes and changes of travel mode exactly.
+                if i > 0 && k < ncell && chain[i - 1] < ncell && mode_of(chain[i - 1]) == mode {
+                    let p = (a.x, a.y);
+                    let mut end = i;
+                    for j in i + 1..chain.len().min(i + 13) {
+                        if chain[j] >= ncell || mode_of(chain[j]) != mode { break; }
+                        let q = pos(chain[j]);
+                        let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+                        let l = dx.hypot(dy).max(1e-4);
+                        if chain[i..j].iter().any(|&v| { let v = pos(v); ((v.0 - p.0) * dy - (v.1 - p.1) * dx).abs() / l > 0.9 }) { break; }
+                        if !walk(p, q) { break; }
+                        end = j;
+                    }
+                    i = end;
+                }
+                let q = pos(chain[i]);
+                if (q.0 - a.x).hypot(q.1 - a.y) > 0.001 {
+                    if (i > 0 || walkable_start) && !walk((a.x, a.y), q) { return Err(-2); }
+                    path.push(Wp { x: q.0, y: q.1, mode });
+                }
+            }
+            i += 1;
         }
-        // the very last point is the exact target when it is reachable on foot
-        if let Some(l) = wps.last_mut() { if l.mode == 0 && ns.idx(tx, ty).map_or(false, |k| k == global(gl)) { l.x = tx; l.y = ty; } }
-        let _ = items.iter().map(|i| i.cell).count();
-        // checks: water too wide, felling without workers
-        let mut prev = (sx, sy);
-        for w in &wps {
-            let len = ((w.x - prev.0).powi(2) + (w.y - prev.1).powi(2)).sqrt();
-            if w.mode == 2 && len > MAX_FERRY { return Err(-5); }
-            if w.mode == 1 && workers == 0 { return Err(-3); }
-            prev = (w.x, w.y);
+        if walkable_goal {
+            let a = path.last().unwrap();
+            if (tx - a.x).hypot(ty - a.y) > 0.001 { path.push(Wp { x: tx, y: ty, mode: 0 }); }
         }
-        Ok(wps)
+        // Gate and deck centring may only replace legs when the result is still clear.
+        let centred = self.through_doors(path.clone(), !no_water);
+        if centred.windows(2).all(|p| p[1].mode == 2 || (!walkable_start && (p[0].x, p[0].y) == start)
+            || walk((p[0].x, p[0].y), (p[1].x, p[1].y))) {
+            Ok(centred)
+        } else {
+            Ok(path)
+        }
     }
 
     /// Wherever a route passes through an open gate or over a lowered drawbridge it is made to run along the middle of the doorway, straight in and straight out (the open-ground
@@ -455,18 +748,96 @@ impl World {
 
     fn det_index(&self, id: u32) -> Option<usize> { self.dets.iter().position(|d| d.id == id) }
 
+    /// A single reverse search from the path entry gives each muster position its own shortest local approach.
+    fn muster_approaches(&self, ns: &NavStatic, anchor: (f32, f32), units: &[u32; NK]) -> Vec<Vec<FilePoint>> {
+        let count = units.iter().sum::<u32>() as usize;
+        let step = if units[4] + units[5] > 0 { 2.6 } else if units[3] > 0 { 1.8 } else { 1.25 };
+        let room = if units[4] + units[5] > 0 { 0.95 } else { members::FOOT_MARGIN };
+        let radius = ((count as f32).sqrt().ceil() as i32 + 2).clamp(3, 24);
+        let side = 2 * radius + 1;
+        let center = (radius * side + radius) as usize;
+        let p = |i: usize| (anchor.0 + (i as i32 % side - radius) as f32 * step, anchor.1 + (i as i32 / side - radius) as f32 * step);
+        let obst = self.obst();
+        let walk = |a, b| self.walk_segment(ns, &obst, a, b, room, if room > 0.6 { 0.85 } else { 1.6 }, false);
+        let net = self.net();
+        let entrances: Vec<_> = net.nodes.iter().position(|&p| p == anchor).into_iter()
+            .flat_map(|i| &net.adj[i]).map(|&(i, _, _)| net.nodes[i as usize])
+            .filter(|&p| (p.0 - anchor.0).hypot(p.1 - anchor.1) < 9.0 && walk(p, anchor)).collect();
+        let mut dist = vec![f32::MAX; (side * side) as usize];
+        let mut from = vec![usize::MAX; dist.len()];
+        let mut open = BinaryHeap::new();
+        let mut approaches = Vec::with_capacity(count);
+        dist[center] = 0.0;
+        open.push(Node { f: 0.0, i: center as u32 });
+        while let Some(Node { f, i }) = open.pop() {
+            let i = i as usize;
+            if f > dist[i] { continue; }
+            let mut indices = vec![i];
+            let mut at = i;
+            while at != center { at = from[at]; indices.push(at); }
+            let start = p(i);
+            let direct = (start.0 - anchor.0).hypot(start.1 - anchor.1);
+            let base_length = if walk(start, anchor) { direct } else { f };
+            let entry = if i == center { None } else {
+                entrances.iter().copied().map(|q| ((start.0 - q.0).hypot(start.1 - q.1), q))
+                    .filter(|&(d, q)| d < base_length && walk(start, q)).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, q)| q)
+            };
+            let path: Vec<_> = if let Some(q) = entry { vec![start, q, anchor] }
+                else if base_length == direct && i != center { vec![start, anchor] }
+                else { indices.into_iter().map(p).collect() };
+            let length = path.windows(2).map(|pair| (pair[0].0 - pair[1].0).hypot(pair[0].1 - pair[1].1)).sum::<f32>();
+            let mut distance = -length;
+            let mut prev = start;
+            let approach = path.into_iter().map(|(x, y)| {
+                distance += (x - prev.0).hypot(y - prev.1);
+                prev = (x, y);
+                FilePoint { wp: Wp { x, y, mode: 0 }, dist: if (x, y) == anchor { 0.0 } else { distance } }
+            }).collect();
+            approaches.push(approach);
+            if approaches.len() == count { break; }
+            let (x, y) = (i as i32 % side, i as i32 / side);
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
+                let (x, y) = (x + dx, y + dy);
+                if !(0..side).contains(&x) || !(0..side).contains(&y) { continue; }
+                let j = (y * side + x) as usize;
+                let next = f + step * if dx != 0 && dy != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+                if next < dist[j] && walk(p(i), p(j)) {
+                    dist[j] = next; from[j] = i; open.push(Node { f: next, i: j as u32 });
+                }
+            }
+        }
+        approaches
+    }
+
     // ---------------------------------------------------------------- commands
     /// Take soldiers out of the barracks into a new field army. Returns its id, or 0 if impossible.
     pub(crate) fn det_form_inner(&mut self, units: [u32; NK]) -> u32 {
         if units.iter().all(|&u| u == 0) || (0..NK).any(|k| units[k] > self.army[k]) { return 0; }
-        if !self.battle_release_army(units) { return 0; }   // (in a fight the soldiers must be ones still standing in it)
-        for k in 0..NK { self.army[k] -= units[k]; }
-        self.next_det += 1;
         let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
         let (bx, by) = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hx + 10.0, hy + 10.0), |b| (b.x, b.y + 8.0));
         let ns = nav_static(self.seed); let ov = self.ov();
-        let (x, y) = self.near_free(&ns, &ov, bx, by, if units[4] > 0 { 1 } else { 0 }).map_or((bx, by), cell_xy);
-        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![] });
+        let Some(cell) = self.near_free(&ns, &ov, bx, by, if units[4] + units[5] > 0 { 1 } else { 0 }) else { return 0; };
+        let spawn = cell_xy(cell);
+        let net = self.net(); let obst = self.obst();
+        let distance = |p: (f32, f32)| (p.0 - spawn.0).hypot(p.1 - spawn.1);
+        let roomy = units[4] + units[5] > 0;
+        let walk = |a, b| self.walk_segment(&ns, &obst, a, b, if roomy { 0.95 } else { members::FOOT_MARGIN }, if roomy { 0.85 } else { 1.6 }, false);
+        let mut nodes: Vec<_> = net.nodes.iter().copied().enumerate().filter_map(|(i, p)| {
+            let d = distance(p);
+            (!net.adj[i].is_empty() && d <= 22.0).then_some((d, p))
+        }).collect();
+        nodes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let entry = nodes.iter().find(|&&(_, p)| walk(spawn, p)).or_else(|| {
+            nodes.iter().take(5).find(|&&(_, p)| walk(p, p) && self.route_in_window(&[1, 0, 0, 0, 0, 0], spawn.0, spawn.1, p.0, p.1, 12.0, true, 0).is_ok())
+        });
+        let (x, y) = entry.map_or(spawn, |&(_, p)| p);
+        let mut file = MarchFile::default();
+        file.record(x, y, 0);
+        file.assign_approaches(self.muster_approaches(&ns, (x, y), &units), &units);
+        if !self.battle_release_army(units) { return 0; }
+        for k in 0..NK { self.army[k] -= units[k]; }
+        self.next_det += 1;
+        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![], file, destination: None, blocked_stamp: 0 });
         self.next_det
     }
 
@@ -475,24 +846,58 @@ impl World {
         if self.det_index(id).is_none() { return -1; }
         self.det_disengage(id);   // an army in the fight breaks off to go where it is told
         let Some(i) = self.det_index(id) else { return -1 };
-        let (u, x, y) = (self.dets[i].units, self.dets[i].x, self.dets[i].y);
+        let mut d = self.dets[i].clone();
+        if let Err(e) = self.set_march_route(&mut d, tx, ty) { return e; }
+        d.state = if home { S_HOME } else { S_MARCH };
+        d.atk = attack; d.home = home; d.defend = false;
+        self.dets[i] = d;
+        0
+    }
+
+    fn set_march_route(&self, d: &mut Det, tx: f32, ty: f32) -> Result<(), i32> {
+        let (u, x, y) = (d.units, d.x, d.y);
+        if d.state == S_FERRY && self.member_blocked_inner(x, y, 0) { return Err(-2); }
         let (hu, gus) = Self::split_groups(&u);
-        let route_units = if u[4] > 0 { u } else { hu };   // (with engines along, the army's route is one they can follow: felling where the forest needs it)
-        match self.find_path(&route_units, x, y, tx, ty) {
-            Ok(p) => {
-                let old = std::mem::take(&mut self.dets[i].grp);
-                let mut grps: Vec<Grp> = vec![];
-                for gu in gus {
-                    let (gx, gy) = old.iter().find(|g| (g.units[3] > 0) == (gu[3] > 0)).map_or((x, y), |g| (g.x, g.y));   // (a group left standing somewhere starts from there)
-                    let (path, tied) = match self.find_path(&gu, gx, gy, tx, ty) {
-                        Ok(q) if q.iter().all(|w| w.mode == 0) => (q, false),
-                        _ => { let mut q = p.clone(); if let Some(f) = q.first_mut() { f.x = gx; f.y = gy; } (q, true) }
-                    };
-                    grps.push(Grp { units: gu, x: gx, y: gy, path, wi: 1, heading: 0.0, speed: 0.0, tied });
+        let route_units = if u[4] + u[5] > 0 { u } else { hu };
+        let path = self.find_path(&route_units, x, y, tx, ty)?;
+        let mut groups = Vec::new();
+        let unstarted = d.grp.is_empty() && d.file.mustered() && d.file.points[0].wp.x == x && d.file.points[0].wp.y == y;
+        let head_count = hu.iter().sum::<u32>() as usize;
+        let mut next_rank = head_count;
+        for (i, gu) in gus.into_iter().enumerate() {
+            let old = d.grp.iter().find(|g| (g.units[3] > 0) == (gu[3] > 0));
+            let (gx, gy) = old.map_or((x, y), |g| (g.x, g.y));
+            let (route, tied) = match self.find_path(&gu, gx, gy, tx, ty) {
+                Ok(q) if q.iter().all(|w| w.mode == 0) => (q, false),
+                _ if (gx, gy) == (x, y) => (path.clone(), true),
+                _ => {
+                    let mut join = self.route_on_graph(&gu, gx, gy, x, y, true)?;
+                    if !join.last().is_some_and(|p| (p.x - x).hypot(p.y - y) < 0.001) { return Err(-2); }
+                    join.extend_from_slice(&path[1..]);
+                    (join, true)
                 }
-                let d = &mut self.dets[i]; d.grp = grps; d.path = p; d.wi = 1; d.state = if home { S_HOME } else { S_MARCH }; d.phase = 0; d.atk = attack; d.home = home; d.defend = false; d.sx = x; d.sy = y; 0 }
-            Err(e) => e,
+            };
+            let mut file = old.filter(|g| g.file.in_flight(&g.units)).map_or_else(MarchFile::default, |g| g.file.clone());
+            file.record(gx, gy, 0);
+            if unstarted {
+                let count = gu.iter().sum::<u32>() as usize;
+                file.assign_approaches(d.file.approaches.iter().skip(next_rank).take(count).cloned().collect(), &gu);
+                next_rank += count;
+            }
+            groups.push(Grp { units: gu, x: gx, y: gy, path: route, wi: 1, heading: 0.0, speed: 0.0, tied, file, delay: if old.is_none() { i as u8 + 1 } else { 0 } });
         }
+        if unstarted {
+            let mut approaches = std::mem::take(&mut d.file.approaches);
+            approaches.truncate(head_count);
+            d.file.assign_approaches(approaches, &hu);
+        } else if d.file.points.last().is_some_and(|p| (p.wp.x, p.wp.y) != (x, y))
+            || (matches!(d.state, S_IDLE | S_ARRIVED | S_FIGHT) && !d.file.in_flight(&Self::head_units(d))) {
+            d.file = Default::default();
+        }
+        d.file.record(x, y, 0);
+        d.grp = groups; d.path = path; d.wi = 1; d.phase = 0; d.sx = x; d.sy = y;
+        d.destination = Some((tx, ty));
+        Ok(())
     }
 
     pub(crate) fn det_split_inner(&mut self, id: u32, take: [u32; NK]) -> u32 {
@@ -511,7 +916,7 @@ impl World {
         let (Some(i), Some(j)) = (self.det_index(a), self.det_index(b)) else { return false };
         if i == j || self.dets[i].state == S_FIGHT || self.dets[j].state == S_FIGHT || ((self.dets[i].x - self.dets[j].x).powi(2) + (self.dets[i].y - self.dets[j].y).powi(2)).sqrt() > 10.0 { return false; }
         let u = self.dets[j].units; for k in 0..NK { self.dets[i].units[k] += u[k]; }
-        self.dets.remove(j); let i = self.det_index(a).unwrap(); self.dets[i].state = S_IDLE; self.dets[i].path.clear(); self.dets[i].grp.clear(); true
+        self.dets.remove(j); let i = self.det_index(a).unwrap(); self.dets[i].state = S_IDLE; self.dets[i].path.clear(); self.dets[i].grp.clear(); self.dets[i].file = Default::default(); true
     }
 
     /// Hand an arrived army over to the attack on another village. Returns its soldiers.
@@ -524,15 +929,31 @@ impl World {
     pub(crate) fn march_step(&mut self) {
         if self.dets.is_empty() { return; }   // no field armies: no need to build the navigation grid
         let ns = nav_static(self.seed);
-        let mut i = 0;
-        while i < self.dets.len() {
-            let mut d = self.dets[i].clone();
+        let obst = self.obst();
+        let stamp = self.navigation_stamp();
+        let walk = |w: &World, a, b, lend| w.walk_segment(&ns, &obst, a, b, members::FOOT_MARGIN, 1.6, lend);
+        let leg = |w: &World, a, b| if walk(w, a, b, false) { Leg::Clear } else if walk(w, a, b, true) { Leg::WaitingForDeck } else { Leg::Blocked };
+        let mut dets = std::mem::take(&mut self.dets);
+        dets.retain_mut(|mut d| {
             let mut remove = false;
+            if d.state == S_BLOCKED && d.blocked_stamp != stamp {
+                d.state = if d.home { S_HOME } else { S_MARCH };
+            }
             let travelling = matches!(d.state, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
-            if travelling && d.wi < d.path.len() {
+            let hu = Self::head_units(&d);
+            let base = Self::march_speed(&hu);
+            let check = |a: Wp, b: Wp| if b.mode == 2 {
+                obst.solid_clear((a.x, a.y), (b.x, b.y), members::FOOT_MARGIN)
+            } else { walk(self, (a.x, a.y), (b.x, b.y), false) };
+            if travelling && (!d.file.check(stamp, &hu, check) || d.grp.iter_mut().any(|g| !g.file.check(stamp, &g.units, check))) {
+                d.state = S_BLOCKED; d.speed = 0.0; d.blocked_stamp = stamp;
+                return true;
+            }
+            let mut blocked = false;
+            if d.wi < d.path.len() && d.file.points.last().is_some_and(|p| (p.wp.x, p.wp.y) != (d.x, d.y)) { d.file = Default::default(); }
+            if travelling && d.wi < d.path.len() && d.file.release(base) {
                 let wp = d.path[d.wi];
-                let hu = Self::head_units(&d);
-                let base = Self::march_speed(&hu);
+                d.file.record(d.x, d.y, if d.state == S_FERRY { 2 } else { 0 });
                 let workers = (hu[0] + hu[2]) as f32;
                 let dens = ns.dens_at(d.x, d.y) as f32;
                 match wp.mode {
@@ -542,7 +963,7 @@ impl World {
                         // which slows them a little, and the cleared strip stays open for the next army
                         let on_road = self.on_road(d.x, d.y);
                         let mut cut = false;
-                        if !on_road && dens >= 1.0 && self.felled.len() < 4000 {
+                        if !on_road && dens >= 1.0 && self.felled.len() < 4000 && leg(self, (d.x, d.y), (wp.x, wp.y)) == Leg::Clear {
                             let base_speed = base / (1.0 + 0.06 * dens);
                             let (dx, dy) = (wp.x - d.x, wp.y - d.y); let dl = dx.hypot(dy).max(1e-3); let reach = base_speed.min(dl);
                             for f in [0.0f32, 0.5, 1.0] {
@@ -556,87 +977,143 @@ impl World {
                             if cut { self.map_ver += 1; }
                         }
                         d.speed = base / (1.0 + 0.06 * dens) * if on_road { crate::pathnet::ROAD_SPEED } else { 1.0 } * if cut { 0.8 } else { 1.0 };
-                        let _ = wp; Self::advance_path(&mut d);
+                        blocked = Self::advance_path(&mut d, |a, b| leg(self, a, b)) == Leg::Blocked;
                     }
                     1 => {
                         d.state = S_FELL; d.speed = (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base);
                         let (ox, oy) = (d.x, d.y);
-                        Self::advance(&mut d, wp);
+                        match leg(self, (d.x, d.y), (wp.x, wp.y)) {
+                            Leg::Clear => { Self::advance(&mut d, wp); d.file.record(d.x, d.y, 1); }
+                            Leg::WaitingForDeck => d.speed = 0.0,
+                            Leg::Blocked => blocked = true,
+                        }
                         d.since_fell += ((d.x - ox).powi(2) + (d.y - oy).powi(2)).sqrt();
                         if d.since_fell >= 2.5 { d.since_fell = 0.0; if self.felled.len() < 600 { self.felled.push([d.x, d.y, 3.4]); self.map_ver += 1; } }
                     }
                     _ => {
+                        if !obst.solid_clear((d.x, d.y), (wp.x, wp.y), members::FOOT_MARGIN) || !walk(self, (wp.x, wp.y), (wp.x, wp.y), false) {
+                            let dst = d.destination.or_else(|| d.path.last().map(|p| (p.x, p.y)));
+                            self.recover_march(&mut d, dst, stamp);
+                            return true;
+                        }
                         if d.phase == 0 {
                             d.sx = d.x; d.sy = d.y;
                             let len = ((wp.x - d.x).powi(2) + (wp.y - d.y).powi(2)).sqrt();
                             let total: u32 = d.units.iter().sum();
-                            let (res, cost) = if len <= BRIDGE_MAX { (PL as usize, (len * 1.5).ceil() as i32) } else { (W as usize, 10 + total as i32 / 3) };
+                            let bridge = len <= BRIDGE_MAX && self.bridges.len() < 60;
+                            let (res, cost) = if bridge { (PL as usize, (len * 1.5).ceil() as i32) } else { (W as usize, 10 + total as i32 / 3) };
                             if self.stock[res] < cost { if d.state != S_WAIT { d.state = S_WAIT; self.push_event(EV_NEEDMAT, res as i32, cost); } }
                             else {
                                 self.stock[res] -= cost; d.phase = 1;
-                                d.work = 0.0; d.work_total = if len <= BRIDGE_MAX { len * 2.5 / workers.max(1.0).powf(0.8) } else { 6.0 + len / 2.4 };
-                                d.state = if len <= BRIDGE_MAX { S_BRIDGE } else { S_FERRY };
+                                d.work = 0.0; d.work_total = if bridge { len * 2.5 / workers.max(1.0).powf(0.8) } else { 6.0 + len / 2.4 };
+                                d.state = if bridge { S_BRIDGE } else { S_FERRY };
                             }
                         }
                         if d.phase == 1 {
                             d.work += 1.0;
-                            if d.state == S_FERRY { let t = (d.work / d.work_total).min(1.0); d.x = d.sx + (wp.x - d.sx) * t; d.y = d.sy + (wp.y - d.sy) * t; d.heading = (wp.y - d.sy).atan2(wp.x - d.sx); }
+                            if d.state == S_FERRY { let t = (d.work / d.work_total).min(1.0); d.x = d.sx + (wp.x - d.sx) * t; d.y = d.sy + (wp.y - d.sy) * t; d.heading = (wp.y - d.sy).atan2(wp.x - d.sx); d.file.record(d.x, d.y, 2); }
                             if d.work >= d.work_total {
-                                if d.state == S_BRIDGE && self.bridges.len() < 60 { self.bridges.push([d.sx, d.sy, wp.x, wp.y]); self.map_ver += 1; d.phase = 2; }
-                                else { d.x = wp.x; d.y = wp.y; d.phase = 0; d.wi += 1; d.state = if d.home { S_HOME } else { S_MARCH }; }
+                                if d.state == S_BRIDGE { self.bridges.push([d.sx, d.sy, wp.x, wp.y]); self.map_ver += 1; d.phase = 2; }
+                                else {
+                                    d.x = wp.x; d.y = wp.y; d.phase = 0;
+                                    d.path[d.wi].mode = 3; // remember that tied files have a ferry available at this completed leg
+                                    d.wi += 1; d.state = if d.home { S_HOME } else { S_MARCH };
+                                }
                             }
                         } else if d.phase == 2 {
-                            d.speed = base * 0.8; Self::advance(&mut d, wp);
+                            d.speed = base * 0.8;
+                            if leg(self, (d.x, d.y), (wp.x, wp.y)) == Leg::Clear { Self::advance(&mut d, wp); d.file.record(d.x, d.y, 0); } else { blocked = true; }
                             if d.wi > 0 && d.path.get(d.wi).map_or(true, |w| (w.x - wp.x).abs() > 0.01 || (w.y - wp.y).abs() > 0.01) { d.phase = 0; d.state = if d.home { S_HOME } else { S_MARCH }; }
                         }
                     }
                 }
-                if d.wi >= d.path.len() { d.path.clear(); d.phase = 0; d.speed = 0.0; d.state = if d.home { S_HOME } else { S_MARCH }; }   // (it waits here for riders and engines still on their way)
+                if d.wi >= d.path.len() { d.phase = 0; d.speed = 0.0; d.state = if d.home { S_HOME } else { S_MARCH }; }
             }
+            let mut groups_done = true;
             if travelling && !d.grp.is_empty() {   // riders and engines go their own way, each at its own pace
-                let head_wi = if d.path.is_empty() { usize::MAX } else { d.wi };
-                for g in d.grp.iter_mut() { self.step_group(&ns, g, head_wi); }
+                let passed = &d.path[..d.wi.min(d.path.len())];
+                for g in d.grp.iter_mut() {
+                    blocked |= self.step_group(&ns, g, passed, |a, b| leg(self, a, b), &obst) == Leg::Blocked;
+                    groups_done &= g.wi >= g.path.len() && g.file.finish(&g.units, Self::march_speed(&g.units));
+                    g.file.trim(&g.units);
+                }
             }
-            if travelling && d.wi >= d.path.len() && d.grp.iter().all(|g| g.wi >= g.path.len()) {   // everybody is there
-                d.path.clear(); d.phase = 0; d.grp.clear();
+            d.file.trim(&hu);
+            if blocked {
+                let dst = d.destination.or_else(|| d.path.last().map(|p| (p.x, p.y)));
+                self.recover_march(&mut d, dst, stamp);
+            } else if travelling && d.wi >= d.path.len() && d.file.finish(&hu, base) && groups_done {   // everybody is there
+                d.path.clear(); d.phase = 0; d.grp.clear(); d.file = Default::default(); d.destination = None;
                 if d.home { for k in 0..NK { self.army[k] += d.units[k]; } remove = true; }
                 else if d.atk.is_some() { d.state = S_ARRIVED; } else { d.state = S_IDLE; }
             }
             if !remove { let (rx, ry) = (d.x, d.y); let scouts = d.units.iter().sum::<u32>() <= 4; self.reveal(rx, ry, if scouts { 120.0 } else { 70.0 }); }   // a small party travels light and sees further   // an army on the march lifts the fog round it
-            if remove { self.dets.remove(i); } else { self.dets[i] = d; i += 1; }
-        }
+            !remove
+        });
+        self.dets = dets;
     }
 
     /// What is left of the army once its riders and engines are counted out: the foot soldiers, whose pace is the army's.
-    fn head_units(d: &Det) -> [u32; NK] { let mut u = d.units; for g in &d.grp { for k in 0..NK { u[k] = u[k].saturating_sub(g.units[k]); } } u }
+    pub(crate) fn head_units(d: &Det) -> [u32; NK] { let mut u = d.units; for g in &d.grp { for k in 0..NK { u[k] = u[k].saturating_sub(g.units[k]); } } u }
+
+    fn navigation_stamp(&self) -> u64 {
+        let mut stamp = self.net_stamp();
+        for b in &self.bridges { for v in b { stamp = stamp.rotate_left(9) ^ v.to_bits() as u64; } }
+        for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) { stamp = stamp.rotate_left(9) ^ (b.progress > 0) as u64; }
+        stamp
+    }
+
+    fn recover_march(&self, d: &mut Det, destination: Option<(f32, f32)>, stamp: u64) {
+        let rerouted = d.blocked_stamp != stamp && destination.is_some_and(|(x, y)| self.set_march_route(d, x, y).is_ok());
+        d.blocked_stamp = stamp;
+        d.speed = 0.0;
+        d.state = if !rerouted { S_BLOCKED } else if d.home { S_HOME } else { S_MARCH };
+    }
 
     /// One tick of a group's march: at its own speed (slowed by woods, quickened on a road), along its own route. A tied group does not pass a place that needs felling or a crossing until the
-    /// army (whose waypoint index is `head_wi`) has got through it.
-    fn step_group(&self, ns: &NavStatic, g: &mut Grp, head_wi: usize) {
-        if g.wi >= g.path.len() { g.speed = 0.0; return; }
+    /// army has passed the matching waypoint.
+    fn step_group(&self, ns: &NavStatic, g: &mut Grp, passed: &[Wp], leg: impl Fn((f32, f32), (f32, f32)) -> Leg, obst: &members::Obst) -> Leg {
+        if g.wi >= g.path.len() || g.delay > 0 { g.speed = 0.0; g.delay = g.delay.saturating_sub(1); return Leg::Clear; }
+        if !g.file.release(Self::march_speed(&g.units)) { return Leg::Clear; }
+        g.file.record(g.x, g.y, 0);
         let dens = ns.dens_at(g.x, g.y) as f32;
         g.speed = Self::march_speed(&g.units) / (1.0 + 0.06 * dens) * if self.on_road(g.x, g.y) { crate::pathnet::ROAD_SPEED } else { 1.0 };
         let mut left = g.speed; let mut moved = false;
         while left > 1e-4 && g.wi < g.path.len() {
             let wp = g.path[g.wi];
-            if g.tied && wp.mode != 0 && head_wi != usize::MAX && head_wi <= g.wi { break; }   // the soldiers have not made the way yet
+            let crossed = |mode| passed.iter().any(|p| p.x == wp.x && p.y == wp.y && p.mode == mode);
+            let ferry = g.tied && wp.mode == 2 && crossed(3);
+            if g.tied && wp.mode != 0 && !ferry && !crossed(wp.mode) { break; }
+            let mut mode = 0;
+            match leg((g.x, g.y), (wp.x, wp.y)) {
+                Leg::Clear => {},
+                Leg::WaitingForDeck => break,
+                Leg::Blocked if ferry && obst.solid_clear((g.x, g.y), (wp.x, wp.y), members::FOOT_MARGIN) => mode = 2,
+                Leg::Blocked => return Leg::Blocked,
+            }
             let (dx, dy) = (wp.x - g.x, wp.y - g.y); let dist = (dx * dx + dy * dy).sqrt();
             if dist > 0.01 { g.heading = dy.atan2(dx); }
             moved = true;
             if dist <= left { g.x = wp.x; g.y = wp.y; g.wi += 1; left -= dist; } else { g.x += dx / dist * left; g.y += dy / dist * left; left = 0.0; }
+            g.file.record(g.x, g.y, mode);
         }
         if !moved { g.speed = 0.0; }
+        Leg::Clear
     }
 
     /// Walk along the route for one tick's worth of distance, carrying on round the corners (what is left of the step after reaching a waypoint is walked towards the next), so the pace is the
     /// same whatever the route does. Only over ordinary ground: felling, bridging and ferrying have their own pace.
-    fn advance_path(d: &mut Det) {
+    fn advance_path(d: &mut Det, leg: impl Fn((f32, f32), (f32, f32)) -> Leg) -> Leg {
         let mut left = d.speed;
         while left > 1e-4 && d.wi < d.path.len() && d.path[d.wi].mode == 0 {
             let wp = d.path[d.wi]; let (dx, dy) = (wp.x - d.x, wp.y - d.y); let dist = (dx * dx + dy * dy).sqrt();
+            let ready = leg((d.x, d.y), (wp.x, wp.y));
+            if ready != Leg::Clear { d.speed = 0.0; return ready; }
             if dist > 0.01 { d.heading = dy.atan2(dx); }
             if dist <= left { d.x = wp.x; d.y = wp.y; d.wi += 1; left -= dist; } else { d.x += dx / dist * left; d.y += dy / dist * left; left = 0.0; }
+            d.file.record(d.x, d.y, 0);
         }
+        Leg::Clear
     }
 
     /// Move up to `speed` units towards the waypoint; step on to the next when reached.
@@ -648,7 +1125,7 @@ impl World {
 
     /// A planned route without giving any order: [ok, seconds, planks, wood, count, x, y, mode, ...].
     pub(crate) fn plan(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> {
-        let (head, gus) = Self::split_groups(units); let units = if units[4] > 0 { units } else { &head };   // (the army's route, which engines need to be able to follow; riders go their own way)
+        let (head, gus) = Self::split_groups(units); let units = if units[4] + units[5] > 0 { units } else { &head };
         match self.find_path(units, sx, sy, tx, ty) {
             Err(e) => vec![e as f32, 0.0, 0.0, 0.0, 0.0],
             Ok(p) => {
@@ -662,7 +1139,8 @@ impl World {
                     }
                     prev = (w.x, w.y);
                 }
-                for gu in &gus { let gt = (tx - sx).hypot(ty - sy) * 1.3 / Self::march_speed(gu); if gt > t { t = gt; } }   // (a slow engine train sets the time of arrival)
+                t += MarchFile::lag(&head) / base;
+                for gu in &gus { let gt = ((tx - sx).hypot(ty - sy) * 1.3 + MarchFile::lag(gu)) / Self::march_speed(gu); if gt > t { t = gt; } }
                 let mut v = vec![1.0, t, planks as f32, wood as f32, p.len() as f32];
                 for w in &p { v.extend_from_slice(&[w.x, w.y, w.mode as f32]); }
                 v

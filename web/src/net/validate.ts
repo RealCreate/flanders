@@ -11,7 +11,7 @@ export interface WireCmd {
   /** The epoch of the village's history this command belongs to (see restart.ts): absent (0) until the owner first restarts. */
   e?: number;
   kind?: number; x?: number; y?: number; rot?: number; idx?: number; tag?: number; angle?: number; ax?: number; ay?: number;
-  /** level: the height to level to (absent or negative: Auto, the land round it). */
+  /** Target height for level, or for a raise/lower placement or pen stroke. Absent or negative uses the tool's automatic height. */
   h?: number;
   to?: string; from?: string; units?: number[]; loot?: number[];
 }
@@ -81,6 +81,13 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
   }
   for (const f of ['to', 'from'] as const) if (r[f] !== undefined) { if (!isKey(r[f])) return null; out[f] = r[f] as string; }
   for (const f of ['units', 'loot'] as const) if (r[f] !== undefined) { const a = numbers(r[f]); if (!a) return null; out[f] = a; }
+  if (out.h !== undefined && (out.op === 'place' || out.op === 'batch')) {
+    const direction = (kind: number | undefined) => kind === 33 || kind === 34;
+    if (!(out.h < 0 || (out.h >= LEVEL_HEIGHT.min && out.h <= LEVEL_HEIGHT.max))) return null;
+    if (out.op === 'place') {
+      if (!direction(out.kind) || !isInt(out.x) || !isInt(out.y)) return null;
+    } else if (!out.units?.length || out.units.length % 4 !== 0 || out.units.some((v, i) => i % 4 === 0 && !direction(v))) return null;
+  }
   return out;
 }
 

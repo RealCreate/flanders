@@ -12,6 +12,7 @@ pub(crate) struct Obst {
     segs: Vec<(f32, f32, f32, f32, f32)>,
     fields: Vec<Building>,
     decks: Vec<(f32, f32, f32, f32, f32)>,
+    lendable: Vec<(f32, f32, f32, f32, f32)>,
 }
 
 /// The room a soldier on foot takes up, and how much more an engine or rider needs (the "engine-width layer": clear of buildings, walls and fields by this much).
@@ -26,24 +27,26 @@ fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
 }
 
 impl World {
-    fn obst(&self) -> Rc<Obst> {
+    pub(crate) fn obst(&self) -> Rc<Obst> {
         let mut h: u64 = self.net_stamp() ^ 0x9e3779b97f4a7c15;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
         for b in &self.bridges { for v in b { mix(v.to_bits() as u64); } }
         for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE || b.kind == GATE) { mix((b.status as u64) << 1 | (b.progress > 0) as u64); }
         mix(self.battle.is_some() as u64);
         if let Some((st, o)) = &*self.mem_cache.borrow() { if *st == h { return o.clone(); } }
-        let mut o = Obst { circles: vec![], segs: vec![], fields: vec![], decks: vec![] };
+        let mut o = Obst { circles: vec![], segs: vec![], fields: vec![], decks: vec![], lendable: vec![] };
         for b in &self.buildings {
             match b.kind {
                 GATE => { if self.gate_shut(b) { o.circles.push((b.x, b.y, 3.4)); } }
                 ROAD | MOAT | RIVER | RAISE | LOWER => {}
-                BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); o.decks.push((b.x - ux * l / 2.0, b.y - uy * l / 2.0, b.x + ux * l / 2.0, b.y + uy * l / 2.0, 1.8)); }
-                DRAWBRIDGE => {
-                    if self.drawn_up(b) { continue; }
-                    let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
-                    o.decks.push((b.x - sx * 7.2, b.y - sy * 7.2, b.x + sx * 7.2, b.y + sy * 7.2, 1.6));
+                BRIDGE | DRAWBRIDGE => {} // handled with the battle's crossing geometry below
+                TOLL => {
+                    for (lx, ly, r) in [(2.4, -0.2, 1.6), (-1.25, 0.6, 0.55), (1.25, 0.6, 0.55)] {
+                        let (dx, dy) = crate::doors::to_world(b.rot, (lx, ly));
+                        o.circles.push((b.x + dx, b.y + dy, r));
+                    }
                 }
+                PLAZA => o.circles.push((b.x, b.y, if b.opts & 4 != 0 { 1.3 } else { 0.4 })),
                 _ => {
                     if matches!(b.kind, FARM | GARDEN | PARK | MARKET) { o.fields.push(b.clone()); }
                     o.circles.push((b.x, b.y, crate::solid_radius(b.kind, b.tier)));
@@ -52,19 +55,17 @@ impl World {
         }
         let (segs, _) = self.wall_lines();
         for sg in &segs { o.segs.push((sg.ax, sg.ay, sg.bx, sg.by, sg.r)); }
-        for br in &self.bridges { o.decks.push((br[0], br[1], br[2], br[3], 1.6)); }
+        for c in self.crossings() {
+            let deck = (c.ax, c.ay, c.bx, c.by, c.half);
+            if c.down { o.decks.push(deck); } else if c.lendable { o.lendable.push(deck); }
+        }
         let o = Rc::new(o);
         *self.mem_cache.borrow_mut() = Some((h, o.clone()));
         o
     }
 
     fn blocked_with(&self, o: &Obst, x: f32, y: f32, m: f32) -> bool {
-        if !x.is_finite() || !y.is_finite() || x.abs() > MAP_LIMIT || y.abs() > MAP_LIMIT { return true; }
-        if o.circles.iter().any(|c| (c.0 - x).hypot(c.1 - y) < c.2 + m) { return true; }
-        if o.segs.iter().any(|s| seg_dist(x, y, s.0, s.1, s.2, s.3) < s.4 + m) { return true; }
-        if o.fields.iter().any(|b| crate::pathnet::in_fields(b, x, y, m)) { return true; }
-        if self.height_ground(x, y) < 0.2 && !o.decks.iter().any(|d| seg_dist(x, y, d.0, d.1, d.2, d.3) <= d.4) { return true; }
-        false
+        !o.solid_clear((x, y), (x, y), m) || (self.height_ground(x, y) < self.march_waterline(x, y) && !o.on_deck(x, y, false))
     }
 
     /// Is this a place a person (`lvl` < 3) or an engine or rider (`lvl` 3: needs more room) may not stand?
@@ -77,13 +78,11 @@ impl World {
         if !(d > 1e-4) || !(step > 0.0) { return [x, y, 0.0]; }
         let o = self.obst(); let m = margin(lvl);
         let s = step.min(d); let base = dy.atan2(dx);
-        let inside = self.blocked_with(&o, x, y, m);
         for (k, a) in [0.0f32, 0.45, -0.45, 0.9, -0.9, 1.4, -1.4, 2.0, -2.0].iter().enumerate() {
             let (c, sn) = ((base + a).cos(), (base + a).sin());
             let (px, py) = (x + c * s, y + sn * s);
             if !self.blocked_with(&o, px, py, m) && !self.blocked_with(&o, x + c * s * 0.5, y + sn * s * 0.5, m) { return [px, py, if k == 0 { 0.0 } else { 1.0 }]; }
         }
-        if inside { return [x + dx / d * s, y + dy / d * s, 1.0]; }   // nowhere free to go: do not stand still in a wall, walk on out
         [x, y, 2.0]
     }
 
@@ -109,6 +108,31 @@ impl World {
             Ok(p) => p.iter().skip(1).flat_map(|w| [w.x, w.y]).collect(),
             Err(_) => vec![],
         }
+    }
+}
+
+impl Obst {
+    pub(crate) fn solid_clear(&self, a: (f32, f32), b: (f32, f32), room: f32) -> bool {
+        if [a.0, a.1, b.0, b.1].iter().any(|v| !v.is_finite() || v.abs() > MAP_LIMIT) { return false; }
+        if self.circles.iter().any(|&(x, y, r)| seg_dist(x, y, a.0, a.1, b.0, b.1) < r + room) { return false; }
+        if self.segs.is_empty() && self.fields.is_empty() { return true; }
+        let steps = ((b.0 - a.0).hypot(b.1 - a.1) / 0.45).ceil().max(1.0) as u32;
+        (0..=steps).all(|i| {
+            let t = i as f32 / steps as f32;
+            let (x, y) = (lerp(a.0, b.0, t), lerp(a.1, b.1, t));
+            !self.segs.iter().any(|s| seg_dist(x, y, s.0, s.1, s.2, s.3) < s.4 + room)
+                && !self.fields.iter().any(|f| (f.x - x).abs() < 18.0 && (f.y - y).abs() < 18.0 && crate::pathnet::in_fields(f, x, y, room))
+        })
+    }
+
+    pub(crate) fn on_deck(&self, x: f32, y: f32, lend: bool) -> bool {
+        self.decks.iter().chain(self.lendable.iter().filter(|_| lend)).any(|d| {
+            let (dx, dy) = (d.2 - d.0, d.3 - d.1);
+            let length = dx.hypot(dy).max(0.001);
+            let (px, py) = (x - d.0, y - d.1);
+            let along = (px * dx + py * dy) / length;
+            (-0.2..=length + 0.2).contains(&along) && (px * dy - py * dx).abs() <= d.4 * length
+        })
     }
 }
 

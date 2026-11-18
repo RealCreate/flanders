@@ -24,6 +24,19 @@ pub fn level_cost(r: i32) -> [(u8, i32); 2] { [(W, 2 * r), (ST, r * r / 2 + 2)] 
 
 #[wasm_bindgen]
 impl World {
+    pub(crate) fn earthwork_plan(&self, kind: u8, dx: i32, dy: i32, height: f32) -> Result<(f32, f32, i32), i32> {
+        if !matches!(kind, RAISE | LOWER) { return Err(-1); }
+        if !height.is_finite() || (height >= 0.0 && !(FLAT_MIN_H..=FLAT_MAX_H).contains(&height)) { return Err(-28); }
+        let (x, y) = (self.ox as f32 + dx as f32, self.oy as f32 + dy as f32);
+        let code = self.can_place_xy(kind, x, y);
+        if code != 0 { return Err(code); }
+        if height < 0.0 { return Ok((x, y, -1)); }
+        let target = (height * 16.0).round();
+        let delta = target / 16.0 - self.height_ground(x, y);
+        if (kind == RAISE && delta <= 0.0) || (kind == LOWER && delta >= 0.0) { return Err(-29); }
+        Ok((x, y, target as i32))
+    }
+
     /// Flat [resource, amount, ...] cost of levelling a patch of radius `r`.
     pub fn level_cost_flat(r: i32) -> Vec<i32> { level_cost(r.clamp(FLAT_MIN_R, FLAT_MAX_R)).into_iter().flat_map(|(a, n)| [a as i32, n]).collect() }
 

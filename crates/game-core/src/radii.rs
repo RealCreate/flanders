@@ -10,8 +10,10 @@ pub const WELL_HALF_RANGE: f32 = 36.0;
 pub const WELL_SPARK_RANGE: f32 = 16.0;
 /// A staffed builders' yard this close sends carpenters to a fire.
 pub const YARD_FIRE_RANGE: f32 = 45.0;
-/// How far an archer shoots (a tower's garrison stands in the tower, so this is the tower's reach too).
+/// How far a ground-level archer shoots.
 pub const ARCHER_RANGE: f32 = 22.0;
+/// How far a garrison shoots from a tower or keep.
+pub const TOWER_RANGE: f32 = 44.0;
 /// Archers on a wall walkway shoot this many times as far.
 pub const WALL_HEIGHT_RANGE: f32 = 1.25;
 
@@ -29,7 +31,7 @@ pub fn effect_radii(kind: u8, tier: u8) -> Vec<(f32, u8, u32)> {
     match kind {
         WELL => vec![(WELL_FULL_RANGE, FX_FIRE_FULL, 100), (WELL_HALF_RANGE, FX_FIRE_HALF, 50), (WELL_SPARK_RANGE, FX_SPARK_GUARD, 50)],
         BUILDERS => vec![(YARD_FIRE_RANGE, FX_YARD_HELP, 100)],
-        TOWER | KEEP => vec![(ARCHER_RANGE, FX_SHOOT, 100)],
+        TOWER | KEEP => vec![(TOWER_RANGE, FX_SHOOT, 100)],
         WALL | GATE if tier >= 1 => vec![(ARCHER_RANGE * WALL_HEIGHT_RANGE, FX_SHOOT, 100)],
         _ => vec![],
     }
@@ -72,12 +74,33 @@ mod tests {
     }
 
     #[test]
-    fn archers_and_towers_share_one_range() {
+    fn towers_and_keeps_have_their_own_range() {
         assert_eq!(military::UNITS[1].range, ARCHER_RANGE);
-        assert_eq!(effect_radii(TOWER, 0)[0].0, military::UNITS[1].range);
-        assert_eq!(effect_radii(KEEP, 2)[0].0, military::UNITS[1].range);
+        assert_eq!(effect_radii(TOWER, 0)[0].0, TOWER_RANGE);
+        assert_eq!(effect_radii(KEEP, 2)[0].0, TOWER_RANGE);
         assert_eq!(effect_radii(WALL, 2)[0].0, military::UNITS[1].range * WALL_HEIGHT_RANGE);
         assert!(effect_radii(WALL, 0).is_empty() && effect_radii(HOUSE, 0).is_empty());
         assert!(effect_radii_json(WELL, 0).starts_with("[{\"r\":18,\"fx\":0,\"pct\":100}"));
+    }
+
+    #[test]
+    fn garrison_fires_to_the_coverage_boundary_in_battle() {
+        let fires = |kind, distance: f32| {
+            let mut w = World::new(1337, 0, 0);
+            let (x, y) = (14.0, 12.0);
+            put_t(&mut w, kind, x, y);
+            w.buildings.last_mut().unwrap().garrison = 1;
+            assert!(w.begin_battle([1, 0, 0, 0, 0, 0], 0.0, 0));
+            for u in &mut w.battle.as_mut().unwrap().units {
+                if u.side == 1 { u.x = x + distance; u.y = y; u.climb = 5.0; }
+                else { u.cd = 0.0; }
+            }
+            w.battle_substep();
+            w.shots.iter().any(|s| s[6] == 1.0 && (s[1] - x).hypot(s[2] - y) < 1.5)
+        };
+        for kind in [TOWER, KEEP] {
+            assert!(fires(kind, TOWER_RANGE - 0.25));
+            assert!(!fires(kind, TOWER_RANGE + 0.25));
+        }
     }
 }
