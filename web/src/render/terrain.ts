@@ -48,6 +48,7 @@ export class Terrain {
   /** Ground height, one texel per vertex (half floats): the water shader reads it to tell how deep the water is, so shallows are pale and the shore foams. */
   heightTex!: THREE.DataTexture; private heightData!: Uint16Array; private heightAt0 = -1;
   private dirtyHeightRows = new Map<number, [number, number]>();
+  onHeightChange?: (x0: number, z0: number, x1: number, z1: number) => void;
   readonly waterTime = { value: 0 };
   readonly waterTex = waterNormalTexture();
   private pos: THREE.BufferAttribute;
@@ -208,9 +209,9 @@ export class Terrain {
       const k = j * NV + i, h = H[k];
       this.pos.setY(k, h);
       const nx = at(i - 1, j) - at(i + 1, j), nz = at(i, j - 1) - at(i, j + 1);
-      const n = new THREE.Vector3(nx, 2 * STEP, nz).normalize();
-      this.nor.setXYZ(k, n.x, n.y, n.z);
-      const slope = 1 - n.y; // 0 flat
+      const invLength = 1 / Math.sqrt(nx * nx + 4 * STEP * STEP + nz * nz), ny = 2 * STEP * invLength;
+      this.nor.setXYZ(k, nx * invLength, ny, nz * invLength);
+      const slope = 1 - ny; // 0 flat
       const x = -HALF + i * STEP, z = -HALF + j * STEP;
       const noise = Math.sin(x * 0.11) * Math.cos(z * 0.13) * 0.5 + Math.sin(x * 0.31 + z * 0.23) * 0.25 + Math.sin(x * 0.047 - z * 0.061) * 0.5;
       // base ground colour
@@ -271,21 +272,25 @@ export class Terrain {
     if (c < a || d < b) return;
     const nx = c - a + 1, ny = d - b + 1;
     const out = world.terrain_region(-HALF + a * STEP, -HALF + b * STEP, nx, ny, STEP);
+    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
     for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
       const k = (b + j) * NV + (a + i);
       const x = -HALF + (a + i) * STEP, z = -HALF + (b + j) * STEP;
-      if (others.length) { const own = Math.hypot(x - cx, z - cz); if (others.some(o => Math.hypot(x - o.x, z - o.z) < own)) continue; } // belongs to a neighbouring village
+      if (others.length) { const own = (x - cx) ** 2 + (z - cz) ** 2; if (others.some(o => (x - o.x) ** 2 + (z - o.z) ** 2 < own)) continue; }
       const height = out[j * nx + i];
       if (this.heights[k] === height) continue;
       this.heights[k] = height;
+      minX = Math.min(minX, x); minZ = Math.min(minZ, z); maxX = Math.max(maxX, x); maxZ = Math.max(maxZ, z);
       const row = b + j, col = a + i, dirty = this.dirtyHeightRows.get(row);
       if (dirty) { dirty[0] = Math.min(dirty[0], col); dirty[1] = Math.max(dirty[1], col); }
       else this.dirtyHeightRows.set(row, [col, col]);
     }
     this.updateRegion(a - 1, b - 1, c + 1, d + 1);
+    // A changed vertex affects neighbouring triangles and the forest's 1.5-unit slope probes.
+    if (minX <= maxX) this.onHeightChange?.(minX - STEP - 1.5, minZ - STEP - 1.5, maxX + STEP, maxZ + STEP);
   }
 
-  private preview: { k: number; h: number }[] | null = null;
+  private preview: Map<number, number> | null = null;
   private previewBox: [number, number, number, number] | null = null;
 
   /** Temporarily level the ground where a building is about to be placed, exactly as the core will, so the ghost sits on it. */
@@ -294,12 +299,12 @@ export class Terrain {
     const outer = inner + 3.5;
     const i0 = Math.max(0, Math.floor((x - outer + HALF) / STEP)), i1 = Math.min(NV - 1, Math.ceil((x + outer + HALF) / STEP));
     const j0 = Math.max(0, Math.floor((z - outer + HALF) / STEP)), j1 = Math.min(NV - 1, Math.ceil((z + outer + HALF) / STEP));
-    const saved: { k: number; h: number }[] = [];
+    const saved = new Map<number, number>();
     for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
       const vx = -HALF + i * STEP, vz = -HALF + j * STEP, d = Math.hypot(vx - x, vz - z);
       if (d >= outer) continue;
       const k = j * NV + i, t = Math.min(1, Math.max(0, (d - inner) / (outer - inner))), w = 1 - t * t * (3 - 2 * t);
-      saved.push({ k, h: this.heights[k] }); this.heights[k] = this.heights[k] + (padH - this.heights[k]) * w;
+      saved.set(k, this.heights[k]); this.heights[k] = this.heights[k] + (padH - this.heights[k]) * w;
     }
     this.preview = saved; this.previewBox = [i0, j0, i1, j1];
     this.updateRegion(i0, j0, i1, j1);
@@ -307,7 +312,7 @@ export class Terrain {
 
   clearPreview() {
     if (!this.preview || !this.previewBox) return;
-    for (const p of this.preview) this.heights[p.k] = p.h;
+    for (const [k, h] of this.preview) this.heights[k] = h;
     const [a, b, c, d] = this.previewBox; this.preview = null; this.previewBox = null;
     this.updateRegion(a, b, c, d);
   }
@@ -320,16 +325,18 @@ export class Terrain {
   }
 
   resetPads() {
-    this.preview = null; this.heights.set(this.base); this.updateRegion(0, 0, NV - 1, NV - 1);
+    this.preview = this.previewBox = null; this.heights.set(this.base); this.updateRegion(0, 0, NV - 1, NV - 1);
     for (let j = 0; j < NV; j++) this.dirtyHeightRows.set(j, [0, NV - 1]);
+    this.onHeightChange?.(-HALF, -HALF, HALF, HALF);
   }
 
-  /** Height on the same two triangles the renderer uses for this terrain cell. */
-  heightAt(x: number, z: number) {
+  /** Height on the same two triangles the renderer uses, optionally ignoring a temporary placement preview. */
+  heightAt(x: number, z: number, committed = false) {
     const fx = (x + HALF) / STEP, fz = (z + HALF) / STEP;
     const i = Math.min(NV - 2, Math.max(0, Math.floor(fx))), j = Math.min(NV - 2, Math.max(0, Math.floor(fz)));
     const tx = Math.min(1, Math.max(0, fx - i)), tz = Math.min(1, Math.max(0, fz - j)), H = this.heights;
-    const a = H[j * NV + i], b = H[j * NV + i + 1], c = H[(j + 1) * NV + i], d = H[(j + 1) * NV + i + 1];
+    const p = committed ? this.preview : null, k = j * NV + i;
+    const a = p?.get(k) ?? H[k], b = p?.get(k + 1) ?? H[k + 1], c = p?.get(k + NV) ?? H[k + NV], d = p?.get(k + NV + 1) ?? H[k + NV + 1];
     if (tx + tz <= 1) return a + (b - a) * tx + (c - a) * tz;
     return d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
   }

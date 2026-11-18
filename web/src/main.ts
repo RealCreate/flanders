@@ -2538,7 +2538,8 @@ function frame(now: number) {
   lightLamps(all, now);
   for (const v of all) v.people.group.visible = v.army.group.visible = drawCrowd;
   perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) { v.boats.level = tideLevel; v.rivers.setTide(tideLevel); }   // open water ebbs and flows; sealed moats stay full
-  forest.tick(now / 1000, rig.cam.position); perf.stop('camera + world');
+  perf.stop('camera + world');
+  perf.start('forest'); forest.tick(now / 1000, rig.cam.position); perf.stop('forest');
   const detailRange = innerHeight * 1.65 / (2 * Math.tan(THREE.MathUtils.degToRad(rig.cam.fov / 2)) * 36);
   perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd)); perf.stop('villages (people, army)');
   perf.start('animals');

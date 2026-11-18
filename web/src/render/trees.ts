@@ -127,38 +127,94 @@ function foliageTexture() {
   return t;
 }
 
-const TILE = 60; // trees are batched per tile so the GPU can cull patches of forest and each tile can pick a detail level
+const TILE = 60;
+
+type Disc = { x: number; z: number; r: number };
+type Trail = { ax: number; az: number; bx: number; bz: number; r: number };
+type Bounds = { x0: number; z0: number; x1: number; z1: number };
+type Mask = Bounds & { r: number; r2: number } & (
+  { kind: 'clear' | 'keep'; x: number; z: number } |
+  { kind: 'trail'; ax: number; az: number; dx: number; dz: number; len2: number }
+);
+type Tree = { x: number; y: number; z: number; type: number; s: number; rot: number; grows: boolean };
+type Tile = { x: number; z: number; batches: Batch[]; masks: Set<Mask> };
+type Batch = { tile: Tile; type: number; ids: number[]; mesh: THREE.InstancedMesh; lod: number; sampleGround: boolean };
+
+/** Distant crowns retain each species' outline with fewer vertices, no leaf texture and no vertex wind. */
+function distantTree(type: number) {
+  const shortTrunk = (h: number, r: number, color: number) => prep(new THREE.CylinderGeometry(r * 0.55, r, h, 5, 1, true).translate(0, h / 2, 0), color);
+  if (type === 0) {
+    const tiers = [[2.35, 3.25, 2.25, 0x2d5a34], [1.75, 3.05, 3.5, 0x38683c], [1.15, 2.55, 4.8, 0x4a8252]];
+    const foliage = tiers.map(([r, h, y, color], i) => ({
+      color, geo: new THREE.ConeGeometry(r, h, 6, 1, true).rotateY(i * 0.26).translate(0, y, 0),
+    }));
+    return merge([shortTrunk(2.1, 0.32, 0x4a3524), ...finishFoliage(foliage, new THREE.Vector3(0, 3.3, 0), 2.4, 0.6, 6.0, 0.55)]);
+  }
+  const oak = type === 1;
+  const foliage = oak ? [
+    { geo: clump(2.24, 0, 4.03, -0.15, 0, 0.87, 2), color: 0x4f8f3a },
+    { geo: clump(1.59, 1.18, 3.52, 0.65, 0, 0.89, 3), color: 0x5a9a42 },
+    { geo: clump(1.59, -1.22, 3.69, -0.48, 0, 0.92, 4), color: 0x468436 },
+  ] : [
+    { geo: clump(1.46, -0.12, 4.28, 0, 0, 1.20, 2), color: 0x8cbf4e },
+    { geo: clump(1.08, 0.52, 3.61, 0.25, 0, 1.05, 3), color: 0x9acb58 },
+  ];
+  return merge([shortTrunk(oak ? 3.0 : 3.7, oak ? 0.50 : 0.24, oak ? 0x5e4128 : 0xe9e5da),
+    ...finishFoliage(foliage, new THREE.Vector3(0, oak ? 4.0 : 4.2, 0), oak ? 2.7 : 1.9, oak ? 2.2 : 3.0, 6.0)]);
+}
 
 export class Forest {
   group = new THREE.Group();
-  private meshes: THREE.InstancedMesh[] = [];
-  private tileCentre: { x: number; z: number; type: number; hi: boolean }[] = [];
-  private geos: { hi: THREE.BufferGeometry; lo: THREE.BufferGeometry }[];
-  private trees: { x: number; y: number; z: number; type: number; s: number; rot: number; slot: number; mesh: number }[] = [];
+  private tiles = new Map<number, Tile>();
+  private batches: Batch[] = [];
+  private shapes = new Map<string, Mask>();
+  private dirty = new Set<Batch>();
+  private geos: THREE.BufferGeometry[][];
+  private mat: THREE.MeshStandardMaterial;
+  private farMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  private trees: Tree[] = [];
   private uTime = { value: 0 };
-  private hidden = new Uint8Array(0);
+  private hidden: Uint8Array;
   private grid = new Map<number, number[]>();
-  private static key(cx: number, cz: number) { return (cx + 200) * 1000 + (cz + 200); }
+  private camera = new THREE.Vector3(Infinity, Infinity, Infinity);
+  private lastDistance = -1;
+  private lastDetail = false;
 
-  /** `rawTrees` is the core's list of trees when the caller already built it a slice at a time (see loader.ts); otherwise it is built here in one go. */
+  private static key(cx: number, cz: number) { return cx * 1024 + cz; }
+
+  /** `rawTrees` is the core's tree list, usually built in slices during loading. */
   constructor(seed: bigint, private terrain: Terrain, rawTrees?: Float32Array) {
     const raw = rawTrees ?? trees_in(seed, -HALF, -HALF, HALF, HALF);
-    const tiles = new Map<string, number>(); // "type:tx:tz" -> mesh index
-    const counts: number[] = [], keys: string[] = [];
+    const layouts = new Map<Tile, Map<number, number[]>>();
     for (let i = 0; i < raw.length; i += 5) {
-      const x = raw[i], z = raw[i + 1];
+      const x = raw[i], z = raw[i + 1], type = raw[i + 2];
       if (Math.max(Math.abs(x), Math.abs(z)) > HALF - 30) continue;
-      const type = raw[i + 2], key = `${type}:${Math.floor(x / TILE)}:${Math.floor(z / TILE)}`;
-      let mi = tiles.get(key);
-      if (mi === undefined) { mi = counts.length; tiles.set(key, mi); counts.push(0); keys.push(key); }
-      this.trees.push({ x, z, y: 0, type, s: raw[i + 3], rot: raw[i + 4], slot: counts[mi]++, mesh: mi });
+      const tx = Math.floor(x / TILE), tz = Math.floor(z / TILE), key = Forest.key(tx, tz);
+      let tile = this.tiles.get(key);
+      if (!tile) {
+        tile = { x: (tx + 0.5) * TILE, z: (tz + 0.5) * TILE, masks: new Set(), batches: [] };
+        this.tiles.set(key, tile);
+        layouts.set(tile, new Map());
+      }
+      const layout = layouts.get(tile)!;
+      let ids = layout.get(type);
+      if (!ids) { ids = []; layout.set(type, ids); }
+      const id = this.trees.length;
+      ids.push(id);
+      this.trees.push({ x, z, y: 0, type, s: raw[i + 3], rot: raw[i + 4], grows: false });
+      const cell = Forest.key(Math.floor(x / 4), Math.floor(z / 4));
+      let treeIds = this.grid.get(cell);
+      if (!treeIds) { treeIds = []; this.grid.set(cell, treeIds); }
+      treeIds.push(id);
     }
     this.hidden = new Uint8Array(this.trees.length);
-    this.trees.forEach((t, i) => { const k = Forest.key(Math.floor(t.x / 4), Math.floor(t.z / 4)); let l = this.grid.get(k); if (!l) { l = []; this.grid.set(k, l); } l.push(i); });
-    this.geos = [{ hi: conifer(true), lo: conifer(false) }, { hi: oak(true), lo: oak(false) }, { hi: birch(true), lo: birch(false) }];
-    const leaf = foliageTexture();
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: leaf, roughness: 0.95, metalness: 0 });
-    mat.onBeforeCompile = sh => {
+    this.geos = [
+      [conifer(true), conifer(false), distantTree(0)],
+      [oak(true), oak(false), distantTree(1)],
+      [birch(true), birch(false), distantTree(2)],
+    ];
+    this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: foliageTexture(), roughness: 0.95, metalness: 0 });
+    this.mat.onBeforeCompile = sh => {
       sh.uniforms.uTime = this.uTime;
       sh.vertexShader = 'uniform float uTime;\n' + sh.vertexShader.replace('#include <begin_vertex>', `
         vec3 transformed = vec3(position);
@@ -169,103 +225,173 @@ export class Forest {
           transformed.z += sw * position.y * position.y * 0.1;
         #endif`);
     };
-    keys.forEach((k, mi) => {
-      const [type, tx, tz] = k.split(':').map(Number);
-      const m = new THREE.InstancedMesh(this.geos[type].lo, mat, Math.max(1, counts[mi]));
-      m.castShadow = true; m.receiveShadow = true; m.frustumCulled = true;
-      this.meshes.push(m); this.group.add(m);
-      this.tileCentre.push({ x: (tx + 0.5) * TILE, z: (tz + 0.5) * TILE, type, hi: false });
-    });
+    for (const [tile, layoutsByType] of layouts) for (const [type, ids] of layoutsByType) {
+      const mesh = new THREE.InstancedMesh(this.geos[type][1], this.mat, ids.length);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(ids.length * 3), 3).setUsage(THREE.DynamicDrawUsage);
+      mesh.boundingSphere = new THREE.Sphere();
+      const batch = { tile, type, ids, mesh, lod: 1, sampleGround: true };
+      tile.batches.push(batch);
+      this.batches.push(batch);
+      this.dirty.add(batch);
+      this.group.add(mesh);
+    }
+    this.terrain.onHeightChange = (x0, z0, x1, z1) => {
+      this.eachTile({ x0, z0, x1, z1 }, tile => {
+        for (const batch of tile.batches) { batch.sampleGround = true; this.dirty.add(batch); }
+      });
+    };
     this.rebuild([]);
   }
 
-  /** Display settings: how far forests are drawn, and whether trees near the camera get their rich shape. */
-  drawDistance = 1300; detail = true;
+  /** Display settings. */
+  drawDistance = 1300;
+  detail = true;
 
-  /** Per frame: wind, and swap each tile between its rich and cheap geometry by distance to the camera. */
   tick(t: number, cam?: THREE.Vector3) {
     this.uTime.value = t;
-    if (this.job) { this.deadline = performance.now() + 5; if (this.job.next().done) this.job = null; }
-    if (!cam) return;
-    this.tileCentre.forEach((c, i) => {
-      const d = Math.hypot(c.x - cam.x, c.z - cam.z), want = this.detail && (c.hi ? d < 95 : d < 75);
-      this.meshes[i].visible = d < this.drawDistance;   // forests further away than the draw distance are skipped   // hysteresis: no flicker at the boundary
-      this.meshes[i].castShadow = d < 150;   // forest beyond the shadow map casts none
-      if (want !== c.hi) { c.hi = want; this.meshes[i].geometry = want ? this.geos[c.type].hi : this.geos[c.type].lo; }
-    });
+    if (this.dirty.size) this.flush(performance.now() + 3);
+    if (!cam || !this.group.visible) return;
+    if (cam.distanceToSquared(this.camera) < 4 && this.drawDistance === this.lastDistance && this.detail === this.lastDetail) return;
+    this.camera.copy(cam); this.lastDistance = this.drawDistance; this.lastDetail = this.detail;
+    for (const batch of this.batches) this.updateView(batch);
+  }
+
+  private updateView(batch: Batch) {
+    const { mesh, tile, type } = batch;
+    const dx = tile.x - this.camera.x, dz = tile.z - this.camera.z, flat = dx * dx + dz * dz;
+    mesh.visible = mesh.count > 0 && flat < this.drawDistance ** 2;
+    if (!mesh.visible) return;
+    const dy = mesh.boundingSphere!.center.y - this.camera.y, distance = flat + dy * dy;
+    const near = this.detail && distance < (batch.lod === 0 ? 95 : 75) ** 2;
+    const far = distance >= (batch.lod === 2 ? 180 : 220) ** 2;
+    const lod = near ? 0 : far ? 2 : 1;
+    if (batch.lod !== lod) {
+      batch.lod = lod; mesh.geometry = this.geos[type][lod];
+      mesh.material = far ? this.farMat : this.mat;
+    }
+    mesh.castShadow = !far && flat < 150 ** 2;
+    mesh.receiveShadow = !far;
   }
 
   /** Standing trees within r of a point (felled and cleared trees do not count). */
   nearTrees(x: number, z: number, r: number, out: { x: number; z: number }[]) {
     if (!Number.isFinite(x) || !Number.isFinite(z) || r > 60) return;
     const c0 = Math.floor((x - r) / 4), c1 = Math.floor((x + r) / 4), d0 = Math.floor((z - r) / 4), d1 = Math.floor((z + r) / 4);
-    for (let a = c0; a <= c1; a++) for (let b = d0; b <= d1; b++) { const l = this.grid.get(Forest.key(a, b)); if (!l) continue; for (const i of l) { if (this.hidden[i]) continue; const t = this.trees[i]; if ((t.x - x) ** 2 + (t.z - z) ** 2 <= r * r) out.push(t); } }
+    for (let a = c0; a <= c1; a++) for (let b = d0; b <= d1; b++) {
+      const ids = this.grid.get(Forest.key(a, b));
+      if (!ids) continue;
+      for (const i of ids) {
+        if (this.hidden[i]) continue;
+        const t = this.trees[i];
+        if ((t.x - x) ** 2 + (t.z - z) ** 2 <= r * r) out.push(t);
+      }
+    }
   }
-  countTrees(x: number, z: number, r: number) { const o: { x: number; z: number }[] = []; this.nearTrees(x, z, r, o); return o.length; }
+  countTrees(x: number, z: number, r: number) { const out: { x: number; z: number }[] = []; this.nearTrees(x, z, r, out); return out.length; }
 
-  /** All tree positions (for placing wildlife near forests). */
+  /** All tree positions, for locating wildlife. */
   get all() { return this.trees; }
 
-  /** Rebuild instances; trees inside any `clear` disc (x, z, radius) are removed. */
-  rebuild(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[] = [], keep: { x: number; z: number; r: number }[] = []) {
-    this.job = null; this.deadline = Infinity;
-    const g = this.steps(clear, lines, keep); while (!g.next().done);
+  rebuild(clear: Disc[], lines: Trail[] = [], keep: Disc[] = []) {
+    this.rebuildLater(clear, lines, keep);
+    this.flush(Infinity);
   }
 
-  /** The same, spread over the next frames (a few milliseconds of each): the forest is rebuilt behind the scenes and swapped in when it is done, so placing a building does not stall a frame. */
-  rebuildLater(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[] = [], keep: { x: number; z: number; r: number }[] = []) {
-    this.job = this.steps(clear, lines, keep);
-  }
-  private job: Generator<void, void, void> | null = null; private deadline = Infinity;
-  get busy() { return this.job !== null; }
-
-  private *steps(clear: { x: number; z: number; r: number }[], lines: { ax: number; az: number; bx: number; bz: number; r: number }[], keep: { x: number; z: number; r: number }[]): Generator<void, void, void> {
-    const L = lines.map(l => ({ ...l, minx: Math.min(l.ax, l.bx) - l.r, maxx: Math.max(l.ax, l.bx) + l.r, minz: Math.min(l.az, l.bz) - l.r, maxz: Math.max(l.az, l.bz) + l.r, dx: l.bx - l.ax, dz: l.bz - l.az }));
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
-    const col = new THREE.Color(), used = new Array<number>(this.meshes.length).fill(0);
-    const tm = this.meshes.map(mm => new Float32Array(mm.instanceMatrix.array.length)), tc = this.meshes.map(mm => new Float32Array(mm.instanceMatrix.array.length / 16 * 3));   // (written aside and swapped in at the end)   // felled and drowned trees are left out, not drawn as zero-size instances
-    // the clearings and paths are filed by the square of ground they touch, so a tree looks only at the few round it (a village has hundreds of them, a forest has tens of thousands of trees)
-    const SQ = 24, sk = (a: number, b: number) => (a + 8192) * 16384 + (b + 8192);
-    const dgrid = new Map<number, number[]>(), lgrid = new Map<number, number[]>();
-    const file = (grid: Map<number, number[]>, i: number, x0: number, x1: number, z0: number, z1: number) => {
-      const a0 = Math.floor(x0 / SQ), a1 = Math.floor(x1 / SQ), b0 = Math.floor(z0 / SQ), b1 = Math.floor(z1 / SQ);
-      for (let a = a0; a <= a1; a++) for (let b = b0; b <= b1; b++) { const k = sk(a, b); const l = grid.get(k); if (l) l.push(i); else grid.set(k, [i]); }
+  /** Queue only tiles touched by additions or removals. Unfinished tiles keep their places in the queue. */
+  rebuildLater(clear: Disc[], lines: Trail[] = [], keep: Disc[] = []) {
+    const next = new Map<string, Mask>();
+    const disc = ({ x, z, r }: Disc, kind: 'clear' | 'keep') => {
+      const id = `${kind}:${x}:${z}:${r}`;
+      next.set(id, this.shapes.get(id) ?? { kind, x, z, r, r2: r * r, x0: x - r, z0: z - r, x1: x + r, z1: z + r });
     };
-    clear.forEach((c, i) => file(dgrid, i, c.x - c.r, c.x + c.r, c.z - c.r, c.z + c.r));
-    L.forEach((l, i) => file(lgrid, i, l.minx, l.maxx, l.minz, l.maxz));
-    for (let ti = 0; ti < this.trees.length; ti++) {
-      if ((ti & 2047) === 0 && performance.now() > this.deadline) yield;
-      const t = this.trees[ti];
-      let hidden = false;
-      const near = dgrid.get(sk(Math.floor(t.x / SQ), Math.floor(t.z / SQ))), nearL = lgrid.get(sk(Math.floor(t.x / SQ), Math.floor(t.z / SQ)));
-      if (near) for (const ci of near) { const c = clear[ci], dx = t.x - c.x, dz = t.z - c.z; if (dx * dx + dz * dz < c.r * c.r) { hidden = true; break; } }
-      // a kept grove stands even inside a big cleared area (the model village's woodcutter grove); small clearings (moats, scorch, felled spots) still win
-      if (hidden && keep.length && !near!.some(ci => clear[ci].r < 30 && (t.x - clear[ci].x) ** 2 + (t.z - clear[ci].z) ** 2 < clear[ci].r ** 2) && keep.some(k => (t.x - k.x) ** 2 + (t.z - k.z) ** 2 < k.r * k.r)) hidden = false;
-      if (!hidden && nearL) for (const li of nearL) { const l = L[li];            // trees never grow on a path
-        if (t.x < l.minx || t.x > l.maxx || t.z < l.minz || t.z > l.maxz) continue;
-        const len2 = l.dx * l.dx + l.dz * l.dz || 1, k = clamp(((t.x - l.ax) * l.dx + (t.z - l.az) * l.dz) / len2, 0, 1), px = l.ax + l.dx * k, pz = l.az + l.dz * k;
-        if ((t.x - px) ** 2 + (t.z - pz) ** 2 < l.r * l.r) { hidden = true; break; }
-      }
-      // terrain rules: no trees in water (a lake, river or moat, natural or dug), and none on ground too steep to grow on after earthworks
-      let h0 = 0;
-      if (!hidden) {
-        h0 = this.terrain.heightAt(t.x, t.z);
-        if (h0 < 0.55) hidden = true;
-        else { const hx = this.terrain.heightAt(t.x + 1.5, t.z), hz = this.terrain.heightAt(t.x, t.z + 1.5); if (Math.hypot(hx - h0, hz - h0) / 1.5 > 1.25) hidden = true; }
-      }
-      this.hidden[ti] = hidden ? 1 : 0;
-      if (hidden) continue;
-      t.slot = used[t.mesh]++; t.y = h0;
-      q.setFromAxisAngle(up, t.rot); p.set(t.x, t.y - 0.1, t.z); s.set(t.s * (t.type === 0 ? 1.1 : 1), t.s * (1 + ((t.rot * 3.7) % 1) * 0.25), t.s * (t.type === 0 ? 1.1 : 1));
-      m.compose(p, q, s); m.toArray(tm[t.mesh], t.slot * 16);
-      const v = 0.88 + ((t.rot * 7.3) % 1) * 0.26, hue = (t.x * 0.13) % 0.12;
-      col.setRGB(v * (1 + hue * 0.6), v * (1 + hue * 0.2), v * (0.9 + hue)); col.toArray(tc[t.mesh], t.slot * 3);
+    clear.forEach(c => disc(c, 'clear'));
+    keep.forEach(c => disc(c, 'keep'));
+    for (const { ax, az, bx, bz, r } of lines) {
+      const id = `trail:${ax}:${az}:${bx}:${bz}:${r}`, dx = bx - ax, dz = bz - az;
+      next.set(id, this.shapes.get(id) ?? { kind: 'trail', ax, az, dx, dz, r, r2: r * r, len2: dx * dx + dz * dz || 1,
+        x0: Math.min(ax, bx) - r, z0: Math.min(az, bz) - r, x1: Math.max(ax, bx) + r, z1: Math.max(az, bz) + r });
     }
-    this.meshes.forEach((mm, i) => {
-      mm.instanceMatrix.array.set(tm[i].subarray(0, used[i] * 16));
-      if (!mm.instanceColor) mm.setColorAt(0, col);
-      (mm.instanceColor!.array as Float32Array).set(tc[i].subarray(0, used[i] * 3));
-      mm.count = used[i]; mm.instanceMatrix.needsUpdate = true; mm.instanceColor!.needsUpdate = true; mm.computeBoundingSphere(); mm.computeBoundingBox();
+    for (const [id, mask] of this.shapes) if (!next.has(id)) this.updateMask(mask, false);
+    for (const [id, mask] of next) if (!this.shapes.has(id)) this.updateMask(mask, true);
+    this.shapes = next;
+  }
+
+  private eachTile({ x0, z0, x1, z1 }: Bounds, visit: (tile: Tile) => void) {
+    const a0 = Math.max(-HALF / TILE, Math.floor(x0 / TILE)), a1 = Math.min(HALF / TILE - 1, Math.floor(x1 / TILE));
+    const b0 = Math.max(-HALF / TILE, Math.floor(z0 / TILE)), b1 = Math.min(HALF / TILE - 1, Math.floor(z1 / TILE));
+    for (let a = a0; a <= a1; a++) for (let b = b0; b <= b1; b++) {
+      const tile = this.tiles.get(Forest.key(a, b));
+      if (tile) visit(tile);
+    }
+  }
+
+  private updateMask(mask: Mask, add: boolean) {
+    this.eachTile(mask, tile => {
+      if (add) tile.masks.add(mask); else tile.masks.delete(mask);
+      for (const batch of tile.batches) this.dirty.add(batch);
     });
+  }
+
+  private clipped(t: Tree, masks: Set<Mask>) {
+    let cleared = false, kept = false;
+    for (const m of masks) {
+      if (t.x < m.x0 || t.x > m.x1 || t.z < m.z0 || t.z > m.z1) continue;
+      if (m.kind === 'trail') {
+        const p = clamp(((t.x - m.ax) * m.dx + (t.z - m.az) * m.dz) / m.len2, 0, 1);
+        if ((t.x - m.ax - m.dx * p) ** 2 + (t.z - m.az - m.dz * p) ** 2 < m.r2) return true;
+      } else if ((t.x - m.x) ** 2 + (t.z - m.z) ** 2 < m.r2) {
+        if (m.kind === 'keep') kept = true;
+        else if (m.r < 30) return true;
+        else cleared = true;
+      }
+    }
+    return cleared && !kept;
+  }
+
+  private matrix = new THREE.Matrix4();
+  private rotation = new THREE.Quaternion();
+  private pos = new THREE.Vector3();
+  private scale = new THREE.Vector3();
+  private up = new THREE.Vector3(0, 1, 0);
+  private color = new THREE.Color();
+
+  private flush(deadline: number) {
+    for (const batch of this.dirty) {
+      this.refit(batch);
+      this.dirty.delete(batch);
+      if (performance.now() >= deadline) break;
+    }
+  }
+
+  private refit(batch: Batch) {
+    const { mesh, tile, ids } = batch;
+    let count = 0, low = Infinity, high = -Infinity;
+    for (const i of ids) {
+      const t = this.trees[i];
+      if (batch.sampleGround) {
+        const h = t.y = this.terrain.heightAt(t.x, t.z, true);
+        t.grows = h >= 0.55 && Math.hypot(this.terrain.heightAt(t.x + 1.5, t.z, true) - h, this.terrain.heightAt(t.x, t.z + 1.5, true) - h) <= 1.5 * 1.25;
+      }
+      const hidden = !t.grows || this.clipped(t, tile.masks);
+      this.hidden[i] = Number(hidden);
+      if (hidden) continue;
+      const width = t.s * (t.type === 0 ? 1.1 : 1), height = t.s * (1 + ((t.rot * 3.7) % 1) * 0.25);
+      this.rotation.setFromAxisAngle(this.up, t.rot); this.pos.set(t.x, t.y - 0.1, t.z); this.scale.set(width, height, width);
+      mesh.setMatrixAt(count, this.matrix.compose(this.pos, this.rotation, this.scale));
+      const v = 0.88 + ((t.rot * 7.3) % 1) * 0.26, hue = (t.x * 0.13) % 0.12;
+      mesh.setColorAt(count++, this.color.setRGB(v * (1 + hue * 0.6), v * (1 + hue * 0.2), v * (0.9 + hue)));
+      low = Math.min(low, t.y - 0.1); high = Math.max(high, t.y + height * 6.8);
+    }
+    batch.sampleGround = false; mesh.count = count;
+    if (count) {
+      mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, count * 16); mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor!.clearUpdateRanges(); mesh.instanceColor!.addUpdateRange(0, count * 3); mesh.instanceColor!.needsUpdate = true;
+      // A conservative bound for all three geometries and the crown's wind motion.
+      const span = TILE / 2 + 6;
+      mesh.boundingSphere!.center.set(tile.x, (low + high) / 2, tile.z);
+      mesh.boundingSphere!.radius = Math.hypot(span, span, (high - low) / 2);
+    }
+    if (this.lastDistance >= 0) this.updateView(batch); else mesh.visible = count > 0;
   }
 }
