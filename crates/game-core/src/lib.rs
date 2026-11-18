@@ -10,6 +10,7 @@ mod market;
 mod march;
 mod members;
 mod military;
+mod tactics;
 mod pathnet;
 pub mod doors;
 mod roadline;
@@ -363,10 +364,14 @@ pub struct World {
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
     db_want: Vec<u32>,           // drawbridges that own soldiers in the fight are waiting to cross this tick (transient: filled by the battle, used by drawbridge_step and cleared)
     map_ver: u32,                // changes when trees are felled or bridges built
+    #[serde(skip)] military_tech: u16,
+    #[serde(skip)] auto_bridge: bool,
+    #[serde(skip)] last_battle_frame: Vec<f32>,
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD3";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD4";
+const MARCH_SNAP_MAGIC: &[u8; 8] = b"FLWORLD3";
 const LEGACY_SNAP_MAGIC: &[u8; 8] = b"FLWORLD2";
 
 /// Rebuild a world from `World::snapshot` bytes. None when the bytes are not a snapshot of this layout (damaged, or made by another build).
@@ -378,8 +383,17 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         w.moat_water = w.compute_moat_water();
         return Some(w);
     }
-    if magic != SNAP_MAGIC { return None; }
-    let (mut w, marches): (World, Vec<march::SavedMarch>) = bincode::deserialize(payload).ok()?;
+    let (mut w, marches) = if magic == SNAP_MAGIC {
+        let (mut w, marches, tech, bridges, state): (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>) = bincode::deserialize(payload).ok()?;
+        if w.battle.is_some() != state.is_some() || tech > tactics::TECH_MASK { return None; }
+        w.military_tech = tech;
+        w.auto_bridge = bridges;
+        if let Some((b, t)) = w.battle.as_mut().zip(state) {
+            if t.strikes.iter().any(|s| s.attacker >= b.units.len() || s.target >= b.units.len()) { return None; }
+            b.tactics = t;
+        }
+        (w, marches)
+    } else if magic == MARCH_SNAP_MAGIC { bincode::deserialize(payload).ok()? } else { return None; };
     if w.dets.len() != marches.len() { return None; }
     for (det, saved) in w.dets.iter_mut().zip(marches) { det.restore_march(saved)?; }
     Some(w)
@@ -416,6 +430,12 @@ pub fn trees_in(seed: u64, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<f32> { ter
 /// Rows `j0..j1` of `terrain_grid` (the same numbers however the rows are cut), so the page can build a big grid a few rows at a time instead of freezing.
 #[wasm_bindgen]
 pub fn terrain_grid_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> { terrain::grid_rows(seed, x0, y0, nx, step, j0, j1) }
+
+#[wasm_bindgen]
+pub fn terrain_land_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> { terrain::land_rows(seed, x0, y0, nx, step, j0, j1) }
+
+#[wasm_bindgen]
+pub fn natural_river_level() -> f32 { terrain::RIVER_LEVEL }
 
 /// How many rows of tree cells `trees_in` goes through for this area, and rows `r0..r1` of them (concatenated they are exactly `trees_in`).
 #[wasm_bindgen]
@@ -481,7 +501,7 @@ impl World {
     pub fn snapshot(&self) -> Vec<u8> {
         let mut v = SNAP_MAGIC.to_vec();
         let marches: Vec<_> = self.dets.iter().map(march::Det::save_march).collect();
-        v.extend(bincode::serialize(&(self, marches)).expect("a world can be written"));
+        v.extend(bincode::serialize(&(self, marches, self.military_tech, self.auto_bridge, self.battle.as_ref().map(|b| &b.tactics))).expect("a world can be written"));
         v
     }
 
@@ -490,7 +510,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), mem_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -2057,12 +2077,18 @@ impl World {
     }
     /// Another village (tag = its id) attacks this one from `angle`.
     pub fn start_raid(&mut self, angle: f32, atk: &[u32], tag: i32) -> bool {
+        self.start_raid_equipped(angle, atk, tag, 0)
+    }
+
+    pub fn start_raid_equipped(&mut self, angle: f32, atk: &[u32], tag: i32, tech: u16) -> bool {
         if !angle.is_finite() || angle.abs() > 7.0 { return false; }   // an angle comes from atan2 (-pi..pi); anything else is a forged command
         if atk.len() < 5 || self.has_treaty(tag, TREATY_PEACE) || self.has_treaty(tag, TREATY_ALLIANCE) { return false; }
         if tag != 0 { self.rel_add(tag, -40); }   // whoever marches on us is not our friend
         let c = |n: u32| n.min(300);
         let Some(atk) = kinds(atk) else { return false };
-        self.begin_battle(atk.map(c), angle, tag)
+        if !self.begin_battle(atk.map(c), angle, tag) { return false; }
+        if let Some(b) = &mut self.battle { b.tactics.tech[1] = if tag != 0 { tech & tactics::TECH_MASK } else { 0 }; }
+        true
     }
     // ---------- trade and treaties ----------
     /// Agree something with another village (tag) for `days` days. kind 0 trade pact, 1 non-aggression. Replaces an older agreement of the same kind.
@@ -2185,6 +2211,8 @@ impl World {
             None => vec![],
         }
     }
+    /// The last frame of a finished fight, for animating casualties on the final tick.
+    pub fn take_last_battle_frame(&mut self) -> Vec<f32> { std::mem::take(&mut self.last_battle_frame) }
     /// Arrows and stones fired since last call: [kind (0 arrow, 1 stone), x0, y0, x1, y1, fire, unitKind] (stride 7).
     pub fn take_shots(&mut self) -> Vec<f32> { std::mem::take(&mut self.shots).into_iter().flatten().collect() }
     /// Burning things: [kind (0 building, 1 forest fire), x, y, radius] (stride 4).
@@ -2278,6 +2306,12 @@ impl World {
     pub fn battle_retreat(&mut self, tag: i32) -> bool { self.retreat_attackers(tag) }
     /// More soldiers of the same attacker (tag) arrive at the battle already going on. True if they joined.
     pub fn battle_reinforce(&mut self, tag: i32, atk: &[u32]) -> bool { let Some(a) = kinds(atk) else { return false }; self.reinforce_attackers(tag, a.map(|n| n.min(300))) }
+
+    pub fn battle_reinforce_equipped(&mut self, tag: i32, atk: &[u32], tech: u16) -> bool {
+        if !self.battle_reinforce(tag, atk) { return false; }
+        if tag != 0 { if let Some(b) = &mut self.battle { b.tactics.tech[1] |= tech & tactics::TECH_MASK; } }
+        true
+    }
     /// Soldiers still standing in the standing army's defence of the battle, per kind (what can be sent out to meet the raiders).
     pub fn battle_standing(&self) -> Vec<u32> { self.standing_in_battle().to_vec() }
     pub fn det_send(&mut self, id: u32) -> Vec<u32> { self.det_send_inner(id).map_or(vec![], |u| u.to_vec()) }
@@ -2497,7 +2531,7 @@ impl World {
             }),
             part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); mix(d.asleep as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
-            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } }),
+            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } mix(self.military_tech as u64); mix(self.auto_bridge as u64); }),
             part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); mix(d.file.dispatch.to_bits() as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); mix(g.file.dispatch.to_bits() as u64); } } }),
             part(&|mix| {   // trade and diplomacy
                 for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }
@@ -2509,7 +2543,7 @@ impl World {
                 for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for l in &self.flats { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
-            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); mix(bt.lair as i64 as u64); } }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); mix(bt.lair as i64 as u64); bt.tactics.hash(mix); } }),
         ]
     }
 

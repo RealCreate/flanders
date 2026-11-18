@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { terrain_grid, type World } from '../wasm/game_core.js';
+import { terrain_land_rows, natural_river_level, type World } from '../wasm/game_core.js';
 import { patchWater, waterNormalTexture } from './water';
 import { groundDetailTexture, patchGround } from './groundtex';
+import { riverGrid } from './rivergrid';
 
 export const HALF = 1200;
 export const STEP = 2.5;
@@ -41,6 +42,8 @@ export class Terrain {
   mesh: THREE.Group;
   private chunks: { mesh: THREE.Mesh; i0: number; j0: number; i1: number; j1: number }[] = [];
   water: THREE.Mesh;
+  riverWater = new THREE.Group();
+  riverMaterial: THREE.MeshPhysicalMaterial;
   geo: THREE.PlaneGeometry;
   /** Ground height, one texel per vertex (half floats): the water shader reads it to tell how deep the water is, so shallows are pale and the shore foams. */
   heightTex!: THREE.DataTexture; private heightData!: Uint16Array; private heightAt0 = -1;
@@ -51,14 +54,15 @@ export class Terrain {
   private col: THREE.BufferAttribute;
   private nor: THREE.BufferAttribute;
 
-  /** `rawHeights` is the core's height grid when the caller already built it a slice at a time (see loader.ts); otherwise it is built here in one go. */
-  constructor(seed: bigint, rawHeights?: Float32Array) {
-    const raw = rawHeights ?? terrain_grid(seed, -HALF, -HALF, NV, NV, STEP);
+  /** `rawLand` interleaves height and river-bed flags from the core, usually built in slices during loading. */
+  constructor(seed: bigint, rawLand?: Float32Array) {
+    const raw = rawLand ?? terrain_land_rows(seed, -HALF, -HALF, NV, STEP, 0, NV);
     this.base = new Float32Array(NV * NV);
     this.heights = new Float32Array(NV * NV);
-    for (let j = 0; j < NV; j++) for (let i = 0; i < NV; i++) {
-      const k = j * NV + i, x = -HALF + i * STEP, z = -HALF + j * STEP;
-      this.base[k] = this.heights[k] = raw[k];   // the core shapes the coast itself: what is drawn is exactly what the simulation sees
+    const rivers = new Uint8Array(NV * NV);
+    for (let k = 0; k < this.base.length; k++) {
+      this.base[k] = this.heights[k] = raw[k * 2];
+      rivers[k] = raw[k * 2 + 1];
     }
     this.geo = new THREE.PlaneGeometry(HALF * 2, HALF * 2, NV - 1, NV - 1);
     this.geo.rotateX(-Math.PI / 2);
@@ -89,6 +93,19 @@ export class Terrain {
     this.uploadHeights();
     this.water = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000).rotateX(-Math.PI / 2), this.makeWaterMaterial());
     this.water.position.y = 0;
+    this.riverMaterial = this.makeWaterMaterial(true);
+    const riverLevel = natural_river_level();
+    for (const { i0, j0, i1, j1 } of this.chunks) {
+      const { positions, indices } = riverGrid(rivers, NV, STEP, riverLevel, i0, j0, i1, j1);
+      if (indices.length === 0) continue;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const uv: number[] = [];
+      for (let i = 0; i < positions.length; i += 3) uv.push(positions[i], positions[i + 2]);
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+      g.setIndex(indices); g.computeVertexNormals();
+      this.riverWater.add(new THREE.Mesh(g, this.riverMaterial));
+    }
   }
 
   /** A water surface material: shaded by how deep the water is over the ground (see water.ts). The sea and the water of the moats share it. Reflections are kept gentle: a

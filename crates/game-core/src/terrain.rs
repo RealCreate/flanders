@@ -2,6 +2,7 @@
 
 pub const HALF: f32 = 1200.0; // map spans [-HALF, HALF] on both axes
 pub const SITE_SPACING: f32 = 300.0;
+pub const RIVER_LEVEL: f32 = 0.2;
 
 #[inline]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
@@ -67,7 +68,7 @@ fn dry_round(seed: u64, x: f32, y: f32) -> bool {
     let mut total = 0;
     for k in 0..17 {
         let (dx, dy) = if k == 0 { (0.0, 0.0) } else { let a = (k - 1) as f32 * std::f32::consts::FRAC_PI_4; let r = if k <= 8 { 30.0 } else { 60.0 }; ((a).cos() * r, (a).sin() * r) };
-        total += 1; if base_height_s(seed, &[], x + dx, y + dy) > 1.5 { dry += 1; }
+        total += 1; if land_sample(seed, &[], x + dx, y + dy, false).0 > 1.5 { dry += 1; }
     }
     dry * 100 >= total * 88
 }
@@ -102,6 +103,10 @@ fn site_weight(sites: &[(f32, f32)], x: f32, y: f32) -> f32 { 1.0 - smoothstep(3
 
 /// Terrain height in world units. Sea level is 0.
 pub fn base_height_s(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
+    land_sample(seed, sites, x, y, true).0
+}
+
+fn land_sample(seed: u64, sites: &[(f32, f32)], x: f32, y: f32, fill_channels: bool) -> (f32, bool) {
     let wx = x + 45.0 * (fbm(seed + 11, x * 0.006, y * 0.006, 2) - 0.5);
     let wy = y + 45.0 * (fbm(seed + 12, x * 0.006, y * 0.006, 2) - 0.5);
     let cont = fbm(seed + 1, wx * 0.0035, wy * 0.0035, 4);
@@ -123,6 +128,7 @@ pub fn base_height_s(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
     let river = 1.0 - smoothstep(0.0, 0.012 + 0.02 * (1.0 - smoothstep(0.0, 40.0, h)), rv);   // rivers widen as they reach the lowlands
     let rmask = 1.0 - smoothstep(16.0, 38.0, h);
     h = lerp(h, -1.1, river * rmask * 0.95);   // shallow rivers: they do not cut deep gorges
+    let channel = smoothstep(0.46, 0.80, river * rmask);
     // a few broad lakes, big enough to sail on
     let lake = fbm(seed + 6, wx * 0.005, wy * 0.005, 3);
     h = lerp(h, -2.0, smoothstep(0.70, 0.78, lake) * (1.0 - smoothstep(10.0, 30.0, h)));
@@ -140,7 +146,13 @@ pub fn base_height_s(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
     let boxy = (nx.powi(4) + ny.powi(4)).powf(0.25);
     let d = 0.65 * round + 0.35 * boxy + (fbm(seed + 7, x * 0.0045, y * 0.0045, 3) - 0.5) * 0.42;   // mostly round, a little square, with bays and headlands
     let land = 1.0 - smoothstep(0.88, 1.12, d);
-    lerp(-9.0, h, land)
+    let height = lerp(-9.0, h, land);
+    let inland = channel > 0.05 && sw < 0.45 && land > 0.75;
+    // Deepen low beds and feather into the banks. Dry terrain at the height of deposits and neutral sites is unchanged.
+    let strength = channel * (1.0 - smoothstep(0.35, 1.35, height));
+    let height = if fill_channels && inland { lerp(height, height.min(-0.85), strength * 0.94) } else { height };
+    let filled = inland && height < RIVER_LEVEL;
+    (height, filled)
 }
 
 /// Tunnels bored through mountain ridges: [x0, y0, x1, y1] per tunnel (the two portals). Worked out once per seed from the natural terrain: from a village
@@ -212,8 +224,8 @@ fn neutrals_uncached(seed: u64) -> Vec<(u8, f32, f32)> {
         let x = (cx as f32 + 0.15 + 0.7 * h01(seed ^ 0x4F, cx, cy)) * 160.0;
         let y = (cy as f32 + 0.15 + 0.7 * h01(seed ^ 0x50, cx, cy)) * 160.0;
         if x.abs() > HALF - 80.0 || y.abs() > HALF - 80.0 { continue; }
-        let h = base_height_s(seed, &s, x, y);
-        if h < 2.0 || h > 40.0 || slope(seed, x, y) > 0.5 { continue; }
+        let h = land_sample(seed, &s, x, y, false).0;
+        if h < 2.0 || h > 40.0 || placement_slope(seed, &s, x, y) > 0.5 { continue; }
         if site_dist(&s, x, y) < 110.0 { continue; }
         let k = h01(seed ^ 0x51, cx, cy); let kind = if k < 0.3 { 0 } else if k < 0.6 { 1 } else if k < 0.86 { 2 } else { 3 };
         out.push((kind, x, y));
@@ -239,10 +251,24 @@ pub fn grid_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u
     out
 }
 
-pub fn slope(seed: u64, x: f32, y: f32) -> f32 {
+/// Terrain rows with a river-bed flag alongside each height, sampled together to share the noise calculations.
+pub fn land_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> {
     let s = sites(seed);
-    let hx = base_height_s(seed, &s, x + 1.0, y) - base_height_s(seed, &s, x - 1.0, y);
-    let hy = base_height_s(seed, &s, x, y + 1.0) - base_height_s(seed, &s, x, y - 1.0);
+    let mut out = Vec::with_capacity((j1.saturating_sub(j0) * nx) as usize * 2);
+    for j in j0..j1 {
+        for i in 0..nx {
+            let (h, wet) = land_sample(seed, &s, x0 + i as f32 * step, y0 + j as f32 * step, true);
+            out.extend([h, u8::from(wet) as f32]);
+        }
+    }
+    out
+}
+
+/// Deposits and neutral sites are addressed by their index in saved games. Leave their original generation criteria in place.
+fn placement_slope(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
+    let hh = |x, y| land_sample(seed, sites, x, y, false).0;
+    let hx = hh(x + 1.0, y) - hh(x - 1.0, y);
+    let hy = hh(x, y + 1.0) - hh(x, y - 1.0);
     (hx * hx + hy * hy).sqrt() * 0.5
 }
 
@@ -363,9 +389,9 @@ pub fn deposits(seed: u64) -> Vec<Deposit> {
                 let (lo, hi) = dist_range[kind as usize];
                 let d = lo + (hi - lo) * h01(seed ^ 0xD1, si as i32 * 7 + kind as i32, attempt);
                 let (x, y) = (sx + a.cos() * d, sy + a.sin() * d);
-                let h = base_height_s(seed, &s, x, y);
+                let h = land_sample(seed, &s, x, y, false).0;
                 if h < 1.5 { continue; }
-                if slope(seed, x, y) > 0.55 { continue; }
+                if placement_slope(seed, &s, x, y) > 0.55 { continue; }
                 if out.iter().any(|o| (o.x - x).powi(2) + (o.y - y).powi(2) < 18.0 * 18.0) { continue; }
                 let r = h01(seed ^ 0xD2, si as i32 * 7 + kind as i32, attempt);
                 let m = amount(kind, r);
@@ -383,8 +409,8 @@ pub fn deposits(seed: u64) -> Vec<Deposit> {
             let x = (cx as f32 + h01(seed ^ 0xD6, cx, cy)) * cell as f32;
             let y = (cy as f32 + h01(seed ^ 0xD7, cx, cy)) * cell as f32;
             if x.abs() > HALF - 6.0 || y.abs() > HALF - 6.0 { continue; }
-            let h = base_height_s(seed, &s, x, y);
-            if h < 1.5 || slope(seed, x, y) > 0.6 { continue; }
+            let h = land_sample(seed, &s, x, y, false).0;
+            if h < 1.5 || placement_slope(seed, &s, x, y) > 0.6 { continue; }
             if out.iter().any(|o| (o.x - x).powi(2) + (o.y - y).powi(2) < 18.0 * 18.0) { continue; }
             let p = h01(seed ^ 0xD8, cx, cy);
             let kind: u8 = if h > 28.0 { if p < 0.45 { 2 } else if p < 0.7 { 3 } else { 0 } } else if h < 8.0 { if p < 0.6 { 1 } else { 0 } } else if p < 0.4 { 0 } else if p < 0.7 { 2 } else { 1 };

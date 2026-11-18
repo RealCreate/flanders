@@ -3,14 +3,14 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe', 'research', 'armybridge', 'battleorder'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {
   op: PeerOp; tick: number; n: number;
   /** The epoch of the village's history this command belongs to (see restart.ts): absent (0) until the owner first restarts. */
   e?: number;
-  kind?: number; x?: number; y?: number; rot?: number; idx?: number; tag?: number; angle?: number; ax?: number; ay?: number;
+  kind?: number; x?: number; y?: number; rot?: number; idx?: number; tag?: number; angle?: number; ax?: number; ay?: number; tech?: number;
   /** Target height for level, or for a raise/lower placement or pen stroke. Absent or negative uses the tool's automatic height. */
   h?: number;
   to?: string; from?: string; units?: number[]; loot?: number[];
@@ -80,6 +80,17 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
     if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 100_000) || !(isInt(out.kind) && out.kind >= -1 && out.kind <= WORKERS_MAX)) return null;
   }
   for (const f of ['to', 'from'] as const) if (r[f] !== undefined) { if (!isKey(r[f])) return null; out[f] = r[f] as string; }
+  if (r.op === 'research' && !(isInt(out.kind) && out.kind >= 0 && out.kind < 8)) return null;
+  if (r.op === 'armybridge' && out.kind !== 0 && out.kind !== 1) return null;
+  if (r.op === 'battleorder') {
+    if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 4) || !(isInt(out.kind) && out.kind >= 0 && out.kind <= 3)) return null;
+    if (out.kind !== 0 && !(isNum(out.x) && isNum(out.y) && Math.abs(out.x) <= 1200 && Math.abs(out.y) <= 1200)) return null;
+    if (out.to && out.tag !== undefined) return null;
+  }
+  if ((out.op === 'raid' || out.op === 'reinforce') && r.tech !== undefined) {
+    if (!isInt(r.tech) || r.tech < 0 || r.tech > 255) return null;
+    out.tech = r.tech;
+  }
   for (const f of ['units', 'loot'] as const) if (r[f] !== undefined) { const a = numbers(r[f]); if (!a) return null; out[f] = a; }
   if (out.h !== undefined && (out.op === 'place' || out.op === 'batch')) {
     const direction = (kind: number | undefined) => kind === 33 || kind === 34;

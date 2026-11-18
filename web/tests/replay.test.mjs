@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { Replay } from '../src/replay.ts';
 import { applyCmd } from '../src/commands.ts';
-const { World } = createRequire(import.meta.url)('./.wasm/game_core.js');
+const { World, world_restore } = createRequire(import.meta.url)('./.wasm/game_core.js');
 
 /** Play a short game live, recording the commands the way the client does (apply, then log with the tick it happened at). */
 function live() {
@@ -69,4 +69,26 @@ test('a history preserves both chosen heights and older automatic earthworks', (
   assert.equal(r.world.height_at(28, -22), 3.5);
   assert.equal(r.world.height_at(36, -22), 3.5);
   assert.ok(Math.abs(r.world.height_at(-26, -24) - 8.2) < 0.01);
+});
+
+test('research, bridge policy and battle orders replay and checkpoint in a running fight', () => {
+  const cmds = [
+    { op: 'cheat', kind: 3 },
+    { op: 'place', kind: 19, x: -20, y: 16 },
+    { op: 'research', kind: 0 },
+    { op: 'armybridge', kind: 1 },
+    { op: 'raid', tag: 25, units: [8, 3, 0, 2, 0, 0], tech: 32 },
+    { op: 'battleorder', idx: 2, kind: 2, x: 15, y: 15, tag: 25 },
+    { op: 'battleorder', idx: 4, kind: 1, x: 10, y: 10 },
+  ].map((cmd, tick) => ({ ...cmd, tick, n: tick }));
+  const r = new Replay(source(cmds), 25);
+  assert.ok(r.advanceTo(12).reached);
+  assert.ok(r.world.battle_active());
+  assert.equal(r.world.military_tech(), 1);
+  assert.ok(r.world.army_bridge_shortcuts());
+  const resumed = world_restore(r.world.snapshot());
+  assert.ok(resumed);
+  while (resumed.tick() < 25n) resumed.step();
+  assert.ok(r.advanceTo(25).reached);
+  assert.equal(resumed.state_hash(), r.world.state_hash());
 });

@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_grid_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names } from './wasm/game_core.js';
+import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_land_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names, military_upgrades } from './wasm/game_core.js';
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
 import { parseRows, parseTotals, stepWant } from './workview';
@@ -119,6 +119,8 @@ const ui: UI = new UI({
   toggleMute: () => { sound.setMuted(!sound.muted); ui.setMuteIcon(sound.muted); },
   minimapClick: (x, z) => rig?.focus(x, z),
   train: (k, n) => doTrain(k, n),
+  research: id => doResearch(id),
+  bridgeShortcuts: on => { if (replay?.target === lv) { updateHud(); return; } lv.world.army_set_bridge_shortcuts(on); void commit({ op: 'armybridge', kind: Number(on) }); },
   attack: (key, u) => doAttack(key, u),
   attackSelected: key => doAttackSelected(key),
   trade: (key, action, res, amount, escort) => doTrade(key, action, res, amount, escort),
@@ -428,6 +430,10 @@ function connect() {
         commit({ op: 'return', units: c.units, loot: new Array(RES.length).fill(0) }); ui.toast('Your army was turned back — the village was already under attack.', 'info');
       }
       if (c.op === 'retreat' && c.to === identity.pub && lv.world.battle_retreat(tagOf(r.key))) { commit({ op: 'retreat', from: r.key, tag: tagOf(r.key) }); ui.toast(`${r.name} calls off the attack: the raiders are running.`, 'good'); lv.afterTick(); }
+      if (c.op === 'battleorder' && c.to === identity.pub) {
+        const tag = tagOf(r.key);
+        if (lv.world.battle_order(tag, c.idx!, c.kind!, c.x ?? 0, c.y ?? 0)) void commit({ op: 'battleorder', from: r.key, tag, idx: c.idx, kind: c.kind, x: c.x, y: c.y });
+      }
       if (c.op === 'raid') ui.toast(`${r.name}'s village is under attack!`, 'info');
       if (c.to === identity.pub) onTrade(r, c);
     },
@@ -698,6 +704,14 @@ function doTrain(kind: number, n: number) {
   commit({ op: 'train', kind, x: n }); sound.train(); ui.toast(`${n} × ${units[kind].name} queued at the barracks.`, 'good'); lv.afterTick(); updateHud();
 }
 
+function doResearch(id: number) {
+  if (replay?.target === lv) return;
+  const code = lv.world.military_research(id);
+  if (code !== 0) { ui.toast(code === -2 ? 'Upgrade your Barracks first.' : code === -3 ? 'Research Padded armor first.' : code === -6 ? 'Insufficient supplies.' : 'This upgrade is already equipped.', 'bad'); return; }
+  void commit({ op: 'research', kind: id });
+  ui.toast('Army upgrade equipped.', 'good'); updateHud();
+}
+
 /** Send a field army against a rival village: it halts just outside their border (on our side) and attacks once it gets there. */
 function marchOn(id: number, key: string, r: Rival): boolean {
   const dx = lv.ox - r.village.ox, dz = lv.oz - r.village.oz, dl = Math.hypot(dx, dz) || 1, stand = r.village.radius + 12;
@@ -831,16 +845,17 @@ function checkArrivals() {
 const awayFights = new Set<string>();
 function attackAway(r: Rival, u: number[]) {
   const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
-  if (r.village.world.start_raid(angle, Uint32Array.from(u), myTag())) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
-  else if (r.village.world.battle_active() && r.village.world.battle_tag() === myTag() && r.village.world.battle_reinforce(myTag(), Uint32Array.from(u))) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`More of your soldiers join the fight at ${r.name}'s village.`, 'good'); }
+  const tech = lv.world.military_tech();
+  if (r.village.world.start_raid_equipped(angle, Uint32Array.from(u), myTag(), tech)) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
+  else if (r.village.world.battle_active() && r.village.world.battle_tag() === myTag() && r.village.world.battle_reinforce_equipped(myTag(), Uint32Array.from(u), tech)) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`More of your soldiers join the fight at ${r.name}'s village.`, 'good'); }
   else { lv.world.return_army(Uint32Array.from(u), new Int32Array(RES.length)); commit({ op: 'return', units: u, loot: new Array(RES.length).fill(0) }); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'bad'); updateHud(); }
 }
 
 /** A rival sent soldiers against us: start the fight in our own (authoritative) village. */
 function defendAgainst(att: Rival, c: Cmd) {
-  const u = c.units ?? [], angle = Math.atan2(att.village.oz - lv.oz, att.village.ox - lv.ox), tag = tagOf(att.key);
-  if (lv.world.start_raid(angle, Uint32Array.from(u), tag)) { commit({ op: 'raid', from: att.key, units: u, angle, tag }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); }
-  else if (lv.world.battle_active() && lv.world.battle_tag() === tag && lv.world.battle_reinforce(tag, Uint32Array.from(u))) { commit({ op: 'reinforce', from: att.key, units: u, tag }); ui.toast(`${att.name} sends more soldiers into the fight!`, 'bad'); lv.afterTick(); }
+  const u = c.units ?? [], angle = Math.atan2(att.village.oz - lv.oz, att.village.ox - lv.ox), tag = tagOf(att.key), tech = att.village.world.military_tech();
+  if (lv.world.start_raid_equipped(angle, Uint32Array.from(u), tag, tech)) { commit({ op: 'raid', from: att.key, units: u, angle, tag, tech }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); }
+  else if (lv.world.battle_active() && lv.world.battle_tag() === tag && lv.world.battle_reinforce_equipped(tag, Uint32Array.from(u), tech)) { commit({ op: 'reinforce', from: att.key, units: u, tag, tech }); ui.toast(`${att.name} sends more soldiers into the fight!`, 'bad'); lv.afterTick(); }
   else commit({ op: 'refuse', to: att.key, units: u });
 }
 
@@ -965,6 +980,7 @@ function tickReplay(dt: number) {
 
 // ---------- start ----------
 async function startGame(name: string, username: string) {
+  ui.setMilitaryUpgrades(JSON.parse(military_upgrades()));
   if (started) return; started = true;
   worldName = cleanWorld(name); seedBig = hashSeed(worldName); history.replaceState(null, '', withWorld(location.href, worldName)); myName = cleanName(username);
   try { localStorage.setItem('flanders:name', myName); } catch { /* ignore */ }
@@ -985,9 +1001,9 @@ async function startGame(name: string, username: string) {
   atmo = new Atmosphere(scene, renderer);
   ui.progress(22, 'Raising the mountains…'); await nextFrame();
   // the core's heights and trees are the heavy part of the ground and the forest: fetched a few rows at a time so the page keeps painting
-  const heights = await collectInSlices(NV, (a, b) => terrain_grid_rows(seedBig, -HALF, -HALF, NV, STEP, a, b), 4, { onProgress: f => ui.progress(22 + Math.round(f * 8), 'Raising the mountains…') });
-  terrain = new Terrain(seedBig, heights);
-  scene.add(terrain.mesh, terrain.water);
+  const land = await collectInSlices(NV, (a, b) => terrain_land_rows(seedBig, -HALF, -HALF, NV, STEP, a, b), 4, { onProgress: f => ui.progress(22 + Math.round(f * 8), 'Raising the mountains…') });
+  terrain = new Terrain(seedBig, land);
+  scene.add(terrain.mesh, terrain.water, terrain.riverWater);
   tunnels = new Tunnels(terrain, tunnels_flat(seedBig)); scene.add(tunnels.group);
   rig = new CameraRig(ui.canvas, terrain);
   ui.progress(38, 'Planting the forests…'); await nextFrame();
@@ -1209,6 +1225,7 @@ function updateHud() {
     tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, flow, kinds, food: Array.from(World.food_table()), pop: w.population(), cap: w.capacity(), sick: w.sick(),
     joy: w.happiness(), eff: w.efficiency(), jobs: w.jobs(), radius: w.build_radius(), buildings: w.building_count(), storage: w.storage(),
     army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
+    militaryTech: w.military_tech(), bridgeShortcuts: w.army_bridge_shortcuts(),
     vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(), winter: Array.from(w.winter_numbers()),
     work: ui.workOpen ? { rows: parseRows(w.staffing_flat(), f), totals: parseTotals(w.staffing_totals()) } : undefined,
   });
@@ -1227,6 +1244,35 @@ function updateHud() {
 const fightSeen = new Map<string, boolean>();
 const raidWarningSeen = new Map<string, boolean>();
 
+interface BattleOrder { village: Village; peer: string | null; group: number; mode: number }
+let pendingBattleOrder: BattleOrder | null = null;
+
+function chooseBattleOrder(village: Village, peer: string | null, group: number, mode: number) {
+  if (replay?.target === village) return;
+  const order = { village, peer, group, mode };
+  if (mode === 0) { pendingBattleOrder = null; sendBattleOrder(order, 0, 0); return; }
+  if (selectedKind !== null) selectKind(null);
+  pendingBattleOrder = order;
+  ui.hint(mode === 1 ? 'Right-click the position to hold · Esc cancels' : mode === 2 ? 'Right-click the enemy or position to attack · Esc cancels' : 'Right-click a safe position to regroup · Esc cancels');
+}
+
+function sendBattleOrder(order: BattleOrder, x: number, y: number) {
+  const { village, peer, group, mode } = order;
+  if (!village.world.battle_active() || replay?.target === village) return false;
+  const r = peer === null ? null : rivals.get(peer);
+  const command = { op: 'battleorder' as const, idx: group, kind: mode, x, y };
+  if (peer !== null && !r) return false;
+  if (r?.online) void commit({ ...command, to: r.key });
+  else {
+    if (!village.world.battle_order(r ? myTag() : 0, group, mode, x, y)) return false;
+    if (peer === null) void commit(command);
+  }
+  ui.hint(null);
+  if (mode !== 0) fx.burst(x, y, false);
+  ui.toast(mode === 0 ? 'Order cleared.' : 'Battle order issued.', 'info');
+  return true;
+}
+
 /** The red banner while a fight is on, for the first village with one: who attacks from where, which side you are on, a click to look at the attackers, and what you can do about it. The same
  *  options exist for both sides (see defence.ts). A raid on your own village also takes the camera there at once when "Jump to raiders" is on. */
 function battleBanner() {
@@ -1242,7 +1288,8 @@ function battleBanner() {
     if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
     if (on && !was) announceBoss(v, mine, key);
   }
-  for (const { v, who, mine, key } of list) {
+  const controllable = list.find(({ v, mine }) => v.world.battle_active() && (mine || v.world.battle_tag() === myTag()));
+  for (const { v, who, mine, key } of controllable ? [controllable] : list) {
     const w = v.world;
     if (!w.battle_active() && w.raid_warning_ticks() > 0) {
       const seconds = w.raid_warning_ticks();
@@ -1276,7 +1323,7 @@ function battleBanner() {
     if (offer?.show) acts.push({ icon: 'gold', label: offer.label, title: offer.title, disabled: offer.disabled, run: () => doBribe() });
     const bribeLine = offer?.show ? `<small class="bribe">The raiders will turn back for coin before the first blow. ${esc(offer.disabled ? offer.reason : BRIBE_CONSEQUENCE)}</small>` : '';
     ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}${bribeLine}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${Math.round(w.battle_time())}s · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
-      () => lookAtAttackers(v), acts);
+      () => lookAtAttackers(v), acts, (mine || role === 'attack') && replay?.target !== v ? (group, mode) => chooseBattleOrder(v, mine ? null : key, group, mode) : undefined);
     return;
   }
   ui.battle(null);
@@ -2264,6 +2311,13 @@ function bindInput() {
   // right click without dragging: send the selected army there
   cv.addEventListener('pointerup', e => {
     if (e.button !== 2 || rig.moved) return;
+    if (pendingBattleOrder) {
+      const hit = terrain.pick(pointerRay(e).ray);
+      if (!hit) return;
+      if (!sendBattleOrder(pendingBattleOrder, hit.x, hit.z)) { ui.hint(null); ui.toast('The order could not be issued.', 'bad'); }
+      pendingBattleOrder = null;
+      return;
+    }
     if (selectedKind === 37 && roadPts.length) { roadPts.pop(); if (roadPts.length === 0) roadSnapped = [false, false]; roadHover(e); return; }   // right-click takes the last road point back
     if (selectedKind !== null) { selectKind(null); return; }                // right-click puts the building down again
     if (multiDets.length) {                                                 // armies selected: send them there, spread out a little
@@ -2283,7 +2337,7 @@ function bindInput() {
     switch (keys.actionOf(e)) {
       case 'penFinish': if (selectedKind === 37 && roadPts.length >= 2) { e.preventDefault(); roadCommit(); break; } if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) { e.preventDefault(); penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); } break;
       case 'penUndo': if (selectedKind === 37 && roadPts.length) { e.preventDefault(); roadPts.pop(); roadPreview(null); break; } if (penShape === 'path' && penPath.length) { e.preventDefault(); penPath.pop(); if (!penPath.length) penPreview.clear(); } break;
-      case 'cancel': if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
+      case 'cancel': if (pendingBattleOrder) { pendingBattleOrder = null; ui.hint(null); } else if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
       case 'rotateBuilding': if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); break; } rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; if (lastGhostE && selectedKind !== null) updateGhost(lastGhostE); break;
       case 'deposits': toggleResources(); break;
       case 'coverage': toggleCoverage(); break;
@@ -2351,7 +2405,7 @@ function setupPerf() {
   const vis = (get: () => THREE.Object3D[]) => (on: boolean) => get().forEach(o => (o.visible = on));
   perf.setLayers([
     { name: 'Terrain', set: vis(() => [terrain.mesh]) },
-    { name: 'Water', set: vis(() => [terrain.water]) },
+    { name: 'Water', set: vis(() => [terrain.water, terrain.riverWater]) },
     { name: 'Trees', set: vis(() => [forest.group]) },
     { name: 'Buildings', set: vis(() => allVillages().flatMap(v => [v.view.root, v.view.batchRoot, v.walls.group, v.ruins.group])) },
     { name: 'Village paths', set: vis(() => allVillages().map(v => v.paths.group)) },
@@ -2413,7 +2467,7 @@ function applySettings(s: Settings) {
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
   atmo.setShadows(s.shadows);
   forest.drawDistance = s.drawDistance; forest.detail = s.treeDetail; forest.group.visible = s.trees && !showroom;
-  const wm = terrain.water.material as THREE.MeshPhysicalMaterial; const gloss = s.waterFx ? 1 : 0; if (wm.clearcoat !== gloss) { wm.clearcoat = gloss; wm.envMapIntensity = s.waterFx ? 1.8 : 0.6; wm.needsUpdate = true; }
+  for (const wm of [terrain.water.material as THREE.MeshPhysicalMaterial, terrain.riverMaterial]) { const gloss = s.waterFx ? 1 : 0; if (wm.clearcoat !== gloss) { wm.clearcoat = gloss; wm.envMapIntensity = s.waterFx ? 1.8 : 0.6; wm.needsUpdate = true; } }
   fx.group.visible = effects.smoke.points.visible = s.particles;
   wildlife.group.visible = crowd.group.visible = s.crowds && !showroom;
   perf.setBadge(s.showFps || perf.open);

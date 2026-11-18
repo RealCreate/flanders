@@ -9,7 +9,20 @@ test('a normal command passes and comes back with only known fields', () => {
   const c = ok({ op: 'place', kind: 3, x: -12, y: 40, rot: 2, evil: '<script>' });
   assert.deepEqual(c, { op: 'place', tick: 5, n: 1, kind: 3, x: -12, y: 40, rot: 2 });
 });
-test('every op the client sends is accepted', () => { for (const op of PEER_OPS) assert.ok(ok(op === 'level' ? { op, x: 0, y: 0, kind: 8 } : op === 'restart' ? { op, e: 1, tick: 0, n: 0 } : op === 'workers' ? { op, idx: 3, kind: 2 } : { op }), op); });
+test('every op the client sends is accepted', () => {
+  const required = { level: { x: 0, y: 0, kind: 8 }, restart: { e: 1, tick: 0, n: 0 }, workers: { idx: 3, kind: 2 }, research: { kind: 2 }, armybridge: { kind: 1 }, battleorder: { kind: 2, idx: 1, x: 15, y: -21 } };
+  for (const op of PEER_OPS) assert.ok(ok({ op, ...required[op] }), op);
+});
+
+test('military commands validate regiment, order, destination and research bits', () => {
+  assert.equal(ok({ op: 'battleorder', idx: 5, kind: 0 }), null);
+  assert.equal(ok({ op: 'battleorder', idx: 2, kind: 3, x: 0, y: 1201 }), null);
+  assert.ok(ok({ op: 'battleorder', idx: 4, kind: 0 }));
+  assert.equal(ok({ op: 'research', kind: 8 }), null);
+  assert.equal(ok({ op: 'armybridge', kind: 2 }), null);
+  assert.equal(ok({ op: 'raid', tech: 256 }), null);
+  assert.equal(ok({ op: 'raid', tech: 9 }).tech, 9);
+});
 test('testing tools are refused from the network but can be recognised', () => {
   assert.equal(ok({ op: 'cheat', kind: 0, x: 1, y: 1000 }), null);
   assert.equal(ok({ op: 'flatten', x: 200 }), null);

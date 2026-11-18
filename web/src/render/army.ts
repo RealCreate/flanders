@@ -361,12 +361,13 @@ export class ArmyView {
           const tw = this.towers.find(q => (q.x - f.x) ** 2 + (q.z - f.z) ** 2 < 2.6 * 2.6);
           if (tw) { const a = Math.atan2(f.z - tw.z, f.x - tw.x), R = (tw.keep ? KEEP_RING : TOWER_RING)[tw.tier], x = tw.x + Math.cos(a) * R, z = tw.z + Math.sin(a) * R; crowd.add({ x, y: this.terrain.walkAt(tw.x, tw.z) + (tw.keep ? KEEP_TOP : TOWER_TOP)[tw.tier], z, yaw: f.anim > 0 ? f.yaw : Math.PI / 2 - a, pose: 3, phase: t + f.seed, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, ...l } as Draw); continue; }
         }
-        const lg = f.kind !== 1 && f.kind !== 4 ? lunge(f.anim) : 0;   // a melee soldier steps into the blow
-        crowd.add({ x: f.x + Math.sin(f.yaw) * lg, y: this.height(f) + f.elev, z: f.z + Math.cos(f.yaw) * lg, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.4) : 0, skin: 0xd9a877, scale: 0.92, ...l } as Draw);
+        const flinch = f.flash / 0.3;
+        const lg = (f.kind !== 1 ? lunge(f.anim, 0.55, 0.36) : 0) - flinch * 0.16;
+        crowd.add({ x: f.x + Math.sin(f.yaw) * lg, y: this.height(f) + f.elev, z: f.z + Math.cos(f.yaw) * lg, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait, speed: f.moving ? f.spd : 0, swing: Math.min(1, f.anim / 0.55), flinch, skin: 0xd9a877, scale: 0.92, ...l } as Draw);
       }
       for (const c of this.corpses) if (near(c.f.x, c.f.z)) this.drawFallen(crowd, c.f);
     } else {
-      for (const c of this.corpses) { const f = c.f; if (f.kind === 4 || f.kind === 5) continue; const l = this.look(f.side, f.kind, f.seed, false); crowd.add({ x: f.x, y: this.terrain.walkAt(f.x, f.z), z: f.z, yaw: f.yaw, pose: 4, phase: 0, skin: 0xd9a877, ...l, mounted: false, tool: undefined, shield: undefined } as Draw); }
+      for (const c of this.corpses) if (near(c.f.x, c.f.z)) this.drawFallen(crowd, c.f);
       for (const p of this.posts) {
         if (p.mode !== 'patrol' && !near(p.x, p.z)) continue;
         const l = this.look(0, p.kind, p.x * 3.1 + p.z, true);

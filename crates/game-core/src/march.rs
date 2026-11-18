@@ -12,7 +12,7 @@ pub const CELL: f32 = 2.5;
 pub const NC: i32 = 960; // cells per side, covering [-1200, 1200)
 const ORG: f32 = -1200.0;
 const MAX_FERRY: f32 = 64.0;
-const BRIDGE_MAX: f32 = 12.0;
+const BRIDGE_MAX: f32 = 16.0;
 
 pub const S_IDLE: u8 = 0;
 pub const S_MARCH: u8 = 1;
@@ -27,6 +27,12 @@ pub const S_BLOCKED: u8 = 9;
 
 #[derive(PartialEq, Eq)]
 enum Leg { Clear, WaitingForDeck, Blocked }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaterTravel { Dry, ExistingDecks, Build, BridgeShortcut }
+
+const HOME_MARCH_SPEED: f32 = 1.35;
+const ARMY_ROAD_SPEED: f32 = pathnet::ROAD_SPEED + 0.4;
 
 /// A waypoint; `mode` describes the leg that ends here: 0 walk, 1 fell trees, 2 cross water.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
@@ -454,7 +460,7 @@ impl World {
 
     pub(crate) fn march_waterline(&self, x: f32, y: f32) -> f32 {
         self.moat_water.iter().filter(|p| (p[0] - x).abs() < p[2] && (p[1] - y).abs() < p[2] && (p[0] - x).hypot(p[1] - y) < p[2])
-            .map(|p| p[3]).fold(0.2, f32::max)
+            .map(|p| p[3]).fold(terrain::RIVER_LEVEL, f32::max)
     }
 
     fn walk_segment(&self, ns: &NavStatic, obst: &members::Obst, a: (f32, f32), b: (f32, f32), room: f32, slope: f32, lend: bool) -> bool {
@@ -486,7 +492,13 @@ impl World {
     /// gates open lines through it), plus the village's path network (roads, rings round buildings, doorways, decks), which joins the grid wherever it touches it. The route is the
     /// cheapest way along those lines; roads cost little, so they are preferred.
     pub(crate) fn find_path(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32) -> Result<Vec<Wp>, i32> {
-        self.route_on_graph(units, sx, sy, tx, ty, false)
+        if self.auto_bridge {
+            if let Ok(route) = self.route_with_water(units, sx, sy, tx, ty, WaterTravel::BridgeShortcut) {
+                if route.windows(2).all(|p| p[1].mode != 2 || (p[1].x - p[0].x).hypot(p[1].y - p[0].y) <= BRIDGE_MAX) { return Ok(route); }
+            }
+        }
+        self.route_with_water(units, sx, sy, tx, ty, WaterTravel::ExistingDecks)
+            .or_else(|_| self.route_with_water(units, sx, sy, tx, ty, WaterTravel::Build))
     }
 
     /// The same for somebody on foot who will not wade (villagers): [1, x, y, x, y, ...] or empty when there is no dry way.
@@ -512,27 +524,33 @@ impl World {
     }
 
     pub(crate) fn route_on_graph(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, no_water: bool) -> Result<Vec<Wp>, i32> {
+        self.route_with_water(units, sx, sy, tx, ty, if no_water { WaterTravel::Dry } else { WaterTravel::Build })
+    }
+
+    fn route_with_water(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, water: WaterTravel) -> Result<Vec<Wp>, i32> {
         if !Self::infrastructure_in_bounds(sx, sy) || !Self::infrastructure_in_bounds(tx, ty) { return Err(-2); }
-        let margins: [f32; 3] = if no_water { [30.0, 90.0, 500.0] } else { [45.0, 180.0, 2500.0] };
+        let margins = if water == WaterTravel::Dry { [30.0, 90.0, 500.0] } else { [45.0, 180.0, 2500.0] };
         let mut last = Err(-2);
         // a siege engine looks for a road wide enough for it first, and only if there is none makes do with a narrower one
         let levels: &[u8] = if units[4] + units[5] > 0 { &[3, 2, 1] } else { &[0] };
         'search: for &lvl in levels {
             for m in margins {
-                last = self.route_in_window(units, sx, sy, tx, ty, m, no_water, lvl);
+                last = self.route_in_window(units, sx, sy, tx, ty, m, water, lvl);
                 if !matches!(last, Err(-2)) { break 'search; }
             }
         }
         last
     }
 
-    fn route_in_window(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, margin: f32, no_water: bool, siege: u8) -> Result<Vec<Wp>, i32> {
+    fn route_in_window(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32, margin: f32, water: WaterTravel, siege: u8) -> Result<Vec<Wp>, i32> {
         let ns = nav_static(self.seed); let ov = self.ov(); let net = self.net(); let obst = self.obst();
         let room = if siege >= 3 { members::ENGINE_MARGIN } else { members::FOOT_MARGIN };
         let slope = if siege > 0 { 0.85 } else { 1.6 };
-        let walk = |a, b| self.walk_segment(&ns, &obst, a, b, room, slope, !no_water);
+        let lend = water != WaterTravel::Dry;
+        let no_water = matches!(water, WaterTravel::Dry | WaterTravel::ExistingDecks);
+        let walk = |a, b| self.walk_segment(&ns, &obst, a, b, room, slope, lend);
         // how a cell can be crossed; for an army (which does not wade) the deck of a drawbridge that is drawn up counts as dry ground, because the army lowers it for itself (see `drawbridge_step`)
-        let cl = |k: usize| -> Cl { match self.classify(&ns, &ov, k, siege) { Cl::Water if !no_water && ov.deck_up[k] => Cl::Free(1.5), c => c } };
+        let cl = |k: usize| -> Cl { match self.classify(&ns, &ov, k, siege) { Cl::Water if lend && ov.deck_up[k] => Cl::Free(1.5), c => c } };
         let workers = units[0] + units[2];
         let start = (sx, sy); let goal = (tx, ty);
         let walkable_start = walk(start, start); let walkable_goal = walk(goal, goal);
@@ -564,7 +582,7 @@ impl World {
         let global = |l: usize| -> usize { let (a, b) = (l as i32 % w + i0, l as i32 / w + j0); (b * NC + a) as usize };
         // Explicit deck edges join dry banks even when a coarse grid centre misses a slender deck.
         let mut deck_nodes = Vec::new();
-        for c in self.crossings().into_iter().filter(|c| c.down || (!no_water && c.lendable)) {
+        for c in self.crossings().into_iter().filter(|c| c.down || (lend && c.lendable)) {
             let (a, b) = ((c.ax, c.ay), (c.bx, c.by));
             if [a, b].iter().all(|&(x, y)| self.height_ground(x, y) >= self.march_waterline(x, y)) && walk(a, b) { deck_nodes.extend([a, b]); }
         }
@@ -611,7 +629,12 @@ impl World {
                 for (di, dj) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                     let (a, b) = (ci + di, cj + dj); if a < 0 || b < 0 || a >= NC || b >= NC { continue; }
                     let k = (b * NC + a) as usize; let Some(kl) = local(k) else { continue };
-                    let step = match cl(k) { Cl::Block => continue, Cl::Free(c) => c, Cl::Water => if no_water { continue } else { 16.0 } };
+                    let step = match cl(k) {
+                        Cl::Block => continue, Cl::Free(c) => c,
+                        Cl::Water if no_water => continue,
+                        Cl::Water if water == WaterTravel::BridgeShortcut => 2.5,
+                        Cl::Water => 16.0,
+                    };
                     if di != 0 && dj != 0 {   // no cutting corners through blocked cells
                         if [(cj * NC + a) as usize, (b * NC + ci) as usize].iter().any(|&k| cl(k) == Cl::Block || (no_water && cl(k) == Cl::Water)) { continue; }
                     }
@@ -736,6 +759,11 @@ impl World {
         if m == f32::MAX { 3.0 } else { m * 1.65 }
     }
 
+    fn army_walk_speed(&self, base: f32, x: f32, y: f32, forest: f32, road: bool) -> f32 {
+        let familiarity = if self.in_territory_by(x, y, false) { HOME_MARCH_SPEED } else { 1.0 };
+        base * familiarity * if road { ARMY_ROAD_SPEED } else { 1.0 / (1.0 + 0.06 * forest) }
+    }
+
     /// Who marches as the army proper and who apart from it. With foot soldiers along, knights and siege engines each make a group of their own; an army of riders or engines alone is one body.
     pub(crate) fn split_groups(units: &[u32; NK]) -> ([u32; NK], Vec<[u32; NK]>) {
         if units[0] + units[1] + units[2] == 0 || units[3] + units[4] + units[5] == 0 { return (*units, vec![]); }
@@ -828,7 +856,7 @@ impl World {
         }).collect();
         nodes.sort_by(|a, b| a.0.total_cmp(&b.0));
         let entry = nodes.iter().find(|&&(_, p)| walk(spawn, p)).or_else(|| {
-            nodes.iter().take(5).find(|&&(_, p)| walk(p, p) && self.route_in_window(&[1, 0, 0, 0, 0, 0], spawn.0, spawn.1, p.0, p.1, 12.0, true, 0).is_ok())
+            nodes.iter().take(5).find(|&&(_, p)| walk(p, p) && self.route_in_window(&[1, 0, 0, 0, 0, 0], spawn.0, spawn.1, p.0, p.1, 12.0, WaterTravel::Dry, 0).is_ok())
         });
         let (x, y) = entry.map_or(spawn, |&(_, p)| p);
         let mut file = MarchFile::default();
@@ -976,7 +1004,7 @@ impl World {
                             }
                             if cut { self.map_ver += 1; }
                         }
-                        d.speed = base / (1.0 + 0.06 * dens) * if on_road { crate::pathnet::ROAD_SPEED } else { 1.0 } * if cut { 0.8 } else { 1.0 };
+                        d.speed = self.army_walk_speed(base, d.x, d.y, dens, on_road) * if cut { 0.8 } else { 1.0 };
                         blocked = Self::advance_path(&mut d, |a, b| leg(self, a, b)) == Leg::Blocked;
                     }
                     1 => {
@@ -1077,7 +1105,7 @@ impl World {
         if !g.file.release(Self::march_speed(&g.units)) { return Leg::Clear; }
         g.file.record(g.x, g.y, 0);
         let dens = ns.dens_at(g.x, g.y) as f32;
-        g.speed = Self::march_speed(&g.units) / (1.0 + 0.06 * dens) * if self.on_road(g.x, g.y) { crate::pathnet::ROAD_SPEED } else { 1.0 };
+        g.speed = self.army_walk_speed(Self::march_speed(&g.units), g.x, g.y, dens, self.on_road(g.x, g.y));
         let mut left = g.speed; let mut moved = false;
         while left > 1e-4 && g.wi < g.path.len() {
             let wp = g.path[g.wi];
@@ -1134,7 +1162,12 @@ impl World {
                 for w in &p {
                     let len = ((w.x - prev.0).powi(2) + (w.y - prev.1).powi(2)).sqrt();
                     match w.mode {
-                        0 => t += len / base, 1 => t += len / (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base),
+                        0 if len > 0.0 => {
+                            let (x, y) = ((prev.0 + w.x) * 0.5, (prev.1 + w.y) * 0.5);
+                            t += len / self.army_walk_speed(base, x, y, 0.0, self.on_road(x, y));
+                        }
+                        0 => {}
+                        1 => t += len / (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base),
                         _ => if len <= BRIDGE_MAX { planks += (len * 1.5).ceil() as i32; t += len * 2.5 / workers.max(1.0).powf(0.8) + len / (base * 0.8); } else { wood += 10 + total as i32 / 3; t += 6.0 + len / 2.4; },
                     }
                     prev = (w.x, w.y);

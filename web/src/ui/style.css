@@ -168,6 +168,9 @@ table.res td.r { text-align: right; }
 #battle-acts { display: flex; gap: 8px; justify-content: center; margin-top: 6px; }
 #battle-acts:empty { display: none; }
 #battle-acts .pbtn { font-size: 13px; padding: 3px 10px; letter-spacing: 0; }
+#battle-orders:not([hidden]) { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; margin-top: 6px; }
+#battle-orders .pbtn, #battle-orders select { font-size: 12px; padding: 3px 7px; letter-spacing: 0; }
+#military-upgrades .card { grid-template-columns: minmax(0, 1fr) auto; align-items: center; cursor: default; }
 #battle .bossstrip { display: block; margin-top: 4px; font-family: var(--f-ui); font-size: 13px; letter-spacing: 0; color: #ffe2c0; }
 #battle .bossstrip .gi { vertical-align: -3px; }
 #battle .bossstrip i, #bossbar i { display: block; height: 6px; margin-top: 3px; background: #2a0e0a; border: 1px solid #000a; border-radius: 3px; overflow: hidden; }

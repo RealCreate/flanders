@@ -1,6 +1,7 @@
 //! Battles, fire and terrain damage. Everything here is deterministic: a battle is a pure function of the
 //! village state, the attacking army and the RNG stream, so every peer replaying the same commands sees the same fight.
 use super::*;
+use crate::tactics::{self, Strike, Tactics};
 use crate::military::*;
 
 const SUBSTEP: f32 = 0.25;
@@ -185,7 +186,7 @@ impl World {
             }
         }
         let ladders = if atk[0] + atk[2] > 0 { ((atk[0] + atk[2]) / 4).max(1) } else { 0 };
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4, bought: false, bought_t: 0.0 });
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4, bought: false, bought_t: 0.0, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
         let fixed = self.bridge_points();
         if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);
@@ -202,7 +203,9 @@ impl World {
         let st = unit_stat(&b.units[j]);
         let boss = b.units[j].boss;
         let plate = if boss > 0 && !siege { let bd = &BOSSES[(boss - 1) as usize]; if bd.heavy > 0.0 && dmg < bd.heavy { bd.soft } else { 1.0 } } else { 1.0 };
-        let d = (dmg * (1.0 - st.armor * 0.1)).max(1.0) * plate * if b.units[j].elev > 0.0 { 0.8 } else { 1.0 } * if b.units[j].wading { WADE_DAMAGE } else { 1.0 };
+        let tech = b.tactics.tech_for(&b.units[j]);
+        let armor = st.armor + if tech & tactics::PADDED_ARMOR != 0 { 1.0 } else { 0.0 } + if tech & tactics::MAIL_ARMOR != 0 { 1.4 } else { 0.0 };
+        let d = (dmg * (1.0 - armor * 0.1)).max(1.0) * plate * if b.units[j].elev > 0.0 { 0.8 } else { 1.0 } * if b.units[j].wading { WADE_DAMAGE } else { 1.0 };
         b.units[j].hp -= d;
         if boss > 0 && b.units[j].phase == 0 && b.units[j].hp > 0.0 && b.units[j].hp < b.units[j].maxhp * BOSSES[(boss - 1) as usize].rage_at { b.units[j].phase = 1; }
         if b.units[j].hp <= 0.0 && b.units[j].alive {
@@ -326,6 +329,7 @@ impl World {
         let dt = SUBSTEP;
         b.t += dt;
         if b.bought { Self::bribed_substep(&mut b, dt); self.battle = Some(b); self.check_battle_end(); return; }
+        Self::battle_strikes(&mut b);
         let n = b.units.len();
         let mut impacts: Vec<(f32, f32)> = vec![];
         let mut ignites: Vec<usize> = vec![];
@@ -349,7 +353,12 @@ impl World {
         for i in 0..n {
             if !b.units[i].alive { continue; }
             let u = b.units[i].clone();
-            let ud = &unit_stat(&u);
+            let tech = b.tactics.tech_for(&u);
+            let mut stats = unit_stat(&u);
+            if u.kind == 1 && !u.held { stats.range += 2.5; }
+            if u.kind == 3 && tech & tactics::CAVALRY_TACK != 0 { stats.speed *= 1.15; }
+            if u.kind == 4 && tech & tactics::SIEGE_SLINGS != 0 { stats.range *= 1.2; stats.cd *= 0.85; }
+            let ud = &stats;
             // morale: a unit running away does not fight; once clear of the field it is gone (alive, but out of the battle)
             if b.rout[i] > 0.0 {
                 b.rout[i] -= dt;
@@ -383,11 +392,18 @@ impl World {
             // nearest enemy
             let tower_guard = tower_guards[i];
             let (from_x, from_y) = if tower_guard { (u.hx, u.hy) } else { (u.x, u.y) };
-            let (mut best, mut bd) = (usize::MAX, f32::MAX);
+            let order = b.tactics.order_for(&u, tower_guard);
+            let ordered = (order.x, order.y);
+            let distance_to_order = (ordered.0 - u.x).hypot(ordered.1 - u.y);
+            let (mut best, mut bd, mut score) = (usize::MAX, f32::MAX, f32::MAX);
             for j in 0..n {
                 if !b.units[j].alive || b.units[j].side == u.side { continue; }
-                let d = (b.units[j].x - from_x).powi(2) + (b.units[j].y - from_y).powi(2);
-                if d < bd { bd = d; best = j; }
+                let foe = &b.units[j];
+                let d = (foe.x - from_x).powi(2) + (foe.y - from_y).powi(2);
+                let near_order = if order.mode == 0 { 0.0 } else { (foe.x - ordered.0).powi(2) + (foe.y - ordered.1).powi(2) };
+                let priority = if order.mode == tactics::FOCUS { d + 1.8 * near_order } else { d };
+                if matches!(order.mode, tactics::HOLD | tactics::FALL_BACK) && near_order > (ud.range + 5.0).powi(2) { continue; }
+                if priority < score { bd = d; score = priority; best = j; }
             }
             let d_enemy = bd.sqrt();
             let siege = u.kind == 4;
@@ -397,13 +413,24 @@ impl World {
             let rng = if tower_guard { radii::TOWER_RANGE } else if b.units[i].elev > 0.0 { ud.range * radii::WALL_HEIGHT_RANGE } else { ud.range };
             let aggro = if tower_guard { rng } else if u.side == 1 { 26.0 } else if u.held { rng.max(ud.range + 5.0) } else { 34.0 };
             let pinned = (tower_guard || b.units[i].elev > 0.0) && d_enemy > rng;
+            let move_to_order = match order.mode {
+                tactics::FALL_BACK => distance_to_order > 5.0,
+                tactics::HOLD => distance_to_order > 6.0 && d_enemy > rng,
+                tactics::FOCUS => distance_to_order > 5.0 && d_enemy > aggro.max(rng),
+                _ => false,
+            };
+            if move_to_order {
+                let step = (ud.speed * dt).min(distance_to_order);
+                self.battle_move(&mut b, i, ordered, step, &bars, &wet, &cr, &mut want, &mut dmg_b);
+                continue;
+            }
             // catapults on the defending side lob stones at whoever comes into range
             if siege && u.side == 0 {
                 if best != usize::MAX && d_enemy <= ud.range && b.units[i].cd <= 0.0 {
                     let (tx, ty) = (b.units[best].x, b.units[best].y);
                     b.units[i].face = (ty - u.y).atan2(tx - u.x); b.units[i].cd = ud.cd; b.units[i].anim = 0.4;
                     shots.push([1.0, u.x, u.y, tx, ty, 0.0, u.kind as f32]);
-                    if self.rf() < 0.7 { Self::damage_from(&mut b, best, ud.dmg, true); for j in 0..n { if j != best && b.units[j].alive && b.units[j].side == 1 && (b.units[j].x - tx).powi(2) + (b.units[j].y - ty).powi(2) < 9.0 { Self::damage_from(&mut b, j, 30.0, true); } } }
+                    if self.rf() < 0.7 { b.tactics.strikes.push(Strike { attacker: i, target: best, at: b.t + (d_enemy / 15.0).max(0.35), dmg: ud.dmg, x: tx, y: ty, reach: 3.0, kind: 2, splash: 30.0 }); }
                 }
                 continue;
             }
@@ -417,28 +444,46 @@ impl World {
             let ram_atk = u.kind == RAM && u.side == 1;   // an attacking ram ignores soldiers and goes for the doors
             if best != usize::MAX && !siege && !ram_atk && d_enemy <= aggro && !pinned {
                 let (tx, ty) = (b.units[best].x, b.units[best].y);
+                let ranged = u.kind == 1;
+                let free = !tower_guard && u.elev <= 0.0 && !u.wading;
+                if ranged && free && d_enemy < rng * 0.60 && b.units[i].cd > 0.0 && order.mode != tactics::HOLD {
+                    let (dx, dy) = ((u.x - tx) / d_enemy.max(0.1), (u.y - ty) / d_enemy.max(0.1));
+                    let step = ud.speed * 0.7 * dt;
+                    self.skirmish_step(&mut b, i, (u.x + dx * step, u.y + dy * step), &bars, &wet, &cr);
+                    b.units[i].face = (ty - u.y).atan2(tx - u.x);
+                    continue;
+                }
                 if d_enemy <= rng && !(u.side == 1 && b.units[i].wading) {
                     b.units[i].face = (ty - u.y).atan2(tx - u.x);
                     if b.units[i].cd <= 0.0 {
-                        let mult = if b.units[i].charge { 1.7 } else { 1.0 };
+                        let charge = if u.charge { if tech & tactics::CAVALRY_TACK != 0 { 2.0 } else { 1.7 } } else { 1.0 };
+                        let weapon = match u.kind {
+                            0 if b.units[best].kind == 3 => if tech & tactics::SPEAR_DRILL != 0 { 1.75 } else { 1.25 },
+                            1 if tech & tactics::FIRE_ARROWS != 0 => 1.20,
+                            2 if tech & tactics::TEMPERED_BLADES != 0 => 1.25,
+                            _ => 1.0,
+                        };
+                        let rear = tactics::rear_attack(&u, &b.units[best]);
                         b.units[i].charge = false;
-                        let hit = ud.range < 5.0 || self.rf() < if b.units[best].wading { WADE_HIT } else { HIT_CHANCE };
-                        if hit { Self::damage_unit(&mut b, best, ud.dmg * mult * if u.side == 0 { hero_mult } else if u.soak > 0.0 { SOAK_DAMAGE } else { 1.0 }); }
-                        b.units[i].cd = ud.cd; b.units[i].anim = 0.35;
-                        if ud.range > 5.0 { shots.push([0.0, u.x, u.y, tx, ty, 0.0, u.kind as f32]); }
+                        let hit = !ranged || self.rf() < if b.units[best].wading { WADE_HIT } else { HIT_CHANCE };
+                        if hit {
+                            let dmg = ud.dmg * charge * weapon * rear * if u.side == 0 { hero_mult } else if u.soak > 0.0 { SOAK_DAMAGE } else { 1.0 };
+                            let (at, reach) = if ranged { ((d_enemy / 30.0).max(0.35), 1.7) } else { (0.25, rng + 0.65) };
+                            b.tactics.strikes.push(Strike { attacker: i, target: best, at: b.t + at, dmg, x: tx, y: ty, reach, kind: ranged as u8, splash: 0.0 });
+                        }
+                        b.units[i].cd = ud.cd; b.units[i].anim = 0.55;
+                        if ranged { shots.push([0.0, u.x, u.y, tx, ty, (tech & tactics::FIRE_ARROWS != 0) as u8 as f32, u.kind as f32]); }
+                    } else if free && u.kind == 3 && u.boss == 0 && d_enemy > 0.25 && order.mode != tactics::HOLD {
+                        self.circle_foe(&mut b, i, (tx, ty), d_enemy, ud.speed * dt, &bars, &wet, &cr);
                     }
                 } else {
-                    let (mx, my) = ((tx - u.x) / d_enemy.max(0.1), (ty - u.y) / d_enemy.max(0.1));
-                    if u.side == 1 {
-                        let before = self.felled.len();
-                        let blocked = Self::attacker_step(&mut b, i, mx, my, ud.speed * dt, &bars, &wet, self.seed, &mut self.felled);
-                        if self.felled.len() > before { self.map_ver += 1; }
-                        if let Some(blk) = blocked { self.on_block(&mut b, i, blk, &bars, &mut dmg_b, dt); }
-                    } else { let _ = (mx, my); Self::own_walk(&mut b, i, tx, ty, ud.speed * dt, &wet, &cr, &mut want); }
+                    let stride = if ranged { (d_enemy - rng + 0.25).clamp(0.0, ud.speed * dt) } else { ud.speed * dt };
+                    self.battle_move(&mut b, i, (tx, ty), stride, &bars, &wet, &cr, &mut want, &mut dmg_b);
                 }
                 acted = true;
             }
             if acted || tower_guard { continue; }
+            if matches!(order.mode, tactics::HOLD | tactics::FALL_BACK) && distance_to_order <= 6.0 { continue; }
             if u.side == 1 && b.lair < 0 {
                 // attackers go for the nearest building
                 let mut tb = usize::MAX; let mut td = f32::MAX;
@@ -459,12 +504,13 @@ impl World {
                 if d <= reach && !b.units[i].wading {
                     b.units[i].face = (by - u.y).atan2(bx - u.x);
                     if b.units[i].cd <= 0.0 {
-                        let (mult, fire) = if siege { (3.2, 0.3) } else if hurls { (BOSSES[(u.boss - 1) as usize].boulder, 0.1) } else if u.kind == RAM { (ram_mult(self.buildings[tb].kind), 0.0) } else if ud.range > 5.0 { (0.25, 0.08) } else { (0.7, 0.05) };
+                        let flaming = u.kind == 1 && tech & tactics::FIRE_ARROWS != 0;
+                        let (mult, fire) = if siege { (3.2, 0.3) } else if hurls { (BOSSES[(u.boss - 1) as usize].boulder, 0.1) } else if u.kind == RAM { (ram_mult(self.buildings[tb].kind) * if tech & tactics::RAM_SHOES != 0 { 1.3 } else { 1.0 }, 0.0) } else if u.kind == 1 { (0.25, if flaming { 0.32 } else { 0.0 }) } else { (0.7, 0.05) };
                         dmg_b.push((tb, ud.dmg * mult));
                         let fl = flammability(self.buildings[tb].kind, self.buildings[tb].tier);
                         if self.rf() < fire * (0.4 + fl) { ignites.push(tb); }
                         b.units[i].cd = ud.cd; b.units[i].anim = 0.4;
-                        if ud.range > 5.0 || hurls { shots.push([if siege || hurls { 1.0 } else { 0.0 }, u.x, u.y, bx, by, if self.rf() < 0.5 { 1.0 } else { 0.0 }, u.kind as f32]); }
+                        if ud.range > 5.0 || hurls { shots.push([if siege || hurls { 1.0 } else { 0.0 }, u.x, u.y, bx, by, flaming as u8 as f32, u.kind as f32]); }
                         if siege { impacts.push((bx + (self.rf() - 0.5) * 3.0, by + (self.rf() - 0.5) * 3.0)); }
                     }
                 } else {
@@ -508,6 +554,46 @@ impl World {
         self.battle = Some(b);
         self.collect_destroyed();
         self.check_battle_end();
+    }
+
+    fn battle_move(&mut self, b: &mut Battle, i: usize, to: (f32, f32), step: f32, bars: &[(usize, f32, f32, f32, u8)], wet: &[(f32, f32, f32)], cr: &[crate::lend::Cross], want: &mut Vec<u32>, damage: &mut Vec<(usize, f32)>) {
+        let u = &b.units[i];
+        if u.side == 0 {
+            Self::own_walk(b, i, to.0, to.1, step, wet, cr, want);
+            return;
+        }
+        let (dx, dy) = (to.0 - u.x, to.1 - u.y);
+        let len = dx.hypot(dy);
+        if len < 1e-3 { return; }
+        let before = self.felled.len();
+        let blocked = Self::attacker_step(b, i, dx / len, dy / len, step.min(len), bars, wet, self.seed, &mut self.felled);
+        if self.felled.len() > before { self.map_ver += 1; }
+        if let Some(blk) = blocked { self.on_block(b, i, blk, bars, damage, SUBSTEP); }
+    }
+
+    fn skirmish_step(&self, b: &mut Battle, i: usize, to: (f32, f32), bars: &[(usize, f32, f32, f32, u8)], wet: &[(f32, f32, f32)], cr: &[crate::lend::Cross]) -> bool {
+        let u = &b.units[i];
+        let (x, y) = to;
+        if bars.iter().any(|&(_, bx, by, r, _)| (bx - x).hypot(by - y) < r + 0.6)
+            || Self::own_wet(b, wet, cr, x, y)
+            || (self.height_ground(x, y) < self.march_waterline(x, y) && !cr.iter().any(|c| c.down && c.on(x, y)))
+            || (self.height_ground(u.x, u.y) - self.height_ground(x, y)).abs() > 1.1
+            || !self.obst().solid_clear((u.x, u.y), to, crate::members::FOOT_MARGIN) { return false; }
+        (b.units[i].x, b.units[i].y) = to;
+        true
+    }
+
+    fn circle_foe(&self, b: &mut Battle, i: usize, target: (f32, f32), distance: f32, stride: f32, bars: &[(usize, f32, f32, f32, u8)], wet: &[(f32, f32, f32)], cr: &[crate::lend::Cross]) {
+        let u = &b.units[i];
+        let (dx, dy) = (u.x - target.0, u.y - target.1);
+        let angle = (stride / distance).min(0.44) * if i % 2 == 0 { 1.0 } else { -1.0 };
+        let (sin, cos) = angle.sin_cos();
+        let radius = (distance + (2.6 - distance) * 0.45) / distance;
+        let orbit = |sin| (target.0 + radius * (dx * cos - dy * sin), target.1 + radius * (dx * sin + dy * cos));
+        let (a, z, x, y) = (orbit(sin), orbit(-sin), u.x, u.y);
+        if self.skirmish_step(b, i, a, bars, wet, cr) || self.skirmish_step(b, i, z, bars, wet, cr) {
+            b.units[i].face = (b.units[i].y - y).atan2(b.units[i].x - x);
+        }
     }
 
     /// Bosses' own clocks and powers, once a step before anyone moves: the war horn (returns the horns now sounding: x, y, reach, haste) and the slam.
@@ -673,7 +759,7 @@ impl World {
             i -= 1;
             let u = &b.units[i];
             if u.side == 0 && u.from_army && u.alive && (u.kind as usize) < NK && left[u.kind as usize] > 0 {
-                left[u.kind as usize] -= 1; b.units.remove(i); if i < b.rout.len() { b.rout.remove(i); }
+                left[u.kind as usize] -= 1; b.remove_unit(i);
                 b.start_side[0] = b.start_side[0].saturating_sub(1);
             }
         }
@@ -751,7 +837,7 @@ impl World {
         if let Some(b) = self.battle.as_mut() {
             let n = Self::det_soldiers(b, id);
             let mut k = b.units.len();
-            while k > 0 { k -= 1; if b.units[k].det == id { if b.units[k].side == 0 && b.units[k].alive { b.start_side[0] = b.start_side[0].saturating_sub(1); } b.units.remove(k); if k < b.rout.len() { b.rout.remove(k); } } }
+            while k > 0 { k -= 1; if b.units[k].det == id { if b.units[k].side == 0 && b.units[k].alive { b.start_side[0] = b.start_side[0].saturating_sub(1); } b.remove_unit(k); } }
             self.dets[i].units = n;
         }
         let d = &mut self.dets[i]; d.state = march::S_IDLE; d.defend = false; d.path.clear(); d.grp.clear(); d.file = Default::default();
@@ -794,13 +880,19 @@ impl World {
     }
 
     fn finish_battle(&mut self) {
+        self.last_battle_frame = self.battle_units_flat();
         let Some(b) = self.battle.take() else { return };
         // field armies that fought come out of it with the soldiers who survived
         for d in self.dets.iter_mut().filter(|d| d.state == march::S_FIGHT) {
             d.units = Self::det_soldiers(&b, d.id); d.state = march::S_IDLE; d.defend = false;
             let (mut sx, mut sy, mut n) = (0.0f32, 0.0f32, 0.0f32);
-            for u in b.units.iter().filter(|u| u.det == d.id && (u.alive || u.escaped)) { sx += u.x; sy += u.y; n += 1.0; }
-            if n > 0.0 { d.x = sx / n; d.y = sy / n; }
+            let survivors = || b.units.iter().filter(|u| u.det == d.id && (u.alive || u.escaped));
+            for u in survivors() { sx += u.x; sy += u.y; n += 1.0; }
+            if n > 0.0 {
+                // Rally at a real survivor's position. The mean can sit in water or far from the lair when archers spread out.
+                let [x, y] = if b.lair >= 0 && !b.units.iter().any(|u| u.side == 1 && u.alive) { b.lair_at } else { [sx / n, sy / n] };
+                if let Some(u) = survivors().min_by(|a, q| ((a.x - x).powi(2) + (a.y - y).powi(2)).total_cmp(&((q.x - x).powi(2) + (q.y - y).powi(2)))) { d.x = u.x; d.y = u.y; }
+            }
         }
         self.dets.retain(|d| d.units.iter().sum::<u32>() > 0);
         let atk_alive = b.units.iter().filter(|u| u.side == 1 && u.alive).count() as u32;
@@ -860,7 +952,7 @@ impl World {
             units.push(Unit::new(1, kind as u8, nx + a.cos() * r, ny + a.sin() * r, face + std::f32::consts::PI)); j += 1;
         } }
         let n1 = units.len() as u32;
-        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0 });
+        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
         self.det_join(di);
         self.push_event(EV_LAIR, ni as i32, 0);
         true

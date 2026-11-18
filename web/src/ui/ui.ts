@@ -53,6 +53,8 @@ export interface Handlers {
   toggleCoverage(): void;
   minimapClick(x: number, z: number): void;
   train(kind: number, n: number): void;
+  research(id: number): void;
+  bridgeShortcuts(on: boolean): void;
   attack(peerKey: string, units: number[]): void;
   /** March the armies that are selected on the map on a rival village. */
   attackSelected(peerKey: string): void;
@@ -81,7 +83,10 @@ export interface Hud {
   work?: { rows: WorkRow[]; totals: WorkTotals };
   winter?: number[];   // the core's winter_numbers()
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
+  militaryTech: number; bridgeShortcuts: boolean;
 }
+
+interface MilitaryUpgrade { id: number; name: string; desc: string; tier: number; prereq: number; cost: [number, number][] }
 
 export interface PeerRow { key: string; name: string; where?: string; online?: boolean; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
@@ -102,6 +107,7 @@ export class UI {
   private logCount = 0;
   private peers: PeerRow[] = [];
   private armyShown = '';
+  private militaryUpgrades: MilitaryUpgrade[] = [];
 
   constructor(private h: Handlers, world: string, name: string) {
     document.getElementById('app')!.innerHTML = this.template(world, name);
@@ -173,6 +179,7 @@ export class UI {
     <div class="sect"><h3>Field armies</h3>
       <div id="det-list" class="armies"></div>
       <p class="muted tiny">Click an army's banner (or press <b>Tab</b>) to select it, then <b>right-click</b> the ground to march. <b>G</b> halts it, <b>B</b> sends it home. Armies walk round buildings, fell trees in their way and bridge or ferry over water.</p>
+      <label class="tiny" title="Armies may spend planks to shorten new routes across water. With shortcuts off, they build only if no route over land or an existing bridge is available."><input id="army-bridging" type="checkbox"> Allow automatic bridge shortcuts</label>
     </div>
     <div class="sect" id="attack-box"><h3>Rival villages</h3><div id="attack-form"></div></div>
     <details class="sect" id="muster-box"><summary>Muster a new army</summary>
@@ -181,6 +188,7 @@ export class UI {
       <div class="btnrow"><button class="pbtn" id="muster-go">${bi('muster')} Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
     </details>
     <details class="sect" open><summary>Train soldiers</summary><div class="cards" id="unit-cards"></div></details>
+    <details class="sect"><summary>Armory upgrades</summary><div class="cards" id="military-upgrades"></div></details>
     <p class="muted tiny">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
   </section>
   <section class="pane" id="pane-village">
@@ -329,11 +337,13 @@ export class UI {
     $('tabs').onclick = e => { const t = (e.target as HTMLElement).dataset.t; if (t) this.setTab(t); };
     $('cats').innerHTML = `<button class="chip on" data-c="-1">All</button>` + CATS.map((c, i) => `<button class="chip" data-c="${i}">${bi(c.icon, 15)} ${c.name}</button>`).join('');
     $('cats').onclick = e => {
-      const c = (e.target as HTMLElement).dataset.c; if (c === undefined) return;
+      const c = (e.target as HTMLElement).closest<HTMLElement>('[data-c]')?.dataset.c; if (c === undefined) return;
       this.filter = Number(c);
       $('cats').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', (x as HTMLElement).dataset.c === c));
-      this.cards.forEach((el, id) => { const road = id === 37 || id === 38; el.hidden = this.filter >= 0 && (this.filter === 7 ? !road : road || (defs[id]?.cat ?? CATS.length - 1) !== this.filter); });   // the Roads tab holds the road and the bridge only
+      this.cards.forEach((el, id) => { const cat = id === LEVEL_TOOL ? defs[33].cat : id === 37 || id === 38 ? 7 : defs[id].cat; el.hidden = this.filter >= 0 && cat !== this.filter; });
     };
+    $('army-bridging').onchange = e => this.h.bridgeShortcuts((e.target as HTMLInputElement).checked);
+    $('military-upgrades').onclick = e => { const id = (e.target as HTMLElement).closest('button')?.dataset.research; if (id !== undefined) this.h.research(Number(id)); };
     $('speed').onclick = e => { const s = (e.target as HTMLElement).dataset.s; if (s !== undefined) this.h.speed(Number(s)); };
     { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
       btn.onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); };
@@ -567,7 +577,7 @@ export class UI {
       c.onclick = () => this.h.select(d.id);
       el.appendChild(c); this.cards.set(d.id, c);
     });
-    // the level-ground tool sits last, with the other tools of the Land category
+    // Level Ground belongs with the terrain tools, even though it has no building definition.
     const lc = document.createElement('div');
     lc.className = 'card'; lc.dataset.id = String(LEVEL_TOOL);
     lc.innerHTML = `<div class="ico">${icon('levelground', 30)}</div><div><div class="nm"><span>Level Ground</span></div>
@@ -594,6 +604,11 @@ export class UI {
       c.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-train]'); if (b) this.h.train(u.id, Number(b.dataset.train)); };
       el.appendChild(c);
     });
+  }
+
+  setMilitaryUpgrades(upgrades: MilitaryUpgrade[]) {
+    this.militaryUpgrades = upgrades;
+    $('military-upgrades').innerHTML = upgrades.map(u => `<div class="card"><div><div class="nm">${esc(u.name)}</div><div class="ds">${esc(u.desc)}</div><div class="cost">${u.cost.map(([r, n]) => `<span>${resIcon(r)} ${n}</span>`).join('')}</div></div><button class="pbtn" data-research="${u.id}">Research</button></div>`).join('');
   }
 
   private io(d: BuildingDef) {
@@ -801,6 +816,13 @@ export class UI {
     // army tab
     $('army-stats').innerHTML = h.army.map((n, i) => `<div class="stat"><b>${n}</b><span>${unitIcon(i, 16)} ${units[i].name}${h.queued[i] ? ` (+${h.queued[i]})` : ''}${h.away[i] ? ` · ${h.away[i]} away` : ''}</span></div>`).join('');
     $('army-info').innerHTML = `${h.guards} guards defend your towers and hall for free. ` + (h.barracks < 0 ? '<b>Build a Barracks to train soldiers.</b>' : `Your barracks is tier ${h.barracks + 1}.`) + ` Soldiers eat grain.`;
+    ($('army-bridging') as HTMLInputElement).checked = h.bridgeShortcuts;
+    $('military-upgrades').querySelectorAll<HTMLButtonElement>('[data-research]').forEach(btn => {
+      const u = this.militaryUpgrades[Number(btn.dataset.research)];
+      const done = (h.militaryTech & (1 << u.id)) !== 0;
+      const lock = h.barracks < u.tier ? `Barracks tier ${u.tier + 1} required` : (h.militaryTech & u.prereq) !== u.prereq ? 'Requires Padded armor' : u.cost.some(([r, n]) => h.stocks[r] < n) ? 'Insufficient supplies' : '';
+      btn.disabled = done || !!lock; btn.textContent = done ? 'Researched' : 'Research'; btn.title = done ? 'Upgrade equipped' : lock;
+    });
     document.querySelectorAll<HTMLElement>('#unit-cards .card').forEach(c => { const u = units[Number(c.dataset.u)]; c.classList.toggle('locked', h.barracks < u.tier); });
   }
 
@@ -851,11 +873,20 @@ export class UI {
 
   /** The red banner while a fight is on. */
   /** The attack banner. With `onClick` it is a button (e.g. to look at where the attackers are). */
-  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = []) {
+  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = [], order?: (group: number, mode: number) => void) {
     const b = $('battle'); b.hidden = !text;
     if (!text) return;
     let body = document.getElementById('battle-text'), bar = document.getElementById('battle-acts');
-    if (!body || !bar) { b.innerHTML = '<div id="battle-text"></div><div id="battle-acts"></div>'; body = $('battle-text'); bar = $('battle-acts'); }
+    if (!body || !bar) {
+      b.innerHTML = `<div id="battle-text"></div><div id="battle-acts"></div><div id="battle-orders" hidden>
+        <select id="battle-group" aria-label="Troop group"><option value="4">All troops</option><option value="0">Infantry</option><option value="1">Archers</option><option value="2">Knights</option><option value="3">Siege</option></select>
+        <button class="pbtn" data-order="1" title="Move to a point and guard it">Hold</button>
+        <button class="pbtn" data-order="2" title="Advance and focus on enemies near the point">Attack here</button>
+        <button class="pbtn" data-order="3" title="Break contact and regroup at a point">Fall back</button>
+        <button class="pbtn" data-order="0" title="Clear the selected troop group's order">Clear order</button>
+        </div>`;
+      body = $('battle-text'); bar = $('battle-acts');
+    }
     body.innerHTML = text;   // (the text changes every second; the buttons are only rebuilt when they change, so a click is never lost to a refresh)
     const sig = actions.map(a => a.label + (a.disabled ? '!' : '')).join('|');
     if (bar.dataset.sig !== sig) {
@@ -863,6 +894,8 @@ export class UI {
       for (const a of actions) { const btn = document.createElement('button'); btn.className = 'pbtn'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.disabled = !!a.disabled; btn.dataset.label = a.label; bar.appendChild(btn); }
     }
     bar.onclick = e => { const t = (e.target as HTMLElement).closest('button'); if (!t) return; e.stopPropagation(); const act = actions.find(a => a.label === t.dataset.label); if (act && !act.disabled) act.run(); };
+    $('battle-orders').hidden = !order;
+    $('battle-orders').onclick = e => { const mode = (e.target as HTMLElement).closest('button')?.dataset.order; if (mode !== undefined) order?.(Number(($('battle-group') as HTMLSelectElement).value), Number(mode)); };
     b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
   }
   private armyNow: number[] = [];

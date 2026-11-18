@@ -182,6 +182,7 @@ export class Village {
     const fighting = w.battle_active();
     if (fighting) this.army.foe = pickFoe(this.army.friend, this.foeColor(w.battle_tag()) ?? 0x4a3a2a);
     this.army.moats = this.field.moats = w.moat_water_flat();
+    if (!fighting) { const last = w.take_last_battle_frame(); if (this.army.battle && last.length) this.army.syncBattle(last); }
     this.army.syncBattle(fighting ? w.battle_units_flat() : new Float32Array(0));
     this.army.syncSiegeWorks(fighting ? w.battle_ladders_flat() : new Float32Array(0), fighting ? w.battle_bridges_flat() : new Float32Array(0));
     this.people.hidden = fighting; this.view.raised = fighting;

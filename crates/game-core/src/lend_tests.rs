@@ -126,6 +126,23 @@ fn with_no_drawbridge_a_narrow_moat_is_bridged_with_planks() {
 }
 
 #[test]
+fn field_orders_go_round_a_canal_unless_bridge_shortcuts_are_enabled() {
+    let mut w = World::new(1337, 0, 0);
+    w.stock = [30_000; N_RES];
+    w.cheat(3, 0, 0);
+    assert_eq!(w.flatten(85, 5.0), 0);
+    let items: Vec<_> = (-28..=68).step_by(4).flat_map(|x| [MOAT as i32, x, 23, 1]).collect();
+    let placed = w.place_batch(&items);
+    assert!(placed.iter().filter(|&&v| v >= 0).count() >= 22, "canal pieces: {placed:?}");
+    let plan = |w: &World| w.plan_march(&[8, 0, 0, 0, 0, 0], 34.0, 12.0, 34.0, 34.0);
+    let dry = plan(&w);
+    assert_eq!((dry[0], dry[2], dry[3]), (1.0, 0.0, 0.0));
+    w.army_set_bridge_shortcuts(true);
+    let wet = plan(&w);
+    assert!(wet[0] == 1.0 && wet[2] > 0.0 && wet[3] == 0.0, "bridge shortcut: {wet:?}");
+}
+
+#[test]
 fn a_moat_too_wide_to_bridge_is_ferried_not_waded() {
     let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
     for (r, n) in [(24.0f32, 52usize), (29.0, 62), (34.0, 72), (39.0, 84)] { ring(&mut w, r, n, MOAT); }   // four moats one inside the other: water too wide for planks

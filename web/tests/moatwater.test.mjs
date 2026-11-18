@@ -1,8 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { moatSurface } from '../src/render/moatwater.ts';
+import { riverGrid } from '../src/render/rivergrid.ts';
 
 const step = 2.5;
+
+test('natural channel cells cover both banks without overlapping across terrain chunks', () => {
+  const mask = new Uint8Array(25); mask[12] = 1;
+  const left = riverGrid(mask, 5, step, 0.2, 0, 0, 2, 4);
+  const right = riverGrid(mask, 5, step, 0.2, 2, 0, 4, 4);
+  assert.equal(left.indices.length, 12);
+  assert.equal(right.indices.length, 12);
+  assert.ok(left.positions.filter((_, i) => i % 3 === 0).every(x => x <= 0));
+  assert.ok(right.positions.filter((_, i) => i % 3 === 0).every(x => x >= 0));
+});
 const triangles = ({ positions, indices }) => {
   const out = [];
   for (let i = 0; i < indices.length; i += 3) out.push(indices.slice(i, i + 3).map(index => positions.slice(index * 3, index * 3 + 3)));

@@ -13,7 +13,10 @@ export function applyCmd(w: World, c: Cmd) {
     case 'demolish': w.demolish(c.idx!); break;
     case 'train': w.train(c.kind!, c.x!); break;
     case 'attack': w.send_army(Uint32Array.from(c.units ?? [])); break;
-    case 'raid': w.start_raid(c.angle ?? 0, Uint32Array.from(c.units ?? []), c.tag ?? 1); break;
+    case 'raid': w.start_raid_equipped(c.angle ?? 0, Uint32Array.from(c.units ?? []), c.tag ?? 1, c.tech ?? 0); break;
+    case 'research': w.military_research(c.kind!); break;
+    case 'armybridge': w.army_set_bridge_shortcuts(c.kind === 1); break;
+    case 'battleorder': if (!c.to) w.battle_order(c.tag ?? 0, c.idx!, c.kind!, c.x ?? 0, c.y ?? 0); break;
     case 'cheat': w.cheat(c.kind ?? 0, c.x ?? 0, c.y ?? 0); break;
     case 'repair': w.repair(c.idx!); break;
     case 'garrison': w.garrison_set(c.idx!, c.kind ?? 0); break;
@@ -57,7 +60,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'sendatk': w.det_send(c.idx!); break;
     case 'defend': w.det_defend(c.idx!); break;   // a field army marches to the fight at home and joins the defenders
     case 'retreat': if (c.tag) w.battle_retreat(c.tag); break;   // (the attacker's own call has no `tag`: it is only a request, which the defender's village carries out and records with the tag)
-    case 'reinforce': if (c.tag) w.battle_reinforce(c.tag, Uint32Array.from(c.units ?? [])); break;
+    case 'reinforce': if (c.tag) w.battle_reinforce_equipped(c.tag, Uint32Array.from(c.units ?? []), c.tech ?? 0); break;
     case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
     case 'restart': w.restart(); break;   // the village starts again from nothing (the first command of a new epoch: see restart.ts)
     case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;

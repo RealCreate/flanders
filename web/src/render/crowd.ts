@@ -10,6 +10,7 @@ export interface Draw {
   phase: number;                      // walking: gait angle in radians (advances with distance walked); otherwise a clock in seconds
   speed?: number;                     // ground speed in units/s (drives stride length, knee bend, lean)
   swing?: number;                     // 0..1 remaining attack swing
+  flinch?: number;                    // 0..1 recoil after a hit
   body: number; legs?: number; skin: number;
   hat?: number; tool?: number; shield?: number; shieldCol?: number;
   dress?: boolean; mounted?: boolean; scale?: number; armor?: boolean;
@@ -53,7 +54,7 @@ const TOOLS: (() => THREE.BufferGeometry)[] = [
   () => merge([cyl(0.025, 0.025, 1.5, WOOD, 0, 0.5), box(0.28, 0.04, 0.04, IRON, 0, 1.25, 0), box(0.03, 0.22, 0.03, IRON, -0.12, 1.36, 0), box(0.03, 0.22, 0.03, IRON, 0, 1.36, 0), box(0.03, 0.22, 0.03, IRON, 0.12, 1.36, 0)]), // 4 pitchfork
   () => merge([cyl(0.025, 0.025, 1.9, WOOD, 0, 0.7), cone(0.05, 0.28, IRON, 0, 1.78, 0, 5)]),                                                              // 5 spear
   () => { const g = new THREE.TorusGeometry(0.46, 0.022, 5, 14, Math.PI); g.rotateZ(-Math.PI / 2); g.rotateY(Math.PI / 2); return merge([tint(g, WOOD), box(0.01, 0.9, 0.01, 0xd8d0b8, 0, 0, 0)]); }, // 6 bow
-  () => merge([box(0.06, 0.82, 0.02, 0xd6dae0, 0, 0.5, 0), box(0.28, 0.04, 0.05, 0x8a7a3a, 0, 0.1, 0), cyl(0.025, 0.025, 0.18, LEATHER, 0, 0, 0, 6)]),     // 7 sword
+  () => merge([box(0.073, 0.71, 0.025, 0xd6dae0, 0, 0.48, 0), cone(0.043, 0.17, 0xd6dae0, 0, 0.91, 0, 4), box(0.26, 0.04, 0.055, 0xb49a59, 0, 0.1, 0), cyl(0.026, 0.026, 0.18, LEATHER, 0, 0, 0, 6), cyl(0.042, 0.038, 0.05, IRON, 0, -0.12, 0, 8)]), // 7 sword
   () => merge([cyl(0.025, 0.025, 1.7, WOOD, 0, 0.5), T(tint(new THREE.SphereGeometry(0.07, 6, 5), 0xc8b070), 0, 1.38, 0)]),                                // 8 staff
   () => merge([cyl(0.025, 0.025, 1.0, WOOD, 0, 0.3), T(tint(new THREE.SphereGeometry(0.09, 6, 5), 0xff9a2a), 0, 0.85, 0)]),                              // 9 torch (glowing head)
   () => merge([cyl(0.15, 0.11, 0.26, 0x6a4a2e, 0, -0.16, 0.12, 10), cyl(0.155, 0.155, 0.03, IRON, 0, -0.05, 0.12, 10), cyl(0.13, 0.13, 0.02, 0x4a8ac8, 0, -0.03, 0.12, 10), box(0.3, 0.025, 0.025, IRON, 0, 0.0, 0.12)]), // 10 water bucket
@@ -184,7 +185,7 @@ export class Crowd {
     const A = walk ? clamp(0.26 + 0.17 * sp, 0.3, 1.0) : 0;
     const s = walk ? Math.sin(ph) : 0;
     const bob = walk ? Math.abs(Math.sin(ph)) * (0.02 + 0.014 * clamp(sp, 0, 5)) : 0;
-    const lean = (walk ? 0.03 + 0.13 * fast : 0) + (d.pose === 3 ? 0.1 : 0) + (d.pose === 2 ? 0.14 + 0.07 * Math.sin(ph * 6) : 0);
+    const lean = (walk ? 0.03 + 0.13 * fast : 0) + (d.pose === 3 ? 0.1 : 0) + (d.pose === 2 ? 0.14 + 0.07 * Math.sin(ph * 6) : 0) + (d.flinch ?? 0) * 0.27;
     const twist = walk ? 0.12 * s * (0.6 + fast) : 0;
     const idle = d.pose === 0 ? Math.sin(ph * 1.5) : 0;
 
@@ -242,7 +243,8 @@ export class Crowd {
     if (d.pose === 2) { const sw = Math.sin(ph * 6); uR = 0.9 + 0.7 * sw; eR = -(0.5 + 0.9 * pos(Math.sin(ph * 6 + 1))); uL = 0.5; eL = -0.6; }
     if (d.pose === 3) {
       const sw = d.swing ?? 0;
-      if (sw > 0) { const p = 1 - sw, k = Math.sin(p * Math.PI / 2); uR = 2.4 - 2.3 * k; eR = -0.9 * (1 - k); } else { uR = 1.0 + 0.1 * Math.sin(ph * 4); eR = -0.9; }
+      if (t === TOOL.SPEAR) { uR = 0.68 + 0.60 * Math.sin(sw * Math.PI); eR = -0.48; }
+      else if (sw > 0) { const p = 1 - sw, k = Math.sin(p * Math.PI / 2); uR = 2.4 - 2.3 * k; eR = -0.9 * (1 - k); } else { uR = 1.0 + 0.1 * Math.sin(ph * 4); eR = -0.9; }
       uL = 0.8; eL = -0.8;
     }
     if (dead) { uR = -0.2; uL = 0.3; eR = eL = -0.2; }
@@ -253,7 +255,11 @@ export class Crowd {
     this.frame(this.a1, this.Tm, 0.29, armY, 0, -uR); this.put(this.uArmR, this.n.arm, this.a1, d.body);
     this.frame(this.a2, this.a1, 0, -0.29, 0, eR); this.put(this.foreR, this.n.arm, this.a2, d.body);
     if (t > 0) {
-      this.frame(this.m, this.a2, 0, -0.3, 0.04, TOOL_ROT[t] + (t === TOOL.SWORD || t === TOOL.AXE || t === TOOL.CLUB ? -0.6 : t === TOOL.SPEAR || t === TOOL.FORK ? -0.9 : t === TOOL.BOW ? -1.2 : 0));
+      const swing = d.pose === 3 ? d.swing ?? 0 : 0;
+      const wrist = t === TOOL.SPEAR ? uR - eR + (d.pose === 3 ? 1.25 + 0.30 * Math.sin(swing * Math.PI) : 0.18)
+        : t === TOOL.SWORD ? uR - eR + (swing > 0 ? 1.85 - 2.5 * swing : 0.32)
+        : TOOL_ROT[t] + (t === TOOL.AXE || t === TOOL.CLUB ? -0.6 : t === TOOL.FORK ? -0.9 : t === TOOL.BOW ? -1.2 : 0);
+      this.frame(this.m, this.a2, 0, -0.3, 0.04, wrist);
       this.tools[t - 1].setMatrixAt(this.n.tools[t - 1]++, this.m);
     }
     this.frame(this.a1, this.Tm, -0.29, armY, 0, -uL); this.put(this.uArmL, this.n.arm, this.a1, d.body);
@@ -282,18 +288,65 @@ export function buildStandard(): THREE.Group {
   return g;
 }
 
+const BEAM = 0x815b36, STRAP = 0x51545a, ROPE = 0x9f8753, HIDE = 0x7d6545;
+const siegeMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.86 });
+const between = (a: [number, number, number], b: [number, number, number], width: number, color: number) => {
+  const start = new THREE.Vector3(...a), end = new THREE.Vector3(...b), dir = end.clone().sub(start);
+  const g = box(width, dir.length(), width, color);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize()));
+  return g.translate(...start.lerp(end, 0.5).toArray());
+};
+const across = (r: number, length: number, color: number, x: number, y: number, z: number, segments = 12) => T(cyl(r, r, length, color, 0, 0, 0, segments).rotateZ(Math.PI / 2), x, y, z);
+
+function wheels(radius: number, back: number, front: number): THREE.BufferGeometry[] {
+  const out: THREE.BufferGeometry[] = [];
+  for (const z of [back, front]) {
+    out.push(across(0.08, 1.72, DARK, 0, radius, z, 8));
+    for (const side of [-1, 1]) {
+      const x = side * 0.82;
+      out.push(T(tint(new THREE.TorusGeometry(radius - 0.05, 0.06, 5, 14).rotateY(Math.PI / 2), STRAP), x, radius, z), across(0.12, 0.23, DARK, x, radius, z, 10));
+      for (let k = 0; k < 6; k++) {
+        const a = k * Math.PI / 3;
+        out.push(between([x, radius, z], [x, radius + Math.cos(a) * (radius - 0.07), z + Math.sin(a) * (radius - 0.07)], 0.09, BEAM));
+      }
+    }
+  }
+  return out;
+}
+
+let ramFrame: THREE.BufferGeometry | undefined, ramLog: THREE.BufferGeometry | undefined, ramHead: THREE.BufferGeometry | undefined;
+let catapultFrame: THREE.BufferGeometry | undefined, catapultArm: THREE.BufferGeometry | undefined, catapultStone: THREE.BufferGeometry | undefined;
+
+const siegeMesh = (g: THREE.BufferGeometry) => { const m = new THREE.Mesh(g, siegeMaterial); m.castShadow = true; return m; };
+
 export function buildRam(): THREE.Group {
-  const g = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 }), iron = new THREE.MeshStandardMaterial({ color: 0x55585c, roughness: 0.6, metalness: 0.4 }), hide = new THREE.MeshStandardMaterial({ color: 0x8a7550, roughness: 1 });
-  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
-  add(new THREE.BoxGeometry(1.5, 0.2, 3.2), wood, 0, 0.55, 0);
-  for (const sx of [-0.8, 0.8]) for (const sz of [-1.0, 1.0]) { const w = add(new THREE.CylinderGeometry(0.42, 0.42, 0.16, 12), dark, sx, 0.42, sz); w.rotation.z = Math.PI / 2; }
-  for (const sx of [-0.65, 0.65]) for (const sz of [-1.3, 1.3]) add(new THREE.BoxGeometry(0.14, 1.3, 0.14), wood, sx, 1.25, sz);
-  const roof = add(new THREE.BoxGeometry(1.7, 0.1, 3.5), hide, 0, 1.95, 0); roof.rotation.z = 0;
-  for (const sx of [-1, 1]) { const r = add(new THREE.BoxGeometry(0.1, 0.1, 3.5), dark, sx * 0.82, 1.92, 0); r.rotation.z = 0; }
-  const log = new THREE.Group(); log.position.set(0, 1.2, 0); g.add(log);
-  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 3.6, 8), wood); beam.rotation.x = Math.PI / 2; beam.castShadow = true; log.add(beam);
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.5, 8), iron); head.rotation.x = Math.PI / 2; head.position.z = 2.0; log.add(head);
+  if (!ramFrame) {
+    const parts = wheels(0.43, -1.08, 1.08);
+    for (const side of [-1, 1]) {
+      const x = side * 0.63;
+      parts.push(box(0.22, 0.24, 3.36, BEAM, x, 0.63, 0), box(0.15, 0.16, 3.32, WOOD, x, 1.86, 0));
+      for (const z of [-1.36, 0, 1.36]) parts.push(box(0.16, 1.29, 0.17, WOOD, x, 1.24, z));
+      for (const z of [-1, 1]) parts.push(between([x, 0.76, 0], [x, 1.82, z * 1.28], 0.12, BEAM));
+      for (let z = -1.45; z <= 1.46; z += 0.29) {
+        parts.push(T(box(0.98, 0.07, 0.31, HIDE + (Math.round((z + 1.45) * 3.45) % 2) * 0x090702).rotateZ(-side * 0.43), side * 0.42, 2.04, z));
+      }
+      parts.push(T(box(0.98, 0.10, 0.15, WOOD).rotateZ(-side * 0.43), side * 0.42, 2.00, 1.58));
+    }
+    parts.push(box(0.15, 0.14, 3.36, WOOD, 0, 2.25, 0));
+    for (const z of [-1.36, 0, 1.36]) parts.push(box(1.48, 0.17, 0.17, WOOD, 0, 1.82, z));
+    ramFrame = merge(parts);
+    const log = [cyl(0.19, 0.22, 3.5, BEAM, 0, 0, 0, 10).rotateX(Math.PI / 2)];
+    for (const z of [-0.82, 0.82]) {
+      log.push(T(cyl(0.23, 0.23, 0.10, DARK).rotateX(Math.PI / 2), 0, 0, z));
+      for (const x of [-0.13, 0.13]) log.push(between([x, 0.05, z], [x, 0.63, z * 0.85], 0.038, ROPE));
+    }
+    ramLog = merge(log);
+    ramHead = merge([cyl(0.20, 0.26, 0.29, STRAP).rotateX(Math.PI / 2), T(cone(0.20, 0.32, IRON).rotateX(Math.PI / 2), 0, 0, 0.29)]);
+  }
+  const g = new THREE.Group(), log = new THREE.Group();
+  log.position.y = 1.19;
+  const head = siegeMesh(ramHead!); head.position.z = 1.84;
+  log.add(siegeMesh(ramLog!), head); g.add(siegeMesh(ramFrame), log);
   g.userData.log = log;
   return g;
 }
@@ -302,17 +355,24 @@ export function buildRam(): THREE.Group {
 export const ARM_REST = -0.9, ARM_THROW = 1.9;
 
 export function buildCatapult(): THREE.Group {
-  const g = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 });
-  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m); return m; };
-  add(new THREE.BoxGeometry(1.5, 0.25, 2.8), wood, 0, 0.6, 0);
-  for (const sx of [-0.85, 0.85]) for (const sz of [-0.9, 0.9]) { const w = add(new THREE.CylinderGeometry(0.5, 0.5, 0.18, 12), dark, sx, 0.5, sz); w.rotation.z = Math.PI / 2; }
-  for (const sx of [-0.6, 0.6]) add(new THREE.BoxGeometry(0.18, 1.3, 0.18), wood, sx, 1.2, 0.5);
-  // the model fires towards +z (like every model, yaw 0 faces +z): the arm pivots near the front and its cup trails behind, resting low at the back, then whips up and over to the front
-  const arm = new THREE.Group(); arm.position.set(0, 1.7, 0.5); g.add(arm);
-  const beam = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 2.8), wood); beam.position.set(0, 0, -0.9); beam.castShadow = true; arm.add(beam);
-  const cup = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.15, 0.6), dark); cup.position.set(0, 0.1, -2.3); arm.add(cup);
-  const stone = new THREE.Mesh(new THREE.IcosahedronGeometry(0.28, 0), new THREE.MeshStandardMaterial({ color: 0x8a8782, roughness: 1 })); stone.position.set(0, 0.35, -2.3); arm.add(stone);
+  if (!catapultFrame) {
+    const parts = wheels(0.46, -1.06, 1.02);
+    for (const side of [-1, 1]) {
+      const x = side * 0.59;
+      parts.push(box(0.23, 0.24, 3.13, BEAM, x, 0.63, 0));
+      parts.push(between([x, 0.69, -0.98], [x, 1.84, 0.45], 0.17, WOOD), between([x, 0.69, 1.18], [x, 1.84, 0.45], 0.18, WOOD));
+      parts.push(across(0.19, 0.11, STRAP, side * 0.72, 1.69, 0.45), across(0.14, 0.075, ROPE, side * 0.54, 0.92, -0.98));
+      parts.push(between([side * 0.69, 0.92, -1], [side * 0.7, 1.25, -1.2], 0.082, DARK));
+    }
+    parts.push(box(1.44, 0.18, 0.24, BEAM, 0, 0.67, -1.3), box(1.45, 0.18, 0.24, BEAM, 0, 0.67, 1.36), across(0.12, 1.49, DARK, 0, 1.69, 0.45), across(0.10, 1.42, ROPE, 0, 0.92, -0.98));
+    catapultFrame = merge(parts);
+    catapultArm = merge([box(0.19, 0.20, 2.85, BEAM, 0, 0, -0.93), box(0.23, 0.24, 0.21, STRAP, 0, 0, -0.08), box(0.22, 0.21, 0.10, STRAP, 0, 0, -1.72), cyl(0.32, 0.25, 0.13, DARK, 0, 0.075, -2.30, 10), T(tint(new THREE.TorusGeometry(0.28, 0.035, 4, 12).rotateX(-Math.PI / 2), STRAP), 0, 0.15, -2.3)]);
+    catapultStone = tint(new THREE.IcosahedronGeometry(0.26, 0), 0x969187);
+  }
+  const g = new THREE.Group(), arm = new THREE.Group();
+  arm.position.set(0, 1.69, 0.45); g.add(siegeMesh(catapultFrame), arm);
+  const stone = siegeMesh(catapultStone!); stone.position.set(0, 0.35, -2.3);
+  arm.add(siegeMesh(catapultArm!), stone);
   g.userData.arm = arm; g.userData.stone = stone;
   return g;
 }
