@@ -4,6 +4,30 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.2.2', date: '2026-11-19', title: 'Battlefield orders and safer villages',
+    added: [
+      'Your village pauses by default while you are away. You can leave the steward in charge for up to one village day of routine work. The steward pauses for trouble or decisions and gives you a report when you return.',
+      'Give orders to individual troop types from the battle controls at the bottom of the screen. Hold a line, attack a point, flank the enemy or fall back. Markers on the battlefield show where your orders apply.',
+      'Some raids ask you to hold a gate or protect a caravan. The raid banner shows the objective, the time left and how close the raiders are to taking it.',
+      'Open Armory upgrades in the Army tab to equip fire arrows, better armor and other improvements for your troops and siege crews.',
+      'The march preview shows estimated arrival times for armies and reinforcements, along with crossing costs and any supplies you are short of.',
+    ],
+    changed: [
+      'Archers keep their distance, spearmen and swordsmen meet the enemy head-on, and knights circle for an opening. Attacks from behind deal more damage, and archers guarding towers and keeps can shoot up to 44 units.',
+      'Soldiers find their own way onto village paths and spread out when they arrive, using nearby clear ground. Armies march faster at home and on roads. Click a soldier or siege engine in the field to select its army.',
+      'Armies can build crossings when they cannot find a route around the water. Turn on Allow automatic bridge shortcuts in the Army tab to let them spend planks on a shorter route.',
+      'Search the Build menu by building name or by what it produces. Smoked fish and smoked meat have separate stock entries, and the smokehouse explains the recipe you selected.',
+      'The red raid banner shows the payoff offer and the raiders’ greed. Drawbridge controls show whether the bridge is up or down. If you lower it during a raid, it stays down until you raise it or a new raid begins.',
+      'Raise and Lower Ground let you set a target height. Roads, bridges, moats and ports can be placed beyond city limits.',
+      'Forests stay visible farther out as you move the camera, with less work spent drawing distant trees, shadows, fire and smoke.',
+    ],
+    fixed: [
+      'Walking routes avoid resource deposits as well as buildings and water. Raiders can finish crossing moats, and catapults and rams have more room in the marching column and wheels that turn as they move.',
+      'Rivers descend into a flat ocean, with smoother banks and map edges. Low shoreline patches stay steady as the tide changes.',
+      'Fishing huts and waterwheels sit on the bank, and drawbridges stay clear of the water. Waterfront placement keeps the camera steady. The harbor’s stone footing fits under the warehouse and leaves the pier wooden.',
+    ],
+  },
+  {
     version: '0.2.1', date: '2026-11-17', title: 'Soldiers keep to the paths',
     added: [],
     changed: [
