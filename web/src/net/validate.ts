@@ -83,7 +83,7 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
   if (r.op === 'research' && !(isInt(out.kind) && out.kind >= 0 && out.kind < 8)) return null;
   if (r.op === 'armybridge' && out.kind !== 0 && out.kind !== 1) return null;
   if (r.op === 'battleorder') {
-    if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 4) || !(isInt(out.kind) && out.kind >= 0 && out.kind <= 3)) return null;
+    if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 4) || !(isInt(out.kind) && out.kind >= 0 && out.kind <= 4)) return null;
     if (out.kind !== 0 && !(isNum(out.x) && isNum(out.y) && Math.abs(out.x) <= 1200 && Math.abs(out.y) <= 1200)) return null;
     if (out.to && out.tag !== undefined) return null;
   }
@@ -92,6 +92,7 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
     out.tech = r.tech;
   }
   for (const f of ['units', 'loot'] as const) if (r[f] !== undefined) { const a = numbers(r[f]); if (!a) return null; out[f] = a; }
+  if (out.op === 'return' && out.kind === 1 && (out.loot !== undefined || !out.units || out.units.length > 6 || out.units.some(n => n < 0))) return null;
   if (out.h !== undefined && (out.op === 'place' || out.op === 'batch')) {
     const direction = (kind: number | undefined) => kind === 33 || kind === 34;
     if (!(out.h < 0 || (out.h >= LEVEL_HEIGHT.min && out.h <= LEVEL_HEIGHT.max))) return null;

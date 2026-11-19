@@ -217,6 +217,7 @@ fn the_ogre_slams_everything_near_and_throws_boulders_at_stone() {
     // the slam: soldiers within reach are hurt (less at the rim), soldiers beyond it are not
     let mut w = village(false); assert!(w.begin_battle_boss([0; NK], 0.0, 0, OGRE, 0, 1.0));
     { let b = w.battle.as_mut().unwrap();
+      b.t = battle::DEPLOY_SECS;
       let (ox, oy) = { let o = b.units.iter().find(|u| u.boss > 0).unwrap(); (o.x, o.y) };
       for (dx, side) in [(1.0f32, 0u8), (3.0, 0), (9.0, 0), (1.0, 1)] { let mut u = Unit::new(side, 0, ox + dx, oy + 8.0 - 8.0, 0.0); u.hp = 70.0; b.units.push(u); }
       b.units.iter_mut().find(|u| u.boss > 0).unwrap().t2 = 0.0; }

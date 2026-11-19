@@ -115,10 +115,10 @@ pub(crate) const MOAT_FLOOR: f32 = 3.0;  // flat bottom radius of a moat piece
 pub(crate) const RIVER_FLOOR: f32 = 2.0; // and of a river piece
 pub(crate) const CHANNEL_BANK: f32 = 1.6;           // how far the steep bank runs out beyond the floor: a channel is a trench with the water at its brim, not a wide dish
 /// How far below the rim of the land the water of a moat stands.
-const MOAT_FREEBOARD: f32 = 0.8;
+const MOAT_FREEBOARD: f32 = 0.55;
 // Match the terrain mesh's 2.5-unit grid. A cut vertex affects the adjoining triangles out to a diagonal.
 const MOAT_MESH_OVERHANG: f32 = march::CELL * std::f32::consts::SQRT_2 + 0.07;
-const MOAT_WATER_SLOPE: f32 = 0.05;   // how fast the water level may change along a moat, per unit
+const MOAT_WATER_SLOPE: f32 = 0.05;   // how fast the water level may change along a carved river, per unit
 const CHANNEL_REF_TOP: f32 = 9.0;   // ground up to this height has a ditch bed at the fixed depth below; above it the bed rises with the ground
 const MOAT_BED: f32 = -3.4;   // a moat is deep: the water reads as water (the shader darkens it with depth) and a soldier in it is out of his depth
 const RIVER_BED: f32 = -2.0; // a river is shallower than a moat, but holds real water  // depth of the bottom
@@ -356,6 +356,8 @@ pub struct World {
     links: Vec<Vec<(f32, f32)>>,   // invisible paths chained from this city out to other villages' cities (set by `link_village`; part of the state)
     #[serde(skip)] mem_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<members::Obst>)>>,   // what stops a walking soldier (derived)
     #[serde(skip)] ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
+    #[serde(skip)] march_heights: std::cell::RefCell<Option<(u64, std::rc::Rc<march::GroundSamples>)>>,
+    #[serde(skip)] march_routes: std::cell::RefCell<march::RouteMemo>,
     #[serde(skip)] ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
     #[serde(skip)] height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
     #[serde(skip)] net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
@@ -511,7 +513,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), mem_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -651,7 +653,7 @@ impl World {
     /// Is a straight leg of a route over dry, ordinary ground (not water and not a drawbridge deck)?
     pub(crate) fn leg_is_dry(&self, a: (f32, f32), b: (f32, f32)) -> bool {
         let l = (b.0 - a.0).hypot(b.1 - a.1); let st = (l / 1.5).ceil().max(1.0) as i32;
-        (0..=st).all(|q| { let t = q as f32 / st as f32; let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t); self.height_ground(x, y) >= 0.2 && !self.on_deck(x, y) })
+        (0..=st).all(|q| { let t = q as f32 / st as f32; let (x, y) = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t); !self.natural_water_covers(x, y, self.height_ground(x, y), 0.2) && !self.on_deck(x, y) })
     }
 
     /// Is the point on the deck of a lowered drawbridge?
@@ -673,14 +675,13 @@ impl World {
         self.staffing();
     }
 
-    /// Where the water stands in a moat. The ditch is dug deep so that it reads as deep water, but the sea is at height 0 and the banks are several units higher, so the plain water
-    /// plane would sit far below the brim. A moat's water is drawn at its own level instead: a little below the lowest bit of undug ground round the piece. The draw mesh extends past the
-    /// excavation to cover the terrain triangles pulled down by the ditch, so bank heights are sampled across that extra reach. Between pieces the level may only
-    /// change gently (`MOAT_WATER_SLOPE` per unit), and each piece takes the lowest of its neighbours' limits plus that slope, so the surface is one continuous sheet that never
-    /// rises above any piece's own limit. Gameplay does not use it: water is still wherever the ground is below the shore line.
+    /// Standing water shares a level within each connected moat. Carved rivers can descend along their channel.
+    /// The mesh extends to all triangles touching the excavation, so check the banks beyond the cut as well.
     fn compute_moat_water(&self) -> Vec<[f32; 4]> {
-        let pieces: Vec<[f32; 4]> = self.buildings.iter().filter(|b| b.kind == MOAT).map(|b| {
-            let reach = MOAT_FLOOR * moat_scale(b) + CHANNEL_BANK;
+        let mut flowing = Vec::new();
+        let pieces: Vec<[f32; 4]> = self.buildings.iter().filter(|b| matches!(b.kind, MOAT | RIVER)).map(|b| {
+            flowing.push(b.kind == RIVER);
+            let reach = if b.kind == MOAT { MOAT_FLOOR * moat_scale(b) } else { RIVER_FLOOR } + CHANNEL_BANK;
             let mut low = f32::MAX;
             for offset in [0.0, 1.2, 2.4, MOAT_MESH_OVERHANG] {
                 for k in 0..16 {
@@ -690,16 +691,50 @@ impl World {
             }
             [b.x, b.y, reach, (low - MOAT_FREEBOARD).max(0.4)]
         }).collect();
-        pieces.iter().map(|p| {
-            let level = pieces.iter().map(|q| { let d = (q[0] - p[0]).hypot(q[1] - p[1]); if d < 60.0 { q[3] + MOAT_WATER_SLOPE * d } else { f32::MAX } }).fold(p[3], f32::min);
+        let mut parent: Vec<_> = (0..pieces.len()).collect();
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i { parent[i] = parent[parent[i]]; i = parent[i]; }
+            i
+        }
+        for (i, p) in pieces.iter().enumerate() {
+            for (j, q) in pieces[..i].iter().enumerate() {
+                if (p[0] - q[0]).hypot(p[1] - q[1]) <= p[2] + q[2] {
+                    let a = root(&mut parent, i); let b = root(&mut parent, j); parent[a] = b;
+                }
+            }
+        }
+        let group: Vec<_> = (0..pieces.len()).map(|i| root(&mut parent, i)).collect();
+        let mut limits = vec![f32::MAX; pieces.len()];
+        let mut rivers = vec![false; pieces.len()];
+        for (i, p) in pieces.iter().enumerate() { limits[group[i]] = limits[group[i]].min(p[3]); rivers[group[i]] |= flowing[i]; }
+        pieces.iter().enumerate().map(|(i, p)| {
+            let id = group[i];
+            let level = if rivers[id] && flowing[i] {
+                pieces.iter().enumerate().filter(|&(j, _)| group[j] == id)
+                    .map(|(_, q)| q[3] + MOAT_WATER_SLOPE * (q[0] - p[0]).hypot(q[1] - p[1])).fold(p[3], f32::min)
+            } else { limits[id] };
             [p[0], p[1], p[2], level]
         }).collect()
     }
-    /// The surface of the water in each moat piece: [x, y, reach, level] (stride 4).
+    /// The surface of each moat or carved river piece: [x, y, reach, level] (stride 4).
     pub fn moat_water_flat(&self) -> Vec<f32> { self.moat_water.iter().flatten().copied().collect() }
     /// The level of the moat water at a point, or 0 (the sea) when it is not in a moat.
     pub(crate) fn moat_level_at(&self, x: f32, y: f32) -> f32 {
         self.moat_water.iter().filter(|p| (p[0] - x).hypot(p[1] - y) < p[2] + 1.0).map(|p| p[3]).fold(0.0, f32::max)
+    }
+
+    fn river_surface_at(&self, x: f32, y: f32) -> f32 { terrain::river_surface_at(self.seed, &self.sites, x, y) }
+
+    fn water_surface_at(&self, x: f32, y: f32) -> f32 { self.moat_level_at(x, y).max(self.river_surface_at(x, y)) }
+
+    fn river_covers(&self, x: f32, y: f32, ground: f32) -> bool {
+        if ground >= terrain::RIVER_LEVEL { return false; }
+        let surface = self.river_surface_at(x, y);
+        surface > 0.0 && ground < surface
+    }
+
+    pub(crate) fn natural_water_covers(&self, x: f32, y: f32, ground: f32, shore: f32) -> bool {
+        ground < shore || self.river_covers(x, y, ground)
     }
 
     /// Food in the larder, in meals: smoked fish and grain.
@@ -707,6 +742,10 @@ impl World {
     pub(crate) fn food_quarters(&self) -> i64 { FOODS.iter().map(|&(r, q)| self.stock[r as usize].max(0) as i64 * q as i64).sum::<i64>() + self.meal_credit as i64 }
     /// Whole meals in the stores.
     pub(crate) fn food(&self) -> i32 { (self.food_quarters() / 4).min(i32::MAX as i64) as i32 }
+    fn appetite(&self) -> (u32, i32) {
+        let soldiers = self.army.iter().chain(&self.away).chain(self.dets.iter().flat_map(|d| &d.units)).copied().sum::<u32>();
+        (soldiers, ((self.population + soldiers) as i32 + 5) / 10)
+    }
     /// Eat `need` quarter meals, taking each item from the store that holds the most food in all (ties: the first in `FOODS`). False if there is not enough: then everything is eaten.
     fn eat_quarters(&mut self, need: i64) -> bool {
         if self.food_quarters() < need { for &(r, _) in &FOODS { self.stock[r as usize] = 0; } self.meal_credit = 0; return false; }
@@ -855,7 +894,7 @@ impl World {
             let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();
             if !(3.0..22.0).contains(&s) || c > 5.2 { continue; }
             let w = smoothstep(3.0, 4.0, s) * (1.0 - smoothstep(15.0, 22.0, s)) * (1.0 - smoothstep(2.4, 5.2, c));
-            h = lerp(h, b.pad_h, w * smoothstep(-0.8, 0.0, h));   // (only dry ground is levelled: a river or moat under and beside the deck is never filled in)
+            if !self.river_covers(x, y, h) { h = lerp(h, b.pad_h, w * smoothstep(-0.8, 0.0, h)); }
         }
         if !built { return h; }
         for s in &self.roads {
@@ -867,7 +906,9 @@ impl World {
             let t = (((x - s[0]) * dx + (y - s[1]) * dy) / len2).clamp(0.0, 1.0);
             let (cx, cy) = (s[0] + dx * t, s[1] + dy * t);
             let d = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
-            if d < ROAD_OUTER { h = lerp(h, lerp(s[2], s[5], t), (1.0 - smoothstep(ROAD_INNER, ROAD_OUTER, d)) * smoothstep(-0.6, 0.0, h)); }   // (only dry ground is graded: a river or moat beside a road is never filled in)
+            if d < ROAD_OUTER && !self.river_covers(x, y, h) {
+                h = lerp(h, lerp(s[2], s[5], t), (1.0 - smoothstep(ROAD_INNER, ROAD_OUTER, d)) * smoothstep(-0.6, 0.0, h));
+            }
         }
         for b in &self.buildings {
             let d = &DEFS[b.kind as usize];
@@ -974,10 +1015,11 @@ impl World {
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
         for (px, py) in pts {
             let h = self.height_core(x + px, y + py, !is_edit(kind) && !matches!(kind, WALL | GATE | FENCE));
+            if !matches!(kind, DRAWBRIDGE | RIVER | RAISE | LOWER)
+                && self.natural_water_covers(x + px, y + py, h, 0.4) { return -4; }
             lo = lo.min(h);
             hi = hi.max(h);
         }
-        if lo < 0.4 && !matches!(kind, DRAWBRIDGE | RIVER | RAISE | LOWER) { return -4; }
         if (hi - lo) / (fr * 2.0) > d.max_slope { return -5; }
         if d.req != 1 {   // nothing is built or dug on top of an ore or stone deposit (only mines and quarries stand beside one)
             let clear = if is_edit(kind) { 2.6 } else if matches!(kind, WALL | FENCE | GATE) { 0.6 } else { d.r + 1.6 };   // a wall may run over an outcrop (only its very middle is in the way)
@@ -996,7 +1038,7 @@ impl World {
 
     /// Is there open water (a lake, river, the sea or a moat) within `r` of the point?
     fn water_near(&self, x: f32, y: f32, r: f32) -> bool {
-        for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; for rr in [r * 0.6, r] { if self.height_at(x + a.cos() * rr, y + a.sin() * rr) < 0.1 { return true; } } }
+        for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; for rr in [r * 0.6, r] { let (px, py) = (x + a.cos() * rr, y + a.sin() * rr); if self.natural_water_covers(px, py, self.height_at(px, py), 0.1) { return true; } } }
         false
     }
 
@@ -1109,16 +1151,18 @@ impl World {
 
     /// Which way the waterwheel's wheel looks for a turn `rot`: the model's +x axis turned by r * 45 degrees (the renderer rotates about the vertical, which sends +x to (cos, -sin)).
     fn wheel_dir(rot: u8) -> (f32, f32) { let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; (a.cos(), -a.sin()) }
-    /// The highest a waterwheel house at (x, y) turned `rot` may stand: WHEEL_PAD_MAX above the surface of the water under its wheel. That surface is the moat's drawn level
-    /// (`moat_level_at`) when the wheel hangs over a moat, and the sea (0) for a river or lake.
+    /// The highest a waterwheel house at (x, y) turned `rot` may stand, measured from the water under its wheel.
     pub fn wheel_pad_cap(&self, x: f32, y: f32, rot: u8) -> f32 {
         let (ux, uy) = Self::wheel_dir(rot);
-        WHEEL_PAD_MAX + self.moat_level_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH)
+        WHEEL_PAD_MAX + self.water_surface_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH)
     }
     /// Does a waterwheel house at (x, y) turned `rot` have its wheel out over open water?
     fn wheel_in_water(&self, x: f32, y: f32, rot: u8) -> bool {
         let (ux, uy) = Self::wheel_dir(rot);
-        self.height_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH) < 0.2 && self.height_at(x + ux * (WHEEL_REACH + 1.2), y + uy * (WHEEL_REACH + 1.2)) < 0.2
+        [WHEEL_REACH, WHEEL_REACH + 1.2].into_iter().all(|r| {
+            let (px, py) = (x + ux * r, y + uy * r);
+            self.natural_water_covers(px, py, self.height_at(px, py), 0.2)
+        })
     }
     /// Where a waterwheel clicked at (dx, dy) goes: pulled onto the bank beside the nearest water and turned so its wheel hangs out over it.
     /// [dx, dy, turn] relative to the origin (what `place` takes), or nothing when there is no water within reach or no bank there where the house can stand. Pure function of the world, so
@@ -1128,7 +1172,7 @@ impl World {
     pub fn fishing_hut_snap(&self, dx: i32, dy: i32) -> Vec<f32> { self.shore_snap(FISHING_HUT, dx, dy) }
     fn shore_snap(&self, kind: u8, dx: i32, dy: i32) -> Vec<f32> {
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
-        let wet = |px: f32, py: f32| self.height_at(px, py) < 0.1;
+        let wet = |px: f32, py: f32| self.natural_water_covers(px, py, self.height_at(px, py), 0.1);
         let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
         'find: for r in 1..=16 { for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; let (px, py) = (x + a.cos() * r as f32, y + a.sin() * r as f32); if wet(px, py) { p = Some((px, py)); break 'find; } } }
         let Some((px, py)) = p else { return vec![] };
@@ -1139,7 +1183,11 @@ impl World {
         for &(_, r) in &turns {
             let (ux, uy) = Self::wheel_dir(r);
             // walk back from the water along the opposite of the wheel's way to the first dry bank
-            let mut t = 0.0f32; while t < 14.0 && self.height_at(px - ux * t, py - uy * t) < 0.45 { t += 0.5; }
+            let mut t = 0.0f32; while t < 14.0 {
+                let (bx, by) = (px - ux * t, py - uy * t);
+                if !self.natural_water_covers(bx, by, self.height_at(bx, by), 0.45) { break; }
+                t += 0.5;
+            }
             for extra in [0.0f32, 0.5, 1.0, 1.5, 2.5] {
                 let back = t + if kind == FISHING_HUT { HUT_FOOT } else { WHEEL_FOOT } + extra;   // the footing ends at the bank
                 let (sx, sy) = ((px - ux * back).round(), (py - uy * back).round());
@@ -1226,7 +1274,7 @@ impl World {
     pub fn bridge_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
         let (x, y) = (self.ox as f32 + dx as f32, self.oy as f32 + dy as f32);
         if !Self::infrastructure_in_bounds(x, y) { return vec![]; }
-        let wet = |px: f32, py: f32| self.height_ground(px, py) < self.march_waterline(px, py);
+        let wet = |px: f32, py: f32| self.ground_is_wet(px, py, self.height_ground(px, py));
         // the nearest water to the click
         let mut p: Option<(f32, f32)> = if wet(x, y) { Some((x, y)) } else { None };
         'find: for r in 1..=14 { for k in 0..16 { let a = k as f32 * std::f32::consts::TAU / 16.0; let (px, py) = (x + a.cos() * r as f32, y + a.sin() * r as f32); if wet(px, py) { p = Some((px, py)); break 'find; } } }
@@ -1260,7 +1308,7 @@ impl World {
         let (ux, uy) = (a.cos(), a.sin()); let ends = [(cx - ux * l / 2.0, cy - uy * l / 2.0), (cx + ux * l / 2.0, cy + uy * l / 2.0)];
         if ends.iter().any(|&(x, y)| !Self::infrastructure_in_bounds(x, y)) { return (-2, snap); }
         let (ha, hb) = (self.height_at(ends[0].0, ends[0].1), self.height_at(ends[1].0, ends[1].1));
-        if ends.iter().any(|&(x, y)| self.height_ground(x, y) < self.march_waterline(x, y).max(0.4)) || (ha - hb).abs() > 2.6 { return (-5, snap); }
+        if ends.iter().any(|&(x, y)| { let h = self.height_ground(x, y); h < 0.4 || self.ground_is_wet(x, y, h) }) || (ha - hb).abs() > 2.6 { return (-5, snap); }
         let steps = (l / 1.5).ceil() as i32;
         for k in 0..=steps { let t = k as f32 * 1.5 - l / 2.0; let (sx, sy) = (cx + ux * t, cy + uy * t);
             for b in &self.buildings { if matches!(b.kind, MOAT | RIVER | RAISE | LOWER | ROAD | DRAWBRIDGE) { continue; } let r = if b.kind == BRIDGE { 1.8 } else { DEFS[b.kind as usize].r }; if (b.x - sx).powi(2) + (b.y - sy).powi(2) < (r + 1.6).powi(2) { return (-3, snap); } } }
@@ -1494,8 +1542,7 @@ impl World {
         }
 
         // food, growth, starvation
-        let soldiers: u32 = self.army.iter().sum::<u32>() + self.away.iter().sum::<u32>() + self.dets.iter().map(|d| d.units.iter().sum::<u32>()).sum::<u32>();
-        let eat = ((self.population + soldiers) as i32 + 5) / 10;
+        let (soldiers, eat) = self.appetite();
         let eaten0: Vec<i32> = FOODS.iter().map(|&(r, _)| self.stock[r as usize]).collect();
         if self.eat_quarters(eat as i64 * 4) {
             let cap_pop = self.capacity();
@@ -2075,6 +2122,14 @@ impl World {
         let cap = self.storage_cap(); let most = cap / 100 * 35;
         for r in 0..N_RES.min(loot.len()) { self.stock[r] = Self::add_capped(self.stock[r], loot[r].clamp(0, most), cap); }
     }
+    /// A refused attack never fought. Return only that contingent and leave other deployed soldiers in the field.
+    pub fn return_refused_army(&mut self, counts: &[u32]) {
+        for (k, &count) in counts.iter().take(NK).enumerate() {
+            let returning = count.min(self.away[k]);
+            self.away[k] -= returning;
+            self.army[k] = self.army[k].saturating_add(returning).min(ARMY_MAX);
+        }
+    }
     /// Another village (tag = its id) attacks this one from `angle`.
     pub fn start_raid(&mut self, angle: f32, atk: &[u32], tag: i32) -> bool {
         self.start_raid_equipped(angle, atk, tag, 0)
@@ -2184,6 +2239,7 @@ impl World {
     pub fn battle_spawn(&self) -> Vec<f32> { self.battle.as_ref().filter(|b| b.lair < 0).map_or(vec![], |b| b.spawn.to_vec()) }
     pub fn battle_angle(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.angle) }
     pub fn battle_time(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.t) }
+    pub fn battle_deploy_remaining(&self) -> f32 { self.battle.as_ref().filter(|b| !b.bought).map_or(0.0, |b| (battle::DEPLOY_SECS - b.t).max(0.0)) }
     /// Ticks until the announced bandit raid arrives (zero when there is no warning).
     pub fn raid_warning_ticks(&self) -> u32 { self.raid_warning_ticks }
     /// Direction the announced bandits will approach from, in radians.
@@ -2205,7 +2261,7 @@ impl World {
                 let horns: Vec<(f32, f32, f32)> = b.units.iter().filter(|u| u.boss > 0 && u.alive && BOSSES[(u.boss - 1) as usize].horn_every > 0.0 && u.t1 < BOSSES[(u.boss - 1) as usize].horn_secs).map(|u| (u.x, u.y, BOSSES[(u.boss - 1) as usize].horn_reach)).collect();
                 b.units.iter().flat_map(|u| {
                     let aura = u.side == 1 && u.alive && horns.iter().any(|h| (h.0 - u.x).powi(2) + (h.1 - u.y).powi(2) < h.2 * h.2);
-                    [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), u.maxhp, u.alive as u8 as f32, u.anim, u.face, if u.wading { (self.moat_level_at(u.x, u.y) - self.height_at(u.x, u.y) + 0.12).max(0.0) } else { u.elev }, u.boss as f32, u.phase as f32, u.bname as f32, aura as u8 as f32]
+                    [u.side as f32, u.kind as f32, u.x, u.y, u.hp.max(0.0), u.maxhp, u.alive as u8 as f32, u.anim, u.face, if u.wading { (self.water_surface_at(u.x, u.y) - self.height_at(u.x, u.y) + 0.12).max(0.0) } else { u.elev }, u.boss as f32, u.phase as f32, u.bname as f32, aura as u8 as f32]
                 }).collect()
             }
             None => vec![],
@@ -2420,6 +2476,28 @@ impl World {
     pub fn bridges_flat(&self) -> Vec<f32> { self.bridges.iter().flatten().copied().collect() }
     /// Plan a route without ordering it: [ok(1) | error code, seconds, planks, wood, count, x, y, mode, ...].
     pub fn plan_march(&self, units: &[u32], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> { let Some(u) = kinds(units) else { return vec![-1.0] }; self.plan(&u, sx, sy, tx, ty) }
+    /// Changes when terrain, construction, or bridge policy could alter a march route.
+    pub fn march_revision(&self) -> u64 { self.route_revision() }
+    /// Run an order on a worker's disposable village copy and return the routes it used.
+    pub fn prepare_army_order(&mut self, id: u32, tx: f32, ty: f32, mode: u8) -> Vec<u8> {
+        self.army_order_mode(id, tx, ty, mode, 0.0, 0.0, false);
+        self.prepared_routes()
+    }
+    /// Try the current order using worker-computed routes. -11 means the army, opponents or terrain have moved since the worker started.
+    pub fn apply_prepared_army_order(&mut self, prepared: &[u8], id: u32, tx: f32, ty: f32, mode: u8, ax: f32, ay: f32) -> i32 {
+        if !self.use_prepared_routes(prepared) { return march::ROUTE_PENDING; }
+        self.army_order_mode(id, tx, ty, mode, ax, ay, true)
+    }
+    fn army_order_mode(&mut self, id: u32, tx: f32, ty: f32, mode: u8, ax: f32, ay: f32, cached_only: bool) -> i32 {
+        match mode {
+            0 | 2 if [tx, ty, ax, ay].iter().all(|v| v.is_finite() && v.abs() <= MAP_LIMIT) => {
+                self.det_march_mode(id, tx, ty, (mode == 2).then_some((ax, ay)), false, cached_only)
+            }
+            1 => self.det_defend_mode(id, cached_only),
+            3 => { let hall = &self.buildings[0]; self.det_march_mode(id, hall.x, hall.y + 9.0, None, true, cached_only) }
+            _ => -1,
+        }
+    }
 
 
     // ---------- repair and rebuilding ----------
@@ -2506,6 +2584,33 @@ impl World {
     pub fn demographics(&self) -> Vec<u32> { vec![self.children, self.adults(), self.elders, self.adults() / 2] }
     /// False while it is winter and the village has no wood to burn: people freeze.
     pub fn warmth(&self) -> bool { self.warm }
+    /// [risk flags, meals, firewood, ruins].
+    /// Flags in order are combat, raid warning, fire, plague, low food, low winter fuel and a pending decision.
+    pub fn steward_status(&self) -> Vec<i32> {
+        let food = self.food();
+        let (_, eat) = self.appetite();
+        let wood = self.stock[W as usize];
+        let fuel = if self.season() == 3 { self.winter_need().max(0) } else { 0 };
+        let flags = [
+            self.battle_active(),
+            self.raid_warning_ticks > 0,
+            !self.wildfires.is_empty() || self.buildings.iter().any(|b| b.burning > 0.0),
+            self.plague_active(),
+            eat > 0 && food < (eat * 15).min(self.storage_cap() / 4).max(eat),
+            fuel > 0 && (!self.warm || wood < fuel * 2),
+            self.choice.is_some(),
+        ].into_iter().enumerate().fold(0, |bits, (i, risk)| bits | ((risk as i32) << i));
+        vec![flags, food, wood, self.ruins.len() as i32]
+    }
+    /// The next ruin to inspect, with buildable, affordable essential buildings first.
+    pub fn recovery_ruin(&self) -> i32 {
+        self.ruins.iter().enumerate().min_by_key(|(_, r)| {
+            let (kind, tier) = (r[3] as u8, r[4] as u8);
+            let blocked = !self.rebuild_site_clear(r[0], r[1], DEFS[kind as usize].r);
+            let expensive = !self.can_afford(&Self::rebuild_cost(kind, tier));
+            (blocked, expensive, Self::recovery_priority(kind))
+        }).map_or(-1, |(i, _)| i as i32)
+    }
     pub fn jobs(&self) -> u32 { self.jobs }
     pub fn building_count(&self) -> u32 { self.buildings.len() as u32 }
     pub fn take_events(&mut self) -> Vec<i32> { std::mem::take(&mut self.events) }
@@ -2582,7 +2687,9 @@ pub fn rules_fingerprint(seed: u64) -> String {
         w.step();
     }
     let parts = w.state_hash_parts();
-    let mut h: u64 = 0xcbf29ce484222325 ^ seed; for p in parts { h ^= p; h = h.wrapping_mul(0x100000001b3); }
+    // The water raster and deployment rules affect peers even when this fingerprint's sample village does not encounter them.
+    let mut h: u64 = 0xcbf29ce484222325 ^ seed ^ u64::from(terrain::RIVER_LEVEL.to_bits()) ^ 0x46ba7e05;
+    for p in parts { h ^= p; h = h.wrapping_mul(0x100000001b3); }
     format!("{h:016x}")
 }
 
@@ -2865,6 +2972,35 @@ mod tests {
     }
 
     #[test]
+    fn prepared_army_orders_match_live_routing_and_reject_stale_routes() {
+        let mut w = village();
+        let units = [10, 4, 0, 2, 1, 0];
+        w.army = units;
+        let id = w.det_form(&units);
+        assert_ne!(id, 0);
+        let snapshot = w.snapshot();
+        let prepared = world_restore(&snapshot).unwrap().prepare_army_order(id, 30.0, 8.0, 0);
+        let mut direct = world_restore(&snapshot).unwrap();
+        assert_eq!(direct.det_march(id, 30.0, 8.0, false, 0.0, 0.0), 0);
+        assert_eq!(w.apply_prepared_army_order(&prepared, id, 40.0, 8.0, 0, 0.0, 0.0), march::ROUTE_PENDING);
+        assert_eq!(w.snapshot(), snapshot, "a cache miss leaves the army alone");
+        assert_eq!(w.apply_prepared_army_order(&prepared, id, 30.0, 8.0, 0, 0.0, 0.0), 0);
+        assert_eq!(w.snapshot(), direct.snapshot(), "the exact same order will replay on the other peers");
+
+        let old = w.snapshot();
+        assert_eq!(w.flatten(30, 7.0), 0);
+        assert_eq!(w.apply_prepared_army_order(&prepared, id, 30.0, 8.0, 0, 0.0, 0.0), march::ROUTE_PENDING);
+        assert_eq!(w.det_path(id), world_restore(&old).unwrap().det_path(id));
+
+        assert!(w.start_raid(0.6, &[8, 4, 2, 0, 0, 0], 0));
+        let raid = w.snapshot();
+        let prepared = world_restore(&raid).unwrap().prepare_army_order(id, 0.0, 0.0, 1);
+        let mut direct = world_restore(&raid).unwrap();
+        assert_eq!(w.apply_prepared_army_order(&prepared, id, 0.0, 0.0, 1, 0.0, 0.0), direct.det_defend(id));
+        assert_eq!(w.snapshot(), direct.snapshot());
+    }
+
+    #[test]
     fn catapults_need_felled_trees_and_soldiers_cut_them() {
         let ns = march::nav_static(1337);
         let mut w = village();
@@ -2897,18 +3033,19 @@ mod tests {
     #[test]
     fn armies_bridge_narrow_water() {
         let ns = march::nav_static(1337);
+        let mut w = village(); w.army = [6, 0, 0, 0, 0, 0];
+        let wet = |i| { let (x, y) = nav_cell_centre(i); w.ground_is_wet(x, y, ns.height(i)) };
         // find two dry points either side of a narrow strip of water
         let mut pair = None;
         'o: for j in (4..(march::NC - 4)).step_by(3) { for i in (4..(march::NC - 12)).step_by(2) {
             let a = (j * march::NC + i) as usize;
-            if ns.height(a) < 1.5 || ns.dens(a) > 1 { continue; }
-            let mut k = 1; let mut wet = 0;
-            while k < 6 && ns.height(a + k) < 0.2 { wet += 1; k += 1; }
-            if wet >= 2 && ns.height(a + k) > 1.5 && ns.dens(a + k) <= 1 { pair = Some((a, a + k)); break 'o; }
+            if ns.height(a) < 1.5 || ns.dens(a) > 1 || wet(a) { continue; }
+            let mut k = 1;
+            while k < 6 && wet(a + k) { k += 1; }
+            if k >= 3 && ns.height(a + k) > 1.5 && ns.dens(a + k) <= 1 && !wet(a + k) { pair = Some((a, a + k)); break 'o; }
         } }
         let Some((a, b)) = pair else { eprintln!("bridge test: no narrow water on this seed"); return };
         let (sx, sy) = nav_cell_centre(a); let (tx, ty) = nav_cell_centre(b);
-        let mut w = village(); w.army = [6, 0, 0, 0, 0, 0];
         let id = w.det_form(&[6, 0, 0, 0, 0, 0]);
         // move the army next to the water, then order the crossing
         w.dets[0].x = sx; w.dets[0].y = sy;
@@ -3242,6 +3379,60 @@ mod tests {
     }
 
     #[test]
+    fn recovery_skips_a_blocked_ruin_and_reserves_winter_firewood() {
+        let mut w = village();
+        w.stock = [2000; N_RES];
+        w.population = 60;
+        let yard = [(-20, -26), (24, 26), (-26, 20)].into_iter()
+            .map(|(x, y)| w.place(BUILDERS, x, y, 0)).find(|&i| i >= 0).expect("place a yard") as usize;
+        let (hall_x, hall_y) = (w.buildings[0].x, w.buildings[0].y);
+        let house = w.buildings.iter().position(|b| b.kind == HOUSE).expect("a house to rebuild");
+        w.buildings[house].hp = 0.0;
+        w.collect_destroyed();
+        w.ruins.insert(0, [hall_x, hall_y, DEFS[FARM as usize].r, FARM as f32, 0.0, 0.0]);
+        assert_eq!(w.recovery_ruin(), 1, "the farm site is blocked by the hall");
+        w.tick = 3 * SEASON_DAYS * DAY;
+        let reserve = 2 * w.winter_need().max(1);
+        w.stock[W as usize] = reserve;
+        let yard = yard - usize::from(house < yard);
+        w.buildings[yard].staff = 1;
+        w.buildings[yard].progress = 700;
+        w.builders_step();
+        assert_eq!(w.ruins.len(), 2);
+        assert_eq!(w.stock[W as usize], reserve);
+        let cost = World::rebuild_cost(HOUSE, 0).iter().find(|&&c| c.0 == W).unwrap().1;
+        w.stock[W as usize] += cost;
+        w.builders_step();
+        assert_eq!(w.ruins.len(), 1);
+        assert_eq!(w.ruins[0][3], FARM as f32);
+        assert_eq!(w.stock[W as usize], reserve);
+    }
+
+    #[test]
+    fn the_steward_flags_emergencies_without_advancing_the_world() {
+        let mut w = World::new(1337, 0, 0);
+        w.stock = [0; N_RES];
+        w.tick = 3 * SEASON_DAYS * DAY;
+        w.raid_warning_ticks = 25;
+        w.buildings[0].burning = 1.0;
+        w.offer(CH_WINTER);
+        w.plague_end = w.tick + DAY;
+        let hash = w.state_hash();
+        assert_eq!(w.steward_status(), vec![0b1111110, 0, 0, 0]);
+        assert_eq!(w.state_hash(), hash);
+        assert_eq!(w.raid_warning_ticks, 25);
+    }
+
+    #[test]
+    fn a_refused_contingent_leaves_other_soldiers_deployed() {
+        let mut w = World::new(1337, 0, 0);
+        w.away = [8, 4, 0, 1, 0, 0];
+        w.return_refused_army(&[3, 2, u32::MAX, 0, 0, 0]);
+        assert_eq!(w.away, [5, 2, 0, 1, 0, 0]);
+        assert_eq!(w.army, [3, 2, 0, 0, 0, 0]);
+    }
+
+    #[test]
     fn battles_are_deterministic() {
         let run = || { let mut w = village(); w.population = 25; w.start_raid(2.0, &[10, 5, 2, 1, 1, 0], 7); for _ in 0..200 { w.step(); w.stock[GR as usize] = 3000; } w.state_hash() };
         assert_eq!(run(), run());
@@ -3371,6 +3562,7 @@ mod road_tests {
         ring(&mut w, 24.0, 52, MOAT);
         let f = w.moat_water_flat(); assert!(f.len() >= 40 && f.len() % 4 == 0, "an entry per placed piece: {}", f.len() / 4);
         for p in f.chunks(4) { assert!(p[3] >= 0.4, "never below the shore line: {}", p[3]); }
+        assert!(f.chunks(4).all(|p| p[3] == f[3]), "the connected moat has a level surface");
         // the land round the moat is several units high: the water must stand well above the sea there, close under the brim
         let land = w.height_core(0.0, 33.0, false);
         let level = w.moat_level_at(0.0, 24.0);
@@ -4760,7 +4952,9 @@ mod pathnet_tests {
             assert_eq!(w.place(WATERWHEEL, dx, dy, (rot + 4) & 7), -16, "wheel facing the land is refused");
             if seen == 1 {
                 assert!(w.place(WATERWHEEL, dx, dy, rot) >= 0, "the snapped spot can be built on: {s:?}");
-                assert!(w.buildings.last().unwrap().pad_h <= WHEEL_PAD_MAX + 1e-4);
+                let stage = w.water_surface_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH);
+                assert!(stage > 0.0, "the carved river has its own surface");
+                assert!(w.buildings.last().unwrap().pad_h <= stage + WHEEL_PAD_MAX + 1e-4);
             }
         }
         assert!(seen >= 3, "the snap finds the bank from most clicks ({seen})");

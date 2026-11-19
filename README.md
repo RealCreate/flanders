@@ -19,6 +19,8 @@ See [docs/HOSTING.md](docs/HOSTING.md): how to share a build safely (static host
 ## Your village is stored in your browser
 Save a backup file under ⚙ Display settings → Your data, and restore it on another browser or computer. The file contains your private signing key.
 
+Closing the game saves the village at its current time. A hidden tab or two minutes without input pauses the village by default. Open **Steward** to allow up to one village day of routine work while the tab stays open. The steward stops for threats, shortages, and decisions. A battle with another player that has already started continues at normal speed while the game is open.
+
 ## Security
 See [docs/SECURITY.md](docs/SECURITY.md) for the threat model, what was hardened and what is still open.
 

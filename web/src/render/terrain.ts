@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { terrain_land_rows, natural_river_level, type World } from '../wasm/game_core.js';
+import { terrain_land_rows, type World } from '../wasm/game_core.js';
 import { patchWater, waterNormalTexture } from './water';
 import { groundDetailTexture, patchGround } from './groundtex';
-import { riverGrid } from './rivergrid';
+import { riverGrid, riverStageAt } from './rivergrid';
 
 export const HALF = 1200;
 export const STEP = 2.5;
@@ -38,6 +38,7 @@ export class Terrain {
   scorch: Float32Array = new Float32Array(0); // burnt ground discs [x, z, r, ...] from every village
   heights: Float32Array;       // current (with pads, with coast drop)
   base: Float32Array;          // base terrain
+  private riverStages: Float32Array;
   /** The ground, cut into square chunks that share one set of vertices: each chunk is culled on its own when it is off screen. */
   mesh: THREE.Group;
   private chunks: { mesh: THREE.Mesh; i0: number; j0: number; i1: number; j1: number }[] = [];
@@ -55,15 +56,15 @@ export class Terrain {
   private col: THREE.BufferAttribute;
   private nor: THREE.BufferAttribute;
 
-  /** `rawLand` interleaves height and river-bed flags from the core, usually built in slices during loading. */
+  /** `rawLand` interleaves ground heights and river surface levels from the core. */
   constructor(seed: bigint, rawLand?: Float32Array) {
     const raw = rawLand ?? terrain_land_rows(seed, -HALF, -HALF, NV, STEP, 0, NV);
     this.base = new Float32Array(NV * NV);
     this.heights = new Float32Array(NV * NV);
-    const rivers = new Uint8Array(NV * NV);
+    this.riverStages = new Float32Array(NV * NV);
     for (let k = 0; k < this.base.length; k++) {
       this.base[k] = this.heights[k] = raw[k * 2];
-      rivers[k] = raw[k * 2 + 1];
+      this.riverStages[k] = raw[k * 2 + 1];
     }
     this.geo = new THREE.PlaneGeometry(HALF * 2, HALF * 2, NV - 1, NV - 1);
     this.geo.rotateX(-Math.PI / 2);
@@ -95,12 +96,12 @@ export class Terrain {
     this.water = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000).rotateX(-Math.PI / 2), this.makeWaterMaterial());
     this.water.position.y = 0;
     this.riverMaterial = this.makeWaterMaterial(true);
-    const riverLevel = natural_river_level();
     for (const { i0, j0, i1, j1 } of this.chunks) {
-      const { positions, indices } = riverGrid(rivers, NV, STEP, riverLevel, i0, j0, i1, j1);
+      const { positions, indices, banks } = riverGrid(this.riverStages, NV, STEP, i0, j0, i1, j1);
       if (indices.length === 0) continue;
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      g.setAttribute('aWaterBank', new THREE.Uint8BufferAttribute(banks, 1));
       const uv: number[] = [];
       for (let i = 0; i < positions.length; i += 3) uv.push(positions[i], positions[i + 2]);
       g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
@@ -176,10 +177,13 @@ export class Terrain {
     return null;
   }
 
-  /** Is this spot water that somebody on foot would sink into: below the shore line, and with no bridge or lowered drawbridge deck over it? */
+  riverSurfaceAt(x: number, z: number) { return riverStageAt(this.riverStages, NV, STEP, x, z); }
+
+  /** Is this spot under water with no bridge or lowered drawbridge deck over it? */
   wetAt(x: number, z: number): boolean {
     const ground = this.heightAt(x, z);
-    return ground < 0.25 && this.deckHeight(x, z, ground) - ground < 0.3;
+    const surface = Math.max(0.25, this.riverSurfaceAt(x, z));
+    return ground < surface && this.deckHeight(x, z, ground) < surface;
   }
 
   animate(t: number) {

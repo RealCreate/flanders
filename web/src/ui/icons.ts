@@ -175,6 +175,7 @@ export const ICONS: Record<string, S> = {
   pause: R(6, 4, 4.5, 16, K) + R(13.5, 4, 4.5, 16, K),
   again: L('M20 12 A8 8 0 1 1 12 4 M12 4 L9 1.5 M12 4 L9 6.5', K, 2),
   close: L('M5 5 L19 19 M19 5 L5 19', K, 2.4),
+  search: C(10.5, 10.5, 5.75, 'none', `stroke="${K}" stroke-width="1.8"`) + L('M15 15 L21 21', K, 2, 'stroke-linecap="round"'),
   check: L('M4 12.5 L9.5 18 L20 6', GN, 2.6),
   cross: L('M5 5 L19 19 M19 5 L5 19', RD, 2.6),
   warn: P('M12 3 L22 20 H2Z', FL2) + L('M12 9 V14', K, 1.8) + C(12, 17, 1, K),

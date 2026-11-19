@@ -2,6 +2,34 @@
 use super::*;
 
 #[test]
+fn raised_natural_channels_flood_their_banks_without_raising_the_open_waterline() {
+    let w = World::new(1337, 0, 0);
+    let max = terrain::RIVER_LEVEL;
+    let land = terrain::land_rows(1337, -800.0, -800.0, 321, 5.0, 0, 321);
+    let mut full = false;
+    let mut flooded = None;
+    let mut dry_low = None;
+    for (i, pair) in land.chunks_exact(2).enumerate() {
+        let (h, level) = (pair[0], pair[1]);
+        assert!(level.abs() <= max);
+        full |= level == max && h < 0.2;
+        let (x, y) = (-800.0 + (i % 321) as f32 * 5.0, -800.0 + (i / 321) as f32 * 5.0);
+        if h > 3.2 && h < level { flooded = Some((x, y, h, level)); }
+        if (0.4..max).contains(&h) && level <= 0.0 && w.river_surface_at(x, y) == 0.0 { dry_low = Some((x, y, h)); }
+    }
+    assert!(full, "inland channels reach the raised level");
+    let (x, y, ground, level) = flooded.expect("a natural bank above 3.2 units is under the fuller river");
+    assert_eq!(w.river_surface_at(x, y), level);
+    assert!(w.ground_is_wet(x, y, ground));
+    assert!(w.member_blocked(x, y, 0));
+    assert!(!w.leg_is_dry((x, y), (x, y)));
+    let (x, y, ground) = dry_low.expect("low land outside the channels");
+    assert!(!w.ground_is_wet(x, y, ground));
+    for (x, y) in terrain::sites(1337) { assert_eq!(w.river_surface_at(x, y), 0.0); }
+    assert_eq!(w.river_surface_at(1190.0, 1190.0), 0.0);
+}
+
+#[test]
 fn directional_earthworks_accept_an_absolute_target_and_keep_old_auto_placements() {
     let mut w = World::new(1337, 0, 0);
     w.stock = [30_000; N_RES];
@@ -71,7 +99,7 @@ fn moat_then_flatten_keeps_the_ditch_and_the_water_moves_with_the_new_ground() {
         assert_eq!(w.flatten(60, h), 0);
         assert!((w.height_at(24.0, 0.0) - bed(h)).abs() < 0.2, "still dug, at {}", w.height_at(24.0, 0.0));
         let after = w.moat_level_at(24.0, 0.0);
-        assert!((after - (h - 0.8)).abs() < 0.2, "water {after} follows a flat at {h} (was {before})");
+        assert!((after - (h - MOAT_FREEBOARD)).abs() < 0.2, "water {after} follows a flat at {h} (was {before})");
         let (s, x, y) = max_step(&w, 45.0); assert!(s < DITCHED, "step {s} at {x},{y} (flat {h})");
     }
 }

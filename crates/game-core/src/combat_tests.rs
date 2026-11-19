@@ -89,6 +89,32 @@ fn a_raider_coming_out_of_the_water_is_sodden_for_a_while() {
 }
 
 #[test]
+fn raider_archers_and_catapults_finish_a_moat_crossing_with_defenders_in_range() {
+    for kind in [1, 4] {
+        let mut w = World::new(1337, 0, 0);
+        assert_eq!(w.flatten(45, 5.0), 0);
+        for y in [-4.0, 0.0, 4.0] { put_t(&mut w, MOAT, 0, 24.0, y); }
+        w.after_change();
+        assert!(w.begin_battle([1, 0, 0, 0, 0, 0], 0.0, 41));
+        let b = w.battle.as_mut().unwrap();
+        let mut raider = Unit::new(1, kind, 26.0, 0.0, std::f32::consts::PI);
+        raider.wading = true;
+        let mut target = Unit::new(0, 4, 13.0, 0.0, 0.0);
+        target.cd = 1000.0;
+        b.units = vec![raider, target];
+        b.start_side = [1, 1];
+        assert!(w.battle_order(41, 4, tactics::HOLD, 26.0, 0.0));
+        for _ in 0..140 {
+            w.battle_substep();
+            if !w.battle.as_ref().unwrap().units[0].wading { break; }
+        }
+        let raider = &w.battle.as_ref().unwrap().units[0];
+        assert!(raider.x < 20.0 && !raider.wading && raider.soak > 0.0, "kind {kind} stuck on raft at {}", raider.x);
+        assert!(!w.shots.iter().any(|s| s[6] == kind as f32));
+    }
+}
+
+#[test]
 fn fire_does_little_to_stone_and_wells_and_builders_help() {
     // hit points lost by a burning timber house over `secs` seconds
     let burn = |setup: &dyn Fn(&mut World), secs: u32| -> f32 {

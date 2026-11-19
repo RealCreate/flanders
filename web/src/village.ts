@@ -56,10 +56,16 @@ export class Village {
     this.moats = new MoatWater(sh.terrain, STEP); sh.scene.add(this.moats.group);
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain); this.field.friend = color; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
-    this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(sh.terrain); this.boats = new Boats(sh.terrain);
+    this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(); this.boats = new Boats(sh.terrain);
     this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k); this.army.onRage = (x, y, z) => sh.fx.rageSpark(x, y, z);
     this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
-    this.army.plan = (ax, az, bx, bz) => { const p = this.world.plan_march(Uint32Array.from([1, 0, 0, 0, 0]), ax, az, bx, bz); return p[0] === 1 ? Array.from(p.slice(5)) : null; };
+    this.army.plan = (ax, az, bx, bz) => {
+      const route = this.world.walk_route(ax, az, bx, bz);
+      if (route.length < 3) return null;
+      const path = [ax, az, 0];
+      for (let i = 1; i + 1 < route.length; i += 2) path.push(route[i], route[i + 1], 0);
+      return path;
+    };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
     sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
   }
@@ -122,11 +128,12 @@ export class Village {
     this.paths.update(f, w.road_lines_flat(), this.sh.radii, w.birth_flat());
     this.nodes.update(w.road_nodes_flat());
     this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat());
-    this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.moats.update(w.moat_water_flat());
+    const water = w.moat_water_flat();
+    this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.moats.update(water);
     this.props.update(f, roads, this.sh.radii);
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
     this.people.setRoads(roads); this.people.sync(f, NO_PATHS, this.sh.radii, w.population(), w.terrain_version());
-    this.rivers.sync(f); this.boats.sync(f);
+    this.rivers.sync(f, water); this.boats.sync(f, water);
     this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     this.army.syncWalls(this.walls.walks);
     this.ruins.sync(w.ruins_flat(), w.terrain_version());

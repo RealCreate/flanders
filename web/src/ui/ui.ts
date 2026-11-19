@@ -1,7 +1,9 @@
 import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
-import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, tierName, type BuildingDef } from '../data';
+import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, TIER_NAMES, tierName, type BuildingDef } from '../data';
+import { buildSearch } from '../buildsearch';
+import { stewardRisks, WATCH_MESSAGES, type StewardAction, type StewardMode, type WatchReport } from '../steward';
 import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
 import { group, workNote, verdict, understaffed, kindOutputs, FILTERS, SORTS, type WorkRow, type WorkTotals, type Filter, type Sort } from '../workview';
@@ -49,6 +51,7 @@ export interface Handlers {
   /** Centre the camera on the next building behind the rate (of one kind, or of any). Returns false when there is none. */
   stockGo(res: number[], sign: number, kind?: number): boolean;
   speed(n: number): void;
+  steward(action: StewardAction): void;
   toggleResources(): void;
   toggleCoverage(): void;
   minimapClick(x: number, z: number): void;
@@ -87,6 +90,16 @@ export interface Hud {
 }
 
 interface MilitaryUpgrade { id: number; name: string; desc: string; tier: number; prereq: number; cost: [number, number][] }
+interface BattleAction { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }
+
+const BATTLE_TARGET_HINTS: Record<number, string> = {
+  1: 'Right-click the position to hold',
+  2: 'Right-click the enemy or position to attack',
+  3: 'Right-click a safe position to regroup',
+  4: 'Right-click a point around the enemy to flank',
+};
+const BATTLE_ORDER_NAMES = ['Automatic', 'Hold line', 'Attack here', 'Fall back', 'Flank'];
+const BATTLE_GROUP_NAMES = ['Infantry', 'Archers', 'Knights', 'Siege'];
 
 export interface PeerRow { key: string; name: string; where?: string; online?: boolean; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
@@ -94,6 +107,16 @@ const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >=
 import { parseWinter, winterTip, winterWarning, winterLines } from '../winter';
 const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
 const BUILDABLE = defs.filter(d => d.id !== 15).sort((a, b) => a.cat - b.cat || a.id - b.id);
+const LEVEL_DESC = 'Levels a round patch of ground to a Target height you choose in the bar (or Auto: the land just outside it): fills pits and cuts bumps, and takes away any ditch or earthworks inside. R changes the size. Buildings in the patch must already stand at that height.';
+const findBuildCards = buildSearch([
+  ...BUILDABLE.map(d => {
+    const category = d.id === 37 || d.id === 38 ? 7 : d.cat;
+    return { id: d.id, category, name: d.name,
+      keywords: [...(TIER_NAMES[d.id] ?? []), ...d.outputs.map(([r]) => RES[r].name), ...(d.id === 35 ? ['harbor', 'dock'] : [])],
+      description: `${CATS[category].name} ${d.desc}` };
+  }),
+  { id: LEVEL_TOOL, category: defs[33].cat, name: 'Level Ground', keywords: ['flatten', 'terrain'], description: `Land ${LEVEL_DESC}` },
+]);
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -103,6 +126,7 @@ export class UI {
   private cards = new Map<number, HTMLElement>();
   private pills: HTMLElement[] = [];
   private filter = -1;
+  private buildResults: number[] = [];
   private tab = 'build';
   private logCount = 0;
   private peers: PeerRow[] = [];
@@ -145,6 +169,7 @@ export class UI {
     <button class="btn" data-s="2" title="Fast x2"><svg viewBox="0 0 16 16"><path d="M1 2l7 6-7 6zM8 2l7 6-7 6z"/></svg></button>
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
   <button class="btn" id="btn-mp" title="Players in this world">${bi('globe')} <span id="mp-count">Online</span></button>
+  <button class="btn" id="btn-steward" title="Away policy and village recovery">${bi('townhall')} <span id="watch-label">Steward</span></button>
   <button class="btn" id="btn-map" title="Full-screen map (M)">${bi('map')} Map</button>
   <button class="btn" id="btn-cov" aria-pressed="false" title="Show how far wells and towers reach, and what they leave unprotected (C)">${bi('coverage')} Show coverage</button>
   <div class="menuwrap">
@@ -160,17 +185,27 @@ export class UI {
   </div>
   </div>
 </header>
-<div id="battle" hidden></div>
+<div id="battle" hidden><div id="battle-text"></div></div>
 <button id="hall-exit" class="btn go" hidden>← Leave the test hall</button>
 <aside id="ledger" hidden>
   <div class="tabs" id="tabs">
     <button class="tab on" data-t="build">Build</button><button class="tab" data-t="army">Army</button><button class="tab" data-t="village">Village</button><button class="tab" data-t="stock">Stock</button><button class="tab" data-t="sel" id="tab-sel" hidden>Selected</button><button class="tabmin" id="ledger-min" title="Hide the panel (H)">▸</button>
   </div>
   <section class="pane on" id="pane-build">
-    <div><div class="eyebrow">Construction</div><h2>Build</h2></div>
-    <div class="chips" id="cats"></div>
-    <div class="cards" id="cards"></div>
-    <p class="muted">Pick a building, then click the ground. <b>R</b> rotates, <b>Esc</b> cancels. Buildings level the ground beneath them and clear the trees.</p>
+    <div class="build-find" role="search" aria-label="Building catalog">
+      <div class="build-search">
+        ${bi('search', 18)}
+        <input id="build-search" type="search" placeholder="Search buildings and tools…" aria-label="Search buildings and tools" aria-controls="cards" autocomplete="off">
+        <button type="button" id="build-clear" aria-label="Clear search" title="Clear search" hidden>${bi('close', 14)}</button>
+      </div>
+      <div class="chips" id="cats" role="group" aria-label="Building categories"></div>
+      <p id="build-count" class="muted tiny" role="status"></p>
+    </div>
+    <div id="build-results">
+      <div class="cards" id="cards"></div>
+      <div id="build-empty" hidden><p class="muted">No matching buildings or tools.</p><button type="button" id="build-reset" class="chip">Clear filters</button></div>
+      <p id="build-help" class="muted">Pick a building, then click the ground. <b>R</b> rotates, <b>Esc</b> cancels. Buildings level the ground beneath them and clear the trees.</p>
+    </div>
   </section>
   <section class="pane" id="pane-army">
     <div><div class="eyebrow">Military</div><h2>Army</h2></div>
@@ -193,6 +228,7 @@ export class UI {
   </section>
   <section class="pane" id="pane-village">
     <div><div class="eyebrow" id="v-sub">Your settlement</div><h2>The Village</h2></div>
+    <div class="btnrow"><button class="pbtn" data-steward="open">${bi('townhall')} Village steward</button></div>
     <div class="stats"><div class="stat"><b id="s-pop">0</b><span>Villagers</span></div><div class="stat"><b id="s-cap">0</b><span>Housing</span></div><div class="stat"><b id="s-sick">0</b><span>Sick</span></div></div>
     <div class="stats"><div class="stat"><b id="s-eff">0%</b><span>Workforce</span></div><div class="stat"><b id="s-bld">0</b><span>Buildings</span></div><div class="stat"><b id="s-rad">0</b><span>Border radius</span></div></div>
     <div><h3>Health &amp; death care</h3><div class="stats" id="care-stats"></div><p class="muted" id="care-info"></p></div>
@@ -225,7 +261,24 @@ export class UI {
 <div class="overlay clear" id="worldmap" hidden><div class="mapwrap"><div class="maphead"><b>The Realm</b><span class="muted">Click anywhere to travel there · Esc to close</span><button class="btn" data-close="worldmap">${bi('close', 14)}</button></div><canvas id="bigmap" width="900" height="900"></canvas></div></div>
 <div id="ctxmenu" hidden></div><div id="selbox" hidden></div>
 <div id="toasts"></div>
-<div id="hint" hidden></div>
+<div id="tool-dock">
+  <div id="hint" hidden></div>
+  <section id="battle-controls" class="tool-panel" aria-label="Battle controls" hidden>
+    <div id="battle-orders" class="tool-row">
+      <label class="tool-select">
+        <select id="battle-group" aria-label="Troop group"><option value="4">All troops</option><option value="0">Infantry</option><option value="1">Archers</option><option value="2">Knights</option><option value="3">Siege</option></select>
+      </label>
+      <button type="button" class="tool-action" data-order="1" aria-pressed="false" title="Hold this point. Spearmen brace against enemies in front of them.">Hold line</button>
+      <button type="button" class="tool-action" data-order="2" aria-pressed="false" title="Advance and focus on enemies near the point">Attack here</button>
+      <button type="button" class="tool-action" data-order="3" aria-pressed="false" title="Break contact and regroup at a point">Fall back</button>
+      <button type="button" class="tool-action" data-order="4" aria-pressed="false" title="Move around the enemy to the selected flank before engaging">Flank</button>
+      <button type="button" class="tool-action" data-order="0" title="Clear the selected troop group's order">Clear order</button>
+    </div>
+    <div id="battle-acts" class="tool-row"></div>
+    <div id="battle-current-orders" hidden></div>
+    <div id="battle-target-hint" role="status" hidden></div>
+  </section>
+</div>
 <div id="tooltip" hidden></div>
 
 <div class="overlay" id="loader" hidden>
@@ -304,6 +357,37 @@ export class UI {
   <div class="sheet flowsheet"><h2 id="winter-title"></h2><div id="winter-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="winter">Close</button></div></div>
 </div>
+<div class="overlay clear" id="steward" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="steward-title">
+    <h2 id="steward-title" tabindex="-1">${bi('townhall', 26)} Village steward</h2>
+    <p id="watch-report" role="status" hidden></p>
+    <div>
+      <h3>When you step away</h3>
+      <p class="muted">This applies in a hidden tab or after two minutes without input. Closing the game saves and stops the village.</p>
+      <div class="btnrow wrap" role="group" aria-label="Away policy">
+        <button class="pbtn" data-steward="pause" aria-pressed="true">Pause village</button>
+        <button class="pbtn" data-steward="steward" aria-pressed="false">Let steward work</button>
+      </div>
+      <p class="muted" id="watch-policy"></p>
+    </div>
+    <div>
+      <h3>Village report</h3>
+      <p id="watch-stores"></p>
+      <ul class="watch-risks" id="watch-risks" hidden></ul>
+      <div class="btnrow wrap" aria-label="Recovery">
+        <button class="pbtn" data-steward="food">${bi('grain')} Food supply</button>
+        <button class="pbtn" data-steward="wood">${bi('cold')} Winter supplies</button>
+        <button class="pbtn" data-steward="work">${bi('work')} Workers</button>
+        <button class="pbtn" data-steward="market" hidden>${bi('gold')} Visit market</button>
+        <button class="pbtn" data-steward="ruins" hidden>${bi('tools')} Find a ruin</button>
+      </div>
+    </div>
+    <div class="btnrow">
+      <button class="pbtn" id="watch-close">Close</button>
+      <button class="pbtn primary" data-steward="resume" hidden>Resume village</button>
+    </div>
+  </div>
+</div>
 <div class="overlay clear" id="mp" hidden>
   <div class="sheet">
     <h2>The shared world</h2>
@@ -335,12 +419,23 @@ export class UI {
     $('found').onclick = () => { const s = cleanWorld(wsel.value === '__custom' ? wcus.value : wsel.value), n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n); };
     ($('username') as HTMLInputElement).onkeydown = wcus.onkeydown = e => { if (e.key === 'Enter') $('found').click(); };
     $('tabs').onclick = e => { const t = (e.target as HTMLElement).dataset.t; if (t) this.setTab(t); };
-    $('cats').innerHTML = `<button class="chip on" data-c="-1">All</button>` + CATS.map((c, i) => `<button class="chip" data-c="${i}">${bi(c.icon, 15)} ${c.name}</button>`).join('');
+    $('cats').innerHTML = `<button type="button" class="chip" data-c="-1">All</button>` + CATS.map((c, i) => `<button type="button" class="chip" data-c="${i}">${bi(c.icon, 15)} ${c.name}</button>`).join('');
     $('cats').onclick = e => {
       const c = (e.target as HTMLElement).closest<HTMLElement>('[data-c]')?.dataset.c; if (c === undefined) return;
       this.filter = Number(c);
-      $('cats').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', (x as HTMLElement).dataset.c === c));
-      this.cards.forEach((el, id) => { const cat = id === LEVEL_TOOL ? defs[33].cat : id === 37 || id === 38 ? 7 : defs[id].cat; el.hidden = this.filter >= 0 && cat !== this.filter; });
+      this.updateBuildResults();
+    };
+    const search = $<HTMLInputElement>('build-search');
+    search.oninput = () => this.updateBuildResults();
+    const clearSearch = () => { search.value = ''; this.updateBuildResults(); search.focus(); };
+    $('build-clear').onclick = clearSearch;
+    $('build-reset').onclick = () => { this.filter = -1; clearSearch(); };
+    search.onkeydown = e => {
+      if (e.isComposing) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (search.value) clearSearch(); else search.blur(); }
+      if (e.key === 'Enter' && /[\p{L}\p{N}]/u.test(search.value) && this.buildResults.length) {
+        e.preventDefault(); this.cards.get(this.buildResults[0])?.click(); search.blur();
+      }
     };
     $('army-bridging').onchange = e => this.h.bridgeShortcuts((e.target as HTMLInputElement).checked);
     $('military-upgrades').onclick = e => { const id = (e.target as HTMLElement).closest('button')?.dataset.research; if (id !== undefined) this.h.research(Number(id)); };
@@ -360,6 +455,15 @@ export class UI {
     $('btn-display').onclick = () => { this.modal('display', true); void restart.drawSection($('restart-section')); };
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
+    $('btn-steward').onclick = () => this.h.steward('open');
+    document.querySelectorAll<HTMLButtonElement>('[data-steward]').forEach(button => {
+      button.onclick = () => this.h.steward(button.dataset.steward as StewardAction);
+    });
+    const closeWatch = () => { this.modal('steward', false); $('btn-steward').focus(); };
+    $('watch-close').onclick = closeWatch;
+    $('steward').onkeydown = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); closeWatch(); }
+    };
     $('v-work').onclick = () => this.openWork();
     $('work-body').onclick = e => this.workClick(e); $('work-body').onchange = e => this.workChange(e);
     for (const id of ['work-body', 'pane-sel']) $(id).addEventListener('pointerdown', e => { if ((e.target as HTMLElement).matches?.('input[type=range]')) this.sliding = true; });
@@ -400,7 +504,7 @@ export class UI {
   }
 
   // ---- loading screen ----
-  private tips = ['Hunters keep the larder full if a forest is near.', 'Stone buildings shrug off fire; thatch does not.', 'Wells and chapels keep the plague away. When it comes it lasts 10 to 20 days: it spreads, peaks and fades, and a hospital, a chapel, a graveyard and a quarantine save lives.', 'Paths appear on their own between your buildings.', 'Press V to reveal ore and stone deposits.', 'Your village keeps growing while you are away.', 'Walls link up by themselves when placed close together.'];
+  private tips = ['Hunters keep the larder full if a forest is near.', 'Stone buildings shrug off fire; thatch does not.', 'Wells and chapels keep the plague away. When it comes it lasts 10 to 20 days: it spreads, peaks and fades, and a hospital, a chapel, a graveyard and a quarantine save lives.', 'Paths appear on their own between your buildings.', 'Press V to reveal ore and stone deposits.', 'Your village pauses while you are away. The steward can oversee a day of routine work if you choose.', 'Walls link up by themselves when placed close together.'];
   private lastPhase = '';   // (each phase of the loading screen leaves a performance mark, so a slow start can be read off the timeline)
   beginLoading() { $('intro').hidden = true; $('loader').hidden = false; $('ltip').textContent = this.tips[Math.floor(Math.random() * this.tips.length)]; this.progress(1, 'Preparing the world…'); }
   progress(p: number, text: string) { if (text !== this.lastPhase) { this.lastPhase = text; performance.mark('load: ' + text); } ($('lbar-i') as HTMLElement).style.width = p + '%'; $('ltext').textContent = text; }
@@ -523,6 +627,44 @@ export class UI {
   setRules(fp: string) { const t = `${versionLabel()} · rules ${fp}`; $('mp-build').textContent = t; $('home-version').title = `Rules fingerprint ${fp}: players with the same one play by the same rules.`; }
   modal(id: string, show: boolean) { $(id).hidden = !show; }
 
+  openSteward() {
+    this.modal('steward', true);
+    $('steward-title').focus({ preventScroll: true });
+  }
+  stewardOpen() { return !$('steward').hidden; }
+  setSteward(info: { mode: StewardMode; report: WatchReport | null; paused: boolean; playerBattle: boolean; status?: ArrayLike<number>; market: boolean }) {
+    const { mode, report, paused, playerBattle, status, market } = info;
+    $('watch-label').textContent = report && !playerBattle ? 'Village paused' : 'Steward';
+    $('btn-steward').classList.toggle('on', !!report && !playerBattle);
+    if (!status) return;
+    const box = $('steward');
+    for (const modeButton of box.querySelectorAll<HTMLButtonElement>('[data-steward="pause"], [data-steward="steward"]')) {
+      const active = modeButton.dataset.steward === mode;
+      modeButton.classList.toggle('on', active);
+      modeButton.setAttribute('aria-pressed', String(active));
+    }
+    const hours = (report?.ticks ?? 0) * 24 / DAY_TICKS;
+    const summary = report?.closed ? 'Welcome back. Your village is waiting at its last saved moment.'
+      : hours ? `The steward oversaw ${hours >= 1 ? `${Math.round(hours)} village hours` : 'a short shift'}.`
+      : 'The village clock stopped while you were away.';
+    const reportLine = playerBattle ? 'The player battle underway continues at normal speed.'
+      : report ? `${summary}${report.stop ? ` ${WATCH_MESSAGES[report.stop]}` : ''}` : '';
+    const message = $('watch-report');
+    message.hidden = !reportLine;
+    if (message.textContent !== reportLine) message.textContent = reportLine;
+    $('watch-policy').textContent = mode === 'pause'
+      ? 'The village waits for your return. Player battles already underway finish at normal speed.'
+      : 'Routine work continues at normal speed for up to one village day. The steward stops for trouble or decisions.';
+    $('watch-stores').textContent = `${status[1]} meals in stores · ${status[2]} firewood · ${status[3]} ${status[3] === 1 ? 'ruin' : 'ruins'}`;
+    const risks = stewardRisks(status[0]).filter(r => r !== report?.stop && (!playerBattle || r !== 'battle'));
+    $('watch-risks').hidden = risks.length === 0;
+    const alerts = risks.map(r => `<li>${esc(WATCH_MESSAGES[r])}</li>`).join('');
+    if ($('watch-risks').innerHTML !== alerts) $('watch-risks').innerHTML = alerts;
+    box.querySelector<HTMLElement>('[data-steward="market"]')!.hidden = !market;
+    box.querySelector<HTMLElement>('[data-steward="ruins"]')!.hidden = status[3] === 0;
+    box.querySelector<HTMLElement>('[data-steward="resume"]')!.hidden = !paused || playerBattle;
+  }
+
   /** The game's own yes/no question (in place of the browser's confirm box). Resolves true on yes; Esc, the backdrop and Cancel mean no. */
   confirm(text: string, yes = 'Yes', title = 'Are you sure?', no = 'Cancel'): Promise<boolean> {
     return new Promise(resolve => {
@@ -570,20 +712,47 @@ export class UI {
   private buildCards() {
     const el = $('cards');
     BUILDABLE.forEach((d, i) => {
-      const c = document.createElement('div');
-      c.className = 'card'; c.dataset.id = String(d.id);
-      c.innerHTML = `<div class="ico">${kindIcon(d.id, 30)}</div><div><div class="nm"><span>${d.name}</span>${i < 9 ? `<span class="key">${i + 1}</span>` : ''}</div>
-        <div class="ds">${d.desc}</div><div class="cost">${d.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${resIcon(r)} ${n}</span>`).join('') || '<span>Free</span>'}</div>${this.io(d)}</div>`;
+      const c = document.createElement('button');
+      c.type = 'button'; c.className = 'card'; c.dataset.id = String(d.id); c.setAttribute('aria-label', d.name); c.setAttribute('aria-pressed', 'false');
+      c.innerHTML = `<span class="ico">${kindIcon(d.id, 30)}</span><span><span class="nm"><span>${d.name}</span>${i < 9 ? `<span class="key">${i + 1}</span>` : ''}</span>
+        <span class="ds">${d.desc}</span><span class="cost">${d.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${resIcon(r)} ${n}</span>`).join('') || '<span>Free</span>'}</span>${this.io(d)}</span>`;
       c.onclick = () => this.h.select(d.id);
       el.appendChild(c); this.cards.set(d.id, c);
     });
     // Level Ground belongs with the terrain tools, even though it has no building definition.
-    const lc = document.createElement('div');
-    lc.className = 'card'; lc.dataset.id = String(LEVEL_TOOL);
-    lc.innerHTML = `<div class="ico">${icon('levelground', 30)}</div><div><div class="nm"><span>Level Ground</span></div>
-      <div class="ds">Levels a round patch of ground to a Target height you choose in the bar (or Auto: the land just outside it): fills pits and cuts bumps, and takes away any ditch or earthworks inside. R changes the size. Buildings in the patch must already stand at that height.</div><div class="cost level-cost"></div></div>`;
+    const lc = document.createElement('button');
+    lc.type = 'button'; lc.className = 'card'; lc.dataset.id = String(LEVEL_TOOL); lc.setAttribute('aria-label', 'Level Ground'); lc.setAttribute('aria-pressed', 'false');
+    lc.innerHTML = `<span class="ico">${icon('levelground', 30)}</span><span><span class="nm">Level Ground</span>
+      <span class="ds">${LEVEL_DESC}</span><span class="cost level-cost"></span></span>`;
     lc.onclick = () => this.h.select(LEVEL_TOOL);
     el.appendChild(lc); this.cards.set(LEVEL_TOOL, lc);
+    this.updateBuildResults();
+  }
+
+  private updateBuildResults() {
+    const query = $<HTMLInputElement>('build-search').value;
+    const ids = this.buildResults = findBuildCards(query, this.filter);
+    const visible = new Set(ids), cards = $('cards');
+    $('cats').querySelectorAll<HTMLButtonElement>('[data-c]').forEach(chip => {
+      const active = Number(chip.dataset.c) === this.filter;
+      chip.classList.toggle('on', active); chip.setAttribute('aria-pressed', String(active));
+    });
+    this.cards.forEach((card, id) => { card.hidden = !visible.has(id); });
+    for (const id of ids) cards.appendChild(this.cards.get(id)!);
+    $('build-clear').hidden = !query;
+    $('build-empty').hidden = ids.length > 0;
+    $('build-help').hidden = ids.length === 0;
+    $('build-count').textContent = query.trim() || this.filter >= 0 ? `${ids.length} ${ids.length === 1 ? 'match' : 'matches'}` : '';
+    $('build-results').scrollTop = 0;
+  }
+
+  focusBuildSearch(): boolean {
+    const ledger = $('ledger');
+    if (ledger.hidden || document.querySelector('.overlay:not([hidden])')) return false;
+    if (ledger.classList.contains('min')) this.toggleLedger();
+    this.setTab('build');
+    const search = $<HTMLInputElement>('build-search'); search.focus(); search.select();
+    return true;
   }
 
   /** The cost line of the level-ground card for the patch size now chosen: flat [resource, amount, ...]. */
@@ -614,11 +783,11 @@ export class UI {
   private io(d: BuildingDef) {
     if (!d.cycle) return d.housing ? `<div class="io">Houses ${d.housing} villagers</div>` : '';
     const f = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)}${n}`).join(' ');
-    return `<div class="io">${d.inputs.length ? f(d.inputs) + ' → ' : ''}${f(d.outputs)} every ${d.cycle}s · ${d.jobs} workers</div>`;
+    return `<span class="io">${d.inputs.length ? f(d.inputs) + ' → ' : ''}${f(d.outputs)} every ${d.cycle}s · ${d.jobs} workers</span>`;
   }
 
   hotkeyKind(n: number): number | null { return BUILDABLE[n]?.id ?? null; }
-  markSelected(kind: number | null) { this.cards.forEach((el, id) => el.classList.toggle('sel', id === kind)); }
+  markSelected(kind: number | null) { this.cards.forEach((el, id) => { el.classList.toggle('sel', id === kind); el.setAttribute('aria-pressed', String(id === kind)); }); }
 
   updateAffordability(stocks: number[]) {
     const mark = (el: HTMLElement) => {
@@ -871,32 +1040,43 @@ export class UI {
     hint.textContent = n ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.';
   }
 
-  /** The red banner while a fight is on. */
-  /** The attack banner. With `onClick` it is a button (e.g. to look at where the attackers are). */
-  battle(text: string | null, onClick?: () => void, actions: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = [], order?: (group: number, mode: number) => void) {
+  /** Battle status and the click-to-focus shortcut. */
+  battle(text: string | null, onClick?: () => void) {
     const b = $('battle'); b.hidden = !text;
     if (!text) return;
-    let body = document.getElementById('battle-text'), bar = document.getElementById('battle-acts');
-    if (!body || !bar) {
-      b.innerHTML = `<div id="battle-text"></div><div id="battle-acts"></div><div id="battle-orders" hidden>
-        <select id="battle-group" aria-label="Troop group"><option value="4">All troops</option><option value="0">Infantry</option><option value="1">Archers</option><option value="2">Knights</option><option value="3">Siege</option></select>
-        <button class="pbtn" data-order="1" title="Move to a point and guard it">Hold</button>
-        <button class="pbtn" data-order="2" title="Advance and focus on enemies near the point">Attack here</button>
-        <button class="pbtn" data-order="3" title="Break contact and regroup at a point">Fall back</button>
-        <button class="pbtn" data-order="0" title="Clear the selected troop group's order">Clear order</button>
-        </div>`;
-      body = $('battle-text'); bar = $('battle-acts');
-    }
-    body.innerHTML = text;   // (the text changes every second; the buttons are only rebuilt when they change, so a click is never lost to a refresh)
+    const body = $('battle-text');
+    body.innerHTML = text;
+    b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
+  }
+
+  battleControls(actions: BattleAction[] = [], order?: (group: number, mode: number) => void, issued?: Uint8Array) {
+    $('battle-controls').hidden = !order && actions.length === 0;
+    const bar = $('battle-acts'), orders = $('battle-orders'), group = $('battle-group') as HTMLSelectElement;
+    orders.hidden = !order;
+    const current = $('battle-current-orders');
+    const modes = Array.from(issued ?? []);
+    const active = modes.flatMap((mode, i) => mode ? [`${BATTLE_GROUP_NAMES[i]} · ${BATTLE_ORDER_NAMES[mode]}`] : []);
+    current.hidden = !order || active.length === 0;
+    current.textContent = modes.length === 4 && active.length === 4 && modes.every(mode => mode === modes[0])
+      ? `All troops · ${BATTLE_ORDER_NAMES[modes[0]]}` : active.join(' / ');
     const sig = actions.map(a => a.label + (a.disabled ? '!' : '')).join('|');
     if (bar.dataset.sig !== sig) {
       bar.dataset.sig = sig; bar.innerHTML = '';
-      for (const a of actions) { const btn = document.createElement('button'); btn.className = 'pbtn'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.disabled = !!a.disabled; btn.dataset.label = a.label; bar.appendChild(btn); }
+      for (const a of actions) { const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'tool-action'; btn.innerHTML = `${a.icon ? bi(a.icon) + ' ' : ''}${esc(a.label)}`; btn.title = a.title; btn.disabled = !!a.disabled; btn.dataset.label = a.label; bar.appendChild(btn); }
     }
-    bar.onclick = e => { const t = (e.target as HTMLElement).closest('button'); if (!t) return; e.stopPropagation(); const act = actions.find(a => a.label === t.dataset.label); if (act && !act.disabled) act.run(); };
-    $('battle-orders').hidden = !order;
-    $('battle-orders').onclick = e => { const mode = (e.target as HTMLElement).closest('button')?.dataset.order; if (mode !== undefined) order?.(Number(($('battle-group') as HTMLSelectElement).value), Number(mode)); };
-    b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
+    bar.onclick = e => { const label = (e.target as HTMLElement).closest('button')?.dataset.label; const act = actions.find(a => a.label === label); if (act && !act.disabled) act.run(); };
+    orders.onclick = e => { const mode = (e.target as HTMLElement).closest('button')?.dataset.order; if (mode !== undefined) order?.(Number(group.value), Number(mode)); };
+    group.onchange = () => {
+      const mode = orders.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.dataset.order;
+      if (mode !== undefined) order?.(Number(group.value), Number(mode));
+    };
+  }
+
+  setBattleTarget(mode: number | null) {
+    const text = mode === null ? '' : BATTLE_TARGET_HINTS[mode];
+    const hint = $('battle-target-hint');
+    hint.innerHTML = text ? `${text} · ${keyNames('cancel')} cancels` : ''; hint.hidden = !text;
+    $('battle-orders').querySelectorAll<HTMLButtonElement>('button[aria-pressed]').forEach(btn => btn.setAttribute('aria-pressed', String(Number(btn.dataset.order) === mode)));
   }
   private armyNow: number[] = [];
   maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 6).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }

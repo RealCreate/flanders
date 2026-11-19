@@ -49,12 +49,21 @@ export function waterNormalTexture(size = 512): THREE.DataTexture {
 /** Give a water material depth: shallow water over the ground is pale and see-through with foam at the shore, deep water is dark and almost opaque, and the ripples
  *  are two layers of the normal map moving across each other in world space (so they look the same on the sea and on a moat, and never repeat in an obvious grid).
  *  Works for a plane and for instanced discs. */
-/** `solid`: moat water is opaque up to its intersection with the rendered bank. */
+/** Solid channels mark their outer vertices so they meet the current terrain after earthworks. */
 export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, time: { value: number }, instanced: boolean, solid = false) {
   mat.onBeforeCompile = sh => {
     sh.uniforms.uTime = time; sh.uniforms.uGround = { value: src.heightTex }; sh.uniforms.uHalf = { value: src.half }; sh.uniforms.uStep = { value: src.step }; sh.uniforms.uNV = { value: src.nv };
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vWP;')
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n vWP = (modelMatrix * ${instanced ? 'instanceMatrix * ' : ''}vec4(transformed, 1.0)).xyz;`);
+    const bankUniforms = solid ? 'attribute float aWaterBank; uniform sampler2D uGround; uniform float uHalf; uniform float uStep; uniform float uNV;' : '';
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\nvarying vec3 vWP; ${bankUniforms}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vWP = (modelMatrix * ${instanced ? 'instanceMatrix * ' : ''}vec4(transformed, 1.0)).xyz;
+        ${solid ? `if (aWaterBank > 0.5) {
+          float bank = texture2D(uGround, ((vWP.xz + uHalf) / uStep + 0.5) / uNV).r;
+          // Overlap the bank slightly to account for the height texture's half-float precision.
+          float drop = max(0.0, vWP.y - bank + 0.04);
+          transformed.y -= drop;
+          vWP.y -= drop;
+        }` : ''}`);
     const normalChunk = THREE.ShaderChunk.normal_fragment_maps
       .replace('texture2D( normalMap, vNormalMapUv ).xyz', '(texture2D( normalMap, uvA ).xyz + texture2D( normalMap, uvB ).xyz) * 0.5');
     sh.fragmentShader = sh.fragmentShader

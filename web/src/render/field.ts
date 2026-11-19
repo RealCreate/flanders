@@ -179,7 +179,10 @@ export class FieldView {
     return rank === 0 ? { x: d.tx, z: d.tz, mode: 0, yaw: Math.PI / 2 - d.heading } : null;
   }
 
-  private waterline(x: number, z: number) { return Math.max(this.terrain.water.position.y, moatLevelAt(this.moats, x, z)); }
+  private waterline(x: number, z: number) {
+    const level = Math.max(moatLevelAt(this.moats, x, z), this.terrain.riverSurfaceAt(x, z));
+    return level > 0 ? Math.max(level, this.terrain.water.position.y) : this.terrain.water.position.y;
+  }
 
   private updateBoat(owner: { boat?: THREE.Group }, x: number, z: number, yaw: number, water: boolean, scale: number) {
     if (water && !owner.boat) {

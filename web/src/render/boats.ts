@@ -2,13 +2,13 @@ import * as THREE from 'three';
 import type { Terrain } from './terrain';
 import { HAT, TOOL, type Crowd } from './crowd';
 import { makeBoat } from './field';
-import { connectedFlags, SEALED_LEVEL } from './rivers';
+import { moatLevelAt } from './wading';
 
 const S = 10, MOAT = 24, RIVER = 32;
-interface Route { pts: THREE.Vector2[]; len: number[]; loop: boolean; total: number; connected: boolean }
+interface Route { pts: THREE.Vector2[]; len: number[]; loop: boolean; total: number }
 interface Boat { mesh: THREE.Group; route: Route; s: number; dir: number; speed: number; yaw: number; crew: { body: number; hat: number }[]; seed: number }
 
-/** Little rowing boats with villagers in them, drifting along the village's moats and rivers. They ride the tide. */
+/** Little rowing boats with villagers in them, drifting along the village's moats and rivers. */
 export class Boats {
   group = new THREE.Group();
   /** Current water level (the tide). */
@@ -16,16 +16,17 @@ export class Boats {
   private boats: Boat[] = [];
   private sig = '';
   private t = 0;
+  private water: Float32Array = new Float32Array(0);
 
   constructor(private terrain: Terrain) {}
 
   /** From buildings_flat: chain the moat and river pieces into water routes and put a boat or two on each. */
-  sync(f: Float32Array) {
+  sync(f: Float32Array, stages: Float32Array) {
+    this.water = stages;
     const water: THREE.Vector2[] = [], meta = new Map<string, { kind: number; rot: number }>();
     for (let i = 0; i < f.length; i += S) if (f[i] === MOAT || f[i] === RIVER) { water.push(new THREE.Vector2(f[i + 2], f[i + 3])); meta.set(`${f[i + 2]},${f[i + 3]}`, { kind: f[i], rot: f[i + 4] }); }
     const sig = water.map(p => `${p.x},${p.y}`).join(';'); if (sig === this.sig) return; this.sig = sig;
     for (const b of this.boats) this.group.remove(b.mesh); this.boats = [];
-    const flags = connectedFlags(this.terrain, water.map(p => ({ x: p.x, z: p.y }))), wetAt = new Map<string, boolean>(); water.forEach((p, i) => wetAt.set(`${p.x},${p.y}`, flags[i]));
     const used = new Array(water.length).fill(false), routes: Route[] = [];
     for (let s = 0; s < water.length; s++) {
       if (used[s]) continue;
@@ -41,7 +42,7 @@ export class Boats {
       if (!ms.some(q => q.kind === RIVER) && broad < 2.5) continue;
       const loop = chain[0].distanceTo(chain[chain.length - 1]) < 7.5, pts = loop ? [...chain, chain[0]] : chain, len = [0];
       for (let i = 1; i < pts.length; i++) len.push(len[i - 1] + pts[i].distanceTo(pts[i - 1]));
-      routes.push({ pts, len, loop, total: len[len.length - 1], connected: chain.some(p => wetAt.get(`${p.x},${p.y}`)) });
+      routes.push({ pts, len, loop, total: len[len.length - 1] });
     }
     routes.slice(0, 6).forEach((r, k) => {
       const n = r.loop && r.total > 90 ? 2 : 1;
@@ -67,7 +68,8 @@ export class Boats {
       else if (b.s > b.route.total) { b.s = b.route.total; b.dir = -1; } else if (b.s < 0) { b.s = 0; b.dir = 1; }
       const p = this.at(b.route, Math.max(0.01, Math.min(b.route.total - 0.01, b.s))), want = Math.atan2(p.tx * b.dir, p.tz * b.dir);
       let d = want - b.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; b.yaw += d * Math.min(1, dt * 2);
-      b.mesh.position.set(p.x, (b.route.connected ? this.level : SEALED_LEVEL) + 0.02 + Math.sin(this.t * 1.6 + b.seed) * 0.04, p.z);   // connected water follows the tide, sealed water stays full
+      const surface = Math.max(this.level, moatLevelAt(this.water, p.x, p.z), this.terrain.riverSurfaceAt(p.x, p.z));
+      b.mesh.position.set(p.x, surface + 0.02 + Math.sin(this.t * 1.6 + b.seed) * 0.04, p.z);
       b.mesh.rotation.set(Math.sin(this.t * 1.3 + b.seed) * 0.03, b.yaw + Math.PI / 2, 0);   // the hull points along +x
     }
   }

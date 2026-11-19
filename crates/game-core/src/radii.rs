@@ -91,6 +91,7 @@ mod tests {
             put_t(&mut w, kind, x, y);
             w.buildings.last_mut().unwrap().garrison = 1;
             assert!(w.begin_battle([1, 0, 0, 0, 0, 0], 0.0, 0));
+            w.battle.as_mut().unwrap().t = crate::battle::DEPLOY_SECS;
             for u in &mut w.battle.as_mut().unwrap().units {
                 if u.side == 1 { u.x = x + distance; u.y = y; u.climb = 5.0; }
                 else { u.cd = 0.0; }

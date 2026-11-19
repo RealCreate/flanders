@@ -63,7 +63,10 @@ export function applyCmd(w: World, c: Cmd) {
     case 'reinforce': if (c.tag) w.battle_reinforce_equipped(c.tag, Uint32Array.from(c.units ?? []), c.tech ?? 0); break;
     case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
     case 'restart': w.restart(); break;   // the village starts again from nothing (the first command of a new epoch: see restart.ts)
-    case 'return': w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? [])); break;
+    case 'return':
+      if (c.kind === 1) w.return_refused_army(Uint32Array.from(c.units ?? []));
+      else w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? []));
+      break;
     default: break; // 'refuse' has no effect on the issuer's own world
   }
 }

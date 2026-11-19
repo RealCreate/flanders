@@ -4,16 +4,24 @@
 //! towards a goal and slides round what is in the way (`member_step`), how far one may be offset sideways from the path inside the free width (`member_reach`), and a route for one soldier
 //! along the network when it has got stuck (`member_route`). They only read the village; they change nothing and do not enter the state hash.
 use super::*;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// What stops a person: solid circles (buildings, shut gates), wall and fence runs, fields, and the decks that make water passable.
 pub(crate) struct Obst {
-    circles: Vec<(f32, f32, f32)>,
-    segs: Vec<(f32, f32, f32, f32, f32)>,
-    fields: Vec<Building>,
+    solids: HashMap<(i32, i32), Vec<Solid>>,
     decks: Vec<(f32, f32, f32, f32, f32)>,
     lendable: Vec<(f32, f32, f32, f32, f32)>,
 }
+
+#[derive(Clone)]
+enum Solid {
+    Circle(f32, f32, f32),
+    Wall(f32, f32, f32, f32, f32),
+    Field(Rc<Building>),
+}
+
+fn bucket(v: f32) -> i32 { (v / 12.0).floor() as i32 }
 
 /// The room a soldier on foot takes up, and how much more an engine or rider needs (the "engine-width layer": clear of buildings, walls and fields by this much).
 pub const FOOT_MARGIN: f32 = 0.3;
@@ -34,27 +42,27 @@ impl World {
         for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE || b.kind == GATE) { mix((b.status as u64) << 1 | (b.progress > 0) as u64); }
         mix(self.battle.is_some() as u64);
         if let Some((st, o)) = &*self.mem_cache.borrow() { if *st == h { return o.clone(); } }
-        let mut o = Obst { circles: vec![], segs: vec![], fields: vec![], decks: vec![], lendable: vec![] };
+        let mut o = Obst { solids: HashMap::new(), decks: vec![], lendable: vec![] };
         for b in &self.buildings {
             match b.kind {
-                GATE => { if self.gate_shut(b) { o.circles.push((b.x, b.y, 3.4)); } }
+                GATE => { if self.gate_shut(b) { o.add(Solid::Circle(b.x, b.y, 3.4)); } }
                 ROAD | MOAT | RIVER | RAISE | LOWER => {}
                 BRIDGE | DRAWBRIDGE => {} // handled with the battle's crossing geometry below
                 TOLL => {
                     for (lx, ly, r) in [(2.4, -0.2, 1.6), (-1.25, 0.6, 0.55), (1.25, 0.6, 0.55)] {
                         let (dx, dy) = crate::doors::to_world(b.rot, (lx, ly));
-                        o.circles.push((b.x + dx, b.y + dy, r));
+                        o.add(Solid::Circle(b.x + dx, b.y + dy, r));
                     }
                 }
-                PLAZA => o.circles.push((b.x, b.y, if b.opts & 4 != 0 { 1.3 } else { 0.4 })),
+                PLAZA => o.add(Solid::Circle(b.x, b.y, if b.opts & 4 != 0 { 1.3 } else { 0.4 })),
                 _ => {
-                    if matches!(b.kind, FARM | GARDEN | PARK | MARKET) { o.fields.push(b.clone()); }
-                    o.circles.push((b.x, b.y, crate::solid_radius(b.kind, b.tier)));
+                    if matches!(b.kind, FARM | GARDEN | PARK | MARKET) { o.add(Solid::Field(Rc::new(b.clone()))); }
+                    o.add(Solid::Circle(b.x, b.y, crate::solid_radius(b.kind, b.tier)));
                 }
             }
         }
         let (segs, _) = self.wall_lines();
-        for sg in &segs { o.segs.push((sg.ax, sg.ay, sg.bx, sg.by, sg.r)); }
+        for sg in &segs { o.add(Solid::Wall(sg.ax, sg.ay, sg.bx, sg.by, sg.r)); }
         for c in self.crossings() {
             let deck = (c.ax, c.ay, c.bx, c.by, c.half);
             if c.down { o.decks.push(deck); } else if c.lendable { o.lendable.push(deck); }
@@ -65,7 +73,7 @@ impl World {
     }
 
     fn blocked_with(&self, o: &Obst, x: f32, y: f32, m: f32) -> bool {
-        !o.solid_clear((x, y), (x, y), m) || (self.height_ground(x, y) < self.march_waterline(x, y) && !o.on_deck(x, y, false))
+        !o.solid_clear((x, y), (x, y), m) || (self.ground_is_wet(x, y, self.height_ground(x, y)) && !o.on_deck(x, y, false))
     }
 
     /// Is this a place a person (`lvl` < 3) or an engine or rider (`lvl` 3: needs more room) may not stand?
@@ -112,17 +120,44 @@ impl World {
 }
 
 impl Obst {
+    fn add(&mut self, solid: Solid) {
+        let (ax, ay, bx, by, r) = match &solid {
+            Solid::Circle(x, y, r) => (*x, *y, *x, *y, *r),
+            Solid::Wall(ax, ay, bx, by, r) => (*ax, *ay, *bx, *by, *r),
+            Solid::Field(b) => (b.x, b.y, b.x, b.y, 18.0),
+        };
+        for y in bucket(ay.min(by) - r)..=bucket(ay.max(by) + r) {
+            for x in bucket(ax.min(bx) - r)..=bucket(ax.max(bx) + r) {
+                self.solids.entry((x, y)).or_default().push(solid.clone());
+            }
+        }
+    }
+
     pub(crate) fn solid_clear(&self, a: (f32, f32), b: (f32, f32), room: f32) -> bool {
         if [a.0, a.1, b.0, b.1].iter().any(|v| !v.is_finite() || v.abs() > MAP_LIMIT) { return false; }
-        if self.circles.iter().any(|&(x, y, r)| seg_dist(x, y, a.0, a.1, b.0, b.1) < r + room) { return false; }
-        if self.segs.is_empty() && self.fields.is_empty() { return true; }
+        let (ax, ay, bx, by) = (a.0.min(b.0) - room, a.1.min(b.1) - room, a.0.max(b.0) + room, a.1.max(b.1) + room);
         let steps = ((b.0 - a.0).hypot(b.1 - a.1) / 0.45).ceil().max(1.0) as u32;
-        (0..=steps).all(|i| {
+        let samples = || (0..=steps).map(|i| {
             let t = i as f32 / steps as f32;
-            let (x, y) = (lerp(a.0, b.0, t), lerp(a.1, b.1, t));
-            !self.segs.iter().any(|s| seg_dist(x, y, s.0, s.1, s.2, s.3) < s.4 + room)
-                && !self.fields.iter().any(|f| (f.x - x).abs() < 18.0 && (f.y - y).abs() < 18.0 && crate::pathnet::in_fields(f, x, y, room))
-        })
+            (lerp(a.0, b.0, t), lerp(a.1, b.1, t))
+        });
+        for y in bucket(ay)..=bucket(by) {
+            for x in bucket(ax)..=bucket(bx) {
+                let Some(solids) = self.solids.get(&(x, y)) else { continue; };
+                for solid in solids {
+                    let clear = match *solid {
+                        Solid::Circle(x, y, r) => x + r < ax || x - r > bx || y + r < ay || y - r > by
+                            || seg_dist(x, y, a.0, a.1, b.0, b.1) >= r + room,
+                        Solid::Wall(x0, y0, x1, y1, r) => x0.max(x1) + r < ax || x0.min(x1) - r > bx || y0.max(y1) + r < ay || y0.min(y1) - r > by
+                            || samples().all(|(x, y)| seg_dist(x, y, x0, y0, x1, y1) >= r + room),
+                        Solid::Field(ref f) => f.x + 18.0 < ax || f.x - 18.0 > bx || f.y + 18.0 < ay || f.y - 18.0 > by
+                            || samples().all(|(x, y)| (f.x - x).abs() >= 18.0 || (f.y - y).abs() >= 18.0 || !crate::pathnet::in_fields(f, x, y, room)),
+                    };
+                    if !clear { return false; }
+                }
+            }
+        }
+        true
     }
 
     pub(crate) fn on_deck(&self, x: f32, y: f32, lend: bool) -> bool {

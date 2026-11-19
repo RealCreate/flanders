@@ -194,7 +194,7 @@ impl World {
     }
 
     /// Everything `height_ground` adds to the natural land: the levelled ground, the ditches and earthworks, the drawbridges (their banks) and craters.
-    fn ground_stamp(&self) -> u64 {
+    pub(crate) fn ground_stamp(&self) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325 ^ self.seed;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
         for l in &self.levels { for v in l { mix(v.to_bits() as u64); } }
@@ -293,7 +293,8 @@ impl World {
         for j in 0..ny { for i in 0..nx {
             let k = (j * nx + i) as usize;
             if deck[k] { ok[k] = true; continue; }
-            if blocked[k] || h[k] < 0.2 { continue; }
+            let (x, y) = cxy(i, j);
+            if blocked[k] || self.natural_water_covers(x, y, h[k], 0.2) { continue; }
             let mut sl = 0.0f32;
             for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] { let (p, q) = (i + di, j + dj); if p >= 0 && q >= 0 && p < nx && q < ny { sl = sl.max((h[(q * nx + p) as usize] - h[k]).abs() / RC); } }
             ok[k] = sl <= 1.6;
@@ -391,7 +392,7 @@ impl World {
             (0..=steps).all(|i| {
                 let t = i as f32 / steps as f32;
                 let (x, y) = (lerp(a.0, b.0, t), lerp(a.1, b.1, t));
-                self.height_ground(x, y) >= self.march_waterline(x, y) || o.on_deck(x, y, false)
+                !self.ground_is_wet(x, y, self.height_ground(x, y)) || o.on_deck(x, y, false)
             })
         };
         let mut at: BTreeMap<(u32, u32), u32> = BTreeMap::new();

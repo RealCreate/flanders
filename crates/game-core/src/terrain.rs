@@ -2,7 +2,9 @@
 
 pub const HALF: f32 = 1200.0; // map spans [-HALF, HALF] on both axes
 pub const SITE_SPACING: f32 = 300.0;
-pub const RIVER_LEVEL: f32 = 0.2;
+pub const RIVER_LEVEL: f32 = 4.8;
+const RIVER_STEP: f32 = 2.5; // spacing of the rendered terrain's vertices
+const RIVER_VERTICES: usize = (2.0 * HALF / RIVER_STEP) as usize + 1;
 
 #[inline]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
@@ -68,7 +70,7 @@ fn dry_round(seed: u64, x: f32, y: f32) -> bool {
     let mut total = 0;
     for k in 0..17 {
         let (dx, dy) = if k == 0 { (0.0, 0.0) } else { let a = (k - 1) as f32 * std::f32::consts::FRAC_PI_4; let r = if k <= 8 { 30.0 } else { 60.0 }; ((a).cos() * r, (a).sin() * r) };
-        total += 1; if land_sample(seed, &[], x + dx, y + dy, false).0 > 1.5 { dry += 1; }
+        total += 1; if land_sample::<false>(seed, &[], x + dx, y + dy, false).0 > 1.5 { dry += 1; }
     }
     dry * 100 >= total * 88
 }
@@ -103,10 +105,10 @@ fn site_weight(sites: &[(f32, f32)], x: f32, y: f32) -> f32 { 1.0 - smoothstep(3
 
 /// Terrain height in world units. Sea level is 0.
 pub fn base_height_s(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
-    land_sample(seed, sites, x, y, true).0
+    land_sample::<false>(seed, sites, x, y, true).0
 }
 
-fn land_sample(seed: u64, sites: &[(f32, f32)], x: f32, y: f32, fill_channels: bool) -> (f32, bool) {
+fn land_sample<const SURFACE: bool>(seed: u64, sites: &[(f32, f32)], x: f32, y: f32, fill_channels: bool) -> (f32, f32) {
     let wx = x + 45.0 * (fbm(seed + 11, x * 0.006, y * 0.006, 2) - 0.5);
     let wy = y + 45.0 * (fbm(seed + 12, x * 0.006, y * 0.006, 2) - 0.5);
     let cont = fbm(seed + 1, wx * 0.0035, wy * 0.0035, 4);
@@ -127,11 +129,13 @@ fn land_sample(seed: u64, sites: &[(f32, f32)], x: f32, y: f32, fill_channels: b
     let rv = (fbm(seed + 4, wx * 0.0075, wy * 0.0075, 3) - 0.5).abs();
     let river = 1.0 - smoothstep(0.0, 0.012 + 0.02 * (1.0 - smoothstep(0.0, 40.0, h)), rv);   // rivers widen as they reach the lowlands
     let rmask = 1.0 - smoothstep(16.0, 38.0, h);
-    h = lerp(h, -1.1, river * rmask * 0.95);   // shallow rivers: they do not cut deep gorges
-    let channel = smoothstep(0.46, 0.80, river * rmask);
+    let incision = river * rmask;
+    h = lerp(h, -1.1, incision * 0.95);   // shallow rivers: they do not cut deep gorges
+    let channel = smoothstep(0.46, 0.80, incision);
     // a few broad lakes, big enough to sail on
     let lake = fbm(seed + 6, wx * 0.005, wy * 0.005, 3);
-    h = lerp(h, -2.0, smoothstep(0.70, 0.78, lake) * (1.0 - smoothstep(10.0, 30.0, h)));
+    let lake_cut = smoothstep(0.70, 0.78, lake) * (1.0 - smoothstep(10.0, 30.0, h));
+    h = lerp(h, -2.0, lake_cut);
     // gentle valleys around village sites
     let sw = site_weight(sites, x, y);
     let target = 5.0 + (hills - 0.5) * 6.0;
@@ -151,8 +155,68 @@ fn land_sample(seed: u64, sites: &[(f32, f32)], x: f32, y: f32, fill_channels: b
     // Deepen low beds and feather into the banks. Dry terrain at the height of deposits and neutral sites is unchanged.
     let strength = channel * (1.0 - smoothstep(0.35, 1.35, height));
     let height = if fill_channels && inland { lerp(height, height.min(-0.85), strength * 0.94) } else { height };
-    let filled = inland && height < RIVER_LEVEL;
-    (height, filled)
+    // Keep the stage across the carved bed and its shallow shelves. Beyond them the mesh
+    // meets the ground, so it cannot end in mid-air over low land outside the channel.
+    let surface = if SURFACE {
+        let stage = RIVER_LEVEL * smoothstep(0.75, 0.97, land) * (1.0 - smoothstep(0.3, 0.85, lake_cut));
+        let shelf = incision > 0.36 && height >= stage - 1.2 && height < stage;
+        if (incision > 0.38 || shelf) && sw < 0.45 { stage } else { -stage.min(height.max(0.0)) }
+    } else { 0.0 };
+    (height, surface)
+}
+
+// The browser loads the surface grid along with the terrain. Headless games sample touched vertices lazily.
+thread_local! { static RIVER_SURFACES: std::cell::RefCell<Option<(u64, Vec<f32>)>> = const { std::cell::RefCell::new(None) }; }
+
+fn with_river_surfaces<T>(seed: u64, f: impl FnOnce(&mut [f32]) -> T) -> T {
+    RIVER_SURFACES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.as_ref().is_none_or(|(s, _)| *s != seed) {
+            *cache = Some((seed, vec![f32::NAN; RIVER_VERTICES * RIVER_VERTICES]));
+        }
+        f(&mut cache.as_mut().unwrap().1)
+    })
+}
+
+#[test]
+fn river_mesh_stays_level_at_inland_banks_and_ends_at_ground_level() {
+    let n = RIVER_VERTICES;
+    let land = land_rows(1337, -HALF, -HALF, n as u32, RIVER_STEP, 0, n as u32);
+    let mut flat_banks = 0;
+    for vertex in land.chunks_exact(2) {
+        let (ground, surface) = (vertex[0], vertex[1]);
+        if surface < 0.0 { assert!(surface.abs() <= ground, "exposed river edge over {ground}"); }
+    }
+    for y in 0..n - 1 {
+        for x in 0..n - 1 {
+            let a = 2 * (y * n + x) + 1;
+            if land[a] == RIVER_LEVEL && land[a + 2] == -RIVER_LEVEL && land[a + 2 * n].abs() == RIVER_LEVEL { flat_banks += 1; }
+        }
+    }
+    assert!(flat_banks > 100);
+}
+
+/// Natural river surface at a point, using the same triangles as the renderer. Zero is open water or dry land outside the river profile.
+pub fn river_surface_at(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
+    if !(x.abs() < HALF && y.abs() < HALF) { return 0.0; }
+    let (fx, fy) = ((x + HALF) / RIVER_STEP, (y + HALF) / RIVER_STEP);
+    let (i, j) = ((fx as usize).min(RIVER_VERTICES - 2), (fy as usize).min(RIVER_VERTICES - 2));
+    let (tx, ty) = (fx - i as f32, fy - j as f32);
+    with_river_surfaces(seed, |grid| {
+        let mut at = |i, j| {
+            let stage: &mut f32 = &mut grid[j * RIVER_VERTICES + i];
+            if stage.is_nan() { *stage = land_sample::<true>(seed, sites, -HALF + i as f32 * RIVER_STEP, -HALF + j as f32 * RIVER_STEP, true).1; }
+            *stage
+        };
+        let interp = |a: f32, b: f32, c: f32, tx: f32, ty: f32| {
+            if a <= 0.0 && b <= 0.0 && c <= 0.0 { return 0.0; }
+            let (a, b, c) = (a.abs(), b.abs(), c.abs());
+            a + (b - a) * tx + (c - a) * ty
+        };
+        let (b, c) = (at(i + 1, j), at(i, j + 1));
+        if tx + ty <= 1.0 { interp(at(i, j), b, c, tx, ty) }
+        else { interp(at(i + 1, j + 1), c, b, 1.0 - tx, 1.0 - ty) }
+    })
 }
 
 /// Tunnels bored through mountain ridges: [x0, y0, x1, y1] per tunnel (the two portals). Worked out once per seed from the natural terrain: from a village
@@ -224,7 +288,7 @@ fn neutrals_uncached(seed: u64) -> Vec<(u8, f32, f32)> {
         let x = (cx as f32 + 0.15 + 0.7 * h01(seed ^ 0x4F, cx, cy)) * 160.0;
         let y = (cy as f32 + 0.15 + 0.7 * h01(seed ^ 0x50, cx, cy)) * 160.0;
         if x.abs() > HALF - 80.0 || y.abs() > HALF - 80.0 { continue; }
-        let h = land_sample(seed, &s, x, y, false).0;
+        let h = land_sample::<false>(seed, &s, x, y, false).0;
         if h < 2.0 || h > 40.0 || placement_slope(seed, &s, x, y) > 0.5 { continue; }
         if site_dist(&s, x, y) < 110.0 { continue; }
         let k = h01(seed ^ 0x51, cx, cy); let kind = if k < 0.3 { 0 } else if k < 0.6 { 1 } else if k < 0.86 { 2 } else { 3 };
@@ -251,22 +315,28 @@ pub fn grid_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u
     out
 }
 
-/// Terrain rows with a river-bed flag alongside each height, sampled together to share the noise calculations.
+/// Terrain rows with a signed river stage alongside each ground height. Positive stages mark the channel.
 pub fn land_rows(seed: u64, x0: f32, y0: f32, nx: u32, step: f32, j0: u32, j1: u32) -> Vec<f32> {
     let s = sites(seed);
     let mut out = Vec::with_capacity((j1.saturating_sub(j0) * nx) as usize * 2);
     for j in j0..j1 {
         for i in 0..nx {
-            let (h, wet) = land_sample(seed, &s, x0 + i as f32 * step, y0 + j as f32 * step, true);
-            out.extend([h, u8::from(wet) as f32]);
+            let (ground, surface) = land_sample::<true>(seed, &s, x0 + i as f32 * step, y0 + j as f32 * step, true);
+            out.extend([ground, surface]);
         }
+    }
+    if nx as usize == RIVER_VERTICES && x0 == -HALF && y0 == -HALF && step == RIVER_STEP && j0 <= j1 && j1 as usize <= RIVER_VERTICES {
+        with_river_surfaces(seed, |grid| {
+            let row_slice = &mut grid[j0 as usize * RIVER_VERTICES..j1 as usize * RIVER_VERTICES];
+            for (stage, pair) in row_slice.iter_mut().zip(out.chunks_exact(2)) { *stage = pair[1]; }
+        });
     }
     out
 }
 
 /// Deposits and neutral sites are addressed by their index in saved games. Leave their original generation criteria in place.
 fn placement_slope(seed: u64, sites: &[(f32, f32)], x: f32, y: f32) -> f32 {
-    let hh = |x, y| land_sample(seed, sites, x, y, false).0;
+    let hh = |x, y| land_sample::<false>(seed, sites, x, y, false).0;
     let hx = hh(x + 1.0, y) - hh(x - 1.0, y);
     let hy = hh(x, y + 1.0) - hh(x, y - 1.0);
     (hx * hx + hy * hy).sqrt() * 0.5
@@ -314,6 +384,7 @@ pub fn trees_cells(seed: u64, cx0: i32, cx1: i32, cy0: i32, cy1: i32) -> Vec<f32
             };
             let d = tree_density(seed, x, y, h, sl, &s);
             if h01(seed ^ 0xA3, cx, cy) > d * 0.9 { continue; }
+            if h < RIVER_LEVEL && h < river_surface_at(seed, &s, x, y) { continue; }
             let pick = h01(seed ^ 0xA4, cx, cy);
             let conifer_bias = smoothstep(14.0, 34.0, h);
             let kind = if pick < conifer_bias * 0.9 + 0.1 { 0.0 } else if h01(seed ^ 0xA5, cx, cy) < 0.5 { 1.0 } else { 2.0 };
@@ -336,6 +407,8 @@ pub fn forest_near(seed: u64, x: f32, y: f32, rad: f32) -> f32 {
         };
         let (px, py) = (x + dx, y + dy);
         let h = base_height_s(seed, &s, px, py);
+        n += 1.0;
+        if h < 1.3 || (h < RIVER_LEVEL && h < river_surface_at(seed, &s, px, py)) { continue; }
         let hx = base_height_s(seed, &s, px + 1.0, py) - base_height_s(seed, &s, px - 1.0, py);
         let hy = base_height_s(seed, &s, px, py + 1.0) - base_height_s(seed, &s, px, py - 1.0);
         // use the raw forest field (without village clearing) so woodcutters work near the village edge
@@ -344,7 +417,6 @@ pub fn forest_near(seed: u64, x: f32, y: f32, rad: f32) -> f32 {
             tree_density(seed, px, py, h, sl, &[])
         };
         sum += f;
-        n += 1.0;
     }
     sum / n
 }
@@ -389,7 +461,7 @@ pub fn deposits(seed: u64) -> Vec<Deposit> {
                 let (lo, hi) = dist_range[kind as usize];
                 let d = lo + (hi - lo) * h01(seed ^ 0xD1, si as i32 * 7 + kind as i32, attempt);
                 let (x, y) = (sx + a.cos() * d, sy + a.sin() * d);
-                let h = land_sample(seed, &s, x, y, false).0;
+                let h = land_sample::<false>(seed, &s, x, y, false).0;
                 if h < 1.5 { continue; }
                 if placement_slope(seed, &s, x, y) > 0.55 { continue; }
                 if out.iter().any(|o| (o.x - x).powi(2) + (o.y - y).powi(2) < 18.0 * 18.0) { continue; }
@@ -409,7 +481,7 @@ pub fn deposits(seed: u64) -> Vec<Deposit> {
             let x = (cx as f32 + h01(seed ^ 0xD6, cx, cy)) * cell as f32;
             let y = (cy as f32 + h01(seed ^ 0xD7, cx, cy)) * cell as f32;
             if x.abs() > HALF - 6.0 || y.abs() > HALF - 6.0 { continue; }
-            let h = land_sample(seed, &s, x, y, false).0;
+            let h = land_sample::<false>(seed, &s, x, y, false).0;
             if h < 1.5 || placement_slope(seed, &s, x, y) > 0.6 { continue; }
             if out.iter().any(|o| (o.x - x).powi(2) + (o.y - y).powi(2) < 18.0 * 18.0) { continue; }
             let p = h01(seed ^ 0xD8, cx, cy);

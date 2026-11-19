@@ -15,8 +15,9 @@ fn village(cutters: usize) -> World {
     w.after_change(); w
 }
 
-/// Plays `days`, keeping the grain and the gold topped up (this is about firewood and cold, not about farming).
+/// Plays `days` with food supplied and the next raid held until after the firewood and cold checks.
 fn play(w: &mut World, days: u64, wood: Option<i32>) {
+    w.raid_warning_ticks = (days * DAY + 1) as u32;
     for _ in 0..days * DAY { w.step(); w.stock[GR as usize] = w.stock[GR as usize].max(400); if let Some(k) = wood { w.stock[W as usize] = k; } }
 }
 

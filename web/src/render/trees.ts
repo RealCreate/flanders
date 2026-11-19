@@ -75,23 +75,23 @@ const branch = (len: number, r: number, x: number, y: number, rz: number, hex: n
 
 const merge = (parts: THREE.BufferGeometry[]) => mergeGeometries(parts)!;
 
-function oak(hi: boolean) {
-  const d = hi ? 1 : 0, centre = new THREE.Vector3(0, 4.0, 0), R = 2.7;
+function oak() {
+  const d = 1, centre = new THREE.Vector3(0, 4.0, 0), R = 2.7;
   const clumps = [
     { geo: clump(1.6, 0, 3.8, 0, d, 0.9, 1), color: 0x2f6a2a }, // dark core
     { geo: clump(2.0, 0, 3.95, 0, d, 0.88, 2), color: 0x4f8f3a }, { geo: clump(1.55, 1.3, 3.3, 0.7, d, 0.88, 3), color: 0x5a9a42 }, { geo: clump(1.45, -1.25, 3.4, -0.8, d, 0.88, 4), color: 0x468436 },
     { geo: clump(1.35, 0.2, 5.0, -0.4, d, 0.9, 5), color: 0x66a84c },
-    ...(hi ? [{ geo: clump(1.25, -0.5, 3.5, 1.4, d, 0.9, 6), color: 0x52923c }, { geo: clump(1.15, 1.0, 4.4, -1.2, d, 0.9, 7), color: 0x5c9c44 }, { geo: clump(1.0, -1.4, 4.5, 0.4, d, 0.9, 8), color: 0x57973f }] : []),
+    { geo: clump(1.25, -0.5, 3.5, 1.4, d, 0.9, 6), color: 0x52923c }, { geo: clump(1.15, 1.0, 4.4, -1.2, d, 0.9, 7), color: 0x5c9c44 }, { geo: clump(1.0, -1.4, 4.5, 0.4, d, 0.9, 8), color: 0x57973f },
   ];
-  return merge([trunk(3.0, 0.5, 0.26, 0x5e4128), branch(1.5, 0.12, 0.2, 2.6, -0.8, 0x5e4128), ...(hi ? [branch(1.3, 0.1, -0.2, 2.9, 0.9, 0x5e4128)] : []), ...finishFoliage(clumps, centre, R, 2.2, 6.0)]);
+  return merge([trunk(3.0, 0.5, 0.26, 0x5e4128), branch(1.5, 0.12, 0.2, 2.6, -0.8, 0x5e4128), branch(1.3, 0.1, -0.2, 2.9, 0.9, 0x5e4128), ...finishFoliage(clumps, centre, R, 2.2, 6.0)]);
 }
 
-function birch(hi: boolean) {
-  const d = hi ? 1 : 0, centre = new THREE.Vector3(0, 4.2, 0), R = 1.9;
+function birch() {
+  const d = 1, centre = new THREE.Vector3(0, 4.2, 0), R = 1.9;
   const clumps = [
     { geo: clump(1.0, 0, 4.1, 0, d, 1.15, 1), color: 0x6aa03a },
     { geo: clump(1.3, 0, 4.2, 0, d, 1.1, 2), color: 0x8cbf4e }, { geo: clump(0.95, 0.7, 3.3, 0.3, d, 1.1, 3), color: 0x9acb58 }, { geo: clump(0.95, -0.6, 4.9, -0.2, d, 1.1, 4), color: 0x7fb246 },
-    ...(hi ? [{ geo: clump(0.85, -0.5, 3.4, 0.7, d, 1.1, 5), color: 0x93c455 }] : []),
+    { geo: clump(0.85, -0.5, 3.4, 0.7, d, 1.1, 5), color: 0x93c455 },
   ];
   const stem = trunk(3.7, 0.24, 0.12, 0xe9e5da, 0.1);
   const bandsCol = stem.attributes.color as THREE.BufferAttribute, sp = stem.attributes.position;   // dark papery bark bands
@@ -100,14 +100,14 @@ function birch(hi: boolean) {
 }
 
 /** Layered skirts with ragged, drooping hems. */
-function conifer(hi: boolean) {
-  const centre = new THREE.Vector3(0, 3.3, 0), R = 2.4, seg = hi ? 11 : 8;
+function conifer() {
+  const centre = new THREE.Vector3(0, 3.3, 0), R = 2.4, seg = 11;
   const tiers = [[2.3, 2.6, 0.9, 0x2d5a34], [1.9, 2.4, 1.9, 0x346339], [1.5, 2.3, 3.0, 0x3b6c3e], [1.1, 2.1, 4.1, 0x42774a], [0.65, 1.8, 5.1, 0x4a8252]] as const;
   const parts: { geo: THREE.BufferGeometry; color: number }[] = [{ geo: new THREE.ConeGeometry(1.0, 5.0, 8).translate(0, 3.1, 0), color: 0x234a2c }];
   tiers.forEach(([r, h, y, c], ti) => {
     const g = new THREE.ConeGeometry(r, h, seg, 1, true), p = g.attributes.position;
     for (let k = 0; k < p.count; k++) {
-      if (p.getY(k) < 0) { const a = Math.atan2(p.getZ(k), p.getX(k)), spike = 1 + 0.2 * Math.sin(a * (hi ? 5.5 : 4) + ti), droop = -0.28 * (0.5 + 0.5 * Math.sin(a * (hi ? 5.5 : 4) + ti)); p.setXYZ(k, p.getX(k) * spike, p.getY(k) + droop, p.getZ(k) * spike); }
+      if (p.getY(k) < 0) { const a = Math.atan2(p.getZ(k), p.getX(k)), wave = Math.sin(a * 5.5 + ti), spike = 1 + 0.2 * wave, droop = -0.28 * (0.5 + 0.5 * wave); p.setXYZ(k, p.getX(k) * spike, p.getY(k) + droop, p.getZ(k) * spike); }
     }
     g.translate(0, y + h / 2 - 0.4, 0); g.computeVertexNormals(); parts.push({ geo: g, color: c });
   });
@@ -128,6 +128,9 @@ function foliageTexture() {
 }
 
 const TILE = 60;
+const SECTOR = TILE * 4;
+const FAR_RANGE = 220;
+export const TREE_SHADOW_LAYER = 1;
 
 type Disc = { x: number; z: number; r: number };
 type Trail = { ax: number; az: number; bx: number; bz: number; r: number };
@@ -137,8 +140,19 @@ type Mask = Bounds & { r: number; r2: number } & (
   { kind: 'trail'; ax: number; az: number; dx: number; dz: number; len2: number }
 );
 type Tree = { x: number; y: number; z: number; type: number; s: number; rot: number; grows: boolean };
-type Tile = { x: number; z: number; batches: Batch[]; masks: Set<Mask> };
-type Batch = { tile: Tile; type: number; ids: number[]; mesh: THREE.InstancedMesh; lod: number; sampleGround: boolean };
+type Sector = { x: number; z: number; local: THREE.Group; distant: THREE.Group; batches: Batch[]; merged: Map<number, TreeMesh>; bounds: THREE.Box3; dirty: boolean };
+type Tile = { x: number; z: number; sector: Sector; batches: Batch[]; masks: Set<Mask> };
+type Batch = { tile: Tile; type: number; ids: number[]; mesh: TreeMesh; shadow: TreeMesh; lod: number; sampleGround: boolean };
+
+/** Instances are already in world coordinates. A box avoids drawing tall tiles or large sectors just outside the view. */
+class TreeMesh extends THREE.InstancedMesh {
+  override boundingBox = new THREE.Box3();
+  constructor(geometry: THREE.BufferGeometry, material: THREE.Material, count: number) {
+    super(geometry, material, count);
+    this.matrixAutoUpdate = false;
+  }
+  override intersectsFrustum(frustum: THREE.Frustum) { return frustum.intersectsBox(this.boundingBox); }
+}
 
 /** Distant crowns retain each species' outline with fewer vertices, no leaf texture and no vertex wind. */
 function distantTree(type: number) {
@@ -163,20 +177,44 @@ function distantTree(type: number) {
     ...finishFoliage(foliage, new THREE.Vector3(0, oak ? 4.0 : 4.2, 0), oak ? 2.7 : 1.9, oak ? 2.2 : 3.0, 6.0)]);
 }
 
+/** The simplified silhouette used on the horizon and in the depth-only shadow pass. */
+function treeSilhouette(type: number) {
+  const oak = type === 1, pine = type === 0;
+  const height = pine ? 2.1 : oak ? 3.0 : 3.7, r = pine ? 0.32 : oak ? 0.5 : 0.24;
+  const trunk = prep(new THREE.CylinderGeometry(r * 0.6, r, height, 4, 1, true).translate(0, height / 2, 0), oak ? 0x5e4128 : pine ? 0x4a3524 : 0xe9e5da);
+  const parts = pine ? [
+    { color: 0x32633a, geo: new THREE.ConeGeometry(2.4, 4.5, 5, 1, true).translate(0, 2.7, 0) },
+    { color: 0x45794a, geo: new THREE.ConeGeometry(1.45, 3.3, 5, 1, true).rotateY(0.3).translate(0, 4.15, 0) },
+  ] : [{ color: oak ? 0x528d3e : 0x8cbc4c, geo: clump(oak ? 2.45 : 1.67, 0, 4.15, 0, 0, oak ? 0.8 : 1.12, 2) }];
+  return merge([trunk, ...finishFoliage(parts, new THREE.Vector3(0, pine ? 3.3 : 4.15, 0), oak ? 2.7 : 2.3, pine ? 0.6 : 2.2, 6.0)]);
+}
+
 export class Forest {
   group = new THREE.Group();
   private tiles = new Map<number, Tile>();
-  private batches: Batch[] = [];
+  private sectors = new Map<number, Sector>();
+  private shadowGroup = new THREE.Group();
   private shapes = new Map<string, Mask>();
   private dirty = new Set<Batch>();
   private geos: THREE.BufferGeometry[][];
   private mat: THREE.MeshStandardMaterial;
-  private farMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  private farMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+  private shadowMat = new THREE.MeshBasicMaterial();
+  private uSun = { value: new THREE.Vector3(0, 1, 0) };
+  private uDaylight = { value: new THREE.Color(1, 1, 1) };
+  private uSkyLight = { value: new THREE.Color(0.2, 0.2, 0.2) };
   private trees: Tree[] = [];
   private uTime = { value: 0 };
   private hidden: Uint8Array;
   private grid = new Map<number, number[]>();
   private camera = new THREE.Vector3(Infinity, Infinity, Infinity);
+  private shadowFocus = new THREE.Vector3(Infinity, Infinity, Infinity);
+  private shadowRange = -1;
+  private viewMatrix = new THREE.Matrix4();
+  private viewFrustum = new THREE.Frustum();
+  private viewCorner = new THREE.Vector3();
+  private projection = new THREE.Matrix4();
+  private useFrustum = false;
   private lastDistance = -1;
   private lastDetail = false;
 
@@ -192,7 +230,15 @@ export class Forest {
       const tx = Math.floor(x / TILE), tz = Math.floor(z / TILE), key = Forest.key(tx, tz);
       let tile = this.tiles.get(key);
       if (!tile) {
-        tile = { x: (tx + 0.5) * TILE, z: (tz + 0.5) * TILE, masks: new Set(), batches: [] };
+        const sx = Math.floor(x / SECTOR), sz = Math.floor(z / SECTOR), id = Forest.key(sx, sz);
+        let sector = this.sectors.get(id);
+        if (!sector) {
+          sector = { x: (sx + 0.5) * SECTOR, z: (sz + 0.5) * SECTOR, local: new THREE.Group(), distant: new THREE.Group(), batches: [], merged: new Map(), bounds: new THREE.Box3(), dirty: true };
+          sector.distant.visible = false;
+          this.sectors.set(id, sector);
+          this.group.add(sector.local, sector.distant);
+        }
+        tile = { x: (tx + 0.5) * TILE, z: (tz + 0.5) * TILE, sector, masks: new Set(), batches: [] };
         this.tiles.set(key, tile);
         layouts.set(tile, new Map());
       }
@@ -209,9 +255,9 @@ export class Forest {
     }
     this.hidden = new Uint8Array(this.trees.length);
     this.geos = [
-      [conifer(true), conifer(false), distantTree(0)],
-      [oak(true), oak(false), distantTree(1)],
-      [birch(true), birch(false), distantTree(2)],
+      [conifer(), distantTree(0), treeSilhouette(0)],
+      [oak(), distantTree(1), treeSilhouette(1)],
+      [birch(), distantTree(2), treeSilhouette(2)],
     ];
     this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: foliageTexture(), roughness: 0.95, metalness: 0 });
     this.mat.onBeforeCompile = sh => {
@@ -225,16 +271,30 @@ export class Forest {
           transformed.z += sw * position.y * position.y * 0.1;
         #endif`);
     };
+    // Distant crowns take the sun and sky into account per vertex, without the point-light loop of a lit material.
+    this.farMat.onBeforeCompile = sh => {
+      sh.uniforms.uForestSun = this.uSun; sh.uniforms.uForestDaylight = this.uDaylight; sh.uniforms.uForestSky = this.uSkyLight;
+      sh.vertexShader = 'uniform vec3 uForestSun, uForestDaylight, uForestSky;\n' + sh.vertexShader.replace('#include <color_vertex>', `
+        #include <color_vertex>
+        #ifdef USE_INSTANCING_COLOR
+          vec3 n = normalize(mat3(instanceMatrix) * normal);
+          vColor.rgb *= uForestSky + uForestDaylight * max(dot(n, uForestSun), 0.0);
+        #endif`);
+    };
+    this.group.add(this.shadowGroup);
     for (const [tile, layoutsByType] of layouts) for (const [type, ids] of layoutsByType) {
-      const mesh = new THREE.InstancedMesh(this.geos[type][1], this.mat, ids.length);
+      const mesh = new TreeMesh(this.geos[type][1], this.farMat, ids.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(ids.length * 3), 3).setUsage(THREE.DynamicDrawUsage);
       mesh.boundingSphere = new THREE.Sphere();
-      const batch = { tile, type, ids, mesh, lod: 1, sampleGround: true };
+      const shadow = new TreeMesh(this.geos[type][2], this.shadowMat, 0);
+      shadow.instanceMatrix = mesh.instanceMatrix; shadow.boundingSphere = mesh.boundingSphere; shadow.boundingBox = mesh.boundingBox;
+      shadow.layers.set(TREE_SHADOW_LAYER); shadow.castShadow = true; shadow.visible = false;
+      const batch = { tile, type, ids, mesh, shadow, lod: 1, sampleGround: true };
       tile.batches.push(batch);
-      this.batches.push(batch);
+      tile.sector.batches.push(batch);
       this.dirty.add(batch);
-      this.group.add(mesh);
+      tile.sector.local.add(mesh); this.shadowGroup.add(shadow);
     }
     this.terrain.onHeightChange = (x0, z0, x1, z1) => {
       this.eachTile({ x0, z0, x1, z1 }, tile => {
@@ -247,14 +307,59 @@ export class Forest {
   /** Display settings. */
   drawDistance = 1300;
   detail = true;
+  shadowVersion = 0;
 
-  tick(t: number, cam?: THREE.Vector3) {
+  setLight(direction: THREE.Vector3, sun: THREE.DirectionalLight, sky: THREE.HemisphereLight) {
+    this.uSun.value.copy(direction);
+    this.uDaylight.value.copy(sun.color).multiplyScalar(sun.intensity / Math.PI);
+    this.uSkyLight.value.copy(sky.color).lerp(sky.groundColor, 0.25).multiplyScalar(sky.intensity / Math.PI);
+  }
+
+  tick(t: number, cam?: THREE.Vector3, focus = cam, shadowRange = 145, view?: THREE.Camera) {
     this.uTime.value = t;
     if (this.dirty.size) this.flush(performance.now() + 3);
     if (!cam || !this.group.visible) return;
-    if (cam.distanceToSquared(this.camera) < 4 && this.drawDistance === this.lastDistance && this.detail === this.lastDetail) return;
-    this.camera.copy(cam); this.lastDistance = this.drawDistance; this.lastDetail = this.detail;
-    for (const batch of this.batches) this.updateView(batch);
+    const distanceChanged = this.drawDistance !== this.lastDistance;
+    const moved = cam.distanceToSquared(this.camera) >= 4;
+    const turned = view?.matrixWorldInverse.elements.some((e, i) => i < 12 && Math.abs(e - this.viewMatrix.elements[i]) > 0.018);
+    const frustumChanged = !!view !== this.useFrustum || !!view && (turned || !view.projectionMatrix.equals(this.projection));
+    if (moved || frustumChanged || distanceChanged || this.detail !== this.lastDetail) {
+      this.useFrustum = !!view;
+      if (view) {
+        this.viewMatrix.copy(view.matrixWorldInverse); this.projection.copy(view.projectionMatrix);
+        this.viewFrustum.setFromProjectionMatrix(this.cameraProjection.multiplyMatrices(this.projection, this.viewMatrix));
+      }
+      this.camera.copy(cam); this.lastDistance = this.drawDistance; this.lastDetail = this.detail;
+      for (const sector of this.sectors.values()) this.updateSector(sector);
+    }
+    if (focus && (focus.distanceToSquared(this.shadowFocus) >= 16 || shadowRange !== this.shadowRange || distanceChanged)) {
+      if (shadowRange !== this.shadowRange) this.shadowVersion++;
+      this.shadowFocus.copy(focus); this.shadowRange = shadowRange;
+      this.shadowGroup.visible = shadowRange > 0;
+      if (shadowRange > 0) for (const sector of this.sectors.values()) for (const batch of sector.batches) this.updateShadow(batch);
+    }
+  }
+
+  private cameraProjection = new THREE.Matrix4();
+
+  private updateSector(sector: Sector) {
+    const dx = Math.abs(sector.x - this.camera.x), dz = Math.abs(sector.z - this.camera.z), span = (SECTOR - TILE) / 2;
+    const min = Math.max(0, dx - span) ** 2 + Math.max(0, dz - span) ** 2;
+    const max = (dx + span) ** 2 + (dz + span) ** 2, limit = this.drawDistance ** 2;
+    const distant = min >= FAR_RANGE ** 2 && max < limit && !sector.bounds.isEmpty() && this.sectorInView(sector.bounds);
+    sector.distant.visible = distant;
+    sector.local.visible = !distant && min < limit;
+    if (distant && sector.dirty) this.mergeSector(sector);
+    if (sector.local.visible) for (const batch of sector.batches) this.updateView(batch);
+  }
+
+  private sectorInView({ min, max }: THREE.Box3) {
+    if (!this.useFrustum) return true;
+    return this.viewFrustum.planes.every(plane => {
+      const n = plane.normal;
+      this.viewCorner.set(n.x >= 0 ? min.x : max.x, n.y >= 0 ? min.y : max.y, n.z >= 0 ? min.z : max.z);
+      return plane.distanceToPoint(this.viewCorner) >= 0;
+    });
   }
 
   private updateView(batch: Batch) {
@@ -264,14 +369,49 @@ export class Forest {
     if (!mesh.visible) return;
     const dy = mesh.boundingSphere!.center.y - this.camera.y, distance = flat + dy * dy;
     const near = this.detail && distance < (batch.lod === 0 ? 95 : 75) ** 2;
-    const far = distance >= (batch.lod === 2 ? 180 : 220) ** 2;
+    const far = distance >= (batch.lod === 2 ? 180 : FAR_RANGE) ** 2;
     const lod = near ? 0 : far ? 2 : 1;
     if (batch.lod !== lod) {
       batch.lod = lod; mesh.geometry = this.geos[type][lod];
-      mesh.material = far ? this.farMat : this.mat;
+      mesh.material = lod === 0 ? this.mat : this.farMat;
     }
-    mesh.castShadow = !far && flat < 150 ** 2;
-    mesh.receiveShadow = !far;
+    mesh.receiveShadow = near;
+  }
+
+  private updateShadow(batch: Batch) {
+    const { tile, shadow } = batch, dx = tile.x - this.shadowFocus.x, dz = tile.z - this.shadowFocus.z;
+    const reach = Math.min(this.drawDistance, this.shadowRange);
+    shadow.visible = shadow.count > 0 && dx * dx + dz * dz < reach * reach;
+  }
+
+  private mergeSector(sector: Sector) {
+    for (let type = 0; type < this.geos.length; type++) {
+      const batches = sector.batches.filter(batch => batch.type === type);
+      if (!batches.length) continue;
+      let merged = sector.merged.get(type);
+      if (!merged) {
+        const capacity = batches.reduce((n, batch) => n + batch.ids.length, 0);
+        merged = new TreeMesh(this.geos[type][2], this.farMat, capacity);
+        merged.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        merged.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 3), 3).setUsage(THREE.DynamicDrawUsage);
+        merged.boundingSphere = new THREE.Sphere();
+        sector.merged.set(type, merged); sector.distant.add(merged);
+      }
+      let count = 0;
+      merged.boundingSphere!.makeEmpty();
+      merged.boundingBox.makeEmpty();
+      for (const { mesh } of batches) {
+        if (!mesh.count) continue;
+        merged.instanceMatrix.array.set(mesh.instanceMatrix.array.subarray(0, mesh.count * 16), count * 16);
+        merged.instanceColor!.array.set(mesh.instanceColor!.array.subarray(0, mesh.count * 3), count * 3);
+        merged.boundingSphere!.union(mesh.boundingSphere!);
+        merged.boundingBox.union(mesh.boundingBox);
+        count += mesh.count;
+      }
+      merged.count = count; merged.visible = count > 0;
+      this.updateInstances(merged);
+    }
+    sector.dirty = false;
   }
 
   /** Standing trees within r of a point (felled and cleared trees do not count). */
@@ -357,16 +497,31 @@ export class Forest {
   private color = new THREE.Color();
 
   private flush(deadline: number) {
+    const changed = new Set<Sector>();
     for (const batch of this.dirty) {
       this.refit(batch);
+      changed.add(batch.tile.sector);
       this.dirty.delete(batch);
       if (performance.now() >= deadline) break;
     }
+    for (const sector of changed) {
+      sector.bounds.makeEmpty();
+      for (const { mesh } of sector.batches) if (mesh.count) sector.bounds.union(mesh.boundingBox);
+      if (this.lastDistance >= 0) this.updateSector(sector);
+    }
+    if (changed.size) this.shadowVersion++;
+  }
+
+  private updateInstances(mesh: THREE.InstancedMesh) {
+    if (!mesh.count) return;
+    mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, mesh.count * 16); mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor!.clearUpdateRanges(); mesh.instanceColor!.addUpdateRange(0, mesh.count * 3); mesh.instanceColor!.needsUpdate = true;
   }
 
   private refit(batch: Batch) {
-    const { mesh, tile, ids } = batch;
+    const { mesh, shadow, tile, ids } = batch;
     let count = 0, low = Infinity, high = -Infinity;
+    const box = mesh.boundingBox; box.makeEmpty();
     for (const i of ids) {
       const t = this.trees[i];
       if (batch.sampleGround) {
@@ -381,17 +536,21 @@ export class Forest {
       mesh.setMatrixAt(count, this.matrix.compose(this.pos, this.rotation, this.scale));
       const v = 0.88 + ((t.rot * 7.3) % 1) * 0.26, hue = (t.x * 0.13) % 0.12;
       mesh.setColorAt(count++, this.color.setRGB(v * (1 + hue * 0.6), v * (1 + hue * 0.2), v * (0.9 + hue)));
-      low = Math.min(low, t.y - 0.1); high = Math.max(high, t.y + height * 6.8);
+      low = Math.min(low, t.y - 0.1); high = Math.max(high, t.y + height * 7.2);
+      const spread = width * 3.9;
+      box.min.x = Math.min(box.min.x, t.x - spread); box.max.x = Math.max(box.max.x, t.x + spread);
+      box.min.z = Math.min(box.min.z, t.z - spread); box.max.z = Math.max(box.max.z, t.z + spread);
     }
-    batch.sampleGround = false; mesh.count = count;
+    batch.sampleGround = false; mesh.count = shadow.count = count; tile.sector.dirty = true;
     if (count) {
-      mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, count * 16); mesh.instanceMatrix.needsUpdate = true;
-      mesh.instanceColor!.clearUpdateRanges(); mesh.instanceColor!.addUpdateRange(0, count * 3); mesh.instanceColor!.needsUpdate = true;
+      this.updateInstances(mesh);
+      box.min.y = low; box.max.y = high;
       // A conservative bound for all three geometries and the crown's wind motion.
       const span = TILE / 2 + 6;
       mesh.boundingSphere!.center.set(tile.x, (low + high) / 2, tile.z);
       mesh.boundingSphere!.radius = Math.hypot(span, span, (high - low) / 2);
     }
-    if (this.lastDistance >= 0) this.updateView(batch); else mesh.visible = count > 0;
+    mesh.visible = count > 0;
+    if (this.shadowRange >= 0) this.updateShadow(batch);
   }
 }

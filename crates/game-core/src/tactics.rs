@@ -35,6 +35,7 @@ pub fn military_upgrades() -> String {
 pub const HOLD: u8 = 1;
 pub const FOCUS: u8 = 2;
 pub const FALL_BACK: u8 = 3;
+pub const FLANK: u8 = 4;
 pub const GROUPS: usize = 4;
 
 #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
@@ -85,6 +86,15 @@ pub(crate) fn rear_attack(u: &Unit, target: &Unit) -> f32 {
     } else { 1.0 }
 }
 
+/// A braced spearman must reach the hold point and face the incoming blow.
+pub(crate) fn braced_against(b: &Battle, spear: &Unit, attacker: &Unit) -> bool {
+    if spear.kind != 0 || spear.boss != 0 || spear.wading || spear.soak > 0.0 { return false; }
+    let order = b.tactics.order_for(spear, false);
+    if order.mode != HOLD || (spear.x - order.x).hypot(spear.y - order.y) > 6.0 { return false; }
+    let (dx, dy) = (attacker.x - spear.x, attacker.y - spear.y);
+    dx * spear.face.cos() + dy * spear.face.sin() > 0.45 * dx.hypot(dy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +125,28 @@ mod tests {
         World::battle_strikes(&mut b);
         assert!((b.units[0].hp - (hp - 9.2)).abs() < 0.01);
         assert!(b.tactics.strikes.is_empty());
+    }
+
+    #[test]
+    fn deployment_gives_time_to_order_and_bracing_protects_the_front() {
+        let mut w = World::new(1337, 0, 0);
+        assert_eq!(w.flatten(70, 6.0), 0);
+        assert!(w.begin_battle([0, 0, 0, 1, 0, 0], 0.0, 42));
+        let b = w.battle.as_mut().unwrap();
+        let mut spear = Unit::new(0, 0, 20.0, 20.0, 0.0);
+        spear.from_army = true;
+        b.units = vec![spear, Unit::new(1, 3, 22.4, 20.0, std::f32::consts::PI)];
+        b.start_side = [1, 1];
+        assert!(w.battle_order(0, 0, HOLD, 20.0, 20.0));
+        assert!(w.battle_order(42, 2, FLANK, 22.4, 20.0));
+        for _ in 0..24 { w.battle_substep(); }
+        let b = w.battle.as_mut().unwrap();
+        assert!(b.tactics.strikes.is_empty() && b.units.iter().all(|u| u.hp == u.maxhp));
+        assert!(braced_against(b, &b.units[0], &b.units[1]));
+        b.units[1].x = 18.0;
+        assert!(!braced_against(b, &b.units[0], &b.units[1]));
+        for _ in 0..8 { w.battle_substep(); }
+        assert!(w.battle_active(), "a contact fight lasts beyond opening swings");
     }
 
     #[test]
@@ -168,7 +200,7 @@ impl World {
 
     /// Give a regiment of the local army an order. A nonzero tag controls the matching player attack.
     pub fn battle_order(&mut self, tag: i32, group: u8, mode: u8, x: f32, y: f32) -> bool {
-        if mode > FALL_BACK || (group as usize) > GROUPS || (mode != 0 && !Self::infrastructure_in_bounds(x, y)) { return false; }
+        if mode > FLANK || (group as usize) > GROUPS || (mode != 0 && !Self::infrastructure_in_bounds(x, y)) { return false; }
         let Some(b) = self.battle.as_mut() else { return false };
         if b.bought || (tag != 0 && (tag != b.tag || b.lair >= 0)) { return false; }
         let side = usize::from(tag != 0);
@@ -176,6 +208,13 @@ impl World {
         if group as usize == GROUPS { b.tactics.orders[side].fill(order); }
         else { b.tactics.orders[side][group as usize] = order; }
         true
+    }
+
+    /// Current modes for infantry, archers, cavalry and siege, in that order.
+    pub fn battle_orders(&self, tag: i32) -> Vec<u8> {
+        let Some(b) = &self.battle else { return vec![]; };
+        if tag != 0 && (tag != b.tag || b.lair >= 0) { return vec![]; }
+        b.tactics.orders[usize::from(tag != 0)].iter().map(|o| o.mode).collect()
     }
 }
 
@@ -190,7 +229,8 @@ impl World {
             if s.kind == 0 && (!attacker.alive || (attacker.x - target.x).hypot(attacker.y - target.y) > s.reach) { return false; }
             let (tx, ty, side) = (target.x, target.y, target.side);
             if target.alive && (s.kind == 0 || (tx - s.x).hypot(ty - s.y) <= s.reach) {
-                Self::damage_from(b, s.target, s.dmg, s.kind == 2);
+                let brace = if s.kind == 0 && braced_against(b, target, attacker) { 0.7 } else { 1.0 };
+                Self::damage_from(b, s.target, s.dmg * brace, s.kind == 2);
             }
             if s.splash > 0.0 {
                 for j in 0..b.units.len() {

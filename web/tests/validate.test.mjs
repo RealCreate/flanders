@@ -18,10 +18,19 @@ test('military commands validate regiment, order, destination and research bits'
   assert.equal(ok({ op: 'battleorder', idx: 5, kind: 0 }), null);
   assert.equal(ok({ op: 'battleorder', idx: 2, kind: 3, x: 0, y: 1201 }), null);
   assert.ok(ok({ op: 'battleorder', idx: 4, kind: 0 }));
+  assert.ok(ok({ op: 'battleorder', idx: 2, kind: 4, x: -16, y: 32 }));
+  assert.equal(ok({ op: 'battleorder', idx: 2, kind: 5, x: -16, y: 32 }), null);
   assert.equal(ok({ op: 'research', kind: 8 }), null);
   assert.equal(ok({ op: 'armybridge', kind: 2 }), null);
   assert.equal(ok({ op: 'raid', tech: 256 }), null);
   assert.equal(ok({ op: 'raid', tech: 9 }).tech, 9);
+});
+test('a turned-back army carries troop counts and no spoils', () => {
+  const order = { op: 'return', kind: 1, units: [7, 3, 0, 0, 0, 0] };
+  assert.ok(ok(order));
+  assert.equal(ok({ ...order, loot: [100] }), null);
+  assert.equal(ok({ ...order, units: [3, -1] }), null);
+  assert.ok(ok({ op: 'return', units: [3], loot: [1] }), 'older battle reports still validate');
 });
 test('testing tools are refused from the network but can be recognised', () => {
   assert.equal(ok({ op: 'cheat', kind: 0, x: 1, y: 1000 }), null);

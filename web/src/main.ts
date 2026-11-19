@@ -43,6 +43,7 @@ import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
 import { keys, digitOf, prettyKey, type Action } from './keys';
 import { Perf } from './perf';
+import type { ArmyRouteRequest, MarchPreviewRequest } from './march-planner.worker';
 import { Sound } from './audio';
 import { Minimap, type MapVillage } from './ui/minimap';
 import { Tunnels } from './render/tunnels';
@@ -62,6 +63,7 @@ import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
 import { dayPhase, DAY_TICKS } from './daycycle';
 import { cleanWorld, inviteLink, withWorld } from './worldname';
+import { VillageWatch, stewardRisks, type StewardAction, type StewardMode } from './steward';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
 import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Verdict } from './net/sync';
@@ -94,6 +96,7 @@ const sound = new Sound();
 const nextFrame = () => new Promise<void>(r => setTimeout(r, 20));
 /** Game ticks per real second at 1x. Half a tick per second keeps the pace of the village calm and readable. */
 const TICK_RATE = 0.5;
+const watch = new VillageWatch();
 const params = new URLSearchParams(location.search);
 /** Handles for tests and the browser console (window.__game): only on this computer or with ?debug=1, never in a shared build by default. */
 const DEBUG_HOOKS = import.meta.env.DEV || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || params.has('debug');
@@ -112,6 +115,7 @@ const ui: UI = new UI({
   workAll: a => workAll(a),
   goBuilding: i => { const f = lv.world.buildings_flat(); rig.focus(f[i * STRIDE + 2], f[i * STRIDE + 3]); selectBuilding(i); },
   speed: n => setSpeed(n),
+  steward: action => stewardAction(action),
   toggleResources: () => toggleResources(),
   toggleCoverage: () => toggleCoverage(),
   muster: u => doMuster(u, true),
@@ -232,7 +236,17 @@ async function commit(cmd: Omit<Cmd, 'tick' | 'n'>) {
   if (isTool(cmd.op)) usedTools = true; else sharedCount++;
   const signing = identity.sign(full);
   commitsInFlight++;
-  sendChain = sendChain.then(async () => { try { const s = await signing; myLog.push(s); room?.broadcastCmd(s); save(); } finally { commitsInFlight--; } });
+  sendChain = sendChain.then(async () => {
+    try {
+      const s = await signing;
+      myLog.push(s);
+      room?.broadcastCmd(s);
+      save();
+    } finally {
+      commitsInFlight--;
+      if (document.hidden && commitsInFlight === 0) { clearTimeout(saveTimer); writeSave(); }
+    }
+  });
   await sendChain;
 }
 
@@ -242,8 +256,8 @@ function save() {
   saveTimer = window.setTimeout(writeSave, 400);
 }
 function writeSave() {
-  if (resetting) return;
-  try { localStorage.setItem(saveKey(), JSON.stringify({ site: mySite, name: myName, log: myLog, savedAt: Date.now(), tick: Number(lv.world.tick()), v: SYNC_PROTOCOL, rules: myRules, epoch: myEpoch, restartedAt: lastRestartAt })); } catch { /* storage full or blocked */ }
+  if (resetting || replay?.target === lv || commitsInFlight > 0) return;
+  try { localStorage.setItem(saveKey(), JSON.stringify({ site: mySite, name: myName, log: myLog, savedAt: Date.now(), tick: Number(lv.world.tick()), steward: watch.mode, paused: speed === 0, v: SYNC_PROTOCOL, rules: myRules, epoch: myEpoch, restartedAt: lastRestartAt })); } catch { /* storage full or blocked */ }
 }
 
 const siteOrigin = (i: number) => ({ x: Math.round(sites[i].x), z: Math.round(sites[i].z) });
@@ -412,7 +426,7 @@ function connect() {
       if (r.log.length < 60000) r.log.push(c);
       if (replay?.target === r.village || r.loading) return;   // (while a copy is being rebuilt the new command waits in the log: the rebuilt copy plays it last)
       try {
-        if (c.op === 'return') {   // check the attacker's claim against the battle as the defender's copy played it
+        if (c.op === 'return' && c.kind !== 1) {   // check an actual battle result against the defender's copy
           for (const o of rivals.values()) if (o !== r) o.village.advanceTo(c.tick);   // (your own village is live: it is already as far as it will get)
           const v = ledger.claim(tagOf(r.key), c.units, c.loot); c = { ...c, units: v.units, loot: v.loot };
           if (v.lied) { r.liar = true; r.sync = 'claimed false loot'; console.warn(`${r.name} reported loot or survivors that the battle did not give; the real result was used.`); }
@@ -426,8 +440,7 @@ function connect() {
       judged(r, r.track.recheck(r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));   // a hash that was waiting for this command can be judged now
       if ((c.op === 'attack' || c.op === 'sendatk') && c.to === identity.pub) defendAgainst(r, c);
       else if (c.op === 'refuse' && c.to === identity.pub) {
-        lv.world.return_army(Uint32Array.from(c.units ?? []), new Int32Array(RES.length));
-        commit({ op: 'return', units: c.units, loot: new Array(RES.length).fill(0) }); ui.toast('Your army was turned back — the village was already under attack.', 'info');
+        if (returnRefusedArmy(c.units ?? [])) ui.toast('Your army returned. The village is away or already under attack.', 'info');
       }
       if (c.op === 'retreat' && c.to === identity.pub && lv.world.battle_retreat(tagOf(r.key))) { commit({ op: 'retreat', from: r.key, tag: tagOf(r.key) }); ui.toast(`${r.name} calls off the attack: the raiders are running.`, 'good'); lv.afterTick(); }
       if (c.op === 'battleorder' && c.to === identity.pub) {
@@ -574,7 +587,7 @@ async function fullReset() {
 /** Test hall (off the map's east coast): every building at every tier in rows, and the top tier with all its design options. Press again to go home. */
 let showroom: THREE.Group | null = null;
 function toggleShowroom() {
-  const hide = (on: boolean) => { terrain.mesh.visible = on; deposits.group.visible = on; forest.group.visible = on && settings().trees; wildlife.group.visible = on && settings().crowds; };   // the hall stands on its own platform: the land and its trees would clip through it
+  const hide = (on: boolean) => { terrain.mesh.visible = on; deposits.group.visible = on; forest.group.visible = on && settings().trees; wildlife.group.visible = on && settings().crowds; atmo.invalidateShadows(); };   // the hall stands on its own platform: the land and its trees would clip through it
   if (showroom) { scene.remove(showroom); showroom = null; hide(true); ui.hallExit(false, toggleShowroom); rig.focus(lv.ox, lv.oz, 75); ui.toast('Back at your village.', 'info'); return; }
   const x0 = 960, z0 = -560, sr = buildShowroom(defs.map(d => ({ id: d.id, name: d.name, maxTier: d.maxTier })), tierName, x0, z0);
   showroom = sr.group; showroom.position.y = Math.max(1, terrain.heightAt(sr.spawn.x, sr.spawn.z)); scene.add(showroom); hide(false); rig.focus(sr.spawn.x, sr.spawn.z, 70);
@@ -692,6 +705,7 @@ function visitPlace(id: number) {
   if (code === -3) { ui.toast('This place has already been used.', 'info'); return; }
   if (code === -4) { ui.toast('A fight is already on: finish it first.', 'info'); return; }
   if (code < 0) return;
+  pendingArmyOrders.delete(id);
   commit({ op: 'visit', idx: id }); afterLocalChange(); updateDets();
   if (code === 3) return;   // a lair: the fight is on and the banner tells the story (the report says how it ended)
   ui.toast(code === 0 ? 'The monks heal your sick.' : code === 1 ? 'The ruin gives up its hoard.' : code === 2 ? 'The bandit camp is cleared and its coin is yours.' : 'The camp was too strong: half your army fell. Try again with more men.', code >= 100 ? 'bad' : 'good');
@@ -713,33 +727,34 @@ function doResearch(id: number) {
 }
 
 /** Send a field army against a rival village: it halts just outside their border (on our side) and attacks once it gets there. */
-function marchOn(id: number, key: string, r: Rival): boolean {
+async function marchOn(id: number, key: string, r: Rival): Promise<boolean> {
   const dx = lv.ox - r.village.ox, dz = lv.oz - r.village.oz, dl = Math.hypot(dx, dz) || 1, stand = r.village.radius + 12;
   const tx = r.village.ox + dx / dl * stand, tz = r.village.oz + dz / dl * stand;
-  const res = lv.world.det_march(id, tx, tz, true, r.village.ox, r.village.oz);
+  const ax = r.village.ox, az = r.village.oz;
+  const res = await plannedArmyOrder(id, tx, tz, 2, ax, az, () => rivals.get(key) === r && !lv.world.battle_active());
+  if (res === null) return false;
   if (res !== 0) { ui.toast(MARCH_ERRORS[res] ?? 'No route there.', 'bad'); return false; }
-  attackTargets.set(id, key); commit({ op: 'march', idx: id, x: tx, y: tz, to: key, ax: r.village.ox, ay: r.village.oz });
+  attackTargets.set(id, key); commit({ op: 'march', idx: id, x: tx, y: tz, to: key, ax, ay: az });
   return true;
 }
 
-function doAttack(key: string, u: number[]) {
+async function doAttack(key: string, u: number[]) {
   const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
   if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
   const id = lv.world.det_form(Uint32Array.from(u));
   if (!id) { ui.toast('You do not have that many soldiers in the barracks. To send an army you already have in the field, select it on the map first.', 'bad'); return; }
-  commit({ op: 'form', units: u });
-  if (!marchOn(id, key, r)) return;
-  selectDet(id); ui.toast(`Your army sets out for ${r.name}. It attacks when it arrives.`, 'good'); updateHud();
+  commit({ op: 'form', units: u }); lv.afterTick(); selectDet(id); updateHud();
+  if (await orderArmies([id], () => marchOn(id, key, r))) ui.toast(`Your army sets out for ${r.name}. It attacks when it arrives.`, 'good');
 }
 
 /** The armies you have selected march on the village. */
-function doAttackSelected(key: string) {
+async function doAttackSelected(key: string) {
   const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
   if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
   const ids = multiDets.length ? multiDets : selectedDet !== null ? [selectedDet] : [];
   if (!ids.length) { ui.toast('Select an army first.', 'info'); return; }
-  let sent = 0; for (const id of ids) if (detUnits(id) && marchOn(id, key, r)) sent++;
-  if (sent) { ui.toast(sent > 1 ? `${sent} armies set out for ${r.name}. They attack when they arrive.` : `Your army sets out for ${r.name}. It attacks when it arrives.`, 'good'); lv.afterTick(); showRoute(); updateDets(); updateHud(); }
+  const sent = await orderArmies(ids, id => marchOn(id, key, r));
+  if (sent) ui.toast(sent > 1 ? `${sent} armies set out for ${r.name}. They attack when they arrive.` : `Your army sets out for ${r.name}. It attacks when it arrives.`, 'good');
 }
 
 // ---------- field armies: muster, select, order ----------
@@ -754,6 +769,7 @@ function doMuster(u: number[], selectAllArmies = false) {
 let multiDets: number[] = [];   // every selected army; selectedDet is the first
 function selectDet(id: number | null) { selectDets(id === null ? [] : [id]); }
 function selectDets(ids: number[]) {
+  cancelMarchPreview();
   multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids); ui.setSelectedArmies(ids.length);
   if (ids.length) { selectKind(null); selectBuilding(null); selectRuin(null); ui.setTab('army'); ui.hint(`${ids.length > 1 ? ids.length + ' armies' : 'Army ' + ids[0]} selected · right-click the ground to march · Shift+click adds or removes one · drag a box to select several · ${keyNames('haltArmy')} halt · ${keyNames('recallArmy')} send home · ${keyNames('cancel')} deselect`); }
   else if (selectedKind === null) ui.hint(null);
@@ -785,6 +801,107 @@ function showRoute() {
   pathLine?.set(p.length >= 6 ? Array.from(p) : null);
 }
 
+interface MarchPreview { id: number; world: World; revision: bigint; request: MarchPreviewRequest }
+interface ArmyRouteJob {
+  world: World;
+  request: Omit<ArmyRouteRequest, 'snapshot'>;
+  current(): boolean;
+  done(routes: Uint8Array | null): void;
+}
+let marchPreviewWorker: Worker | null = null;
+let marchPreviewUnavailable = false;
+let previewInFlight: MarchPreview | null = null, previewWanted: MarchPreview | null = null;
+let previewWorld: World | null = null, previewRevision: bigint | null = null;
+let armyRouteInFlight: ArmyRouteJob | null = null;
+const armyRouteQueue: ArmyRouteJob[] = [];
+const pendingArmyOrders = new Map<number, symbol>();
+
+function cancelMarchPreview() { previewWanted = null; }
+
+function queueMarchPreview(id: number, x: number, z: number) {
+  if (marchPreviewUnavailable) return;
+  const world = lv.world, revision = world.march_revision();
+  const previous = previewWanted;
+  if (previous?.id === id && previous.world === world && previous.revision === revision
+      && Math.hypot(previous.request.to[0] - x, previous.request.to[1] - z) < 1) return;
+  const units = detUnits(id), pos = lv.field.position(id);
+  if (!units || !pos) return;
+  previewWanted = { id, world, revision, request: { seed: seedBig, units: Uint32Array.from(units), from: [pos.x, pos.z], to: [x, z] } };
+  pumpMarchPreview();
+}
+
+function getMarchWorker() {
+  if (!marchPreviewWorker) {
+    marchPreviewWorker = new Worker(new URL('./march-planner.worker.ts', import.meta.url), { type: 'module' });
+    marchPreviewWorker.onmessage = ({ data }: MessageEvent<Float32Array | Uint8Array | null>) => {
+      if (armyRouteInFlight) {
+        const finished = armyRouteInFlight;
+        armyRouteInFlight = null;
+        finished.done(data instanceof Uint8Array ? data : null);
+        queueMicrotask(pumpMarchPreview);
+        return;
+      }
+      const finished = previewInFlight;
+      previewInFlight = null;
+      if (!(data instanceof Float32Array)) { stopMarchPreviewWorker(); return; }
+      if (finished && previewWanted === finished) {
+        cancelMarchPreview();
+        if (finished.id === selectedDet && lv.world === finished.world && selectedKind === null && !pendingBattleOrder) {
+          if (finished.revision === finished.world.march_revision()) drawMarchPreview(finished.request, data);
+          else queueMarchPreview(finished.id, ...finished.request.to);
+        }
+      }
+      pumpMarchPreview();
+    };
+    marchPreviewWorker.onerror = stopMarchPreviewWorker;
+  }
+  return marchPreviewWorker;
+}
+
+function pumpMarchPreview() {
+  if (armyRouteInFlight || previewInFlight || marchPreviewUnavailable) return;
+  while (armyRouteQueue.length && !armyRouteQueue[0].current()) armyRouteQueue.shift()!.done(null);
+  const order = armyRouteQueue.shift(), preview = previewWanted;
+  if (!order && !preview) return;
+  armyRouteInFlight = order ?? null;
+  try {
+    const worker = getMarchWorker();
+    if (order) {
+      const snapshot = order.world.snapshot();
+      worker.postMessage({ ...order.request, snapshot }, [snapshot.buffer]);
+      return;
+    }
+    if (!preview || selectedDet !== preview.id || lv.world !== preview.world || selectedKind !== null || pendingBattleOrder) { cancelMarchPreview(); return; }
+    if (preview.revision !== preview.world.march_revision()) { cancelMarchPreview(); queueMarchPreview(preview.id, ...preview.request.to); return; }
+    previewInFlight = preview;
+    if (previewWorld !== preview.world || previewRevision !== preview.revision) {
+      const snapshot = preview.world.snapshot();
+      worker.postMessage({ ...preview.request, snapshot }, [snapshot.buffer]);
+      previewWorld = preview.world;
+      previewRevision = preview.revision;
+    } else worker.postMessage(preview.request);
+  } catch { stopMarchPreviewWorker(); }
+}
+
+function stopMarchPreviewWorker() {
+  marchPreviewWorker?.terminate(); marchPreviewWorker = null;
+  marchPreviewUnavailable = true; previewInFlight = previewWanted = null; previewWorld = null;
+  armyRouteInFlight?.done(null); armyRouteInFlight = null;
+  for (const order of armyRouteQueue.splice(0)) order.done(null);
+}
+
+function drawMarchPreview(request: MarchPreviewRequest, plan: Float32Array) {
+  const [x, z] = request.from, [tx, tz] = request.to;
+  if (plan[0] !== 1) { pathLine.set([x, z, 0, tx, tz, 0], false); ui.hint(MARCH_ERRORS[plan[0]] ?? 'No way through to there.', true); return; }
+  const path = Array.from(plan.subarray(5));
+  pathLine.set(path, true);
+  const bits = [`${Math.round(plan[1])}s`];
+  if (plan[2]) bits.push(`${plan[2]} planks for a bridge`);
+  if (plan[3]) bits.push(`${plan[3]} wood for boats`);
+  if (path.some((v, i) => i % 3 === 2 && v === 1)) bits.push('cuts through forest');
+  ui.hint(`Right-click to march · ${bits.join(' · ')}`);
+}
+
 function updateDets() {
   const f = lv.world.det_flat(), list: { id: number; units: number[]; text: string; selected: boolean; leftWp: number }[] = [];
   for (let o = 0; o < f.length; o += 17) {
@@ -799,17 +916,56 @@ function detUnits(id: number): number[] | null {
   const f = lv.world.det_flat(); for (let o = 0; o < f.length; o += 17) if (f[o] === id) return [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]]; return null;
 }
 
-function orderMarch(id: number, tx: number, tz: number) {
-  const r = lv.world.det_march(id, tx, tz, false, 0, 0);
-  if (r !== 0) { ui.toast(MARCH_ERRORS[r] ?? 'No route there.', 'bad'); sound.error(); return; }
-  attackTargets.delete(id); commit({ op: 'march', idx: id, x: tx, y: tz }); sound.click(); fx.burst(tx, tz, false); showRoute(); lv.afterTick(); updateDets();
+async function plannedArmyOrder(id: number, x: number, z: number, mode: ArmyRouteRequest['mode'], ax = 0, az = 0, valid = () => true): Promise<number | null> {
+  const world = lv.world, token = Symbol();
+  pendingArmyOrders.set(id, token);
+  const current = () => lv.world === world && replay?.target !== lv && pendingArmyOrders.get(id) === token && valid();
+  try {
+    if (!current()) return null;
+    for (let attempt = 0; attempt < 2 && !marchPreviewUnavailable; attempt++) {
+      const routes = await new Promise<Uint8Array | null>(done => {
+        armyRouteQueue.push({ world, request: { id, x, z, mode, seed: seedBig }, current, done });
+        pumpMarchPreview();
+      });
+      if (!current()) return null;
+      if (!routes) break;
+      const code = world.apply_prepared_army_order(routes, id, x, z, mode, ax, az);
+      if (code !== -11) return code;
+    }
+    if (mode === 1) return world.det_defend(id);
+    if (mode === 3) return world.det_recall(id);
+    return world.det_march(id, x, z, mode === 2, ax, az);
+  } finally {
+    if (pendingArmyOrders.get(id) === token) pendingArmyOrders.delete(id);
+  }
+}
+
+async function orderArmies(ids: number[], order: (id: number, index: number) => Promise<boolean>) {
+  if (!ids.length) return 0;
+  cancelMarchPreview();
+  const world = lv.world;
+  const status = window.setTimeout(() => ui.toast(ids.length === 1 ? 'Planning the march…' : 'Planning the marches…', 'info'), 350);
+  try {
+    const sent = (await Promise.all(ids.map(order))).filter(Boolean).length;
+    if (sent && lv.world === world) { lv.afterTick(); showRoute(); updateDets(); updateHud(); }
+    return sent;
+  } finally { clearTimeout(status); }
+}
+
+async function orderMarch(id: number, tx: number, tz: number) {
+  const r = await plannedArmyOrder(id, tx, tz, 0);
+  if (r === null) return false;
+  if (r !== 0) { ui.toast(MARCH_ERRORS[r] ?? 'No route there.', 'bad'); sound.error(); return false; }
+  attackTargets.delete(id); commit({ op: 'march', idx: id, x: tx, y: tz }); sound.click(); fx.burst(tx, tz, false);
+  return true;
 }
 
 function detAction(a: string, id: number) {
   const w = lv.world, u = detUnits(id); if (!u) return;
   if (a === 'select') { selectDet(selectedDet === id && multiDets.length === 1 ? null : id); return; }
+  pendingArmyOrders.delete(id);
   if (a === 'halt') { w.det_halt(id); attackTargets.delete(id); commit({ op: 'halt', idx: id }); }
-  else if (a === 'recall') { const r = w.det_recall(id); if (r !== 0) { ui.toast(MARCH_ERRORS[r] ?? 'No route home.', 'bad'); return; } attackTargets.delete(id); commit({ op: 'recall', idx: id }); ui.toast('The army is marching home.', 'info'); }
+  else if (a === 'recall') { void orderArmies([id], orderRecall); return; }
   else if (a === 'split') {
     const take = u.map(n => Math.floor(n / 2));
     if (take.every(n => n === 0)) { ui.toast('This army is too small to split.', 'info'); return; }
@@ -819,9 +975,18 @@ function detAction(a: string, id: number) {
     const pos = lv.field.position(id); let best = 0, bd = 12;
     if (pos) for (const o of lv.field.ids()) { if (o === id) continue; const p = lv.field.position(o)!; const d = Math.hypot(p.x - pos.x, p.z - pos.z); if (d < bd) { bd = d; best = o; } }
     if (!best || !w.det_merge(id, best)) { ui.toast('No other army close enough to merge with.', 'info'); return; }
+    pendingArmyOrders.delete(best);
     commit({ op: 'merge', idx: id, kind: best });
   }
   lv.afterTick(); showRoute(); updateDets(); updateHud();
+}
+
+async function orderRecall(id: number) {
+  const code = await plannedArmyOrder(id, 0, 0, 3);
+  if (code === null) return false;
+  if (code !== 0) { ui.toast(MARCH_ERRORS[code] ?? 'No route home.', 'bad'); return false; }
+  attackTargets.delete(id); commit({ op: 'recall', idx: id }); ui.toast('The army is marching home.', 'info');
+  return true;
 }
 
 /** Marching armies that have reached an enemy village go in. */
@@ -830,6 +995,7 @@ function checkArrivals() {
   for (let o = 0; o < f.length; o += 17) {
     if (f[o + 8] !== 5) continue;
     const id = f[o], key = attackTargets.get(id), r = key ? rivals.get(key) : null;
+    if (pendingArmyOrders.has(id)) continue;
     if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
     const u = detUnits(id)!, sent = lv.world.det_send(id);
     if (sent.length) {
@@ -843,18 +1009,27 @@ function checkArrivals() {
 /** Villages whose owner has left but whose village stays in the world are fought over here, on our copy of it: the fight is against their towers, walls and soldiers as they stood
  *  when they left. The battle runs a tick at a time (see `stepLocal`), and the report that ends it brings our survivors home with the loot, as with an online defender. */
 const awayFights = new Set<string>();
+function returnRefusedArmy(units: number[]) {
+  if (units.length > 6 || units.some(n => n < 0) || !units.some(n => n > 0)) return false;
+  lv.world.return_refused_army(Uint32Array.from(units));
+  void commit({ op: 'return', kind: 1, units });
+  updateHud();
+  return true;
+}
+
 function attackAway(r: Rival, u: number[]) {
   const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
   const tech = lv.world.military_tech();
   if (r.village.world.start_raid_equipped(angle, Uint32Array.from(u), myTag(), tech)) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
   else if (r.village.world.battle_active() && r.village.world.battle_tag() === myTag() && r.village.world.battle_reinforce_equipped(myTag(), Uint32Array.from(u), tech)) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`More of your soldiers join the fight at ${r.name}'s village.`, 'good'); }
-  else { lv.world.return_army(Uint32Array.from(u), new Int32Array(RES.length)); commit({ op: 'return', units: u, loot: new Array(RES.length).fill(0) }); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'bad'); updateHud(); }
+  else { returnRefusedArmy(u); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'info'); }
 }
 
 /** A rival sent soldiers against us: start the fight in our own (authoritative) village. */
 function defendAgainst(att: Rival, c: Cmd) {
   const u = c.units ?? [], angle = Math.atan2(att.village.oz - lv.oz, att.village.ox - lv.ox), tag = tagOf(att.key), tech = att.village.world.military_tech();
-  if (lv.world.start_raid_equipped(angle, Uint32Array.from(u), tag, tech)) { commit({ op: 'raid', from: att.key, units: u, angle, tag, tech }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); }
+  watch.observe(performance.now(), document.hidden);
+  if (!watch.away && lv.world.start_raid_equipped(angle, Uint32Array.from(u), tag, tech)) { commit({ op: 'raid', from: att.key, units: u, angle, tag, tech }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); }
   else if (lv.world.battle_active() && lv.world.battle_tag() === tag && lv.world.battle_reinforce_equipped(tag, Uint32Array.from(u), tech)) { commit({ op: 'reinforce', from: att.key, units: u, tag, tech }); ui.toast(`${att.name} sends more soldiers into the fight!`, 'bad'); lv.afterTick(); }
   else commit({ op: 'refuse', to: att.key, units: u });
 }
@@ -980,6 +1155,7 @@ function tickReplay(dt: number) {
 
 // ---------- start ----------
 async function startGame(name: string, username: string) {
+  const openedAt = Date.now();
   ui.setMilitaryUpgrades(JSON.parse(military_upgrades()));
   if (started) return; started = true;
   worldName = cleanWorld(name); seedBig = hashSeed(worldName); history.replaceState(null, '', withWorld(location.href, worldName)); myName = cleanName(username);
@@ -1040,23 +1216,22 @@ async function startGame(name: string, username: string) {
   ui.progress(50, 'Mapping the roads…'); await nextFrame();
   // The army navigation grid (a few seconds of work) is needed by the first road link or field army, and so by the first command a history replays: build it first,
   // a slice at a time so the page keeps painting. (Left to the first command, it froze the whole page for seconds and Chrome offered to kill the tab.)
+  try { getMarchWorker().postMessage({ warm: seedBig }); } catch { stopMarchPreviewWorker(); }
   await warmNavigationInSlices(warm_navigation_step, seedBig, { onProgress: f => ui.progress(50 + Math.round(f * 9), 'Mapping the roads…') });
   ui.progress(60, 'Gathering your villagers…'); await nextFrame();
   // your village: restore from the last visit, or found a new one
-  let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number; v?: number; rules?: string; epoch?: number; restartedAt?: number | null } | null = null;
+  let saved: { site: number; name: string; log: Signed[]; savedAt: number; tick: number; steward?: StewardMode; paused?: boolean; v?: number; rules?: string; epoch?: number; restartedAt?: number | null } | null = null;
   try { saved = JSON.parse(localStorage.getItem(saveKey()) ?? 'null'); } catch { /* ignore */ }
   mySite = saved && saved.site < sites.length ? saved.site : 0;
   try { myRules = rules_fingerprint(seedBig); ui.setRules(myRules); } catch { /* without a fingerprint other players cannot tell our build */ }
   const o = siteOrigin(mySite);
   let w = new World(seedBig, o.x, o.z);
-  let away = 0;
   if (saved) {
     const entries = validSavedLog(saved.log);
     for (const s of entries) { myLog.push(s.signed); cmdN = Math.max(cmdN, s.cmd.n + 1); }
     myEpoch = entries.length ? entries[0].cmd.e ?? 0 : 0; lastRestartAt = typeof saved.restartedAt === 'number' ? saved.restartedAt : null;
     sharedCount = countShared(entries);
-    away = Math.min(1800, Math.floor(((Date.now() - saved.savedAt) / 1000) * TICK_RATE));
-    // the whole history, then the ticks that passed while you were away, a few milliseconds at a time behind the loading screen
+    // Reproduce the village at its last saved tick. Wall-clock time is never owed to the simulation.
     const prog = (f: number) => ui.progress(60 + Math.round(f * 8), `Gathering your villagers… ${Math.round(f * 100)}%`);
     // a checkpoint of the world (if it belongs to this very history) saves replaying most of it
     let from = 0; const cp = await loadCheckpoint(checkpointKey());
@@ -1064,7 +1239,6 @@ async function startGame(name: string, username: string) {
     if (restored && cp) { w.free(); w = restored; from = cp.meta.cmds; console.info(`Resumed from a checkpoint at tick ${cp.meta.tick} (${from} of ${entries.length} commands already in it).`); }
     else if (cp) { console.info('The saved checkpoint does not belong to this history or is damaged: replaying the whole history.'); void deleteCheckpoint(checkpointKey()); }
     const rep = await replayInSlices(w, entries.slice(from).map(e => e.cmd), applyCmd, saved.tick, { onProgress: prog });
-    await replayInSlices(w, [], applyCmd, Number(w.tick()) + away, { onProgress: prog });
     const slow = Object.entries(rep.timing.byOp).sort((p, q) => q[1].ms - p[1].ms).slice(0, 4).map(([op, v]) => `${op} ×${v.n}: ${Math.round(v.ms)} ms`).join(', ');
     console.info(`Replayed your history: ${rep.timing.commands} commands and ${rep.timing.ticks} ticks in ${Math.round(rep.timing.totalMs)} ms (ticks alone ${Math.round(rep.timing.stepMs)} ms; slowest commands: ${slow || 'none'}).`);
   }
@@ -1075,7 +1249,6 @@ async function startGame(name: string, username: string) {
   buildDepositLabels();
   refreshTerrain(w); lv.syncFull(); lv.markCaughtUp();
   const ev = w.take_events();
-  if (away > 60 && ev.length) ui.toast(`While you were away (${Math.round(away / 60)} min): ${ev.length / 4} things happened — see the Chronicle.`, 'info');
   for (let i = 0; i < ev.length; i += 4) { const e = EVENT_TEXT(ev[i], ev[i + 1], ev[i + 2]); ui.log(e.text, e.tone, ev[i + 3]); }
   rebuildForest(); updateHud();
   rig.focus(o.x, o.z, 75); rig.snap();
@@ -1088,20 +1261,25 @@ async function startGame(name: string, username: string) {
   setTimeout(() => ui.hint(null), 7000);
   addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); });
   bindInput();
+  if (saved?.paused === true) speed = 0;
+  watch.mode = saved?.steward === 'steward' ? 'steward' : 'pause';
+  watch.openSave(performance.now(), saved ? openedAt - saved.savedAt : 0);
+  startVillageWatch();
   connect();
   setupPerf(); applySettings(settings()); onSettings(applySettings);
   const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
   if (Number.isInteger(agentPort) && agentPort >= 1024 && agentPort <= 65535 && /^[A-Za-z0-9_-]{8,128}$/.test(agentToken)) startAgentBridge({
-    world: () => lv.world, commit: c => commit(c as Omit<Cmd, 'tick' | 'n'>), afterChange: () => { afterLocalChange(); },
+    world: () => lv.world, commit: c => commit(c as Omit<Cmd, 'tick' | 'n'>), afterChange: () => { playerPresent(); afterLocalChange(); },
     toast: (m, k) => ui.toast(m, k ?? 'info'),
     rivals: () => [...rivals.entries()].map(([key, r]) => ({ key, name: r.name, x: r.village.ox, z: r.village.oz, online: r.online })),
     attack: (key, u) => { const r = rivals.get(key); if (!r || !r.online) return false; doAttack(key, u); return true; },
   }, agentPort, agentToken);
   setInterval(() => { save(); updatePeers(); checkpoint(); }, 8000);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { save(); checkpoint(true); } });
   tutorial.begin(!saved); updateGoals();
   if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
   ui.enterGame();                       // everything is ready: reveal the game
+  if (watch.review && !document.hidden) ui.openSteward();
+  renderWatch();
   if (DEBUG_HOOKS) (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
   last = performance.now(); startBackgroundClock(); requestAnimationFrame(frame);
 }
@@ -1116,7 +1294,7 @@ async function warmUp() {
   ui.progress(86, 'Baking shadows…'); await nextFrame();
   const view = Math.max(90, rig.dist * 1.7 + 50);
   for (let i = 0; i < 4; i++) {
-    rig.update(0.016); atmo.follow(rig.target); forest.tick(0, rig.cam.position);
+    rig.update(0.016); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); forest.setLight(atmo.lightDirection, atmo.sun, atmo.hemi); forest.tick(0, rig.cam.position, rig.target, settings().shadows ? 135 : 0, rig.cam);
     crowd.begin(); lv.draw(crowd, rig.target.x, rig.target.z, view, rig.cam.position, Infinity); crowd.end();
     renderer.shadowMap.needsUpdate = true; renderer.render(scene, rig.cam);   // the first frames compile and fill the shadow map
     (renderer.getContext() as WebGL2RenderingContext).finish();
@@ -1146,6 +1324,7 @@ const REMOTE_TILE = 32;
 
 /** Re-level the ground of a whole village: pads, graded paths, craters and burn scars. */
 function refreshTerrain(w: World, box: [number, number, number, number] | null = null) {
+  atmo.invalidateShadows();
   terrain.scorch = allScorch();
   const ox = w.origin_x(), oz = w.origin_y();
   const others = [...rivals.values()].map(r => ({ x: r.village.ox, z: r.village.oz })).concat(lv ? [{ x: lv.ox, z: lv.oz }] : []).filter(p => Math.hypot(p.x - ox, p.z - oz) > 1);
@@ -1247,13 +1426,21 @@ const raidWarningSeen = new Map<string, boolean>();
 interface BattleOrder { village: Village; peer: string | null; group: number; mode: number }
 let pendingBattleOrder: BattleOrder | null = null;
 
+function setPendingBattleOrder(order: BattleOrder | null) {
+  pendingBattleOrder = order;
+  ui.setBattleTarget(order?.mode ?? null);
+}
+
 function chooseBattleOrder(village: Village, peer: string | null, group: number, mode: number) {
   if (replay?.target === village) return;
   const order = { village, peer, group, mode };
-  if (mode === 0) { pendingBattleOrder = null; sendBattleOrder(order, 0, 0); return; }
+  if (mode === 0) { setPendingBattleOrder(null); sendBattleOrder(order, 0, 0); return; }
   if (selectedKind !== null) selectKind(null);
-  pendingBattleOrder = order;
-  ui.hint(mode === 1 ? 'Right-click the position to hold · Esc cancels' : mode === 2 ? 'Right-click the enemy or position to attack · Esc cancels' : 'Right-click a safe position to regroup · Esc cancels');
+  cancelMarchPreview();
+  showRoute();
+  ui.hint(null);
+  ui.tip(null);
+  setPendingBattleOrder(order);
 }
 
 function sendBattleOrder(order: BattleOrder, x: number, y: number) {
@@ -1266,8 +1453,8 @@ function sendBattleOrder(order: BattleOrder, x: number, y: number) {
   else {
     if (!village.world.battle_order(r ? myTag() : 0, group, mode, x, y)) return false;
     if (peer === null) void commit(command);
+    battleBanner();
   }
-  ui.hint(null);
   if (mode !== 0) fx.burst(x, y, false);
   ui.toast(mode === 0 ? 'Order cleared.' : 'Battle order issued.', 'info');
   return true;
@@ -1289,6 +1476,7 @@ function battleBanner() {
     if (on && !was) announceBoss(v, mine, key);
   }
   const controllable = list.find(({ v, mine }) => v.world.battle_active() && (mine || v.world.battle_tag() === myTag()));
+  if (pendingBattleOrder && (pendingBattleOrder.village !== controllable?.v || replay?.target === pendingBattleOrder.village)) setPendingBattleOrder(null);
   for (const { v, who, mine, key } of controllable ? [controllable] : list) {
     const w = v.world;
     if (!w.battle_active() && w.raid_warning_ticks() > 0) {
@@ -1297,7 +1485,8 @@ function battleBanner() {
       const bossWarning = w.raid_warning_boss() ? ' A warlord leads them.' : '';
       const text = `Raid approaching from the ${dir} in ${seconds}s.${bossWarning} Muster troops, man towers and prepare your defences.`;
       const f = foeFocus(w.raid_warning_angle(), v.ox, v.oz, w.build_radius());
-      ui.battle(`${icon('attack', 18, { mono: true })} Raiders approaching<small>${esc(text)}</small><small>Countdown · ${seconds}s · Direction · ${dir}</small>`, () => rig.focus(f.x, f.z, 65), []);
+      ui.battle(`${icon('attack', 18, { mono: true })} Raiders approaching<small>${esc(text)}</small><small>Countdown · ${seconds}s · Direction · ${dir}</small>`, () => rig.focus(f.x, f.z, 65));
+      ui.battleControls();
       return;
     }
     if (!w.battle_active()) continue;
@@ -1315,18 +1504,24 @@ function battleBanner() {
     const acts: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = [];
     for (const act of actionsFor(role, { armies, standing, reserve: 0 })) {
       if (lair) continue;
-      if (act === 'send-armies') acts.push({ icon: 'army', label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { for (const id of freeArmyIds()) orderDefend(id); } });
+      if (act === 'send-armies') acts.push({ icon: 'army', label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { void orderArmies(freeArmyIds(), orderDefend); } });
       else if (act === 'sally') acts.push({ icon: 'attack', label: `Sally out (${standing})`, title: 'The soldiers at their posts leave them and march out to meet the raiders as a field army', run: () => doSally() });
       else if (act === 'retreat') acts.push({ icon: 'halt', label: 'Retreat', title: 'Call off the attack: your soldiers break off and run for home', run: () => doRetreat(key) });
     }
     const offer = role === 'defend' && !lair && tag === 0 ? bribeOffer(w.bribe_price(), w.stocks()[GOLD], w.bribe_greed()) : null;
     if (offer?.show) acts.push({ icon: 'gold', label: offer.label, title: offer.title, disabled: offer.disabled, run: () => doBribe() });
     const bribeLine = offer?.show ? `<small class="bribe">The raiders will turn back for coin before the first blow. ${esc(offer.disabled ? offer.reason : BRIBE_CONSEQUENCE)}</small>` : '';
-    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}${bribeLine}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${Math.round(w.battle_time())}s · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
-      () => lookAtAttackers(v), acts, (mine || role === 'attack') && replay?.target !== v ? (group, mode) => chooseBattleOrder(v, mine ? null : key, group, mode) : undefined);
+    const deployment = w.battle_deploy_remaining();
+    const elapsed = (deployment > 0 ? `Forming up · ${Math.ceil(deployment)}s` : `${Math.round(w.battle_time())}s`)
+      + (speed > 1 && role !== 'watch' ? ' · Normal speed during battle' : '');
+    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}${bribeLine}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${elapsed} · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
+      () => lookAtAttackers(v));
+    const order = (mine || role === 'attack') && replay?.target !== v ? (group: number, mode: number) => chooseBattleOrder(v, mine ? null : key, group, mode) : undefined;
+    ui.battleControls(acts, order, order ? w.battle_orders(mine ? 0 : myTag()) : undefined);
     return;
   }
   ui.battle(null);
+  ui.battleControls();
 }
 
 /** A fight has just begun in this village: if a boss leads it, say so (who, from where) and, for a lair, take the camera there. */
@@ -1394,11 +1589,13 @@ function freeArmyIds(): number[] {
 const fieldArmiesFree = () => freeArmyIds().length;
 
 /** Send a field army to the fight at home: it marches to the raiders and joins the defenders. */
-function orderDefend(id: number) {
-  const r = lv.world.det_defend(id);
-  if (r !== 0) { ui.toast(r === -10 ? 'There is no fight to send them to.' : (MARCH_ERRORS[r] ?? 'No way through to the raiders.'), 'bad'); sound.error(); return; }
-  attackTargets.delete(id); commit({ op: 'defend', idx: id }); sound.click(); lv.afterTick(); showRoute(); updateDets();
+async function orderDefend(id: number) {
+  const r = await plannedArmyOrder(id, 0, 0, 1);
+  if (r === null) return false;
+  if (r !== 0) { ui.toast(r === -10 ? 'There is no fight to send them to.' : (MARCH_ERRORS[r] ?? 'No way through to the raiders.'), 'bad'); sound.error(); return false; }
+  attackTargets.delete(id); commit({ op: 'defend', idx: id }); sound.click();
   ui.toast('The army marches out to meet the raiders.', 'good');
+  return true;
 }
 
 /** The standing army leaves its posts and marches out as a field army. */
@@ -1407,7 +1604,7 @@ function doSally() {
   if (u.every(n => n === 0)) { ui.toast('Nobody is standing at their post.', 'info'); return; }
   const id = lv.world.det_form(Uint32Array.from(u));
   if (!id) { ui.toast('The soldiers cannot leave their posts just now.', 'bad'); return; }
-  commit({ op: 'form', units: u }); lv.afterTick(); selectDet(id); orderDefend(id); updateHud();
+  commit({ op: 'form', units: u }); lv.afterTick(); selectDet(id); updateHud(); void orderArmies([id], orderDefend);
 }
 
 /** The attacker calls off the attack. In a village whose owner is here the owner's own copy carries it out (and tells everybody); in an away village the fight is local. */
@@ -1442,7 +1639,14 @@ function stepLocal() {
   const w = lv.world;
   w.step();
   const ev = w.take_events();
-  for (let i = 0; i < ev.length; i += 4) { const e = EVENT_TEXT(ev[i], ev[i + 1], ev[i + 2]); ui.toast(e.text, e.tone); ui.log(e.text, e.tone, ev[i + 3]); if (e.tone === 'bad') sound.alert(); else if (e.tone === 'good') sound.coin(); }
+  for (let i = 0; i < ev.length; i += 4) {
+    const e = EVENT_TEXT(ev[i], ev[i + 1], ev[i + 2]);
+    ui.log(e.text, e.tone, ev[i + 3]);
+    if (!watch.away) {
+      ui.toast(e.text, e.tone);
+      if (e.tone === 'bad') sound.alert(); else if (e.tone === 'good') sound.coin();
+    }
+  }
   const t = Number(w.tick());
   if (t % 4 === 0) updateGoals();
   { const l = newlyLent(w.buildings_flat(), lentBridges); lentBridges = l.now; if (l.fresh.length) ui.toast('Lowering the drawbridge for the army', 'info', 'drawbridge'); }
@@ -1453,13 +1657,86 @@ function stepLocal() {
   if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
+  if (ui.stewardOpen() || watch.review) renderWatch();
   if (forestDirtyFlag) rebuildForest(true);
 }
 
-function setSpeed(n: number) { if (rivals.size && [...rivals.values()].some(r => r.online)) n = Math.min(n, 1); speed = n; ui.setSpeed(n); }
+function setSpeed(n: number) {
+  if ([...rivals.values()].some(r => r.online)) n = Math.min(n, 1);
+  if (n > 0 && watch.review && !document.hidden) watch.resume(performance.now());
+  speed = n;
+  renderWatch();
+  save();
+}
+
+const livePlayerBattle = () => lv.world.battle_active() && lv.world.battle_tag() !== 0;
+const watchRisk = () => stewardRisks(lv.world.steward_status()[0])[0];
+
+function renderWatch() {
+  const playerBattle = livePlayerBattle(), working = watch.working && speed > 0;
+  const paused = !!watch.review || (watch.away && !working) || speed === 0;
+  ui.setSpeed(playerBattle || working ? 1 : paused ? 0 : speed);
+  const status = ui.stewardOpen() ? lv.world.steward_status() : undefined;
+  ui.setSteward({ mode: watch.mode, report: watch.review, paused, playerBattle, status, market: !!status && lv.world.market_goods().length > 0 });
+}
+
+function stewardAction(action: StewardAction) {
+  if (replay?.target === lv) return;
+  if (action === 'open') { ui.openSteward(); renderWatch(); return; }
+  if (action === 'pause' || action === 'steward') { watch.mode = action; renderWatch(); writeSave(); return; }
+  ui.modal('steward', false);
+  switch (action) {
+    case 'resume': setSpeed(speed || 1); break;
+    case 'food': ui.openFlow(-2); break;
+    case 'wood': ui.modal('winter', true); updateHud(); break;
+    case 'work': ui.openWork(); break;
+    case 'ruins': {
+      const index = lv.world.recovery_ruin();
+      if (index < 0) break;
+      const ruin = lv.world.ruins_flat(), x = ruin[index * 6], z = ruin[index * 6 + 1];
+      rig.focus(x, z, 42); selectRuin(index);
+      break;
+    }
+    case 'market': {
+      const f = lv.world.buildings_flat();
+      for (let i = 0; i < f.length; i += STRIDE) if (f[i] === 28) {
+        rig.focus(f[i + 2], f[i + 3], 45); selectBuilding(i / STRIDE);
+        break;
+      }
+      break;
+    }
+  }
+}
+
+function playerPresent() {
+  if (document.hidden) return;
+  const now = performance.now(), before = watch.review;
+  watch.observe(now, false);
+  const wasAway = watch.away;
+  watch.present(now);
+  if (watch.review !== before) {
+    if (watch.review && replay?.target !== lv) ui.openSteward();
+  }
+  if (wasAway) renderWatch();
+}
+
+function startVillageWatch() {
+  for (const type of ['pointerdown', 'pointermove', 'keydown', 'wheel']) {
+    addEventListener(type, playerPresent, { passive: true, capture: true });
+  }
+  const persist = () => { clearTimeout(saveTimer); writeSave(); checkpoint(true); };
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { watch.observe(performance.now(), true); persist(); }
+    else playerPresent();
+  });
+  addEventListener('pagehide', () => { watch.observe(performance.now(), true); persist(); });
+  addEventListener('pageshow', e => { if (e.persisted) playerPresent(); });
+}
 
 // ---------- selection & placement ----------
 function selectKind(k: number | null) {
+  if (k !== null) cancelMarchPreview();
+  if (k !== null && pendingBattleOrder) setPendingBattleOrder(null);
   selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
   terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false;
@@ -1565,10 +1842,9 @@ function drawPenBar() {
   let bar = document.getElementById('penbar');
   if (selectedKind === null || !PEN_SPACING[selectedKind]) { bar?.remove(); return; }
   if (!bar) {
-    bar = document.createElement('div'); bar.id = 'penbar';
-    bar.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;display:flex;gap:4px;background:#1d150de6;border:1px solid #c9a24a;border-radius:8px;padding:5px 6px;box-shadow:0 4px 16px #0008';
+    bar = document.createElement('div'); bar.id = 'penbar'; bar.className = 'tool-panel';
     bar.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-shape]'); if (b) setPenShape(b.dataset.shape as Shape); };
-    document.body.appendChild(bar);
+    document.getElementById('tool-dock')!.appendChild(bar);
   }
   bar.innerHTML = SHAPES.map(sh => `<button data-shape="${sh.id}" title="${sh.label}: ${sh.hint}" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${sh.id === penShape ? '#ffe08a' : '#6d5a38'};background:${sh.id === penShape ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon(sh.icon, 24, { mono: true })}</span><span style="font-size:10px">${sh.label}</span></button>`).join('');
 }
@@ -1970,7 +2246,7 @@ function openContext(e: PointerEvent) {
     if (rival) { const rv = rival; title = `${rv.name}'s village`; items.push({ label: 'March on this village…', run: () => ui.setTab('army') }, '-'); }
     if (hit) {
       items.push({ label: 'Look here', run: () => rig.focus(hit.x, hit.z) }, { label: 'Build here…', run: () => ui.setTab('build') });
-      for (const id of lv.field.ids()) items.push({ label: `March Army ${id} here`, run: () => { selectDet(id); orderMarch(id, hit.x, hit.z); } });
+      for (const id of lv.field.ids()) items.push({ label: `March Army ${id} here`, run: () => { selectDet(id); void orderArmies([id], () => orderMarch(id, hit.x, hit.z)); } });
     }
     const soldiers = Array.from(lv.world.army()).slice(0, 6);
     if (soldiers.some(n => n > 0)) items.push('-', { label: 'Muster every soldier', sub: 'F', run: () => doMuster(soldiers, true) });
@@ -2077,8 +2353,7 @@ function drawLevelBar() {
   if (!raisingOrLowering && selectedKind !== LEVEL_TOOL) { bar?.remove(); return; }
   const btn = 'cursor:pointer;border-radius:5px;border:1px solid #6d5a38;background:#2a2014;color:#f1e4c3;font:12px system-ui,sans-serif';
   if (!bar) {
-    bar = document.createElement('div'); bar.id = 'levelbar';
-    bar.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;display:flex;gap:10px;align-items:stretch;background:#1d150de6;border:1px solid #c9a24a;border-radius:8px;padding:5px 8px;box-shadow:0 4px 16px #0008;color:#f1e4c3;font:12px system-ui,sans-serif';
+    bar = document.createElement('div'); bar.id = 'levelbar'; bar.className = 'tool-panel';
     bar.innerHTML = `<div id="level-sizes" style="display:flex;gap:4px"></div>
       <div id="level-height" style="display:flex;flex-direction:column;gap:3px;justify-content:center;min-width:230px;border-left:1px solid #6d5a38;padding-left:10px">
         <div style="display:flex;gap:6px;align-items:center"><b>Target height</b><span id="lh-val" style="color:#ffe08a"></span><button id="lh-auto" title="Level to the land just outside the patch" style="${btn};margin-left:auto;padding:2px 8px">Auto</button></div>
@@ -2092,9 +2367,8 @@ function drawLevelBar() {
     range.oninput = () => setLevelHeight(Number(range.value));
     num.onchange = () => { const v = Number(num.value); if (num.value !== '' && Number.isFinite(v)) setLevelHeight(v); else drawLevelBar(); };
     num.onkeydown = e => e.stopPropagation(); num.onkeyup = e => e.stopPropagation();   // (typing a height must not trigger the game's keys)
-    document.body.appendChild(bar);
+    document.getElementById('tool-dock')!.appendChild(bar);
   }
-  bar.style.bottom = raisingOrLowering ? '67px' : '16px';
   bar.querySelector<HTMLElement>('#level-height')!.style.borderLeftWidth = raisingOrLowering ? '0' : '1px';
   bar.querySelector<HTMLElement>('#level-height')!.style.paddingLeft = raisingOrLowering ? '0' : '10px';
   bar.querySelector('#level-sizes')!.innerHTML = raisingOrLowering ? '' : LEVEL_SIZES.map(r => `<button data-r="${r}" title="Level a patch ${r} wide" style="cursor:pointer;min-width:44px;padding:5px 6px;border-radius:5px;border:1px solid ${r === levelR ? '#ffe08a' : '#6d5a38'};background:${r === levelR ? '#7a5a22' : '#2a2014'};color:#f1e4c3;font:16px system-ui,sans-serif"><span style="display:block;line-height:0;height:24px">${icon('levelground', 24, { mono: true })}</span><span style="font-size:10px">${r}</span></button>`).join('');
@@ -2214,7 +2488,9 @@ function bindInput() {
   let down: { x: number; y: number } | null = null, hoverT = 0, routeT = 0;
   const dropStroke = () => { down = null; penStart = null; if (penShape !== 'path') penPreview.clear(); ui.selBox(null); };
   cv.addEventListener('pointercancel', dropStroke); cv.addEventListener('lostpointercapture', () => { if (down) dropStroke(); });
+  cv.addEventListener('pointerleave', cancelMarchPreview);
   cv.addEventListener('pointerdown', e => {
+    cancelMarchPreview();
     if (e.button !== 0) { dropStroke(); return; }   // any other button (the right one turns the camera) abandons a selection or pen stroke: it must never carry on under a camera drag
     down = { x: e.clientX, y: e.clientY };
     try { cv.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
@@ -2222,6 +2498,7 @@ function bindInput() {
   });
   cv.addEventListener('pointermove', e => {
     if (down && e.buttons === 1 && selectedKind === null && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) ui.selBox({ x0: down.x, y0: down.y, x1: e.clientX, y1: e.clientY });
+    if (pendingBattleOrder) { cv.style.cursor = 'crosshair'; return; }
     updateGhost(e);
     if (selectedKind !== null && PEN_SPACING[selectedKind]) {   // the pen: preview a stroke being dragged, or the next stretch of a path
       const dragging = penStart && (e.buttons & 1) && down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8, walking = penShape === 'path' && penPath.length > 0 && !e.buttons;
@@ -2231,12 +2508,9 @@ function bindInput() {
       }
     }
     if (selectedDet !== null && selectedKind === null && performance.now() - routeT > 140 && !e.buttons) {   // preview the route under the cursor
-      routeT = performance.now(); const hit = terrain.pick(pointerRay(e).ray), u = detUnits(selectedDet), pos = lv.field.position(selectedDet);
-      if (hit && u && pos) {
-        const plan = lv.world.plan_march(Uint32Array.from(u), pos.x, pos.z, hit.x, hit.z);
-        if (plan[0] === 1) { pathLine.set(Array.from(plan.slice(5)), true); const bits = [`${Math.round(plan[1])}s`]; if (plan[2]) bits.push(`${plan[2]} planks for a bridge`); if (plan[3]) bits.push(`${plan[3]} wood for boats`); if (Array.from(plan.slice(5)).some((v, i) => i % 3 === 2 && v === 1)) bits.push('cuts through forest'); ui.hint(`Right-click to march · ${bits.join(' · ')}`); }
-        else { pathLine.set([pos.x, pos.z, 0, hit.x, hit.z, 0], false); ui.hint(MARCH_ERRORS[plan[0]] ?? 'No way through to there.', true); }
-      }
+      routeT = performance.now(); const hit = terrain.pick(pointerRay(e).ray);
+      if (hit) queueMarchPreview(selectedDet, hit.x, hit.z);
+      else cancelMarchPreview();
     }
     if (selectedKind === null && performance.now() - hoverT > 90 && !e.buttons) {
       hoverT = performance.now();
@@ -2314,16 +2588,17 @@ function bindInput() {
     if (pendingBattleOrder) {
       const hit = terrain.pick(pointerRay(e).ray);
       if (!hit) return;
-      if (!sendBattleOrder(pendingBattleOrder, hit.x, hit.z)) { ui.hint(null); ui.toast('The order could not be issued.', 'bad'); }
-      pendingBattleOrder = null;
+      const order = pendingBattleOrder;
+      setPendingBattleOrder(null);
+      if (!sendBattleOrder(order, hit.x, hit.z)) ui.toast('The order could not be issued.', 'bad');
       return;
     }
     if (selectedKind === 37 && roadPts.length) { roadPts.pop(); if (roadPts.length === 0) roadSnapped = [false, false]; roadHover(e); return; }   // right-click takes the last road point back
     if (selectedKind !== null) { selectKind(null); return; }                // right-click puts the building down again
     if (multiDets.length) {                                                 // armies selected: send them there, spread out a little
       const hit = terrain.pick(pointerRay(e).ray);
-      if (hit && lv.world.battle_active() && foeNear(lv.world.battle_units_flat(), hit.x, hit.z, 18)) multiDets.slice().forEach(id => orderDefend(id));   // right-click on the raiders: the army goes to meet them
-      else if (hit) multiDets.slice().forEach((id, k) => { const a = k * 2.4, r = k ? 3 + 2 * Math.sqrt(k) : 0; orderMarch(id, hit.x + Math.cos(a) * r, hit.z + Math.sin(a) * r); });
+      if (hit && lv.world.battle_active() && foeNear(lv.world.battle_units_flat(), hit.x, hit.z, 18)) void orderArmies(multiDets.slice(), orderDefend);   // right-click on the raiders: the army goes to meet them
+      else if (hit) void orderArmies(multiDets.slice(), (id, k) => { const a = k * 2.4, r = k ? 3 + 2 * Math.sqrt(k) : 0; return orderMarch(id, hit.x + Math.cos(a) * r, hit.z + Math.sin(a) * r); });
       return;
     }
     openContext(e);
@@ -2331,23 +2606,27 @@ function bindInput() {
   addEventListener('keydown', e => {
     if (ui.captureKey(e)) return;                                   // rebinding a key in the help screen
     if (e.ctrlKey || e.metaKey || e.altKey) return;                 // browser shortcuts (Ctrl+F, Ctrl+R...) are not game commands
-    if ((e.target as HTMLElement)?.matches?.('input,textarea,select')) return;
+    if (pendingBattleOrder && !e.defaultPrevented && keys.actionOf(e) === 'cancel' && (e.target as HTMLElement)?.id === 'battle-group') { setPendingBattleOrder(null); return; }
+    const target = e.target as HTMLElement;
+    if (e.defaultPrevented || target?.matches?.('input,textarea,select')) return;
+    if (target?.closest?.('#pane-build') && ['Tab', 'Enter', ' '].includes(e.key)) return;
     const n = digitOf(e);
     if (n !== null) { const kind = ui.hotkeyKind(n - 1); if (kind !== null) { ui.setTab('build'); selectKind(kind); } return; }
     switch (keys.actionOf(e)) {
       case 'penFinish': if (selectedKind === 37 && roadPts.length >= 2) { e.preventDefault(); roadCommit(); break; } if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) { e.preventDefault(); penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); } break;
       case 'penUndo': if (selectedKind === 37 && roadPts.length) { e.preventDefault(); roadPts.pop(); roadPreview(null); break; } if (penShape === 'path' && penPath.length) { e.preventDefault(); penPath.pop(); if (!penPath.length) penPreview.clear(); } break;
-      case 'cancel': if (pendingBattleOrder) { pendingBattleOrder = null; ui.hint(null); } else if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
+      case 'cancel': if (pendingBattleOrder) setPendingBattleOrder(null); else if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
       case 'rotateBuilding': if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); break; } rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; if (lastGhostE && selectedKind !== null) updateGhost(lastGhostE); break;
+      case 'focusBuild': if (ui.focusBuildSearch()) e.preventDefault(); break;
       case 'deposits': toggleResources(); break;
       case 'coverage': toggleCoverage(); break;
-      case 'pause': e.preventDefault(); setSpeed(speed === 0 ? 1 : 0); break;
+      case 'pause': e.preventDefault(); setSpeed(speed === 0 || watch.review ? 1 : 0); break;
       case 'perf': e.preventDefault(); perf.toggle(); break;
       case 'help': e.preventDefault(); ui.modal('help', true); break;
       case 'toggleLedger': ui.toggleLedger(); break;
       case 'nextArmy': { e.preventDefault(); const ids = lv.field.ids(); if (ids.length) { const i = ids.indexOf(selectedDet ?? -1); const id = ids[(i + 1) % ids.length], p = lv.field.position(id); selectDet(id); if (p) rig.focus(p.x, p.z); } break; }
       case 'haltArmy': multiDets.slice().forEach(id => detAction('halt', id)); break;
-      case 'recallArmy': multiDets.slice().forEach(id => detAction('recall', id)); break;
+      case 'recallArmy': void orderArmies(multiDets.slice(), orderRecall); break;
       case 'fullMap': ui.toggleMap(); break;
       case 'fullscreen': e.preventDefault(); toggleFullscreen(); break;
       case 'photo': e.preventDefault(); togglePhotoMode(renderer.domElement, () => perf.render(renderer, scene, rig.cam), t => ui.toast(t, 'info')); break;
@@ -2462,11 +2741,13 @@ let tideLevel = 0;   // the water rises and falls a little, slowly
 let noteT = 0, sCount = 0, sT = 0, fireBuf = new Float32Array(256);
 let lastPhase = -1;   // the day phase the light was last set for
 let last = 0, miniT = 0, scareT = 0, scares: { x: number; z: number }[] = [];
+let forestShadowVersion = -1;
 /** Put the display settings into effect (at start, and whenever one changes). */
 function applySettings(s: Settings) {
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
   atmo.setShadows(s.shadows);
   forest.drawDistance = s.drawDistance; forest.detail = s.treeDetail; forest.group.visible = s.trees && !showroom;
+  atmo.invalidateShadows();
   for (const wm of [terrain.water.material as THREE.MeshPhysicalMaterial, terrain.riverMaterial]) { const gloss = s.waterFx ? 1 : 0; if (wm.clearcoat !== gloss) { wm.clearcoat = gloss; wm.envMapIntensity = s.waterFx ? 1.8 : 0.6; wm.needsUpdate = true; } }
   fx.group.visible = effects.smoke.points.visible = s.particles;
   wildlife.group.visible = crowd.group.visible = s.crowds && !showroom;
@@ -2474,8 +2755,7 @@ function applySettings(s: Settings) {
 }
 
 // ---------- adaptive resolution: when frames run long, draw fewer pixels; when there is room again, win them back ----------
-let resScale = 1, slowMs = 0, resFrames = 0, lastShadow = -Infinity;
-const shadowFocus = new THREE.Vector3();
+let resScale = 1, slowMs = 0, resFrames = 0;
 function adaptResolution(frameMs: number) {
   if (!settings().adaptive) return;
   slowMs = slowMs * 0.94 + frameMs * 0.06;
@@ -2505,18 +2785,47 @@ function lightLamps(all: Village[], now: number) {
   for (const l of lampLights) l.intensity = l.userData.on ? k * 26 : 0;
 }
 
-/** A page that is not on screen gets no animation frames, and a village that stopped ticking when its tab went to the background stalled everything that depended on it (a fight in it, the
- *  other players' copies of it). So the clock also runs from a worker's timer, which the browser does not slow down, and it steps the village only while no frames are coming (the page is hidden). */
+/** Animation and background timers use the same watch. A battle already committed by two players
+ *  keeps running, even if one player switches tabs or tries to pause the clock. */
 let bgLast = 0, frameAt = 0;
+const liveSpeed = () => lv.world.battle_active() || awayFights.size > 0 ? Math.min(speed, 1) : speed;
+function runClock(dt: number, now: number) {
+  if (replay?.target === lv) { acc = 0; return; }
+  const wasAway = watch.away;
+  watch.observe(now, document.hidden);
+  if (wasAway !== watch.away) { acc = 0; renderWatch(); }
+  const pace = watch.pace(liveSpeed(), livePlayerBattle());
+  if (pace <= 0) { acc = 0; return; }
+  acc += dt * pace * TICK_RATE;
+  while (acc >= 1) {
+    const playerBattle = livePlayerBattle();
+    const wasWorking = watch.working;
+    if (!playerBattle && !watch.allowStep(watchRisk)) {
+      if (wasWorking) renderWatch();
+      acc = 0;
+      break;
+    }
+    acc -= 1;
+    stepLocal();
+    if (watch.away && !playerBattle) {
+      watch.afterStep(watchRisk);
+      if (!watch.working) renderWatch();
+    }
+    if (playerBattle && !livePlayerBattle()) { acc = 0; renderWatch(); break; }
+  }
+}
+
 function startBackgroundClock() {
   try {
     const src = 'setInterval(() => postMessage(0), 200);';
-    const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    let w: Worker;
+    try { w = new Worker(url); } finally { URL.revokeObjectURL(url); }
     w.onmessage = () => {
       const now = performance.now();
       if (now - frameAt < 400 || !lv) { bgLast = now; return; }   // frames are coming (the page is on screen): they run the clock
       const dt = Math.max(0, Math.min(0.5, (now - (bgLast || now)) / 1000)); bgLast = now;
-      if (replay?.target !== lv && speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
+      runClock(dt, now);
     };
   } catch { /* no workers (a locked-down browser): the village simply waits while its tab is hidden, as before */ }
 }
@@ -2527,19 +2836,21 @@ function frame(now: number) {
   const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last); last = now;   // never negative, never a big jump
   perf.start('simulation');
   if (replay) tickReplay(dt);
-  if (replay?.target !== lv && speed > 0) { acc += dt * speed * TICK_RATE; let n = 0; while (acc >= 1 && n++ < 8) { acc -= 1; stepLocal(); } if (n >= 8) acc = 0; }
+  runClock(dt, frameAt);
   perf.stop('simulation');
   const all = allVillages();
   const s = settings(), drawCrowd = s.crowds && !showroom;
   { // the time of day: the light follows the village clock, smoothly between ticks
     const ph = dayPhase(Number(lv.world.tick()) + (replay ? 0 : acc));
-    if (Math.abs(ph - lastPhase) > 0.0008 || lastPhase < 0) { lastPhase = ph; atmo.setClock(ph); setNightLight(atmo.night); for (const v of all) v.props.setNight(atmo.night); }
+    if (Math.abs(ph - lastPhase) > 0.0008 || lastPhase < 0) { lastPhase = ph; atmo.setClock(ph); forest.setLight(atmo.lightDirection, atmo.sun, atmo.hemi); setNightLight(atmo.night); for (const v of all) v.props.setNight(atmo.night); }
   }
   lightLamps(all, now);
   for (const v of all) v.people.group.visible = v.army.group.visible = drawCrowd;
-  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) { v.boats.level = tideLevel; v.rivers.setTide(tideLevel); }   // open water ebbs and flows; sealed moats stay full
+  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) v.boats.level = tideLevel;   // open water ebbs and flows; carved channels keep their own stage
   perf.stop('camera + world');
-  perf.start('forest'); forest.tick(now / 1000, rig.cam.position); perf.stop('forest');
+  const treeShadowRange = !s.shadows ? 0 : rig.dist <= 175 ? 135 : rig.pitch < 0.5 ? 65 : 85;
+  perf.start('forest'); forest.tick(now / 1000, rig.cam.position, rig.target, treeShadowRange, rig.cam); perf.stop('forest');
+  if (forestShadowVersion !== forest.shadowVersion) { forestShadowVersion = forest.shadowVersion; if (forest.group.visible) atmo.invalidateShadows(); }
   const detailRange = innerHeight * 1.65 / (2 * Math.tan(THREE.MathUtils.degToRad(rig.cam.fov / 2)) * 36);
   perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd)); perf.stop('villages (people, army)');
   perf.start('animals');
@@ -2584,9 +2895,7 @@ function frame(now: number) {
   }
   perf.stop('labels + minimap');
   perf.start('render (CPU side)');
-  const shadowElapsed = now - lastShadow;
-  renderer.shadowMap.needsUpdate = atmo.sun.castShadow && (shadowElapsed >= 90 || (shadowElapsed >= 32 && shadowFocus.distanceToSquared(rig.target) > 4));
-  if (renderer.shadowMap.needsUpdate) { shadowFocus.copy(rig.target); lastShadow = now; }
+  atmo.updateShadows(now, rig.target, rig.dist, drawCrowd && (speed > 0 || wildlife.visible > 0));
   perf.render(renderer, scene, rig.cam);
   perf.stop('render (CPU side)');
   if (perf.open && now - noteT > 500) { noteT = now; perf.netNotes(syncNotes()); }

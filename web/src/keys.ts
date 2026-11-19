@@ -3,7 +3,7 @@
 export type Action =
   | 'panUp' | 'panDown' | 'panLeft' | 'panRight' | 'panFast'
   | 'rotLeft' | 'rotRight' | 'tiltUp' | 'tiltDown' | 'zoomIn' | 'zoomOut'
-  | 'rotateBuilding' | 'deposits' | 'coverage' | 'pause' | 'cancel' | 'perf' | 'help' | 'toggleLedger' | 'toggleMinimap' | 'fullMap' | 'fullscreen' | 'photo' | 'nextArmy' | 'haltArmy' | 'recallArmy' | 'musterAll' | 'penFinish' | 'penUndo';
+  | 'rotateBuilding' | 'focusBuild' | 'deposits' | 'coverage' | 'pause' | 'cancel' | 'perf' | 'help' | 'toggleLedger' | 'toggleMinimap' | 'fullMap' | 'fullscreen' | 'photo' | 'nextArmy' | 'haltArmy' | 'recallArmy' | 'musterAll' | 'penFinish' | 'penUndo';
 
 export const ACTIONS: { id: Action; label: string; group: string; defaults: string[] }[] = [
   { id: 'panUp', label: 'Move forward', group: 'Camera', defaults: ['w', 'z', 'arrowup'] },
@@ -18,6 +18,7 @@ export const ACTIONS: { id: Action; label: string; group: string; defaults: stri
   { id: 'zoomIn', label: 'Zoom in', group: 'Camera', defaults: ['+', '='] },
   { id: 'zoomOut', label: 'Zoom out', group: 'Camera', defaults: ['-', '_'] },
   { id: 'rotateBuilding', label: 'Rotate the building you place', group: 'Building', defaults: ['r'] },
+  { id: 'focusBuild', label: 'Search buildings and tools', group: 'Building', defaults: ['/'] },
   { id: 'penFinish', label: 'Pen: build the path you have drawn', group: 'Building', defaults: ['enter'] },
   { id: 'penUndo', label: 'Pen: remove the last corner', group: 'Building', defaults: ['backspace'] },
   { id: 'cancel', label: 'Cancel / close', group: 'Game', defaults: ['escape'] },

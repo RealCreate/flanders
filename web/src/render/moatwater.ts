@@ -35,7 +35,14 @@ export function moatSurface(flat: ArrayLike<number>, step: number) {
       if (!cells.has(key)) { cells.add(key); indices.push(a, c, b, b, c, d); }
     }
   }
-  return { positions, indices };
+  const banks: number[] = [];
+  for (let i = 0; i < positions.length; i += 3) {
+    const col = Math.round(positions[i] / step), row = Math.round(positions[i + 2] / step);
+    const enclosed = cells.has(col + ':' + row) && cells.has((col - 1) + ':' + row)
+      && cells.has(col + ':' + (row - 1)) && cells.has((col - 1) + ':' + (row - 1));
+    banks.push(enclosed ? 0 : 1);
+  }
+  return { positions, indices, banks };
 }
 
 export class MoatWater {
@@ -46,18 +53,21 @@ export class MoatWater {
 
   constructor(terrain: Terrain, terrainStep: number) {
     this.terrainStep = terrainStep;
-    this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), terrain.makeWaterMaterial(true));
+    const material = terrain.makeWaterMaterial(true);
+    material.polygonOffset = true; material.polygonOffsetFactor = -1; material.polygonOffsetUnits = -1;
+    this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), material);
     this.mesh.receiveShadow = false;
     this.group.add(this.mesh);
   }
 
-  /** `flat` is World.moat_water_flat(): [x, z, reach, level] per piece. */
+  /** `flat` is World.moat_water_flat(): [x, z, reach, level] per moat or carved river piece. */
   update(flat: Float32Array) {
     const sig = flat.join(',');
     if (sig === this.sig) return; this.sig = sig;
-    const { positions, indices } = moatSurface(flat, this.terrainStep);
+    const { positions, indices, banks } = moatSurface(flat, this.terrainStep);
     const mesh = new THREE.BufferGeometry();
     mesh.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    mesh.setAttribute('aWaterBank', new THREE.Uint8BufferAttribute(banks, 1));
     const uv: number[] = [];
     for (let i = 0; i < positions.length; i += 3) uv.push(positions[i], positions[i + 2]);
     mesh.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));

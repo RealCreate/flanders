@@ -177,7 +177,7 @@ export class ArmyView {
       if (this.quiet === 0 && f.kind !== 4) {
         const died = wasAlive && !f.alive && f.hp <= 0;
         if (died) f.deadAt = this.t;
-        if (died || (f.alive && f.hp < prevHp - 0.01)) { f.flash = 0.3; this.onHit?.(f.tx, f.tz, this.terrain.walkAt(f.tx, f.tz) + 1.1 + Math.max(f.telev, f.wade ? moatLevelAt(this.moats, f.tx, f.tz) - this.terrain.walkAt(f.tx, f.tz) + 0.12 : 0), died); }
+        if (died || (f.alive && f.hp < prevHp - 0.01)) { f.flash = 0.3; this.onHit?.(f.tx, f.tz, this.terrain.walkAt(f.tx, f.tz) + 1.1 + Math.max(f.telev, f.wade ? this.raftSurface(f.tx, f.tz) - this.terrain.walkAt(f.tx, f.tz) + 0.12 : 0), died); }
       } else if (!f.alive && f.hp <= 0 && f.deadAt < 0) f.deadAt = this.t - 5;   // already down when we first saw it
       if (this.quiet > 0) { f.anim = 0; f.fireT = 0; }
       else { f.anim = Math.max(f.anim, flat[o + 7]); if (f.kind === 4 && flat[o + 7] >= 0.3 && f.lastCore < 0.3) f.fireT = 1.0; }   // a catapult only swings its arm when it really has just fired
@@ -292,13 +292,14 @@ export class ArmyView {
   }
 
   private height(f: Field) { return Number.isNaN(f.gy) ? this.terrain.walkAt(f.x, f.z) : f.gy; }
+  private raftSurface(x: number, z: number) { return Math.max(moatLevelAt(this.moats, x, z), this.terrain.riverSurfaceAt(x, z)); }
 
   /** The moat water levels, World.moat_water_flat(): wading raiders stand on that surface. */
   moats: Float32Array = new Float32Array(0);
 
   /** Work out the height of the ground (or water) under a soldier and move the drawn height toward it at a limited speed. */
   private settle(f: Field, dt: number) {
-    const ground = this.terrain.walkAt(f.x, f.z), level = f.side === 1 ? moatLevelAt(this.moats, f.x, f.z) : 0, want = standHeight(ground, f.wade, level);
+    const ground = this.terrain.walkAt(f.x, f.z), level = f.wade ? this.raftSurface(f.x, f.z) : 0, want = standHeight(ground, f.wade, level);
     f.gy = Number.isNaN(f.gy) ? want : chase(f.gy, want, dt);
     f.wet = onWater(ground, f.wade, level);
   }
@@ -331,16 +332,16 @@ export class ArmyView {
   draw(crowd: Crowd, hallPos: { x: number; z: number }, cx = 0, cz = 0, radius = 1e9) {
     const t = this.t, r2 = radius * radius, near = (x: number, z: number) => (x - cx) ** 2 + (z - cz) ** 2 <= r2;
     const sg = new Set<THREE.Group>();
-    const placeSiege = (x: number, z: number, yaw: number, fire: number, i: number) => {
+    const placeSiege = (x: number, z: number, yaw: number, fire: number, i: number, y = this.terrain.walkAt(x, z)) => {
       let g = this.siege[i]; if (!g) { g = buildCatapult(); g.visible = true; this.siege[i] = g; this.group.add(g); }
-      g.position.set(x, this.terrain.walkAt(x, z), z); g.rotation.y = yaw; g.visible = true; sg.add(g);
+      g.position.set(x, y, z); g.rotation.y = yaw; g.visible = true; sg.add(g);
       // fire = seconds of the throwing motion left (1 -> 0): a quick swing forward, then the arm is winched back
       const p = 1 - fire; (g.userData.arm as THREE.Object3D).rotation.x = fire <= 0 ? ARM_REST : p < 0.25 ? ARM_REST + (p / 0.25) * (ARM_THROW - ARM_REST) : ARM_THROW - ((p - 0.25) / 0.75) * (ARM_THROW - ARM_REST);
     };
     let ri = 0;
-    const placeRam = (x: number, z: number, yaw: number, swing: number) => {
+    const placeRam = (x: number, z: number, yaw: number, swing: number, y = this.terrain.walkAt(x, z)) => {
       let g = this.rams[ri]; if (!g) { g = buildRam(); this.rams[ri] = g; this.group.add(g); } ri++;
-      g.position.set(x, this.terrain.walkAt(x, z), z); g.rotation.y = yaw; g.visible = true; sg.add(g);
+      g.position.set(x, y, z); g.rotation.y = yaw; g.visible = true; sg.add(g);
       (g.userData.log as THREE.Object3D).position.z = swing > 0 ? Math.sin((1 - swing) * Math.PI) * 0.9 : 0;   // the log swings forward as it strikes
     };
     let si = 0, nr = 0, nb = 0; for (const r of this.rafts) r.visible = false;
@@ -350,9 +351,17 @@ export class ArmyView {
         if (!f.alive && f.hp > 0) continue;   // ran off the field
         if (!near(f.x, f.z)) continue;
         if (!f.alive) { if (f.kind !== 4 && f.kind !== 5) this.drawFallen(crowd, f); continue; }
-        if (f.wet && f.kind !== 4) { const r = this.raftAt(nr++); r.visible = true; r.position.set(f.x, this.height(f) - 0.28 + Math.sin(t * 3.1 + f.seed) * 0.07, f.z); r.rotation.y = f.yaw + Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.12; r.rotation.z = Math.sin(t * 2.3 + f.seed * 2) * 0.14; r.rotation.x = Math.sin(t * 1.7 + f.seed * 3) * 0.08; }   // (a raft wallows: the raiders on it are helpless, see the core's WADE_* numbers)
-        if (f.kind === 5) { placeRam(f.x, f.z, f.yaw, Math.min(1, f.anim / 0.5)); continue; }
-        if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++); continue; }
+        const y = this.height(f), engine = f.kind === 4 || f.kind === 5;
+        if (f.wet) {
+          const raft = this.raftAt(nr++);
+          raft.visible = true;
+          raft.position.set(f.x, y - 0.28 + Math.sin(t * 3.1 + f.seed) * (engine ? 0.025 : 0.07), f.z);
+          raft.scale.set(engine ? 1.6 : 1, 1, engine ? 2.8 : 1);
+          raft.rotation.set(engine ? 0 : Math.sin(t * 1.7 + f.seed * 3) * 0.08,
+            f.yaw + (engine ? 0 : Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.12), engine ? 0 : Math.sin(t * 2.3 + f.seed * 2) * 0.14);
+        }
+        if (f.kind === 5) { placeRam(f.x, f.z, f.yaw, Math.min(1, f.anim / 0.5), y); continue; }
+        if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++, y); continue; }
         if (f.boss > 0) { this.drawBoss(crowd, f, t, nb++, sg); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
         if (f.side === 1 && f.elev > 0.3 && l.body !== undefined) l.body = mix(l.body, 0x4a6a84, 0.4);   // soaked and struggling in the water: a cold, grey-blue tint

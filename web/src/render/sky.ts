@@ -1,6 +1,30 @@
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { dayPhase, sunElevation, nightFactor } from '../daycycle';
+import { TREE_SHADOW_LAYER } from './trees';
+
+/** Cache static shadows and limit refreshes from moving actors at wider zooms. */
+export class ShadowRefresh {
+  private time = -Infinity;
+  private target = new THREE.Vector3();
+  private direction = new THREE.Vector3();
+  private dirty = true;
+  private actors = false;
+
+  invalidate() { this.dirty = true; }
+
+  update(now: number, target: THREE.Vector3, direction: THREE.Vector3, zoom: number, actors: boolean) {
+    const elapsed = now - this.time;
+    const pan = target.distanceToSquared(this.target);
+    const sunMoved = direction.distanceToSquared(this.direction) >= 0.018 ** 2;
+    const actorInterval = zoom < 105 ? 110 : zoom < 175 ? 160 : 240;
+    const stopped = this.actors && !actors;
+    this.actors = actors;
+    if (!this.dirty && !stopped && pan < 40 ** 2 && !(pan >= 6 ** 2 && elapsed >= 60) && !(sunMoved && elapsed >= 125) && !(actors && elapsed >= actorInterval)) return false;
+    this.dirty = false; this.time = now; this.target.copy(target); this.direction.copy(direction);
+    return true;
+  }
+}
 
 /** Physically based sky, sun light with shadows, image-based lighting and fog. */
 export class Atmosphere {
@@ -9,6 +33,8 @@ export class Atmosphere {
   hemi = new THREE.HemisphereLight(0xa9c4ee, 0x4a5530, 0.42);
   /** Direction of the light that lights the world: the sun by day, a pale moon at night (never from below the horizon). */
   private sunDir = new THREE.Vector3();
+  get lightDirection() { return this.sunDir; }
+  private shadows = new ShadowRefresh();
   private skyDir = new THREE.Vector3();
   /** 0 in full day .. 1 at night: what lanterns and windows follow. */
   night = 0;
@@ -23,6 +49,7 @@ export class Atmosphere {
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);   // 4096 cost four times the fill for a barely sharper edge
     const c = this.sun.shadow.camera; c.left = -80; c.right = 80; c.top = 80; c.bottom = -80; c.near = 10; c.far = 500;
+    c.layers.enable(TREE_SHADOW_LAYER);
     this.sun.shadow.bias = -0.0005; this.sun.shadow.normalBias = 0.4;
 
     scene.fog = new THREE.FogExp2(this.fogCol, 0.0016);
@@ -64,9 +91,16 @@ export class Atmosphere {
 
   /** Shadow quality from the display settings: a map size, or 0 for no shadows at all. */
   setShadows(size: number) {
+    if (this.sun.castShadow !== (size > 0) || this.sun.shadow.mapSize.x !== size) this.invalidateShadows();
     this.sun.castShadow = size > 0;
     if (size > 0 && this.sun.shadow.mapSize.x !== size) { this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; this.sun.shadow.mapSize.set(size, size); }
     if (size === 0) { this.sun.shadow.map?.dispose(); this.sun.shadow.map = null; }
+  }
+
+  invalidateShadows() { this.shadows.invalidate(); }
+
+  updateShadows(now: number, target: THREE.Vector3, zoom: number, movingActors: boolean) {
+    this.renderer.shadowMap.needsUpdate = this.sun.castShadow && this.shadows.update(now, target, this.sunDir, zoom, movingActors);
   }
 
   /** Move the shadow frustum so it follows the camera focus. */

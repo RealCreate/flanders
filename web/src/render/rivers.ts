@@ -1,51 +1,17 @@
 import * as THREE from 'three';
-import { HALF, NV, STEP, type Terrain } from './terrain';
-import { patchWater } from './water';
 
-const S = 10, MOAT = 24, RIVER = 32, MAXP = 1500;
-/** Radii of the flat bottom of a moat piece (before its width setting) and of a river piece: the same numbers as the core's. */
-export const CHANNEL = { moatFloor: 3.0, riverFloor: 2.0, bank: 1.6 };
+const RIVER = 32, MAX_RIPPLES = 1500;
 
-/** The water level for a sealed channel piece: just under the lowest of the highest ground round it, found on a ring outside the steep bank. Never below the sealed level. */
-export function channelLevel(terrain: Terrain, x: number, z: number, floor: number): number {
-  const r = floor + CHANNEL.bank + 0.9; let rim = -1e9;
-  for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; rim = Math.max(rim, terrain.heightAt(x + Math.cos(a) * r, z + Math.sin(a) * r)); }
-  return Math.max(SEALED_LEVEL, rim - 0.35);
-}
-/** Surface level of water that is sealed off from any sea or lake: it stays full whatever the tide does. */
-export const SEALED_LEVEL = 0.04;
-
-/** Is there natural open water (sea or lake) at or near this point? */
-export function nearNaturalWater(terrain: Terrain, x: number, z: number, r = 9): boolean {
-  if (terrain.baseAt(x, z) < -0.25) return true;
-  for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; if (terrain.baseAt(x + Math.cos(a) * r, z + Math.sin(a) * r) < -0.25) return true; }
-  return false;
-}
-
-/** Which moat and river pieces are connected to a body of open water? Neighbouring pieces form one channel; a channel that reaches a sea or lake is
- *  connected (its level follows the tide), any other is sealed (it just stays full). */
-export function connectedFlags(terrain: Terrain, pts: { x: number; z: number }[]): boolean[] {
-  const n = pts.length, parent = Array.from({ length: n }, (_, i) => i);
-  const find = (i: number): number => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
-  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) if ((pts[i].x - pts[j].x) ** 2 + (pts[i].z - pts[j].z) ** 2 < 7.5 * 7.5) parent[find(i)] = find(j);
-  const wet = new Map<number, boolean>();
-  for (let i = 0; i < n; i++) { const r = find(i); if (!wet.get(r) && nearNaturalWater(terrain, pts[i].x, pts[i].z)) wet.set(r, true); }
-  return pts.map((_, i) => !!wet.get(find(i)));
-}
-
-/** Flowing water for rivers. Moats participate in the connection check and have their own water surface. */
+/** Surface ripples for carved rivers. MoatWater draws the shared water mesh underneath. */
 export class RiverFlow {
   group = new THREE.Group();
-  mesh: THREE.InstancedMesh;     // ripples
-  private pond: THREE.InstancedMesh;
+  private mesh: THREE.InstancedMesh;
   private uTime = { value: 0 };
   private sig = '';
-  private ripple: { x: number; z: number; connected: boolean; level: number }[] = [];
-  private level = 0;
 
-  constructor(private terrain: Terrain) {
+  constructor() {
     const geo = new THREE.PlaneGeometry(6, 6).rotateX(-Math.PI / 2);
-    geo.setAttribute('aDir', new THREE.InstancedBufferAttribute(new Float32Array(2 * MAXP), 2));
+    geo.setAttribute('aDir', new THREE.InstancedBufferAttribute(new Float32Array(2 * MAX_RIPPLES), 2));
     const mat = new THREE.ShaderMaterial({
       uniforms: { uTime: this.uTime }, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
       vertexShader: `attribute vec2 aDir; varying vec2 vDir; varying vec2 vP; varying vec2 vL;
@@ -59,44 +25,30 @@ export class RiverFlow {
           gl_FragColor = vec4(0.88, 0.96, 1.0, (a * 0.34 + b * 0.26) * fade);
         }`,
     });
-    this.mesh = new THREE.InstancedMesh(geo, mat, MAXP); this.mesh.count = 0; this.mesh.frustumCulled = false; this.mesh.renderOrder = 3;
-    const pondGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
-    const pondMat = new THREE.MeshPhysicalMaterial({ color: 0x2f6f98, roughness: 0.05, metalness: 0, transparent: true, opacity: 1, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1, normalMap: terrain.waterTex, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 1.8 });
-    patchWater(pondMat, { heightTex: terrain.heightTex, half: HALF, step: STEP, nv: NV }, terrain.waterTime, true);
-    this.pond = new THREE.InstancedMesh(pondGeo, pondMat, MAXP); this.pond.count = 0; this.pond.frustumCulled = false; this.pond.renderOrder = 2;
-    this.group.add(this.pond, this.mesh);
+    this.mesh = new THREE.InstancedMesh(geo, mat, MAX_RIPPLES); this.mesh.count = 0; this.mesh.frustumCulled = false; this.mesh.renderOrder = 3;
+    this.group.add(this.mesh);
   }
 
-  /** From buildings_flat: every river and moat piece. */
-  sync(f: Float32Array) {
-    const items: { x: number; z: number; rot: number; kind: number }[] = [];
-    for (let i = 0; i < f.length; i += S) if (f[i] === RIVER || f[i] === MOAT) items.push({ x: f[i + 2], z: f[i + 3], rot: f[i + 4], kind: f[i] });
-    const sig = items.map(q => `${q.kind},${q.x},${q.z},${q.rot}`).join(';'); if (sig === this.sig) return; this.sig = sig;
-    const flags = connectedFlags(this.terrain, items), dir = this.mesh.geometry.getAttribute('aDir') as THREE.InstancedBufferAttribute, m = new THREE.Matrix4(), sc = new THREE.Vector3();
-    let nr = 0, np = 0; this.ripple = [];
-    items.forEach((q, i) => {
-      if (q.kind !== RIVER) return;
-      // a channel that is sealed off from the sea is a trench with its water close to the brim: the surface is the lowest of the surrounding land, less a hand's breadth, so the banks
-      // are not left standing bare. Where the bank is a step the water sits behind it, and the terrain hides the rest, so it never spills over the edge.
-      const floor = CHANNEL.riverFloor, level = flags[i] ? SEALED_LEVEL : channelLevel(this.terrain, q.x, q.z, floor);
-      if (nr < MAXP) { const a = q.rot * Math.PI / 4; dir.setXY(nr, Math.cos(a), -Math.sin(a)); this.ripple.push({ x: q.x, z: q.z, connected: flags[i], level }); nr++; }
-      // a river that reaches the sea still holds its water well above the sea's low level, up to a point (about a metre above it), so it is not a dry trench with a puddle in the bottom
-      const surface = flags[i] ? Math.min(channelLevel(this.terrain, q.x, q.z, floor), 1.0) : level;
-      if (np < MAXP) { const r = floor + 1.1; sc.set(r, 1, r); m.compose(new THREE.Vector3(q.x, surface, q.z), new THREE.Quaternion(), sc); this.pond.setMatrixAt(np++, m); }
-    });
-    this.mesh.count = nr; this.pond.count = np; this.pond.instanceMatrix.needsUpdate = true; dir.needsUpdate = true;
-    this.placeRipples(this.level, true);
+  sync(buildings: Float32Array, water: Float32Array) {
+    const items: { x: number; z: number; rot: number }[] = [];
+    for (let i = 0; i < buildings.length; i += 10) if (buildings[i] === RIVER) items.push({ x: buildings[i + 2], z: buildings[i + 3], rot: buildings[i + 4] });
+    const sig = items.length ? `${items.map(q => `${q.x},${q.z},${q.rot}`).join(';')}:${water.join(',')}` : '';
+    if (sig === this.sig) return;
+    this.sig = sig;
+    const levels = new Map<string, number>();
+    for (let i = 0; i < water.length; i += 4) levels.set(`${water[i]},${water[i + 1]}`, water[i + 3]);
+    const dir = this.mesh.geometry.getAttribute('aDir') as THREE.InstancedBufferAttribute, matrix = new THREE.Matrix4();
+    let n = 0;
+    for (const { x, z, rot } of items) {
+      if (n === MAX_RIPPLES) break;
+      const level = levels.get(`${x},${z}`);
+      if (level === undefined) continue;
+      const a = rot * Math.PI / 4;
+      dir.setXY(n, Math.cos(a), -Math.sin(a));
+      this.mesh.setMatrixAt(n++, matrix.makeTranslation(x, level + 0.02, z));
+    }
+    this.mesh.count = n; this.mesh.instanceMatrix.needsUpdate = true; dir.needsUpdate = true;
   }
-
-  private placeRipples(level: number, force = false) {
-    if (!force && Math.abs(level - this.level) < 0.004) return; this.level = level;
-    const m = new THREE.Matrix4();
-    this.ripple.forEach((q, i) => { m.makeTranslation(q.x, (q.connected ? level : q.level) + 0.05, q.z); this.mesh.setMatrixAt(i, m); });
-    this.mesh.instanceMatrix.needsUpdate = true;
-  }
-
-  /** The tide: connected channels rise and fall with it, sealed ones stay put. */
-  setTide(level: number) { this.placeRipples(level); }
 
   update(t: number) { this.uTime.value = t; }
 }
