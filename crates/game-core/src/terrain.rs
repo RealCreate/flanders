@@ -126,6 +126,7 @@ fn land_sample<const SURFACE: bool>(seed: u64, sites: &[(f32, f32)], x: f32, y: 
     let pass = 1.0 - smoothstep(0.0, 0.014, (fbm(seed + 8, wx * 0.0048, wy * 0.0048, 3) - 0.5).abs());
     h = lerp(h, 14.0 + (hills - 0.5) * 6.0, pass * smoothstep(26.0, 44.0, h) * 0.9);
     // rivers carve into lowlands
+    let uncut_height = h;
     let rv = (fbm(seed + 4, wx * 0.0075, wy * 0.0075, 3) - 0.5).abs();
     let river = 1.0 - smoothstep(0.0, 0.012 + 0.02 * (1.0 - smoothstep(0.0, 40.0, h)), rv);   // rivers widen as they reach the lowlands
     let rmask = 1.0 - smoothstep(16.0, 38.0, h);
@@ -149,7 +150,12 @@ fn land_sample<const SURFACE: bool>(seed: u64, sites: &[(f32, f32)], x: f32, y: 
     let round = (nx * nx + ny * ny).sqrt();
     let boxy = (nx.powi(4) + ny.powi(4)).powf(0.25);
     let d = 0.65 * round + 0.35 * boxy + (fbm(seed + 7, x * 0.0045, y * 0.0045, 3) - 0.5) * 0.42;   // mostly round, a little square, with bays and headlands
-    let land = 1.0 - smoothstep(0.88, 1.12, d);
+    let mut land = 1.0 - smoothstep(0.88, 1.12, d);
+    if fill_channels {
+        // Submerge the last stretch of terrain even where a headland reaches the square map edge.
+        let edge = HALF - x.abs().max(y.abs());
+        land *= smoothstep(0.0, 85.0, edge);
+    }
     let height = lerp(-9.0, h, land);
     let inland = channel > 0.05 && sw < 0.45 && land > 0.75;
     // Deepen low beds and feather into the banks. Dry terrain at the height of deposits and neutral sites is unchanged.
@@ -158,8 +164,12 @@ fn land_sample<const SURFACE: bool>(seed: u64, sites: &[(f32, f32)], x: f32, y: 
     // Keep the stage across the carved bed and its shallow shelves. Beyond them the mesh
     // meets the ground, so it cannot end in mid-air over low land outside the channel.
     let surface = if SURFACE {
-        let stage = RIVER_LEVEL * smoothstep(0.75, 0.97, land) * (1.0 - smoothstep(0.3, 0.85, lake_cut));
-        let shelf = incision > 0.36 && height >= stage - 1.2 && height < stage;
+        // Broad, low coastal bays can extend well inside the coast mask. Taper from the
+        // height of the surrounding land before incision, so the bed itself does not lower the stage.
+        let coastal_bank = lerp(-9.0, uncut_height, land);
+        let stage = RIVER_LEVEL * smoothstep(0.85, 8.5, coastal_bank) * smoothstep(0.75, 0.97, land)
+            * (1.0 - smoothstep(0.18, 0.78, lake_cut));
+        let shelf = incision > 0.18 && height >= stage - 1.2 && height < stage;
         if (incision > 0.38 || shelf) && sw < 0.45 { stage } else { -stage.min(height.max(0.0)) }
     } else { 0.0 };
     (height, surface)
@@ -194,6 +204,29 @@ fn river_mesh_stays_level_at_inland_banks_and_ends_at_ground_level() {
         }
     }
     assert!(flat_banks > 100);
+}
+
+#[test]
+fn open_coastal_water_has_no_raised_river_ribbons() {
+    for (seed, x, y) in [(1337, -1012.5, 457.5), (1084, -62.5, -1147.5), (1, -267.5, -882.5)] {
+        let patch = land_rows(seed, x - 25.0, y - 25.0, 21, RIVER_STEP, 0, 21);
+        assert!(patch.chunks_exact(2).all(|p| p[0] < 0.0), "fixture must be in open water");
+        let stage = river_surface_at(seed, &sites(seed), x, y);
+        assert_eq!(stage, 0.0, "raised coastal water at {seed}: ({x}, {y})");
+    }
+}
+
+#[test]
+fn terrain_reaches_the_sea_floor_on_all_four_map_edges() {
+    let seed = 1337;
+    let sites = sites(seed);
+    for offset in (-10..=10).map(|i| i as f32 * HALF / 10.0) {
+        for (x, y) in [(-HALF, offset), (HALF, offset), (offset, -HALF), (offset, HALF)] {
+            let (height, stage) = land_sample::<true>(seed, &sites, x, y, true);
+            assert_eq!(height, -9.0);
+            assert_eq!(stage, 0.0);
+        }
+    }
 }
 
 /// Natural river surface at a point, using the same triangles as the renderer. Zero is open water or dry land outside the river profile.
@@ -436,6 +469,9 @@ pub const REGROW_IDLE_PCT: i32 = 2;
 pub const REGROW_WORKED_PERMILLE: i32 = 5;
 pub const WAKE_PCT: i32 = 15;
 impl Deposit {
+    /// Clearance around the full cluster of rocks, including the wider clay piles.
+    pub(crate) fn walk_radius(&self) -> f32 { if self.kind == 1 { 7.0 } else { 6.0 } }
+
     /// Can a building take ore from it right now?
     pub fn active(&self) -> bool { self.max > 0 && !self.asleep && self.rem > 0 }
     /// One day passes: regrow (never for a deposit the villagers cleared, `max == 0`), and wake when enough has come back.

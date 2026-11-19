@@ -25,3 +25,16 @@ test('search combines with category filters and preserves catalog order when cle
   assert.deepEqual(find('', 4), [22, 3]);
   assert.deepEqual(find('', -1), [22, 3, 5, 35, 37, 99]);
 });
+
+test('resource searches favor producers and match alternate recipes', () => {
+  const search = buildSearch([
+    { id: 9, category: 3, name: 'Iron Mine', outputs: ['Iron ore'] },
+    { id: 12, category: 3, name: 'Smelter', outputs: ['Iron'] },
+    { id: 18, category: 1, name: 'Hunter’s Lodge', description: 'Meat can become smoked meat.' },
+    { id: 42, category: 3, name: 'Smokehouse', outputs: ['Smoked fish', 'Smoked meat'] },
+  ]);
+  assert.deepEqual(search('iron', -1), [12, 9]);
+  assert.deepEqual(search('ironore', -1), [9]);
+  assert.deepEqual(search('smoked meat', -1), [42, 18]);
+  assert.deepEqual(search('smok mea', 3), [42]);
+});

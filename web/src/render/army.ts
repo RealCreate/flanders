@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { buildCatapult, buildRam, buildStandard, ARM_REST, ARM_THROW, HAT, TOOL, type Crowd, type Draw } from './crowd';
+import { buildCatapult, buildRam, buildStandard, setSiegeWheelTravel, ARM_REST, ARM_THROW, HAT, TOOL, type Crowd, type Draw } from './crowd';
+import type { ArmyPicker } from './armypick';
 import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses';
 import { smoothPath } from './field';
 import { lunge, fallen, mix } from './fight';
@@ -17,6 +18,7 @@ const CIV = [0x8c3b2f, 0x3b5f8c, 0x5f7a3b, 0x8c7a3b, 0x6b4a7a, 0x7a5a3b];
 
 interface Field {
   x: number; z: number; tx: number; tz: number; yaw: number; side: number; kind: number; alive: boolean; anim: number; hp: number; max: number;
+  det: number; wheelTravel: number; drawn: boolean;
   moving: boolean; seed: number; elev: number; telev: number; fireT: number; lastCore: number;   // height it stands at (on a wall) and where that is heading
   sx: number; sz: number; segT: number; segD: number; lastSync: number;   // glide from where it was drawn to where the core put it, over the time one tick takes
   gait: number; spd: number;   // gait angle (advances with distance walked) and smoothed ground speed
@@ -90,10 +92,19 @@ export class ArmyView {
     if (barr.length) { const i = barr[0], rot = buildings[i + 4] * Math.PI / 4; yaw = rot; yx = buildings[i + 2] + Math.sin(rot) * 8; yz = buildings[i + 3] + Math.cos(rot) * 8; }
     let k = 0;
     // idle soldiers are shown as a representative squad: one figure stands for a few men, so a big army costs little to draw
-    for (let kind = 0; kind < 5; kind++) for (let j = 0, shown = army[kind] <= 3 ? army[kind] : Math.min(10, Math.ceil(army[kind] / 4)); j < shown; j++, k++) {
+    const shown = (kind: number) => {
+      const count = army[kind] ?? 0;
+      return count <= 3 ? count : Math.min(10, Math.ceil(count / 4));
+    };
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    for (let kind = 0; kind < 4; kind++) for (let j = 0; j < shown(kind); j++, k++) {
       const row = Math.floor(k / 8), col = (k % 8) - 3.5;
-      const c = Math.cos(yaw), s = Math.sin(yaw);
       posts.push({ kind, x: yx + col * 1.6 * c + row * 1.7 * s, z: yz - col * 1.6 * s + row * 1.7 * c, y: 0, yaw, row, mode: 'drill' });
+    }
+    const catapults = shown(4), engines = catapults + shown(5), columns = Math.min(4, engines), firstRow = Math.ceil(k / 8) * 1.7 + (k ? 1.4 : 0);
+    for (let i = 0; i < engines; i++) {
+      const row = Math.floor(i / columns), across = (i % columns - (columns - 1) / 2) * 4.4, along = firstRow + row * 4.4;
+      posts.push({ kind: i < catapults ? 4 : 5, x: yx + across * c + along * s, z: yz - across * s + along * c, y: 0, yaw, row, mode: 'drill' });
     }
     // tower archers
     this.towers = [];
@@ -154,7 +165,7 @@ export class ArmyView {
   }
 
   /** Live positions from a running battle (call whenever the world ticks). */
-  syncBattle(flat: Float32Array) {
+  syncBattle(flat: Float32Array, detachments?: Uint32Array) {
     const n = flat.length / SB;
     if (n === 0) {
       if (this.battle) { // battle over: the dead stay on the field for a while
@@ -165,9 +176,12 @@ export class ArmyView {
     }
     if (!this.battle) this.quiet = 2;   // a battle just appeared (or we just loaded): whatever was mid-swing in the core is not shown as a fresh attack
     this.battle = true;
-    while (this.field.length < n) { const i = this.field.length; this.field.push({ boss: 0, phase: 0, bname: 0, aura: false, x: flat[i * SB + 2], z: flat[i * SB + 3], elev: 0, telev: 0, fireT: 0, lastCore: 0, tx: 0, tz: 0, yaw: 0, side: 0, kind: 0, alive: true, anim: 0, hp: 1, max: 1, moving: false, gy: NaN, wade: false, wet: false, seed: i * 2.3, gait: i * 1.7, spd: 0, flash: 0, deadAt: -1, sx: flat[i * SB + 2], sz: flat[i * SB + 3], segT: 1, segD: 1, lastSync: this.t }); }
+    while (this.field.length < n) { const i = this.field.length; this.field.push({ boss: 0, phase: 0, bname: 0, aura: false, x: flat[i * SB + 2], z: flat[i * SB + 3], elev: 0, telev: 0, fireT: 0, lastCore: 0, tx: 0, tz: 0, yaw: 0, side: 0, kind: 0, det: 0, wheelTravel: 0, drawn: false, alive: true, anim: 0, hp: 1, max: 1, moving: false, gy: NaN, wade: false, wet: false, seed: i * 2.3, gait: i * 1.7, spd: 0, flash: 0, deadAt: -1, sx: flat[i * SB + 2], sz: flat[i * SB + 3], segT: 1, segD: 1, lastSync: this.t }); }
     for (let i = 0; i < n; i++) {
       const f = this.field[i], o = i * SB;
+      const det = detachments?.[i] ?? 0;
+      if (f.det !== det || f.kind !== flat[o + 1] || f.side !== flat[o]) f.wheelTravel = 0;
+      f.det = det;
       f.side = flat[o]; f.kind = flat[o + 1]; f.boss = flat[o + B_BOSS]; f.phase = flat[o + B_PHASE]; f.bname = flat[o + B_NAME]; f.aura = flat[o + B_AURA] > 0;
       f.wade = f.side === 1 && flat[o + 9] > 0.02;   // (only attackers wade; the core's number for them is water depth, not a wall height: see update)
       f.telev = f.wade ? 0 : flat[o + 9];
@@ -282,7 +296,9 @@ export class ArmyView {
       const gx = f.sx + (f.tx - f.sx) * k, gz = f.sz + (f.tz - f.sz) * k;
       const dx = f.tx - f.x, dz = f.tz - f.z; f.moving = (Math.hypot(dx, dz) > 0.12 || k < 1) && f.alive;
       const mx = (gx - f.x) * lp, mz = (gz - f.z) * lp, moved = Math.hypot(mx, mz);
+      const wasWet = f.wet;
       f.x += mx; f.z += mz; f.anim = Math.max(0, f.anim - dt); f.elev += (f.telev - f.elev) * Math.min(1, dt * 5); this.settle(f, dt); f.fireT = Math.max(0, f.fireT - dt); f.flash = Math.max(0, f.flash - dt);
+      if (f.alive && (f.kind === 4 || f.kind === 5) && !wasWet && !f.wet) f.wheelTravel += mx * Math.sin(f.yaw) + mz * Math.cos(f.yaw);
       f.spd += ((moved / Math.max(dt, 0.001)) - f.spd) * Math.min(1, dt * 5);          // smoothed ground speed, so strides match how fast they really move
       f.gait += Math.PI * moved / (0.55 + 0.13 * f.spd);                               // one step per stride length: no sliding feet
     }
@@ -293,6 +309,17 @@ export class ArmyView {
 
   private height(f: Field) { return Number.isNaN(f.gy) ? this.terrain.walkAt(f.x, f.z) : f.gy; }
   private raftSurface(x: number, z: number) { return Math.max(moatLevelAt(this.moats, x, z), this.terrain.riverSurfaceAt(x, z)); }
+
+  pick(picker: ArmyPicker) {
+    if (!this.group.visible || !this.battle) return;
+    for (const f of this.field) {
+      if (!f.det || f.side !== 0 || !f.alive || !f.drawn) continue;
+      const engine = f.kind === 4 || f.kind === 5;
+      const l = engine ? 0 : (f.kind !== 1 ? lunge(f.anim, 0.55, 0.36) : 0) - f.flash / 0.3 * 0.16;
+      picker.test(f.det, f.x + Math.sin(f.yaw) * l, this.height(f) + (engine ? 0 : f.elev), f.z + Math.cos(f.yaw) * l,
+        f.yaw, engine ? 'engine' : f.kind === 3 ? 'mounted' : 'foot');
+    }
+  }
 
   /** The moat water levels, World.moat_water_flat(): wading raiders stand on that surface. */
   moats: Float32Array = new Float32Array(0);
@@ -332,24 +359,27 @@ export class ArmyView {
   draw(crowd: Crowd, hallPos: { x: number; z: number }, cx = 0, cz = 0, radius = 1e9) {
     const t = this.t, r2 = radius * radius, near = (x: number, z: number) => (x - cx) ** 2 + (z - cz) ** 2 <= r2;
     const sg = new Set<THREE.Group>();
-    const placeSiege = (x: number, z: number, yaw: number, fire: number, i: number, y = this.terrain.walkAt(x, z)) => {
+    const placeSiege = (x: number, z: number, yaw: number, fire: number, i: number, y = this.terrain.walkAt(x, z), wheelTravel = 0) => {
       let g = this.siege[i]; if (!g) { g = buildCatapult(); g.visible = true; this.siege[i] = g; this.group.add(g); }
       g.position.set(x, y, z); g.rotation.y = yaw; g.visible = true; sg.add(g);
+      setSiegeWheelTravel(g, wheelTravel);
       // fire = seconds of the throwing motion left (1 -> 0): a quick swing forward, then the arm is winched back
       const p = 1 - fire; (g.userData.arm as THREE.Object3D).rotation.x = fire <= 0 ? ARM_REST : p < 0.25 ? ARM_REST + (p / 0.25) * (ARM_THROW - ARM_REST) : ARM_THROW - ((p - 0.25) / 0.75) * (ARM_THROW - ARM_REST);
     };
     let ri = 0;
-    const placeRam = (x: number, z: number, yaw: number, swing: number, y = this.terrain.walkAt(x, z)) => {
+    const placeRam = (x: number, z: number, yaw: number, swing: number, y = this.terrain.walkAt(x, z), wheelTravel = 0) => {
       let g = this.rams[ri]; if (!g) { g = buildRam(); this.rams[ri] = g; this.group.add(g); } ri++;
       g.position.set(x, y, z); g.rotation.y = yaw; g.visible = true; sg.add(g);
+      setSiegeWheelTravel(g, wheelTravel);
       (g.userData.log as THREE.Object3D).position.z = swing > 0 ? Math.sin((1 - swing) * Math.PI) * 0.9 : 0;   // the log swings forward as it strikes
     };
     let si = 0, nr = 0, nb = 0; for (const r of this.rafts) r.visible = false;
     for (const m of this.marks) m.horn.visible = m.rage.visible = false;
     if (this.battle) {
       for (const f of this.field) {
+        f.drawn = near(f.x, f.z);
         if (!f.alive && f.hp > 0) continue;   // ran off the field
-        if (!near(f.x, f.z)) continue;
+        if (!f.drawn) continue;
         if (!f.alive) { if (f.kind !== 4 && f.kind !== 5) this.drawFallen(crowd, f); continue; }
         const y = this.height(f), engine = f.kind === 4 || f.kind === 5;
         if (f.wet) {
@@ -360,8 +390,8 @@ export class ArmyView {
           raft.rotation.set(engine ? 0 : Math.sin(t * 1.7 + f.seed * 3) * 0.08,
             f.yaw + (engine ? 0 : Math.PI / 2 + Math.sin(t * 2 + f.seed) * 0.12), engine ? 0 : Math.sin(t * 2.3 + f.seed * 2) * 0.14);
         }
-        if (f.kind === 5) { placeRam(f.x, f.z, f.yaw, Math.min(1, f.anim / 0.5), y); continue; }
-        if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++, y); continue; }
+        if (f.kind === 5) { placeRam(f.x, f.z, f.yaw, Math.min(1, f.anim / 0.5), y, f.wheelTravel); continue; }
+        if (f.kind === 4) { placeSiege(f.x, f.z, f.yaw, f.fireT, si++, y, f.wheelTravel); continue; }
         if (f.boss > 0) { this.drawBoss(crowd, f, t, nb++, sg); continue; }
         const l = this.look(f.side, f.kind, f.seed, false);
         if (f.side === 1 && f.elev > 0.3 && l.body !== undefined) l.body = mix(l.body, 0x4a6a84, 0.4);   // soaked and struggling in the water: a cold, grey-blue tint
@@ -381,6 +411,7 @@ export class ArmyView {
         if (p.mode !== 'patrol' && !near(p.x, p.z)) continue;
         const l = this.look(0, p.kind, p.x * 3.1 + p.z, true);
         if (p.kind === 4) { placeSiege(p.x, p.z, p.yaw, 0, si++); continue; }
+        if (p.kind === 5) { placeRam(p.x, p.z, p.yaw, 0); continue; }
         if (p.mode === 'drill') {
           const drilling = Math.sin(t * 0.35 + p.row * 0.9) > 0.88;
           crowd.add({ x: p.x, y: this.terrain.walkAt(p.x, p.z), z: p.z, yaw: p.yaw, pose: drilling ? 3 : 0, phase: t + p.x, swing: drilling ? (Math.sin(t * 5 + p.x) > 0 ? 0.6 : 0) : 0, skin: 0xd9a877, ...l } as Draw);

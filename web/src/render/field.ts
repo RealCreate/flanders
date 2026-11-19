@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { HAT, TOOL, ARM_REST, buildCatapult, buildRam, type Crowd, type Draw } from './crowd';
+import { HAT, TOOL, ARM_REST, buildCatapult, buildRam, setSiegeWheelTravel, type Crowd, type Draw } from './crowd';
+import type { ArmyPicker } from './armypick';
 
 import { dotsAlong } from './trail';
-import { marchPoint, marchSlot } from '../marchfile';
+import { arrivalSlot, marchPoint, marchSlot } from '../marchfile';
 import { moatLevelAt } from './wading';
 
 interface Member {
-  kind: number; x: number; z: number; yaw: number; gait: number; spd: number; seed: number;
-  visible: boolean; mode: number; boat?: THREE.Group;
+  kind: number; x: number; z: number; y: number; yaw: number; gait: number; spd: number; seed: number;
+  visible: boolean; drawn: boolean; mode: number; boat?: THREE.Group;
 }
 interface Track { points: Float32Array; gap: number; from: number; to: number; time: number; duration: number }
 interface Det {
@@ -20,7 +21,8 @@ interface Det {
   dots: THREE.InstancedMesh | null; flag: THREE.Group | null;
 }
 
-export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle', 'Route blocked'];
+export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle', 'Route blocked', 'Taking position'];
+const FORMING = 10;
 
 const SIEGE_LEN = 3.2;
 
@@ -52,8 +54,7 @@ export class FieldView {
         const banner = new THREE.Group();
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.2, 6), new THREE.MeshStandardMaterial({ color: 0x4a3420 })); pole.position.y = 2.1; pole.castShadow = true;
         const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.95), new THREE.MeshStandardMaterial({ color: this.friend, side: THREE.DoubleSide, roughness: 0.8 })); cloth.position.set(0.8, 3.6, 0);
-        banner.add(pole, cloth); banner.userData.detId = id; pole.userData.detId = id; cloth.userData.detId = id;
-        const hit = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 4.4, 8), new THREE.MeshBasicMaterial({ visible: false })); hit.position.y = 2.2; hit.userData.detId = id; banner.add(hit);
+        banner.add(pole, cloth);
         this.group.add(banner);
         d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null };
         this.dets.set(id, d);
@@ -156,15 +157,15 @@ export class FieldView {
     for (const kind of [0, 2, 1, 3]) {
       for (let k = 0; k < units[kind]; k++) {
         const i = members.length, prev = d.members[i];
-        members.push(prev?.kind === kind ? prev : { kind, x: d.x, z: d.z, yaw: 0, gait: 0, spd: 0, seed: i * 1.7 + d.id * 5.3, visible: false, mode: 0 });
+        members.push(prev?.kind === kind ? prev : { kind, x: d.x, z: d.z, y: 0, yaw: 0, gait: 0, spd: 0, seed: i * 1.7 + d.id * 5.3, visible: false, drawn: false, mode: 0 });
         if (prev?.kind !== kind && prev?.boat) this.dropModel(prev.boat);
       }
     }
     for (const m of d.members.slice(members.length)) if (m.boat) this.dropModel(m.boat);
     d.members = members;
-    while (d.siege.length < units[4]) { const g = buildCatapult(); this.group.add(g); d.siege.push(g); }
+    while (d.siege.length < units[4]) { const g = buildCatapult(); g.visible = false; this.group.add(g); d.siege.push(g); }
     while (d.siege.length > units[4]) this.group.remove(d.siege.pop()!);
-    while (d.rams.length < units[5]) { const g = buildRam(); this.group.add(g); d.rams.push(g); }
+    while (d.rams.length < units[5]) { const g = buildRam(); g.visible = false; this.group.add(g); d.rams.push(g); }
     while (d.rams.length > units[5]) this.group.remove(d.rams.pop()!);
   }
 
@@ -173,6 +174,12 @@ export class FieldView {
     if (track) {
       const dispatch = this.dispatch(track), progress = dispatch - rank * track.gap;
       const approach = d.approaches.get(kind)?.[rank];
+      if (d.state === FORMING && track.points.length === 4 && approach) {
+        return arrivalSlot(approach, dispatch, rank, d.members.length + d.siege.length + d.rams.length, Math.PI / 2 - d.heading, false);
+      }
+      if ((d.state === 0 || d.state === 5) && track.points.length === 4 && approach) {
+        return arrivalSlot(approach, dispatch, rank, 0, Math.PI / 2 - d.heading, true);
+      }
       if (approach && progress <= 0) return marchPoint(approach, d.state === 0 && track.points.length === 4 ? -Infinity : progress);
       return marchSlot(track.points, dispatch, rank, track.gap);
     }
@@ -201,7 +208,8 @@ export class FieldView {
     dt = Math.max(0, Math.min(dt, 0.2)); this.t += dt;
     for (const d of this.dets.values()) {
       const leader = this.slot(d, 0, 0);
-      d.x = leader?.x ?? d.tx; d.z = leader?.z ?? d.tz;
+      const parked = d.state === FORMING || ((d.state === 0 || d.state === 5) && d.tracks.get(0)?.points.length === 4);
+      d.x = parked ? d.tx : (leader?.x ?? d.tx); d.z = parked ? d.tz : (leader?.z ?? d.tz);
       const fighting = d.state === 8;
       d.banner.visible = !fighting;
       d.banner.position.set(d.x, leader?.mode === 2 ? 0.3 : this.terrain.walkAt(d.x, d.z), d.z);
@@ -226,9 +234,16 @@ export class FieldView {
       [...d.siege, ...d.rams].forEach((engine, i) => {
         const separate = d.tracks.has(4);
         const p = fighting ? null : this.slot(d, separate ? 4 : 0, separate ? i : foot + i);
-        engine.visible = !!p;
-        if (!p) return;
+        if (!p) { engine.visible = false; return; }
         const yaw = p.yaw ?? engine.rotation.y, hx = Math.sin(yaw), hz = Math.cos(yaw), half = SIEGE_LEN / 2;
+        const afloat = p.mode === 2;
+        if (engine.visible && !afloat && !engine.userData.afloat) {
+          const dx = p.x - engine.position.x, dz = p.z - engine.position.z;
+          const travel = (engine.userData.wheelTravel ?? 0) + dx * hx + dz * hz;
+          engine.userData.wheelTravel = travel;
+          setSiegeWheelTravel(engine, travel);
+        }
+        engine.userData.afloat = afloat; engine.visible = true;
         const a = this.terrain.walkAt(p.x + hx * half, p.z + hz * half), b = this.terrain.walkAt(p.x - hx * half, p.z - hz * half);
         engine.position.set(p.x, p.mode === 2 ? 0.3 : Math.max(this.terrain.walkAt(p.x, p.z), (a + b) / 2), p.z);
         engine.rotation.set(p.mode === 2 ? 0 : -Math.atan2(a - b, SIEGE_LEN) * 0.8, yaw, 0);
@@ -251,18 +266,32 @@ export class FieldView {
     for (const d of this.dets.values()) {
       if (d.state === 8) continue;
       for (const [i, m] of d.members.entries()) {
-        if (!m.visible || (m.x - cx) ** 2 + (m.z - cz) ** 2 > r2) continue;
+        m.drawn = m.visible && (m.x - cx) ** 2 + (m.z - cz) ** 2 <= r2;
+        if (!m.drawn) continue;
         const working = d.state === 2 && i === 0;
         const walking = m.spd > 0.35 && m.mode !== 2;
-        const y = m.mode === 2 ? this.waterline(m.x, m.z) + 0.19 : this.terrain.walkAt(m.x, m.z);
-        crowd.add({ x: m.x, y, z: m.z, yaw: m.yaw, pose: working ? 2 : walking ? 1 : 0, phase: walking ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...lookOf(m.kind, this.friend), ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}) } as Draw);
+        m.y = m.mode === 2 ? this.waterline(m.x, m.z) + 0.19 : this.terrain.walkAt(m.x, m.z);
+        crowd.add({ x: m.x, y: m.y, z: m.z, yaw: m.yaw, pose: working ? 2 : walking ? 1 : 0, phase: walking ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...lookOf(m.kind, this.friend), ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}) } as Draw);
       }
     }
   }
-  /** Which army's banner is under the pointer? */
-  pick(ray: THREE.Raycaster): number | null {
-    const hit = ray.intersectObject(this.group, true).find(h => h.object.userData.detId !== undefined);
-    return hit ? hit.object.userData.detId : null;
+  pick(picker: ArmyPicker, crowds: boolean) {
+    if (!this.group.visible) return;
+    for (const d of this.dets.values()) {
+      if (d.state === 8) continue;
+      const banner = d.banner.position;
+      if (d.banner.visible) {
+        const cloth = d.banner.children[1];
+        picker.test(d.id, banner.x, banner.y, banner.z, 0, 'pole');
+        picker.test(d.id, banner.x + cloth.position.x, banner.y + cloth.position.y, banner.z, cloth.rotation.y, 'flag');
+      }
+      if (crowds) for (const m of d.members) if (m.drawn && m.visible) {
+        picker.test(d.id, m.x, m.y, m.z, m.yaw, m.kind === 3 ? 'mounted' : 'foot');
+      }
+      for (const engines of [d.siege, d.rams]) for (const g of engines) if (g.visible) {
+        picker.test(d.id, g.position.x, g.position.y, g.position.z, g.rotation.y, 'engine');
+      }
+    }
   }
 }
 

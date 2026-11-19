@@ -52,13 +52,14 @@ export class Village {
   fireData: Float32Array = new Float32Array(0);
 
   constructor(public world: World, public key: string, public name: string, public mine: boolean, private sh: Shared, color: number) {
-    this.defaultBanner = color; this.view = new VillageView(color); this.paths = new Paths(sh.terrain); this.nodes = new RoadNodes(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
+    this.defaultBanner = color; this.view = new VillageView(color, (x, z, rot) => this.world.shore_water_height(x, z, rot)); this.paths = new Paths(sh.terrain); this.nodes = new RoadNodes(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
     this.moats = new MoatWater(sh.terrain, STEP); sh.scene.add(this.moats.group);
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain); this.field.friend = color; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(); this.boats = new Boats(sh.terrain);
     this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k); this.army.onRage = (x, y, z) => sh.fx.rageSpark(x, y, z);
     this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
+    this.people.depositClear = (a, b, c, d) => this.world.deposit_leg_clear(a, b, c, d);
     this.army.plan = (ax, az, bx, bz) => {
       const route = this.world.walk_route(ax, az, bx, bz);
       if (route.length < 3) return null;
@@ -122,6 +123,7 @@ export class Village {
   syncFull() {
     { const fl = unpackFlag(this.world.style()), col = fl ? flagColor(fl) : this.defaultBanner; this.view.setFlag(fl, col); this.field.friend = col; this.army.friend = col; }
     const w = this.world, f = w.buildings_flat(), roads = w.roads_flat();
+    this.view.raised = w.battle_active();
     this.hall = { x: f[2], z: f[3], tier: f[1] };
     this.clear = this.view.sync(f, this.sh.radii, w.building_health(), w.options_flat());
     for (let i = 0; i < f.length; i += 10) { const k = f[i]; if (k === 24) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 6.4 * (1 + 0.13 * (f[i + 4] & 7)) }); else if (k === 32 || k === 33 || k === 34) this.clear.push({ x: f[i + 2], z: f[i + 3], r: 5.6 }); }   // no trees on the banks of a moat or river or on earthworks
@@ -159,6 +161,8 @@ export class Village {
   /** Cheap per-tick refresh: statuses, fire damage, battle positions, projectiles. */
   afterTick() {
     const w = this.world;
+    const fighting = w.battle_active();
+    this.view.raised = fighting;
     const f = w.buildings_flat(), hp = w.building_health();
     if (w.building_count() !== this.count || w.terrain_version() !== this.version) {
       if (w.terrain_version() !== this.version) this.sh.terrainChanged(this);
@@ -186,13 +190,12 @@ export class Village {
       this.people.setJobs(jobs);
     }
     this.syncField();
-    const fighting = w.battle_active();
     if (fighting) this.army.foe = pickFoe(this.army.friend, this.foeColor(w.battle_tag()) ?? 0x4a3a2a);
     this.army.moats = this.field.moats = w.moat_water_flat();
     if (!fighting) { const last = w.take_last_battle_frame(); if (this.army.battle && last.length) this.army.syncBattle(last); }
-    this.army.syncBattle(fighting ? w.battle_units_flat() : new Float32Array(0));
+    this.army.syncBattle(fighting ? w.battle_units_flat() : new Float32Array(0), fighting ? w.battle_detachment_ids() : undefined);
     this.army.syncSiegeWorks(fighting ? w.battle_ladders_flat() : new Float32Array(0), fighting ? w.battle_bridges_flat() : new Float32Array(0));
-    this.people.hidden = fighting; this.view.raised = fighting;
+    this.people.hidden = fighting;
     const tk = Number(w.tick()), jumped = tk - this.lastShotTick > 8; this.lastShotTick = tk;   // after loading or catching up, old shots must not fly again
     const s = w.take_shots();
     if (!jumped) for (let i = 0; i < s.length; i += 7) {

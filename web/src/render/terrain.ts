@@ -2,11 +2,28 @@ import * as THREE from 'three';
 import { terrain_land_rows, type World } from '../wasm/game_core.js';
 import { patchWater, waterNormalTexture } from './water';
 import { groundDetailTexture, patchGround } from './groundtex';
-import { riverGrid, riverStageAt } from './rivergrid';
+import { riverFootprint, riverGrid, riverStageAt, seaGrid } from './rivergrid';
 
 export const HALF = 1200;
 export const STEP = 2.5;
 export const NV = Math.round((HALF * 2) / STEP) + 1; // vertices per side
+
+function waterGeometry({ positions, indices, banks }: { positions: number[]; indices: number[]; banks?: number[] }) {
+  const geometry = new THREE.BufferGeometry();
+  const normals = new Float32Array(positions.length);
+  const uv = new Float32Array(positions.length / 3 * 2);
+  for (let i = 0, k = 0; i < positions.length; i += 3, k += 2) {
+    normals[i + 1] = 1;
+    uv[k] = positions[i];
+    uv[k + 1] = positions[i + 2];
+  }
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  if (banks) geometry.setAttribute('aWaterBank', new THREE.Uint8BufferAttribute(banks, 1));
+  geometry.setIndex(indices);
+  return geometry;
+}
 
 function grainTexture() {
   const s = 256, c = document.createElement('canvas'); c.width = c.height = s;
@@ -51,6 +68,7 @@ export class Terrain {
   private dirtyHeightRows = new Map<number, [number, number]>();
   onHeightChange?: (x0: number, z0: number, x1: number, z1: number) => void;
   readonly waterTime = { value: 0 };
+  private tide = { value: 0 };
   readonly waterTex = waterNormalTexture();
   private pos: THREE.BufferAttribute;
   private col: THREE.BufferAttribute;
@@ -93,32 +111,33 @@ export class Terrain {
     this.heightTex = new THREE.DataTexture(this.heightData, NV, NV, THREE.RedFormat, THREE.HalfFloatType);
     this.heightTex.minFilter = this.heightTex.magFilter = THREE.LinearFilter; this.heightTex.wrapS = this.heightTex.wrapT = THREE.ClampToEdgeWrapping; this.heightTex.generateMipmaps = false;
     this.uploadHeights();
-    this.water = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000).rotateX(-Math.PI / 2), this.makeWaterMaterial());
-    this.water.position.y = 0;
-    this.riverMaterial = this.makeWaterMaterial(true);
+    // The sea extends past the camera's far plane and leaves room for each river surface.
+    const footprint = riverFootprint(this.riverStages, NV);
+    this.water = new THREE.Mesh(waterGeometry(seaGrid(footprint, NV, STEP, 6000)), this.makeWaterMaterial());
+    this.riverMaterial = this.makeWaterMaterial(true, true);
     for (const { i0, j0, i1, j1 } of this.chunks) {
-      const { positions, indices, banks } = riverGrid(this.riverStages, NV, STEP, i0, j0, i1, j1);
-      if (indices.length === 0) continue;
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      g.setAttribute('aWaterBank', new THREE.Uint8BufferAttribute(banks, 1));
-      const uv: number[] = [];
-      for (let i = 0; i < positions.length; i += 3) uv.push(positions[i], positions[i + 2]);
-      g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-      g.setIndex(indices); g.computeVertexNormals();
-      this.riverWater.add(new THREE.Mesh(g, this.riverMaterial));
+      const surface = riverGrid(this.riverStages, footprint, NV, STEP, i0, j0, i1, j1);
+      if (surface.indices.length === 0) continue;
+      const river = new THREE.Mesh(waterGeometry(surface), this.riverMaterial);
+      river.renderOrder = this.water.renderOrder + 1;
+      this.riverWater.add(river);
     }
   }
 
   /** A water surface material: shaded by how deep the water is over the ground (see water.ts). The sea and the water of the moats share it. Reflections are kept gentle: a
    *  full mirror coat turned every bridge and wall into a bright glare on the water. */
-  makeWaterMaterial(solid = false) {
+  makeWaterMaterial(solid = false, tidal = false) {
     const wm = new THREE.MeshPhysicalMaterial({
-      color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: !solid, opacity: 1, depthWrite: solid,
+      color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: !solid || tidal, opacity: 1, depthWrite: solid,
+      depthFunc: !solid || tidal ? THREE.LessDepth : THREE.LessEqualDepth,
       normalMap: this.waterTex, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.35, clearcoatRoughness: 0.22, envMapIntensity: 0.8,
     });
-    patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, this.waterTime, false, solid);
+    patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, this.waterTime, false, solid, tidal ? this.tide : undefined);
     return wm;
+  }
+
+  setTide(level: number) {
+    this.water.position.y = this.tide.value = level;
   }
 
   /** Surfaces people and soldiers can stand on above the ground: the decks of bridges and lowered drawbridges. `owner` is whoever registers them (a village). */
@@ -345,7 +364,7 @@ export class Terrain {
     return d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
   }
 
-  /** Ray vs heightfield by marching, then bisection. */
+  /** Pick committed terrain so a placement preview cannot move the ground under its own pointer. */
   pick(ray: THREE.Ray): THREE.Vector3 | null {
     const p = new THREE.Vector3();
     let t = 0, prev = 0;
@@ -354,7 +373,7 @@ export class Terrain {
     for (; t < max; t += 1.5) {
       ray.at(t, p);
       if (Math.abs(p.x) > HALF || Math.abs(p.z) > HALF) { prev = t; continue; }
-      const h = this.heightAt(p.x, p.z);
+      const h = this.heightAt(p.x, p.z, true);
       if (p.y < h) { above = false; break; }
       prev = t;
     }
@@ -362,7 +381,7 @@ export class Terrain {
     let lo = prev, hi = t;
     for (let k = 0; k < 14; k++) {
       const m = (lo + hi) / 2; ray.at(m, p);
-      if (p.y < this.heightAt(p.x, p.z)) hi = m; else lo = m;
+      if (p.y < this.heightAt(p.x, p.z, true)) hi = m; else lo = m;
     }
     ray.at(hi, p);
     return p.clone();

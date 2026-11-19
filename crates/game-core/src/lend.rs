@@ -75,8 +75,9 @@ impl World {
         let fight = self.battle.is_some();
         for i in 0..self.buildings.len() {
             if self.buildings[i].kind != DRAWBRIDGE { continue; }
+            if self.buildings[i].status == DB_UP && self.buildings[i].progress > 0 { self.buildings[i].progress -= 1; }
             let b = self.buildings[i].clone();
-            if b.status == DB_UP && b.progress > 0 { self.buildings[i].progress -= 1; }
+            let lendable = self.db_lendable(&b);
             let travelling = |s: u8| matches!(s, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
             let needed = want.contains(&(i as u32)) || self.dets.iter().any(|d| {
                 if !travelling(d.state) && d.state != S_BLOCKED { return false; }
@@ -92,9 +93,9 @@ impl World {
                     b.progress += 1;
                     if b.progress >= if fight { LEND_HOLD_FIGHT } else { LEND_HOLD } { b.status = if b.status == DB_LENT { DB_UP } else { 4 }; b.progress = 0; }
                 }
-            } else if needed {
-                let lendable = (b.status == DB_UP && b.progress == 0) || (fight && b.status != DB_UP);
-                if lendable { b.status = if b.status == DB_UP { DB_LENT } else { DB_LENT_FIGHT }; b.progress = 0; }
+            } else if needed && lendable {
+                b.status = if b.status == DB_UP { DB_LENT } else { DB_LENT_FIGHT };
+                b.progress = 0;
             }
         }
     }

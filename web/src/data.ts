@@ -8,6 +8,7 @@ await init(); // the building catalog comes from the Rust core, so wasm must be 
 export interface BuildingDef {
   id: number; name: string; cat: number; r: number; weight: number;
   cost: [number, number][]; jobs: number; inputs: [number, number][]; outputs: [number, number][];
+  alternateRecipe?: { inputs: [number, number][]; outputs: [number, number][] };
   cycle: number; req: number; reqArg: number; housing: number; maxTier: number; opts?: { n: string; d: string; t: number }[]; desc: string;
 }
 
@@ -97,6 +98,11 @@ export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; ton
     case 2: return { text: `The raiders pillaged the village: ${a} gold stolen, ${b} defenders fell.`, tone: 'bad' };
     case 3: return { text: 'The attackers were beaten back!', tone: 'good' };
     case 27: return { text: bribedText(a, b), tone: 'info' };
+    case 28: return {
+      text: a === 1 ? (b ? 'The gate held against the raid.' : 'The raiders breached the gate.')
+        : b ? `The supply caravan escaped.${b > 1 ? ` +${b - 1} grain.` : ''}` : 'The raiders seized the supply caravan.',
+      tone: b ? 'good' : 'bad',
+    };
     case 4: return { text: `A merchant caravan pays ${a} gold for passage.`, tone: 'good' };
     case 5: return { text: 'Famine! A villager starves.', tone: 'bad' };
     case 6: return { text: 'The plague has passed.', tone: 'good' };

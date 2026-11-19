@@ -187,7 +187,10 @@ impl World {
             }
         }
         let ladders = if atk[0] + atk[2] > 0 { ((atk[0] + atk[2]) / 4).max(1) } else { 0 };
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4, bought: false, bought_t: 0.0, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
+        for bridge in self.buildings.iter_mut().filter(|b| b.kind == DRAWBRIDGE && b.status == DB_MANUAL_DOWN) {
+            bridge.status = 4;
+        }
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4, bought: false, bought_t: 0.0, objective: None, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
         let fixed = self.bridge_points();
         if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);
@@ -326,11 +329,17 @@ impl World {
 
     /// Advance the battle by one 0.25s step.
     pub(crate) fn battle_substep(&mut self) {
+        if self.battle.is_none() { return; }
+        let cr = self.crossings();   // resolve raised decks while the battle is still in the world
+        let siege_obstacles = self.battle.as_ref().filter(|b| b.units.iter().filter(|u| u.alive && matches!(u.kind, 4 | RAM)).take(2).count() == 2)
+            .map(|_| self.obst());
         let Some(mut b) = self.battle.take() else { return };
         let dt = SUBSTEP;
         b.t += dt;
         if b.bought { Self::bribed_substep(&mut b, dt); self.battle = Some(b); self.check_battle_end(); return; }
         let deploying = b.t <= DEPLOY_SECS;
+        let objective = b.objective.filter(|o| !o.lost);
+        let raid_gate = objective.filter(|o| o.kind == raid_objective::Kind::Gate).and_then(|o| self.gate_objective_index(o));
         Self::battle_strikes(&mut b);
         let n = b.units.len();
         let mut impacts: Vec<(f32, f32)> = vec![];
@@ -346,7 +355,7 @@ impl World {
         // walls, fences and gates stop attackers; moats and rivers too unless bridged
         let bars: Vec<(usize, f32, f32, f32, u8)> = self.buildings.iter().enumerate().filter(|(_, x)| x.hp > 0.0 && matches!(x.kind, WALL | FENCE | GATE)).map(|(k, x)| (k, x.x, x.y, if x.kind == FENCE { 1.9 } else { 2.6 }, x.kind)).collect();
         let wet: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|x| matches!(x.kind, MOAT | RIVER)).map(|x| (x.x, x.y, if x.kind == MOAT { MOAT_FLOOR * moat_scale(x) + 0.5 } else { RIVER_FLOOR + 0.5 })).collect();
-        let cr = self.crossings(); let mut want: Vec<u32> = vec![];   // the ways over water for our own soldiers, and the drawbridges they are waiting for
+        let mut want: Vec<u32> = vec![];   // the drawbridges our soldiers are waiting for
         let tower_guards: Vec<bool> = b.units.iter().map(|u| u.side == 0 && u.kind == 1 && !u.from_army && u.det == 0 && self.buildings.iter().any(|t| {
             matches!(t.kind, TOWER | KEEP) && t.hp > 0.0 && (t.x, t.y) == (u.hx, u.hy)
         })).collect();
@@ -524,14 +533,20 @@ impl World {
             if acted || tower_guard { continue; }
             if matches!(order.mode, tactics::HOLD | tactics::FALL_BACK) && distance_to_order <= 6.0 { continue; }
             if u.side == 1 && b.lair < 0 {
+                if let Some(wagon) = objective.filter(|o| o.kind == raid_objective::Kind::Caravan) {
+                    if (u.x - wagon.x).hypot(u.y - wagon.y) > 4.0 {
+                        self.battle_move(&mut b, i, (wagon.x, wagon.y), ud.speed * dt, &bars, &wet, &cr, &mut want, &mut dmg_b);
+                    }
+                    continue;
+                }
                 // attackers go for the nearest building
                 let mut tb = usize::MAX; let mut td = f32::MAX;
                 let hurls = u.boss > 0 && BOSSES[(u.boss - 1) as usize].boulder > 0.0;   // an ogre throws boulders at walls
                 let gates = u.kind == RAM && self.buildings.iter().any(|g| g.kind == GATE && g.hp > 0.0);   // a ram looks for a door
                 for (k, bd2) in self.buildings.iter().enumerate() {
                     if bd2.hp <= 0.0 || bd2.kind == ROAD || is_edit(bd2.kind) { continue; }
-                    if gates && bd2.kind != GATE { continue; }
-                    if !siege && u.kind != RAM && !hurls && is_stone(bd2.kind, bd2.tier) { continue; }   // nor hacks at stone: foot soldiers go over a stone wall by ladder (see on_block) and leave it to the catapults to break
+                    if raid_gate.is_some_and(|gate| gate != k) || (gates && bd2.kind != GATE) { continue; }
+                    if raid_gate != Some(k) && !siege && u.kind != RAM && !hurls && is_stone(bd2.kind, bd2.tier) { continue; }
                     let d = (bd2.x - u.x).powi(2) + (bd2.y - u.y).powi(2);
                     if d < td { td = d; tb = k; }
                 }
@@ -562,13 +577,31 @@ impl World {
             }
         }
         // soft separation so units do not stack
+        let can_space_engine = |u: &Unit, p: (f32, f32), b: &Battle| {
+            let Some(obstacles) = &siege_obstacles else { return false; };
+            if u.wading || self.own_wet(b, &wet, &cr, p.0, p.1) { return false; }
+            let h = self.height_ground(p.0, p.1);
+            (!self.ground_is_wet(p.0, p.1, h) || cr.iter().any(|c| c.down && c.on(p.0, p.1)))
+                && (self.height_ground(u.x, u.y) - h).abs() < 0.8
+                && obstacles.movement_clear((u.x, u.y), p, 0.95)
+        };
         for i in 0..n {
             if !b.units[i].alive { continue; }
             for j in (i + 1)..n {
                 if !b.units[j].alive { continue; }
-                let (dx, dy) = (b.units[j].x - b.units[i].x, b.units[j].y - b.units[i].y);
+                let (a, z) = (&b.units[i], &b.units[j]);
+                let (dx, dy) = (z.x - a.x, z.y - a.y);
                 let d2 = dx * dx + dy * dy;
-                if d2 < 0.8 && d2 > 0.0001 {
+                let engines = a.side == z.side && matches!(a.kind, 4 | RAM) && matches!(z.kind, 4 | RAM);
+                if engines && d2 < SIEGE_SPACING * SIEGE_SPACING {
+                    let d = d2.sqrt();
+                    let (ux, uy) = if d > 0.01 { (dx / d, dy / d) } else { (-a.face.sin(), a.face.cos()) };
+                    let push = ((SIEGE_SPACING - d) * 0.5).min(0.65);
+                    let (ni, nj) = ((a.x - ux * push, a.y - uy * push), (z.x + ux * push, z.y + uy * push));
+                    let (move_i, move_j) = (can_space_engine(a, ni, &b), can_space_engine(z, nj, &b));
+                    if move_i { (b.units[i].x, b.units[i].y) = ni; }
+                    if move_j { (b.units[j].x, b.units[j].y) = nj; }
+                } else if d2 < 0.8 && d2 > 0.0001 {
                     let d = d2.sqrt(); let push = (0.9 - d) * 0.5;
                     let (ni, nj) = ((b.units[i].x - dx / d * push, b.units[i].y - dy / d * push), (b.units[j].x + dx / d * push, b.units[j].y + dy / d * push));
                     if !tower_guards[i] && (b.units[i].side == 1 || !self.own_wet(&b, &wet, &cr, ni.0, ni.1)) { b.units[i].x = ni.0; b.units[i].y = ni.1; }
@@ -586,6 +619,7 @@ impl World {
         }
         self.shots.extend(shots);
         self.db_want.extend(want);
+        self.raid_objective_step(&mut b, dt);
         self.battle = Some(b);
         self.collect_destroyed();
         self.check_battle_end();
@@ -850,7 +884,7 @@ impl World {
         }
         self.battle = Some(b);
         let d = &mut self.dets[di];
-        d.state = march::S_FIGHT; d.path.clear(); d.grp.clear(); d.wi = 0; d.phase = 0; d.defend = false; d.atk = None;
+        d.state = march::S_FIGHT; d.path.clear(); d.grp.clear(); d.file = Default::default(); d.wi = 0; d.phase = 0; d.defend = false; d.atk = None;
     }
 
     /// One tick: armies sent to defend join the fight when they get close to an attacker; the armies in it follow their soldiers; with no battle, none is left in one.
@@ -878,19 +912,29 @@ impl World {
     }
 
     pub(crate) fn det_defend_mode(&mut self, id: u32, cached_only: bool) -> i32 {
-        let Some(b) = self.battle.as_ref() else { return -10 };
+        if self.battle.is_none() { return -10; }
         let Some(i) = self.dets.iter().position(|d| d.id == id) else { return -1 };
         if self.dets[i].state == march::S_FIGHT { return 0; }
         let (dx, dy) = (self.dets[i].x, self.dets[i].y);
-        let Some(f) = b.units.iter().filter(|u| u.side == 1 && u.alive).min_by(|p, q| ((p.x - dx).powi(2) + (p.y - dy).powi(2)).total_cmp(&((q.x - dx).powi(2) + (q.y - dy).powi(2)))) else { return -10 };
-        let (fx, fy) = (f.x, f.y);
-        let d = ((fx - dx).powi(2) + (fy - dy).powi(2)).sqrt();
-        if d <= JOIN_REACH { self.dets[i].defend = true; self.defence_step(); return 0; }
-        // walk to a spot short of the attacker, on our side of him (he comes on towards us anyway)
-        let k = ((d - JOIN_REACH * 0.6) / d).clamp(0.0, 1.0);
-        let r = self.det_march_mode(id, dx + (fx - dx) * k, dy + (fy - dy) * k, None, false, cached_only);
+        let (tx, ty) = match self.reinforce_waypoint(dx, dy) {
+            Ok(Some(target)) => target,
+            Ok(None) => { self.dets[i].defend = true; self.defence_step(); return 0; }
+            Err(code) => return code,
+        };
+        let r = self.det_march_mode(id, tx, ty, None, false, cached_only);
         if r == 0 { if let Some(i) = self.dets.iter().position(|d| d.id == id) { self.dets[i].defend = true; } }
         r
+    }
+
+    pub(crate) fn reinforce_waypoint(&self, dx: f32, dy: f32) -> Result<Option<(f32, f32)>, i32> {
+        let b = self.battle.as_ref().ok_or(-10)?;
+        let f = b.units.iter().filter(|u| u.side == 1 && u.alive).min_by(|p, q| ((p.x - dx).powi(2) + (p.y - dy).powi(2)).total_cmp(&((q.x - dx).powi(2) + (q.y - dy).powi(2)))).ok_or(-10)?;
+        let (fx, fy) = (f.x, f.y);
+        let d = ((fx - dx).powi(2) + (fy - dy).powi(2)).sqrt();
+        if d <= JOIN_REACH { return Ok(None); }
+        // walk to a spot short of the attacker, on our side of him (he comes on towards us anyway)
+        let k = ((d - JOIN_REACH * 0.6) / d).clamp(0.0, 1.0);
+        Ok(Some((dx + (fx - dx) * k, dy + (fy - dy) * k)))
     }
 
     /// An army that is in the fight leaves it (the soldiers who are still standing become an idle army where they stand).
@@ -938,7 +982,8 @@ impl World {
         let atk = b.units.iter().filter(|u| u.side == 1 && u.alive).count();
         let def = b.units.iter().filter(|u| u.side == 0 && u.alive).count();
         if b.t > DEPLOY_SECS && def == 0 && atk > 0 { b.pillage += SUBSTEP; }
-        let done = atk == 0 || b.pillage > 14.0 || b.t > if b.lair >= 0 { LAIR_SECS } else { 170.0 };
+        let done = atk == 0 || b.pillage > 14.0 || (!b.bought && b.objective.is_some_and(|o| o.held(b.t)))
+            || b.t > if b.lair >= 0 { LAIR_SECS } else { 170.0 };
         if done { self.finish_battle(); }
     }
 
@@ -960,7 +1005,11 @@ impl World {
         self.dets.retain(|d| d.units.iter().sum::<u32>() > 0);
         let atk_alive = b.units.iter().filter(|u| u.side == 1 && u.alive).count() as u32;
         let lair = b.lair >= 0;
-        let won = if lair { atk_alive == 0 } else { atk_alive == 0 || b.pillage <= 0.0 };   // (at a lair only a cleared place is a win) holding out until the time limit is a defence, not a defeat
+        let held = !b.bought && b.objective.is_some_and(|o| o.held(b.t));
+        let won = if lair { atk_alive == 0 } else { atk_alive == 0 || held || b.pillage <= 0.0 };
+        if won && !b.bought && (held || atk_alive == 0) {
+            if let Some(o) = b.objective.filter(|o| !o.lost) { self.reward_raid_objective(o); }
+        }
         // the standing army loses the soldiers that fell (anything added during the fight, such as new recruits, stays)
         let mut fell = [0u32; NK];
         for u in b.units.iter().filter(|u| u.side == 0 && u.from_army && !u.alive && (u.kind as usize) < NK) { fell[u.kind as usize] += 1; }
@@ -1015,7 +1064,7 @@ impl World {
             units.push(Unit::new(1, kind as u8, nx + a.cos() * r, ny + a.sin() * r, face + std::f32::consts::PI)); j += 1;
         } }
         let n1 = units.len() as u32;
-        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
+        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0, objective: None, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
         self.det_join(di);
         self.push_event(EV_LAIR, ni as i32, 0);
         true
@@ -1087,7 +1136,8 @@ impl World {
         self.pay(&cost);
         self.ruins.remove(ri);
         let fr = d.r * 0.8;
-        let pad_h = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)].iter().map(|(px, py)| self.height_at(x + px, y + py)).sum::<f32>() / 5.0;
+        let pad_h = if matches!(kind, WATERWHEEL | FISHING_HUT | DRAWBRIDGE) { self.placement_height(kind, x, y, rot) }
+            else { [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)].iter().map(|(px, py)| self.height_at(x + px, y + py)).sum::<f32>() / 5.0 };
         let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg, true).map_or(-1, |i| i as i32) } else { -1 };
         self.buildings.push(Building { kind, tier, x, y, rot, pad_h, progress: 0, status: if d.cycle > 0 { 1 } else { 4 }, aux, staff: 0, residents: 0, hp: max_hp(kind, tier), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
         self.terrain_ver += 1;

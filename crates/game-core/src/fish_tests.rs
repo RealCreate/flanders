@@ -38,21 +38,23 @@ fn a_fishing_hut_snaps_to_a_river_bank_with_its_jetty_over_the_water() {
 }
 
 #[test]
-fn a_fishing_hut_at_a_moat_stands_at_the_visible_water_level() {
+fn a_fishing_hut_at_a_moat_keeps_its_floor_on_dry_ground() {
     let mut w = moat_world();
     let level = w.moat_level_at(0.0, 24.0);
     assert!(level > 1.0, "a moat's water stands above the sea: {level}");
     let s = w.fishing_hut_snap(0, 33);
     assert!(!s.is_empty(), "the hut snaps to the moat bank");
     let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
-    let cap = w.wheel_pad_cap((w.ox + dx) as f32, (w.oy + dy) as f32, rot);
+    let (x, y) = ((w.ox + dx) as f32, (w.oy + dy) as f32);
+    let bank = w.height_ground(x, y);
+    let water = w.shore_water_height(x, y, rot);
+    let preview = w.placement_height(FISHING_HUT, x, y, rot);
     let i = w.place(FISHING_HUT, dx, dy, rot); assert!(i >= 0, "built: {i}");
-    let (x, y) = (w.buildings[i as usize].x, w.buildings[i as usize].y);
-    let (ux, uy) = World::wheel_dir(rot);
-    let surface = w.moat_level_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH);
     let pad = w.buildings[i as usize].pad_h;
-    assert!(surface > 1.0 && pad > WHEEL_PAD_MAX + 0.5, "not sunk to the sea: pad {pad}");
-    assert!(pad <= cap + 1e-4 && cap > 1.0 + WHEEL_PAD_MAX && pad >= surface - 1.5, "pad {pad} (cap {cap}) at the surface {surface}");
+    assert_eq!(pad, preview);
+    assert!(water > 1.0 && pad >= bank.max(water + SHORE_CLEARANCE), "bank {bank}, pad {pad}, water {water}");
+    assert_eq!(w.flatten(40, 0.5), 0);
+    assert!(w.buildings[i as usize].pad_h > w.shore_water_height(x, y, rot), "the hut stays clear when the bank is lowered");
 }
 
 #[test]

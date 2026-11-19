@@ -16,10 +16,3 @@ test('the ring still follows high ground on the banks and other buildings stay o
   assert.equal(ringHeight(5, 23, DECK), 5 + RING_LIFT);
   assert.equal(ringHeight(BED, 0, DECK), BED + RING_LIFT);
 });
-
-import { drawbridgeDeckHeight } from '../src/render/ringheight.ts';
-test('the ghost drawbridge hangs at the deck height the core will give it, never on the moat bed', () => {
-  assert.equal(drawbridgeDeckHeight([{ d: 12, h: 2.5 }, { d: 20, h: 4 }], -3, -3), 2.5, 'nearest gate within 30 sets it');
-  assert.equal(drawbridgeDeckHeight([{ d: 40, h: 2.5 }], 1.7, 1.2), 1.7, 'else the higher bank');
-  assert.equal(drawbridgeDeckHeight([], -3, -3), 0.8, 'never below the water');
-});

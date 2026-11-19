@@ -216,6 +216,14 @@ impl World {
         if tag != 0 && (tag != b.tag || b.lair >= 0) { return vec![]; }
         b.tactics.orders[usize::from(tag != 0)].iter().map(|o| o.mode).collect()
     }
+
+    /// Active orders on the requesting player's side: [group, mode, x, z] per order.
+    pub fn battle_order_points(&self, tag: i32) -> Vec<f32> {
+        let Some(b) = &self.battle else { return vec![]; };
+        if b.bought || (tag != 0 && (tag != b.tag || b.lair >= 0)) { return vec![]; }
+        b.tactics.orders[usize::from(tag != 0)].iter().enumerate().filter(|(_, o)| o.mode != 0)
+            .flat_map(|(group, o)| [group as f32, o.mode as f32, o.x, o.y]).collect()
+    }
 }
 
 impl World {

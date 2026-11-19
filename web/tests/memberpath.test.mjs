@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { marchPoint, marchSlot } from '../src/marchfile.ts';
+import { arrivalSlot, marchPoint, marchSlot } from '../src/marchfile.ts';
 
 const corner = [0, 0, 0, 0, 5, 0, 0, 5, 5, 7, 0, 12];
 test('a march interpolates along both legs of a corner', () => {
@@ -19,4 +19,13 @@ test('the mode belongs to the crossed segment, so each soldier boards independen
   assert.equal(marchSlot(route, 7, 0, 2).mode, 0);
   assert.equal(marchSlot(route, 7, 1, 2).mode, 2);
   assert.equal(marchSlot(route, 7, 3, 2).mode, 0);
+});
+
+test('an arrival spreads into a slot around a corner and holds there', () => {
+  const approach = [3, 4, 0, -7, 3, 0, 0, -3, 0, 0, 0, 0];
+  assert.equal(arrivalSlot(approach, 0.2, 1, 6, 1, false), null, 'people peel off the end in order');
+  const moving = arrivalSlot(approach, 5, 0, 6, 1, false);
+  assert.deepEqual([moving.x, moving.z], [3, 2], 'use both path segments around the corner');
+  const settled = arrivalSlot(approach, 0, 0, 6, 1, true);
+  assert.deepEqual([settled.x, settled.z, settled.yaw], [3, 4, 1]);
 });

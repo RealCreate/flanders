@@ -1,60 +1,95 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
 
-/** Soft round particles (flames, smoke, dust) on the GPU. */
-class Particles {
+/** A generous view check for emitters, leaving room for their particles to drift in. */
+export class EffectView {
+  private frustum = new THREE.Frustum();
+  private projection = new THREE.Matrix4();
+  private sphere = new THREE.Sphere();
+
+  update(camera: THREE.Camera) {
+    this.frustum.setFromProjectionMatrix(this.projection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+  }
+
+  includes(x: number, y: number, z: number, radius: number) {
+    this.sphere.center.set(x, y, z); this.sphere.radius = radius;
+    return this.frustum.intersectsSphere(this.sphere);
+  }
+}
+
+/** A packed pool that updates and uploads only living particles. */
+export class Particles {
   points: THREE.Points;
-  private n: number; private cursor = 0;
+  private count = 0; private cursor = 0;
   private pos: Float32Array; private vel: Float32Array; private age: Float32Array; private life: Float32Array;
   private s0: Float32Array; private s1: Float32Array; private rgb: Float32Array; private a0: Float32Array;
-  private aSize: THREE.BufferAttribute; private aCol: THREE.BufferAttribute;
-  private grav: number; private drag: number;
-  private active = false;   // nothing is alive: skip the per-frame work and the draw call
+  private aPos: THREE.BufferAttribute; private aSize: THREE.BufferAttribute; private aCol: THREE.BufferAttribute;
 
-  constructor(n: number, additive: boolean, grav = 0, drag = 0.5) {
-    this.n = n; this.grav = grav; this.drag = drag;
-    this.pos = new Float32Array(n * 3); this.vel = new Float32Array(n * 3); this.age = new Float32Array(n).fill(99); this.life = new Float32Array(n).fill(1);
+  constructor(private capacity: number, additive: boolean, private grav = 0, private drag = 0.5, projectionScale = 260) {
+    const n = capacity;
+    this.pos = new Float32Array(n * 3); this.vel = new Float32Array(n * 3); this.age = new Float32Array(n); this.life = new Float32Array(n);
     this.s0 = new Float32Array(n); this.s1 = new Float32Array(n); this.rgb = new Float32Array(n * 3); this.a0 = new Float32Array(n);
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
-    this.aSize = new THREE.BufferAttribute(new Float32Array(n), 1); this.aCol = new THREE.BufferAttribute(new Float32Array(n * 4), 4);
+    this.aPos = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
+    this.aSize = new THREE.BufferAttribute(new Float32Array(n), 1).setUsage(THREE.DynamicDrawUsage);
+    this.aCol = new THREE.BufferAttribute(new Float32Array(n * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('position', this.aPos);
     g.setAttribute('aSize', this.aSize); g.setAttribute('aCol', this.aCol);
+    g.setDrawRange(0, 0);
     const mat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-      vertexShader: 'attribute float aSize; attribute vec4 aCol; varying vec4 vC; void main(){ vC=aCol; vec4 mv=modelViewMatrix*vec4(position,1.); gl_PointSize=aSize*(260./-mv.z); gl_Position=projectionMatrix*mv; }',
+      uniforms: { projectionScale: { value: projectionScale } },
+      vertexShader: 'uniform float projectionScale; attribute float aSize; attribute vec4 aCol; varying vec4 vC; void main(){ vC=aCol; vec4 mv=modelViewMatrix*vec4(position,1.); gl_PointSize=clamp(aSize*projectionScale/max(-mv.z,1.),1.,80.); gl_Position=projectionMatrix*mv; }',
       fragmentShader: 'varying vec4 vC; void main(){ float d=length(gl_PointCoord-.5)*2.; float a=smoothstep(1.,.15,d)*vC.a; if(a<.01) discard; gl_FragColor=vec4(vC.rgb,a); }',
     });
     this.points = new THREE.Points(g, mat); this.points.frustumCulled = false; this.points.renderOrder = 5; this.points.visible = false;
   }
 
   /** Show the (normally hidden) points so their shader is compiled before the first fire. */
-  warm(on: boolean) { this.points.visible = on || this.active; }
+  warm(on: boolean) { this.points.visible = on || this.count > 0; }
 
   emit(x: number, y: number, z: number, vx: number, vy: number, vz: number, life: number, s0: number, s1: number, r: number, g: number, b: number, a: number) {
-    const i = this.cursor++ % this.n;
-    this.active = true; this.points.visible = true;
-    this.pos.set([x, y, z], i * 3); this.vel.set([vx, vy, vz], i * 3); this.age[i] = 0; this.life[i] = life; this.s0[i] = s0; this.s1[i] = s1; this.rgb.set([r, g, b], i * 3); this.a0[i] = a;
+    const i = this.count < this.capacity ? this.count++ : this.cursor++ % this.capacity, j = i * 3;
+    this.pos[j] = x; this.pos[j + 1] = y; this.pos[j + 2] = z;
+    this.vel[j] = vx; this.vel[j + 1] = vy; this.vel[j + 2] = vz;
+    this.rgb[j] = r; this.rgb[j + 1] = g; this.rgb[j + 2] = b;
+    this.age[i] = 0; this.life[i] = life; this.s0[i] = s0; this.s1[i] = s1; this.a0[i] = a;
   }
 
   update(dt: number) {
-    if (!this.active) return;
-    let live = 0;
-    for (let i = 0; i < this.n; i++) {
-      const a = (this.age[i] += dt);
-      if (a >= this.life[i]) { this.aCol.setW(i, 0); continue; }
-      live++;
+    if (!this.count) return;
+    const drag = 1 - this.drag * dt, gravity = this.grav * dt;
+    for (let i = 0; i < this.count;) {
+      const a = this.age[i] + dt, j = i * 3;
+      if (a >= this.life[i]) {
+        const last = --this.count, tail = last * 3;
+        if (i < last) {
+          this.pos.copyWithin(j, tail, tail + 3);
+          this.vel.copyWithin(j, tail, tail + 3);
+          this.rgb.copyWithin(j, tail, tail + 3);
+          this.age[i] = this.age[last]; this.life[i] = this.life[last];
+          this.s0[i] = this.s0[last]; this.s1[i] = this.s1[last]; this.a0[i] = this.a0[last];
+        }
+        continue;
+      }
+      this.age[i] = a;
       const u = a / this.life[i];
-      for (let k = 0; k < 3; k++) { this.vel[i * 3 + k] *= 1 - this.drag * dt; this.pos[i * 3 + k] += this.vel[i * 3 + k] * dt; }
-      this.vel[i * 3 + 1] += this.grav * dt;
+      for (let k = j; k < j + 3; k++) { this.vel[k] *= drag; this.pos[k] += this.vel[k] * dt; }
+      this.vel[j + 1] += gravity;
       this.aSize.setX(i, this.s0[i] + (this.s1[i] - this.s0[i]) * u);
-      this.aCol.setXYZW(i, this.rgb[i * 3], this.rgb[i * 3 + 1], this.rgb[i * 3 + 2], this.a0[i] * (u < 0.15 ? u / 0.15 : 1 - (u - 0.15) / 0.85));
+      this.aCol.setXYZW(i, this.rgb[j], this.rgb[j + 1], this.rgb[j + 2], this.a0[i] * (u < 0.15 ? u / 0.15 : 1 - (u - 0.15) / 0.85));
+      i++;
     }
-    (this.points.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true; this.aSize.needsUpdate = this.aCol.needsUpdate = true;
-    if (!live) { this.active = false; this.points.visible = false; }
+    this.points.geometry.setDrawRange(0, this.count);
+    this.points.visible = this.count > 0;
+    if (!this.count) return;
+    for (const attr of [this.aPos, this.aSize, this.aCol]) {
+      attr.clearUpdateRanges(); attr.addUpdateRange(0, this.count * attr.itemSize); attr.needsUpdate = true;
+    }
   }
 }
 
-interface Shot { m: THREE.Object3D; t: number; dur: number; a: THREE.Vector3; b: THREE.Vector3; arc: number; fire: boolean; stone: boolean; alive: boolean }
+interface Shot { m: THREE.Object3D; t: number; dur: number; a: THREE.Vector3; b: THREE.Vector3; arc: number; fire: boolean; stone: boolean; nextTrail: number }
 
 /** Flames, smoke, arrows, stones, dust and fire light. */
 export class Effects2 {
@@ -63,7 +98,9 @@ export class Effects2 {
   private smoke = new Particles(1800, false, 0.8, 0.4);
   private dust = new Particles(500, false, -3, 1.4);
   private shots: Shot[] = [];
-  private lights: THREE.PointLight[] = [];
+  private light = new THREE.PointLight(0xff7a2a, 0, 34, 2);
+  private shotPosition = new THREE.Vector3();
+  private shotLook = new THREE.Vector3();
   private acc: number[] = [];
   private arrowGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.3, 5).rotateX(Math.PI / 2);
   private arrowMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a });
@@ -72,8 +109,7 @@ export class Effects2 {
   private t = 0;
 
   constructor(private terrain: Terrain) {
-    this.group.add(this.dust.points, this.smoke.points, this.flames.points);
-    for (let i = 0; i < 3; i++) { const l = new THREE.PointLight(0xff7a2a, 0, 34, 2); l.castShadow = false; this.lights.push(l); this.group.add(l); }
+    this.group.add(this.dust.points, this.smoke.points, this.flames.points, this.light);
   }
 
   warm(on: boolean) { this.flames.warm(on); this.smoke.warm(on); this.dust.warm(on); }
@@ -84,7 +120,7 @@ export class Effects2 {
     const a = new THREE.Vector3(x0, this.terrain.heightAt(x0, z0) + (stone ? 2.4 : y0), z0), b = new THREE.Vector3(x1, this.terrain.heightAt(x1, z1) + (stone ? 0.4 : 1.1), z1);
     const m = new THREE.Mesh(stone ? this.stoneGeo : this.arrowGeo, stone ? this.stoneMat : this.arrowMat); m.castShadow = false; this.group.add(m);
     const d = a.distanceTo(b);
-    this.shots.push({ m, t: 0, dur: Math.max(0.35, d / (stone ? 15 : 30)), a, b, arc: stone ? d * 0.35 : d * 0.08, fire, stone, alive: true });
+    this.shots.push({ m, t: 0, dur: Math.max(0.35, d / (stone ? 15 : 30)), a, b, arc: stone ? d * 0.35 : d * 0.08, fire, stone, nextTrail: 0 });
   }
 
   /** The ogre's slam: a ring of dust and small stones thrown outward from where he struck. */
@@ -108,7 +144,7 @@ export class Effects2 {
   arrowAt(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) {
     const m = new THREE.Mesh(this.arrowGeo, this.arrowMat); this.group.add(m);
     const a = new THREE.Vector3(x0, y0, z0), b = new THREE.Vector3(x1, y1, z1), d = a.distanceTo(b);
-    this.shots.push({ m, t: 0, dur: Math.max(0.3, d / 30), a, b, arc: d * 0.08, fire: false, stone: false, alive: true });
+    this.shots.push({ m, t: 0, dur: Math.max(0.3, d / 30), a, b, arc: d * 0.08, fire: false, stone: false, nextTrail: 0 });
   }
 
   /** A bucket of water thrown onto a burning building: droplets in an arc, then a hiss of steam. */
@@ -140,16 +176,19 @@ export class Effects2 {
   }
 
   /** Update fires. `fires` is World.fires_flat(): [kind, x, y, r] per fire. `camera` picks which fires cast light. */
-  update(dt: number, fires: Float32Array, camPos: THREE.Vector3) {
+  update(dt: number, fires: Float32Array, camPos: THREE.Vector3, view?: EffectView) {
     this.t += dt;
-    const nf = fires.length / 4;
-    while (this.acc.length < nf) this.acc.push(0);
-    const lit: { i: number; d: number }[] = [];
+    const enabled = this.group.visible, nf = enabled ? fires.length / 4 : 0;
+    let closest = Infinity, lit = -1, litY = 0;
+    this.acc.length = nf;
     for (let i = 0; i < nf; i++) {
       const kind = fires[i * 4], x = fires[i * 4 + 1], z = fires[i * 4 + 2], r = fires[i * 4 + 3];
       const gy = this.terrain.heightAt(x, z);
-      const rate = kind === 0 ? 70 : 24 + r * 8;
-      this.acc[i] += rate * dt;
+      if (view && !view.includes(x, gy + 5, z, r + 34)) { this.acc[i] = 0; continue; }
+      const dist2 = (x - camPos.x) ** 2 + (gy - camPos.y) ** 2 + (z - camPos.z) ** 2;
+      if (dist2 < closest) { closest = dist2; lit = i; litY = gy; }
+      const rate = (kind === 0 ? 70 : 24 + r * 8) * Math.min(1, 150 / Math.sqrt(dist2));
+      this.acc[i] = (this.acc[i] ?? 0) + rate * dt;
       while (this.acc[i] >= 1) {
         this.acc[i] -= 1;
         const ang = Math.random() * 6.28, rr = Math.sqrt(Math.random()) * (kind === 0 ? r * 0.8 : r), px = x + Math.cos(ang) * rr, pz = z + Math.sin(ang) * rr;
@@ -159,34 +198,37 @@ export class Effects2 {
         if (Math.random() < 0.55) this.smoke.emit(px, py + 1.4, pz, 0.6 + Math.random() * 0.6, 1.6 + Math.random() * 1.2, (Math.random() - 0.5) * 0.7, 3 + Math.random() * 2.5, 3.2, 12, 0.16, 0.15, 0.15, 0.55);
         if (Math.random() < 0.05) this.flames.emit(px, py, pz, (Math.random() - 0.5) * 3, 3 + Math.random() * 3, (Math.random() - 0.5) * 3, 0.9, 0.35, 0.1, 1, 0.85, 0.3, 1);
       }
-      lit.push({ i, d: Math.hypot(x - camPos.x, z - camPos.z) });
     }
-    lit.sort((a, b) => a.d - b.d);
-    this.lights.forEach((l, k) => {
-      const f = lit[k];
-      if (!f) { l.intensity = 0; return; }
-      const x = fires[f.i * 4 + 1], z = fires[f.i * 4 + 2];
-      l.position.set(x, this.terrain.heightAt(x, z) + 3.5, z);
-      l.intensity = (90 + fires[f.i * 4 + 3] * 25) * (0.8 + Math.sin(this.t * 17 + k * 3) * 0.12 + Math.sin(this.t * 31 + k) * 0.08);
-    });
+    this.light.intensity = 0;
+    if (lit >= 0) {
+      this.light.position.set(fires[lit * 4 + 1], litY + 3.5, fires[lit * 4 + 2]);
+      this.light.intensity = (90 + fires[lit * 4 + 3] * 25) * (0.8 + Math.sin(this.t * 17) * 0.12 + Math.sin(this.t * 31) * 0.08);
+    }
 
     // projectiles
-    const v = new THREE.Vector3();
+    const v = this.shotPosition, look = this.shotLook;
+    let survivors = 0;
     for (const s of this.shots) {
       s.t += dt; const u = Math.min(1, s.t / s.dur);
       v.lerpVectors(s.a, s.b, u); v.y += s.arc * 4 * u * (1 - u);
-      const prev = s.m.position.clone(); s.m.position.copy(v);
       if (u < 1) {
-        const dir = v.clone().sub(prev); if (dir.lengthSq() > 1e-6) s.m.lookAt(v.clone().add(dir));
-        if (s.stone) { s.m.rotation.x += dt * 8; this.smoke.emit(v.x, v.y, v.z, 0, 0.2, 0, 0.8, 0.5, 1.4, 0.3, 0.28, 0.26, 0.4); }
-        if (s.fire) { this.flames.emit(v.x, v.y, v.z, 0, 0.5, 0, 0.35, 0.6, 0.1, 1, 0.55, 0.15, 0.9); this.smoke.emit(v.x, v.y, v.z, 0, 0.4, 0, 1.2, 0.5, 2, 0.2, 0.2, 0.2, 0.3); }
+        look.subVectors(v, s.m.position); s.m.position.copy(v);
+        if (look.lengthSq() > 1e-6) s.m.lookAt(look.add(v));
+        if (s.stone) s.m.rotation.x += dt * 8;
+        if (enabled && (s.stone || s.fire) && s.t >= s.nextTrail && (!view || view.includes(v.x, v.y, v.z, 6))) {
+          s.nextTrail = s.t + 1 / 30 - 0.001;
+          if (s.stone) this.smoke.emit(v.x, v.y, v.z, 0, 0.2, 0, 0.8, 0.5, 1.4, 0.3, 0.28, 0.26, 0.4);
+          if (s.fire) { this.flames.emit(v.x, v.y, v.z, 0, 0.5, 0, 0.35, 0.6, 0.1, 1, 0.55, 0.15, 0.9); this.smoke.emit(v.x, v.y, v.z, 0, 0.4, 0, 1.2, 0.5, 2, 0.2, 0.2, 0.2, 0.3); }
+        }
+        this.shots[survivors++] = s;
       } else {
-        s.alive = false; this.group.remove(s.m);
+        this.group.remove(s.m);
+        if (!enabled || (view && !view.includes(s.b.x, s.b.y, s.b.z, 16))) continue;
         if (s.stone) this.burst(s.b.x, s.b.z, true);
         else if (s.fire) this.flames.emit(s.b.x, s.b.y, s.b.z, 0, 1, 0, 0.8, 1.2, 0.2, 1, 0.5, 0.1, 0.9);
       }
     }
-    this.shots = this.shots.filter(s => s.alive);
+    this.shots.length = survivors;
     this.flames.update(dt); this.smoke.update(dt); this.dust.update(dt);
   }
 }

@@ -5,6 +5,7 @@ pub const N_UNITS: usize = 7; // 0 spearman, 1 archer, 2 swordsman, 3 knight, 4 
 /// Kinds a village can train and send out: everything but the militia.
 pub const NK: usize = 6;
 pub const RAM: u8 = 5;
+pub(crate) const SIEGE_SPACING: f32 = 4.4;
 pub const MILITIA: u8 = 6;
 
 pub struct UnitDef {
@@ -182,6 +183,7 @@ pub struct Battle {
     #[serde(default)] pub bought: bool,      // the raiders were paid to leave (see bribe.rs): they walk off and nobody fights
     #[serde(default)] pub bought_t: f32,    // seconds since they were paid
     #[serde(skip)] pub tactics: crate::tactics::Tactics, // stored separately in world snapshots to preserve legacy layouts
+    #[serde(skip)] pub(crate) objective: Option<crate::raid_objective::RaidObjective>,
 }
 
 impl Battle {

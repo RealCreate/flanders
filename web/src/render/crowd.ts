@@ -298,30 +298,46 @@ const between = (a: [number, number, number], b: [number, number, number], width
 };
 const across = (r: number, length: number, color: number, x: number, y: number, z: number, segments = 12) => T(cyl(r, r, length, color, 0, 0, 0, segments).rotateZ(Math.PI / 2), x, y, z);
 
-function wheels(radius: number, back: number, front: number): THREE.BufferGeometry[] {
-  const out: THREE.BufferGeometry[] = [];
-  for (const z of [back, front]) {
-    out.push(across(0.08, 1.72, DARK, 0, radius, z, 8));
-    for (const side of [-1, 1]) {
-      const x = side * 0.82;
-      out.push(T(tint(new THREE.TorusGeometry(radius - 0.05, 0.06, 5, 14).rotateY(Math.PI / 2), STRAP), x, radius, z), across(0.12, 0.23, DARK, x, radius, z, 10));
-      for (let k = 0; k < 6; k++) {
-        const a = k * Math.PI / 3;
-        out.push(between([x, radius, z], [x, radius + Math.cos(a) * (radius - 0.07), z + Math.sin(a) * (radius - 0.07)], 0.09, BEAM));
-      }
+/** Both wheels on one axle rotate about the same local x axis and use one mesh. */
+function wheelset(radius: number): THREE.BufferGeometry {
+  const out = [across(0.08, 1.72, DARK, 0, 0, 0, 8)];
+  for (const side of [-1, 1]) {
+    const x = side * 0.82;
+    out.push(T(tint(new THREE.TorusGeometry(radius - 0.05, 0.06, 5, 14).rotateY(Math.PI / 2), STRAP), x, 0, 0), across(0.12, 0.23, DARK, x, 0, 0, 10));
+    for (let k = 0; k < 6; k++) {
+      const a = k * Math.PI / 3;
+      out.push(between([x, 0, 0], [x, Math.cos(a) * (radius - 0.07), Math.sin(a) * (radius - 0.07)], 0.09, BEAM));
     }
   }
-  return out;
+  return merge(out);
 }
 
 let ramFrame: THREE.BufferGeometry | undefined, ramLog: THREE.BufferGeometry | undefined, ramHead: THREE.BufferGeometry | undefined;
 let catapultFrame: THREE.BufferGeometry | undefined, catapultArm: THREE.BufferGeometry | undefined, catapultStone: THREE.BufferGeometry | undefined;
+let ramWheels: THREE.BufferGeometry | undefined, catapultWheels: THREE.BufferGeometry | undefined;
+const RAM_WHEEL_RADIUS = 0.43, CATAPULT_WHEEL_RADIUS = 0.46;
 
 const siegeMesh = (g: THREE.BufferGeometry) => { const m = new THREE.Mesh(g, siegeMaterial); m.castShadow = true; return m; };
 
+function attachWheels(engine: THREE.Group, geometry: THREE.BufferGeometry, radius: number, back: number, front: number) {
+  engine.userData.wheelRadius = radius;
+  engine.userData.axles = [back, front].map(z => {
+    const axle = siegeMesh(geometry);
+    axle.position.set(0, radius, z);
+    engine.add(axle);
+    return axle;
+  });
+}
+
+export function setSiegeWheelTravel(engine: THREE.Group, distance: number) {
+  const angle = (distance / engine.userData.wheelRadius) % (2 * Math.PI);
+  for (const axle of engine.userData.axles as THREE.Mesh[]) axle.rotation.x = angle;
+}
+
 export function buildRam(): THREE.Group {
   if (!ramFrame) {
-    const parts = wheels(0.43, -1.08, 1.08);
+    ramWheels = wheelset(RAM_WHEEL_RADIUS);
+    const parts: THREE.BufferGeometry[] = [];
     for (const side of [-1, 1]) {
       const x = side * 0.63;
       parts.push(box(0.22, 0.24, 3.36, BEAM, x, 0.63, 0), box(0.15, 0.16, 3.32, WOOD, x, 1.86, 0));
@@ -347,6 +363,7 @@ export function buildRam(): THREE.Group {
   log.position.y = 1.19;
   const head = siegeMesh(ramHead!); head.position.z = 1.84;
   log.add(siegeMesh(ramLog!), head); g.add(siegeMesh(ramFrame), log);
+  attachWheels(g, ramWheels!, RAM_WHEEL_RADIUS, -1.08, 1.08);
   g.userData.log = log;
   return g;
 }
@@ -356,7 +373,8 @@ export const ARM_REST = -0.9, ARM_THROW = 1.9;
 
 export function buildCatapult(): THREE.Group {
   if (!catapultFrame) {
-    const parts = wheels(0.46, -1.06, 1.02);
+    catapultWheels = wheelset(CATAPULT_WHEEL_RADIUS);
+    const parts: THREE.BufferGeometry[] = [];
     for (const side of [-1, 1]) {
       const x = side * 0.59;
       parts.push(box(0.23, 0.24, 3.13, BEAM, x, 0.63, 0));
@@ -373,6 +391,7 @@ export function buildCatapult(): THREE.Group {
   arm.position.set(0, 1.69, 0.45); g.add(siegeMesh(catapultFrame), arm);
   const stone = siegeMesh(catapultStone!); stone.position.set(0, 0.35, -2.3);
   arm.add(siegeMesh(catapultArm!), stone);
+  attachWheels(g, catapultWheels!, CATAPULT_WHEEL_RADIUS, -1.06, 1.02);
   g.userData.arm = arm; g.userData.stone = stone;
   return g;
 }

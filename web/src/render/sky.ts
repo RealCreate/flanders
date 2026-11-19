@@ -8,20 +8,22 @@ export class ShadowRefresh {
   private time = -Infinity;
   private target = new THREE.Vector3();
   private direction = new THREE.Vector3();
+  private extent = -1;
   private dirty = true;
   private actors = false;
 
   invalidate() { this.dirty = true; }
 
-  update(now: number, target: THREE.Vector3, direction: THREE.Vector3, zoom: number, actors: boolean) {
+  update(now: number, target: THREE.Vector3, direction: THREE.Vector3, zoom: number, actors: boolean, extent = 80) {
     const elapsed = now - this.time;
     const pan = target.distanceToSquared(this.target);
-    const sunMoved = direction.distanceToSquared(this.direction) >= 0.018 ** 2;
-    const actorInterval = zoom < 105 ? 110 : zoom < 175 ? 160 : 240;
+    const sunMoved = direction.distanceToSquared(this.direction) >= 0.025 ** 2;
+    const actorInterval = zoom < 105 ? 140 : zoom < 175 ? 200 : 275;
+    const framingChanged = pan >= 6 ** 2 || Math.abs(extent - this.extent) >= 4;
     const stopped = this.actors && !actors;
     this.actors = actors;
-    if (!this.dirty && !stopped && pan < 40 ** 2 && !(pan >= 6 ** 2 && elapsed >= 60) && !(sunMoved && elapsed >= 125) && !(actors && elapsed >= actorInterval)) return false;
-    this.dirty = false; this.time = now; this.target.copy(target); this.direction.copy(direction);
+    if (!this.dirty && !stopped && pan < 40 ** 2 && !(framingChanged && elapsed >= 100) && !(sunMoved && elapsed >= 150) && !(actors && elapsed >= actorInterval)) return false;
+    this.dirty = false; this.time = now; this.target.copy(target); this.direction.copy(direction); this.extent = extent;
     return true;
   }
 }
@@ -100,7 +102,15 @@ export class Atmosphere {
   invalidateShadows() { this.shadows.invalidate(); }
 
   updateShadows(now: number, target: THREE.Vector3, zoom: number, movingActors: boolean) {
-    this.renderer.shadowMap.needsUpdate = this.sun.castShadow && this.shadows.update(now, target, this.sunDir, zoom, movingActors);
+    const extent = THREE.MathUtils.clamp(43 + zoom * 0.48, 50, 80);
+    const redraw = this.sun.castShadow && this.shadows.update(now, target, this.sunDir, zoom, movingActors, extent);
+    this.renderer.shadowMap.needsUpdate = redraw;
+    const camera = this.sun.shadow.camera;
+    if (redraw && camera.right !== extent) {
+      camera.left = camera.bottom = -extent;
+      camera.right = camera.top = extent;
+      camera.updateProjectionMatrix();
+    }
   }
 
   /** Move the shadow frustum so it follows the camera focus. */

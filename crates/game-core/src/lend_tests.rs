@@ -24,6 +24,28 @@ fn st(w: &World, di: u32) -> u8 { w.buildings[di as usize].status }
 fn tick(w: &mut World) { w.step(); w.stock = [30000; N_RES]; }
 
 #[test]
+fn manually_lowering_a_drawbridge_holds_until_the_next_raid_or_raise() {
+    let (mut w, di) = moat_village(false);
+    let i = di as usize;
+    assert!(w.start_raid(0.0, &[8, 0, 0, 0, 0, 0], 0));
+    assert!(w.drawn_up(&w.buildings[i]));
+    assert_eq!(w.drawbridge_set(di, false), 0);
+    for _ in 0..LEND_HOLD + 1 { w.drawbridge_step(); }
+    assert!(!w.drawn_up(&w.buildings[i]));
+    assert!(w.battle.as_ref().unwrap().fixed.contains(&[w.buildings[i].x, w.buildings[i].y]));
+    let restored = world_restore(&w.snapshot()).unwrap();
+    assert!(!restored.drawn_up(&restored.buildings[i]));
+    assert_eq!(w.drawbridge_set(di, true), 0);
+    assert!(w.drawn_up(&w.buildings[i]));
+    assert!(!w.battle.as_ref().unwrap().fixed.contains(&[w.buildings[i].x, w.buildings[i].y]));
+    assert_eq!(w.drawbridge_set(di, false), 0);
+    w.battle = None;
+    assert!(!w.drawn_up(&w.buildings[i]));
+    assert!(w.start_raid(0.0, &[8, 0, 0, 0, 0, 0], 0));
+    assert!(w.drawn_up(&w.buildings[i]));
+}
+
+#[test]
 fn an_army_sent_to_a_raid_across_a_moat_gets_the_drawbridge_lowered_crosses_on_the_deck_and_it_is_raised_again() {
     let (mut w, di) = moat_village(true);
     assert_eq!(st(&w, di), DB_UP);

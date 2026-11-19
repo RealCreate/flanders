@@ -111,25 +111,30 @@ export class Travellers {
   active() { return [...this.lives.values()].map(L => ({ id: L.id, kind: L.j.kind, p: L.p, text: L.text, head: L.head })); }
 
   // ---------- drawing ----------
-  draw(crowd: Crowd, cx: number, cz: number, view: number) {
+  draw(crowd: Crowd | null, cx: number, cz: number, view: number, wagon: { x: number; z: number; yaw: number } | null = null) {
     for (const p of Object.values(this.pools)) p.n = 0;
     const labels: Label[] = [];
-    for (const L of this.lives.values()) {
-      const sHead = L.p * (L.road.len + L.span);
-      const hs = Math.min(L.road.len, Math.max(0, sHead)), hp = pointAt(L.road, hs);
-      L.head = { x: hp.x, y: this.terrain.walkAt(hp.x, hp.z), z: hp.z };
-      if (L.p <= 0 || L.p >= 1) continue;
-      const near = Math.hypot(hp.x - cx, hp.z - cz) < view + L.span;
-      if (!near) continue;
-      this.party(crowd, L.road, L.units, sHead, L.color, L.color2, L.speed, false, L.j, L.id.length);
-      labels.push({ id: L.id, x: hp.x, y: L.head.y + (L.j.kind === JK.MARRIAGE ? 5.5 : 4.8), z: hp.z, text: L.text, kind: L.j.kind });
+    if (wagon && Math.hypot(wagon.x - cx, wagon.z - cz) < view) {
+      this.cart({ ...wagon, y: this.terrain.walkAt(wagon.x, wagon.z) }, 1, GOODS[10], WHITE);
     }
-    for (const g of this.ghosts) {
-      const age = this.t - g.t0, hp = pointAt(g.road, Math.min(g.road.len, g.sHead));
-      if (Math.hypot(hp.x - cx, hp.z - cz) > view + 30) continue;
-      this.party(crowd, g.road, g.units, g.sHead, g.color, g.color2, 0, true, g.j, g.seed, age);
-      const y = this.terrain.walkAt(hp.x, hp.z);
-      labels.push({ id: `robbed${g.seed}|${g.t0}`, x: hp.x, y: y + 4.5, z: hp.z, text: 'Caravan waylaid by robbers!', kind: 99 });
+    if (crowd) {
+      for (const L of this.lives.values()) {
+        const sHead = L.p * (L.road.len + L.span);
+        const hs = Math.min(L.road.len, Math.max(0, sHead)), hp = pointAt(L.road, hs);
+        L.head = { x: hp.x, y: this.terrain.walkAt(hp.x, hp.z), z: hp.z };
+        if (L.p <= 0 || L.p >= 1) continue;
+        const near = Math.hypot(hp.x - cx, hp.z - cz) < view + L.span;
+        if (!near) continue;
+        this.party(crowd, L.road, L.units, sHead, L.color, L.color2, L.speed, false, L.j, L.id.length);
+        labels.push({ id: L.id, x: hp.x, y: L.head.y + (L.j.kind === JK.MARRIAGE ? 5.5 : 4.8), z: hp.z, text: L.text, kind: L.j.kind });
+      }
+      for (const g of this.ghosts) {
+        const age = this.t - g.t0, hp = pointAt(g.road, Math.min(g.road.len, g.sHead));
+        if (Math.hypot(hp.x - cx, hp.z - cz) > view + 30) continue;
+        this.party(crowd, g.road, g.units, g.sHead, g.color, g.color2, 0, true, g.j, g.seed, age);
+        const y = this.terrain.walkAt(hp.x, hp.z);
+        labels.push({ id: `robbed${g.seed}|${g.t0}`, x: hp.x, y: y + 4.5, z: hp.z, text: 'Caravan waylaid by robbers!', kind: 99 });
+      }
     }
     this.shown = labels;
     for (const p of Object.values(this.pools)) { p.mesh.count = p.n; p.mesh.instanceMatrix.needsUpdate = true; if (p.mesh.instanceColor) p.mesh.instanceColor.needsUpdate = true; }

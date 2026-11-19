@@ -11,6 +11,7 @@ mod march;
 mod members;
 mod military;
 mod tactics;
+mod raid_objective;
 mod pathnet;
 pub mod doors;
 mod roadline;
@@ -83,6 +84,7 @@ fn full_eff() -> u32 { 100 }
 pub(crate) const DB_UP: u8 = 5;
 pub(crate) const DB_LENT: u8 = 6;
 pub(crate) const DB_LENT_FIGHT: u8 = 7;
+pub(crate) const DB_MANUAL_DOWN: u8 = 8;
 /// Seconds a drawbridge stays raised against armies after the player raised it by hand.
 pub(crate) const VETO_SECS: u32 = 120;
 /// Seconds a lent drawbridge stays down after the last soldier needing it has gone (in a battle: one second, so raiders get no time to use it).
@@ -167,6 +169,7 @@ const EV_MIASMA: i32 = 22;
 const EV_SERVICE: i32 = 23;
 const EV_DIPLO: i32 = 24;
 const EV_BRIBED: i32 = 27;   // raiders were paid to leave: a = coins, b = boss (0 none)
+const EV_RAID_OBJECTIVE: i32 = 28; // a = objective kind, b = 0 lost or 1 + any recovered grain
 const EV_LAIR: i32 = 26;   // the army went into a lair: a = place
 const EV_BOSS: i32 = 25;   // a boss fell: a = boss * 16 + name, b = 1
 /// Causes of death, for the village's ledger.
@@ -221,7 +224,7 @@ pub const WHEEL_REACH: f32 = 5.2;
 pub const WHEEL_FOOT: f32 = 3.2;
 /// The fishing hut stands this far from the bank (middle to bank): its footing (to 1.5 out) then ends well short of the water even where the bank runs oblique to the turn; its jetty carries on over the water.
 pub const HUT_FOOT: f32 = 3.8;
-pub const WHEEL_PAD_MAX: f32 = 0.7;
+const SHORE_CLEARANCE: f32 = 0.45;
 /// Grain harvest by season in percent: spring sowing, summer growth, a big autumn harvest, a lean winter (see the WINTER_* numbers below).
 const GRAIN_BY_SEASON: [i32; 4] = [100, 125, 150, WINTER_GRAIN];
 // ---- Winter: every number that decides how hard it is lives here (and `winter_numbers` hands them to the interface). Changing any of them changes the rules (the fingerprint says so). ----
@@ -355,6 +358,7 @@ pub struct World {
     felled: Vec<[f32; 3]>,       // trees cleared by marching soldiers [x, y, radius]
     links: Vec<Vec<(f32, f32)>>,   // invisible paths chained from this city out to other villages' cities (set by `link_village`; part of the state)
     #[serde(skip)] mem_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<members::Obst>)>>,   // what stops a walking soldier (derived)
+    #[serde(skip)] deposit_layout: std::cell::Cell<Option<u64>>,   // stable while deposits are worked or regrowing
     #[serde(skip)] ov_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<march::Ov>)>>,   // the grid overlays (derived; rebuilt when the village changes)
     #[serde(skip)] march_heights: std::cell::RefCell<Option<(u64, std::rc::Rc<march::GroundSamples>)>>,
     #[serde(skip)] march_routes: std::cell::RefCell<march::RouteMemo>,
@@ -372,7 +376,8 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD4";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD5";
+const TACTICS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD4";
 const MARCH_SNAP_MAGIC: &[u8; 8] = b"FLWORLD3";
 const LEGACY_SNAP_MAGIC: &[u8; 8] = b"FLWORLD2";
 
@@ -385,14 +390,22 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         w.moat_water = w.compute_moat_water();
         return Some(w);
     }
-    let (mut w, marches) = if magic == SNAP_MAGIC {
-        let (mut w, marches, tech, bridges, state): (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>) = bincode::deserialize(payload).ok()?;
+    let (mut w, marches) = if magic == SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+        type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
+        let ((mut w, marches, tech, bridges, state), objective): (TacticalState, Option<raid_objective::RaidObjective>) =
+            if magic == SNAP_MAGIC { bincode::deserialize(payload).ok()? }
+            else { (bincode::deserialize(payload).ok()?, None) };
         if w.battle.is_some() != state.is_some() || tech > tactics::TECH_MASK { return None; }
         w.military_tech = tech;
         w.auto_bridge = bridges;
         if let Some((b, t)) = w.battle.as_mut().zip(state) {
             if t.strikes.iter().any(|s| s.attacker >= b.units.len() || s.target >= b.units.len()) { return None; }
             b.tactics = t;
+        }
+        if let Some(o) = objective {
+            let b = w.battle.as_mut()?;
+            if !o.valid() || b.tag != 0 || b.lair >= 0 || b.boss != 0 { return None; }
+            b.objective = Some(o);
         }
         (w, marches)
     } else if magic == MARCH_SNAP_MAGIC { bincode::deserialize(payload).ok()? } else { return None; };
@@ -503,7 +516,9 @@ impl World {
     pub fn snapshot(&self) -> Vec<u8> {
         let mut v = SNAP_MAGIC.to_vec();
         let marches: Vec<_> = self.dets.iter().map(march::Det::save_march).collect();
-        v.extend(bincode::serialize(&(self, marches, self.military_tech, self.auto_bridge, self.battle.as_ref().map(|b| &b.tactics))).expect("a world can be written"));
+        let battle = self.battle.as_ref();
+        let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
+        v.extend(bincode::serialize(&(tactical_state, battle.and_then(|b| b.objective))).expect("a world can be written"));
         v
     }
 
@@ -513,7 +528,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -660,7 +675,7 @@ impl World {
     fn on_deck(&self, x: f32, y: f32) -> bool {
         if self.buildings.iter().any(|b| { if b.kind != BRIDGE { return false; } let (ux, uy, l) = Self::bridge_dir(b); let (dx, dy) = (x - b.x, y - b.y); (dx * ux + dy * uy).abs() <= l / 2.0 && (dx * uy - dy * ux).abs() <= 1.9 }) { return true; }
         self.buildings.iter().any(|b| {
-            if b.kind != DRAWBRIDGE || b.status == 5 { return false; }
+            if b.kind != DRAWBRIDGE || self.drawn_up(b) { return false; }
             let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             let (dx, dy) = (x - b.x, y - b.y); let along = dx * sx + dy * sy; let across = dx * sy - dy * sx;
             along.abs() <= 7.4 && across.abs() <= 1.9
@@ -819,13 +834,21 @@ impl World {
         // applied on top again and bring its old height back), and whatever stands inside the disc is set on the new ground (its footing is re-fitted, never left on a pedestal or in a pit).
         self.flats.retain(|f| (f[0] - cx).hypot(f[1] - cy) + f[2] > rr);
         self.levels.push([cx, cy, rr, h]); self.terrain_ver += 1; self.map_ver += 1;
+        let mut shore = Vec::new();
         for i in 0..self.buildings.len() {
             let b = &self.buildings[i];
             if is_edit(b.kind) || b.kind == ROAD || !(DEFS[b.kind as usize].pad || b.kind == DRAWBRIDGE) || (b.x - cx).hypot(b.y - cy) > rr { continue; }
-            let kind = b.kind; let (bx, by, rot) = (b.x, b.y, b.rot);
-            let mut ph = h;
-            if matches!(kind, WATERWHEEL | FISHING_HUT) { ph = ph.min(self.wheel_pad_cap(bx, by, rot & 7)); }
-            self.buildings[i].pad_h = ph;
+            if matches!(b.kind, WATERWHEEL | FISHING_HUT | DRAWBRIDGE) { shore.push(i); }
+            self.buildings[i].pad_h = h;
+        }
+        if !shore.is_empty() {
+            self.moat_water = self.compute_moat_water();
+            for i in shore {
+                let b = &self.buildings[i];
+                let clearance = if b.kind == DRAWBRIDGE { self.drawbridge_clearance(b.x, b.y, b.rot) }
+                    else { self.shore_water_height(b.x, b.y, b.rot) + SHORE_CLEARANCE };
+                self.buildings[i].pad_h = h.max(clearance);
+            }
         }
         self.after_change(); 0
     }
@@ -927,7 +950,16 @@ impl World {
             if matches!(b.kind, WALL | GATE | FENCE) {   // a wall builds the ground it stands on: earth is heaped up where it is missing (never dug away), so no wall hangs over a drop or a ditch
                 let r1 = r0 + 2.2;
                 if dist < r1 && h < b.pad_h { h += (b.pad_h - h) * (1.0 - smoothstep(r0 * 0.8, r1, dist)); }
-            } else if dist < r1 { h = lerp(h, b.pad_h, 1.0 - smoothstep(r0, r1, dist)); }
+            } else if dist < r1 {
+                let mut weight = 1.0 - smoothstep(r0, r1, dist);
+                if matches!(b.kind, WATERWHEEL | FISHING_HUT) {
+                    let (ux, uy) = Self::wheel_dir(b.rot);
+                    let foot = if b.kind == WATERWHEEL { WHEEL_FOOT } else { HUT_FOOT };
+                    // Blend the foundation into the bank before it reaches the wheel or the end of the jetty.
+                    weight *= 1.0 - smoothstep(foot, WHEEL_REACH - 0.6, dx * ux + dy * uy);
+                }
+                h = lerp(h, b.pad_h, weight);
+            }
         }
         for c in &self.craters {
             let (dx, dy) = (x - c[0], y - c[1]);
@@ -1101,20 +1133,7 @@ impl World {
         if matches!(kind, WATERWHEEL | FISHING_HUT) && !self.wheel_in_water(x, y, rot & 7) { return -16; }   // the wheel hangs out over the water: the turn decides where it is
         let d = &DEFS[kind as usize];
         for &(res, n) in d.cost { self.stock[res as usize] -= n; }
-        let fr = d.r * 0.8;
-        let samples = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
-        let mut pad_h = samples.iter().map(|(px, py)| self.height_at(x + px, y + py)).sum::<f32>() / 5.0;
-        if matches!(kind, WALL | GATE | FENCE) {   // a wall stands level on its highest side and heaps earth under the low side
-            let hi = samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(f32::MIN, f32::max);
-            pad_h = hi.max(0.3);
-        }
-        if matches!(kind, WATERWHEEL | FISHING_HUT) { pad_h = pad_h.min(self.wheel_pad_cap(x, y, rot & 7)); }   // the house stands low on the bank so its wheel dips into the water (the visible surface: a moat's own level, not the sea's)
-        if kind == DRAWBRIDGE {   // the deck lies at the height of the gate, and both banks are levelled to it, so it floats clear above the water
-            let gate = self.buildings.iter().filter(|b| b.kind == GATE).map(|b| (((b.x - x).powi(2) + (b.y - y).powi(2)).sqrt(), b.pad_h)).fold(None, |best: Option<(f32, f32)>, c| if best.map_or(true, |b| c.0 < b.0) { Some(c) } else { best });
-            let bank = |sx: f32, sy: f32| self.height_at(x + sx * 9.0, y + sy * 9.0);
-            let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
-            pad_h = match gate { Some((d, h)) if d < 30.0 => h, _ => bank(sx, sy).max(bank(-sx, -sy)).max(0.8) };
-        }
+        let pad_h = self.placement_height(kind, x, y, rot);
         let aux = if d.req == 1 { self.nearest_deposit(x, y, d.req_arg, true).map_or(-1, |i| i as i32) } else { earthwork_height };
         let mut status = if d.cycle > 0 { 1 } else { 4 };
         if kind == ROAD { let t = tgts.unwrap_or_else(|| self.road_tgts_near(x, y)); status = if self.road_piece_attached(x, y, &t) { 4 } else { 2 }; self.road_conn.push(roadline::RoadConn { x, y, to: t }); }
@@ -1151,10 +1170,40 @@ impl World {
 
     /// Which way the waterwheel's wheel looks for a turn `rot`: the model's +x axis turned by r * 45 degrees (the renderer rotates about the vertical, which sends +x to (cos, -sin)).
     fn wheel_dir(rot: u8) -> (f32, f32) { let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; (a.cos(), -a.sin()) }
-    /// The highest a waterwheel house at (x, y) turned `rot` may stand, measured from the water under its wheel.
-    pub fn wheel_pad_cap(&self, x: f32, y: f32, rot: u8) -> f32 {
+    /// Water level under the mill wheel or the end of a fishing jetty.
+    pub fn shore_water_height(&self, x: f32, y: f32, rot: u8) -> f32 {
         let (ux, uy) = Self::wheel_dir(rot);
-        WHEEL_PAD_MAX + self.water_surface_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH)
+        self.water_surface_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH)
+    }
+    fn drawbridge_clearance(&self, x: f32, y: f32, rot: u8) -> f32 {
+        let (sx, sy) = doors::to_world(rot, (0.0, 1.0));
+        let water = [-4.0, 0.0, 4.0].into_iter()
+            .map(|d| self.water_surface_at(x + sx * d, y + sy * d)).fold(0.0, f32::max);
+        (water + 0.35).max(0.8)
+    }
+    /// The floor or deck height at an absolute location, shared by placement and its preview.
+    pub fn placement_height(&self, kind: u8, x: f32, y: f32, rot: u8) -> f32 {
+        if matches!(kind, WATERWHEEL | FISHING_HUT) {
+            return self.height_ground(x, y).max(self.shore_water_height(x, y, rot) + SHORE_CLEARANCE);
+        }
+        if kind == DRAWBRIDGE {
+            let (sx, sy) = doors::to_world(rot, (0.0, 1.0));
+            let gate = self.buildings.iter().filter(|b| b.kind == GATE)
+                .map(|b| ((b.x - x).hypot(b.y - y), b.pad_h)).filter(|&(d, _)| d < 30.0)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            return gate.map_or_else(
+                || self.height_at(x + sx * 9.0, y + sy * 9.0).max(self.height_at(x - sx * 9.0, y - sy * 9.0)),
+                |(_, h)| h,
+            ).max(self.drawbridge_clearance(x, y, rot));
+        }
+        let Some(d) = DEFS.get(kind as usize) else { return self.height_at(x, y) };
+        let fr = d.r * 0.8;
+        let samples = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
+        if matches!(kind, WALL | GATE | FENCE) {
+            // A wall stands level on its highest side and heaps earth under the low side.
+            return samples.iter().map(|(px, py)| self.height_core(x + px, y + py, false)).fold(0.3, f32::max);
+        }
+        samples.iter().map(|(px, py)| self.height_at(x + px, y + py)).sum::<f32>() / 5.0
     }
     /// Does a waterwheel house at (x, y) turned `rot` have its wheel out over open water?
     fn wheel_in_water(&self, x: f32, y: f32, rot: u8) -> bool {
@@ -1351,6 +1400,10 @@ impl World {
     pub(crate) fn bridge_points(&self) -> Vec<[f32; 2]> {
         let mut out = vec![];
         for b in self.buildings.iter().filter(|b| b.kind == BRIDGE) { let (ux, uy, l) = Self::bridge_dir(b); let n = (l / 3.0).ceil() as i32; for k in 0..=n { let t = k as f32 * l / n.max(1) as f32 - l / 2.0; out.push([b.x + ux * t, b.y + uy * t]); } }
+        for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE && b.status == DB_MANUAL_DOWN) {
+            let a = b.rot as f32 * std::f32::consts::FRAC_PI_4;
+            for t in [-6.0, -3.0, 0.0, 3.0, 6.0] { out.push([b.x + a.sin() * t, b.y + a.cos() * t]); }
+        }
         out
     }
 
@@ -1433,6 +1486,7 @@ impl World {
         if self.stock[W as usize] < 40 || self.stock[TL as usize] < 10 { return -6; }
         self.stock[W as usize] -= 40; self.stock[TL as usize] -= 10;
         let dep = &mut self.deposits[i as usize]; dep.rem = 0; dep.max = 0; dep.asleep = false;
+        self.deposit_layout.set(None);
         self.map_ver += 1; self.after_change();
         0
     }
@@ -1598,7 +1652,11 @@ impl World {
             self.raid_warning_ticks -= 1;
             if self.raid_warning_ticks == 0 {
                 if self.raid_warning_boss { self.begin_boss_raid(RAID_BOSS, self.raid_warning_angle, self.raid_warning_rf, self.raid_warning_name); }
-                else { let force = self.bandit_force(self.raid_warning_rf); self.begin_battle(force, self.raid_warning_angle, 0); }
+                else {
+                    let objective = self.warned_raid_objective();
+                    let force = self.bandit_force(self.raid_warning_rf);
+                    if self.begin_battle(force, self.raid_warning_angle, 0) { self.battle.as_mut().unwrap().objective = objective; }
+                }
             }
         } else if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(self.raid_one_in()) == 0 {
             self.raid_warning_angle = self.rng.range(628) as f32 * 0.01;
@@ -2051,24 +2109,31 @@ impl World {
 
     // ---------- tower garrisons ----------
     fn garrison_cap_of(b: &Building) -> u32 { match b.kind { TOWER => 2 * (b.tier as u32 + 1) + 2, KEEP => 4 * (b.tier as u32 + 1) + 4, _ => 0 } }
-    /// Raise (true) or lower (false) a drawbridge by hand. A raised one cannot be crossed by anybody but your own armies, which lower it for themselves while they march over it (see `drawbridge_step`);
-    /// every drawbridge counts as drawn up while a battle is on. A manual raise wins over the automatic lowering: for `VETO_SECS` no army lowers it, and any army whose route ran over it plans
-    /// another way (a bridge of its own, or a ferry). 0 ok, -1 not a drawbridge.
+    /// Raise or lower a drawbridge by hand. A manual lowering holds until it is raised or a new raid starts.
+    /// A manual raise blocks lending for `VETO_SECS` and replans armies already heading for the deck.
     pub fn drawbridge_set(&mut self, idx: u32, up: bool) -> i32 {
         let Some(b) = self.buildings.get(idx as usize) else { return -1 };
         if b.kind != DRAWBRIDGE { return -1; }
-        if up && self.crossings().iter().any(|c| c.db == idx as i32 && c.down && self.dets.iter().any(|d| d.occupied(|x, y| c.on(x, y)))) { return -3; }
+        if up && self.crossings().iter().any(|c| c.db == idx as i32 && c.down
+            && (self.dets.iter().any(|d| d.occupied(|x, y| c.on(x, y)))
+                || self.battle.as_ref().is_some_and(|b| b.units.iter().any(|u| u.alive && u.side == 0 && c.on(u.x, u.y))))) { return -3; }
         let b = &mut self.buildings[idx as usize];
-        b.status = if up { DB_UP } else { 4 };
+        b.status = if up { DB_UP } else if self.battle.is_some() { DB_MANUAL_DOWN } else { 4 };
         b.progress = if up { VETO_SECS } else { 0 };
         if up { self.replan_over_deck(idx as usize); }
+        if self.battle.is_some() {
+            let fixed = self.bridge_points();
+            self.battle.as_mut().unwrap().fixed = fixed;
+        }
         0
     }
     /// A drawbridge's own states (`status`): 4 lowered, 5 drawn up by hand (`progress` counts down the seconds an army may not lower it), 6 lowered for an army (was drawn up), 7 lowered for an
     /// army during a battle (was lowered: every drawbridge counts as drawn up while a battle is on). `progress` of a lent one counts the seconds nobody has needed it.
     pub(crate) fn db_lent(b: &Building) -> bool { b.kind == DRAWBRIDGE && matches!(b.status, DB_LENT | DB_LENT_FIGHT) }
-    /// Is this drawbridge drawn up right now (so that nobody can cross it)? Raised by hand, or any that is not lent while raiders attack.
-    pub(crate) fn drawn_up(&self, b: &Building) -> bool { b.kind == DRAWBRIDGE && (b.status == DB_UP || (self.battle.is_some() && !Self::db_lent(b))) }
+    /// The raid lifts ordinary decks. A manual lowering and decks lent to an army hold them down.
+    pub(crate) fn drawn_up(&self, b: &Building) -> bool {
+        b.kind == DRAWBRIDGE && (b.status == DB_UP || (self.battle.is_some() && b.status != DB_MANUAL_DOWN && !Self::db_lent(b)))
+    }
     /// May an army lower it for itself? (Not for `VETO_SECS` after the player raised it.)
     pub(crate) fn db_lendable(&self, b: &Building) -> bool { self.drawn_up(b) && !(b.status == DB_UP && b.progress > 0) }
     /// Close (true) or open (false) the doors of a stone gatehouse (tier 3 up). A closed gate cannot be passed by your own armies; every stone gatehouse is shut while a battle is on and
@@ -2240,6 +2305,14 @@ impl World {
     pub fn battle_angle(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.angle) }
     pub fn battle_time(&self) -> f32 { self.battle.as_ref().map_or(0.0, |b| b.t) }
     pub fn battle_deploy_remaining(&self) -> f32 { self.battle.as_ref().filter(|b| !b.bought).map_or(0.0, |b| (battle::DEPLOY_SECS - b.t).max(0.0)) }
+    /// Announced or current objective: [kind, x, z, combat seconds left, capture fraction, lost].
+    pub fn raid_objective(&self) -> Vec<f32> {
+        if let Some(b) = &self.battle {
+            return b.objective.filter(|_| !b.bought).map_or(vec![], |o| o.flat((b.t - battle::DEPLOY_SECS).max(0.0)));
+        }
+        if self.raid_warning_ticks > 0 { return self.warned_raid_objective().map_or(vec![], |o| o.flat(0.0)); }
+        vec![]
+    }
     /// Ticks until the announced bandit raid arrives (zero when there is no warning).
     pub fn raid_warning_ticks(&self) -> u32 { self.raid_warning_ticks }
     /// Direction the announced bandits will approach from, in radians.
@@ -2266,6 +2339,10 @@ impl World {
             }
             None => vec![],
         }
+    }
+    /// The friendly field army each battle unit belongs to, in the same order as `battle_units_flat`. Zero means no field army.
+    pub fn battle_detachment_ids(&self) -> Vec<u32> {
+        self.battle.as_ref().map_or_else(Vec::new, |b| b.units.iter().map(|u| if u.side == 0 { u.det } else { 0 }).collect())
     }
     /// The last frame of a finished fight, for animating casualties on the final tick.
     pub fn take_last_battle_frame(&mut self) -> Vec<f32> { std::mem::take(&mut self.last_battle_frame) }
@@ -2351,6 +2428,7 @@ impl World {
                 }
             }
         } else {
+            if d.state == march::S_FORMATION { d.file.hold_formation(&d.units); }
             d.path.clear(); d.state = march::S_IDLE; d.phase = 0; d.speed = 0.0;
             for g in &mut d.grp { g.path.clear(); g.speed = 0.0; }
         }
@@ -2388,7 +2466,7 @@ impl World {
     /// followed by [x, y, movement mode, distance along the track] for each point.
     pub fn det_files_flat(&self) -> Vec<f32> {
         let mut out = Vec::new();
-        for d in self.dets.iter().filter(|d| !matches!(d.state, march::S_ARRIVED | march::S_FIGHT)) {
+        for d in self.dets.iter().filter(|d| d.state != march::S_FIGHT) {
             let head = Self::head_units(d);
             if d.state != march::S_IDLE || d.file.in_flight(&head) || d.file.mustered() { d.file.write_flat(d.id, 0, &head, &mut out); }
             for g in &d.grp { g.file.write_flat(d.id, if g.units[3] > 0 { 3 } else { 4 }, &g.units, &mut out); }
@@ -2399,7 +2477,7 @@ impl World {
     /// [x, y, mode, distance to the network entry (negative until the soldier reaches it)].
     pub fn det_approaches_flat(&self) -> Vec<f32> {
         let mut out = Vec::new();
-        for d in self.dets.iter().filter(|d| !matches!(d.state, march::S_FIGHT | march::S_ARRIVED)) {
+        for d in self.dets.iter().filter(|d| d.state != march::S_FIGHT) {
             d.file.write_approaches(d.id, 0, &mut out);
             for g in &d.grp { g.file.write_approaches(d.id, if g.units[3] > 0 { 3 } else { 4 }, &mut out); }
         }
@@ -2437,6 +2515,7 @@ impl World {
                 let r = (a as f32).clamp(10.0, 200.0);
                 self.felled.push([hx, hy, r]); self.groves.clear();
                 for d in self.deposits.iter_mut() { if (d.x - hx).hypot(d.y - hy) < r { d.rem = 0; d.max = 0; d.asleep = false; } }
+                self.deposit_layout.set(None);
                 self.map_ver += 1; self.terrain_ver += 1; 0
             }
             1 => {
@@ -2447,6 +2526,7 @@ impl World {
                 let Some(i) = slot else { return -1 };
                 let amount = match kind { 0 => 1500, 1 => 1200, 2 => 900, _ => 320 };
                 self.deposits[i] = Deposit { kind, x, y, rem: amount, max: amount, asleep: false };
+                self.deposit_layout.set(None);
                 self.map_ver += 1; self.terrain_ver += 1; i as i32
             }
             2 => { if !(-400..=400).contains(&a) || !(-400..=400).contains(&b) || self.groves.len() >= 16 { return -1; } self.groves.push([hx + a as f32, hy + b as f32, (c as f32).clamp(5.0, 60.0)]); self.map_ver += 1; 0 }
@@ -2476,6 +2556,16 @@ impl World {
     pub fn bridges_flat(&self) -> Vec<f32> { self.bridges.iter().flatten().copied().collect() }
     /// Plan a route without ordering it: [ok(1) | error code, seconds, planks, wood, count, x, y, mode, ...].
     pub fn plan_march(&self, units: &[u32], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> { let Some(u) = kinds(units) else { return vec![-1.0] }; self.plan(&u, sx, sy, tx, ty) }
+    /// Plan the selected army's current interception route using the same waypoint as `det_defend`.
+    pub fn plan_reinforcement(&self, id: u32) -> Vec<f32> {
+        let Some(d) = self.dets.iter().find(|d| d.id == id) else { return vec![-1.0]; };
+        if d.state == march::S_FIGHT { return vec![1.0, 0.0, 0.0, 0.0, 0.0]; }
+        match self.reinforce_waypoint(d.x, d.y) {
+            Ok(Some((x, y))) => self.plan(&d.units, d.x, d.y, x, y),
+            Ok(None) => vec![1.0, 0.0, 0.0, 0.0, 0.0],
+            Err(code) => vec![code as f32],
+        }
+    }
     /// Changes when terrain, construction, or bridge policy could alter a march route.
     pub fn march_revision(&self) -> u64 { self.route_revision() }
     /// Run an order on a worker's disposable village copy and return the routes it used.
@@ -2648,7 +2738,7 @@ impl World {
                 for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for l in &self.flats { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
-            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); mix(bt.lair as i64 as u64); bt.tactics.hash(mix); } }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); mix(bt.lair as i64 as u64); bt.tactics.hash(mix); if let Some(o) = bt.objective { o.hash(mix); } } }),
         ]
     }
 
@@ -2688,7 +2778,7 @@ pub fn rules_fingerprint(seed: u64) -> String {
     }
     let parts = w.state_hash_parts();
     // The water raster and deployment rules affect peers even when this fingerprint's sample village does not encounter them.
-    let mut h: u64 = 0xcbf29ce484222325 ^ seed ^ u64::from(terrain::RIVER_LEVEL.to_bits()) ^ 0x46ba7e05;
+    let mut h: u64 = 0xcbf29ce484222325 ^ seed ^ u64::from(terrain::RIVER_LEVEL.to_bits()) ^ 0x46ba7e08;
     for p in parts { h ^= p; h = h.wrapping_mul(0x100000001b3); }
     format!("{h:016x}")
 }
@@ -4539,6 +4629,41 @@ mod relation_tests {
 #[cfg(test)]
 mod deposit_tests {
     use super::*;
+
+    #[test]
+    fn deposits_block_march_and_walk_routes_until_cleared() {
+        let mut w = rich();
+        w.demo(0, 100, 0, 0);
+        assert_eq!(w.flatten(60, 6.0), 0);
+        let i = w.demo(1, 0, 0, 25);
+        assert!(i >= 0);
+        let start = (-15.0, 25.0);
+        let goal = (15.0, 25.0);
+        assert!(!w.net().ok_at(0.0, 25.0));
+        let obstacle = w.obst();
+        assert!(!obstacle.deposit_clear(start, goal, members::FOOT_MARGIN));
+        assert!(w.member_blocked_inner(0.0, 25.0, 0));
+        assert!(obstacle.movement_clear((1.0, 25.0), (2.0, 25.0), members::FOOT_MARGIN));
+        assert!(!obstacle.movement_clear((1.0, 25.0), (0.0, 25.0), members::FOOT_MARGIN));
+        let stamp = w.route_revision();
+        w.deposits[i as usize].rem = 0;
+        w.deposits[i as usize].asleep = true;
+        assert_eq!(w.route_revision(), stamp);
+        let march = w.route_on_graph(&[1, 0, 0, 0, 0, 0], start.0, start.1, goal.0, goal.1, true).unwrap();
+        assert!(march.windows(2).all(|p| obstacle.deposit_clear((p[0].x, p[0].y), (p[1].x, p[1].y), members::FOOT_MARGIN)));
+        let walk = w.walk_route_inner(start.0, start.1, goal.0, goal.1);
+        assert_eq!(walk.first(), Some(&1.0));
+        let mut prev = start;
+        for p in walk[1..].chunks_exact(2) {
+            assert!(obstacle.deposit_clear(prev, (p[0], p[1]), members::FOOT_MARGIN));
+            prev = (p[0], p[1]);
+        }
+        assert_eq!(prev, goal);
+        assert_eq!(w.clear_deposit(i as u32), 0);
+        assert_ne!(w.route_revision(), stamp);
+        assert!(w.obst().deposit_clear(start, goal, members::FOOT_MARGIN));
+        assert!(!w.member_blocked_inner(0.0, 25.0, 0));
+    }
     #[test]
     fn a_deposit_can_be_cleared_for_wood_and_tools_and_stops_blocking() {
         let mut w = World::new(1337, 0, 0); w.stock = [5000; N_RES];
@@ -4643,6 +4768,7 @@ mod gate_tests {
     #[test]
     fn stone_gatehouses_have_doors_that_block_armies_until_opened() {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        w.deposits.clear();   // keep the gate approaches clear of the nearby outcrop
         for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
         let g = w.place(GATE, 0, 30, 0); assert!(g >= 0);
         assert_eq!(w.gate_set(g as u32, true), -2, "a wooden gate has no doors");
@@ -4841,6 +4967,7 @@ mod pathnet_tests {
     fn the_network_respects_closed_gates_and_drawbridges() {
         // a wall with a gatehouse: the way through is open until the doors are shut
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        w.deposits.clear();
         for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
         let g = w.place(GATE, 0, 30, 0); assert!(g >= 0);
         for _ in 0..2 { assert_eq!(w.upgrade(g as u32), 0); }
@@ -4855,6 +4982,7 @@ mod pathnet_tests {
 
         // a moat: only a lowered drawbridge gets you across, and only along its deck
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        w.deposits.clear();
         for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; let r = w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); print!("{r} "); }
         for k in 0..44 { let a = k as f32 / 44.0 * std::f32::consts::TAU; print!("{:.1} ", w.height_ground(a.cos() * 20.0, a.sin() * 20.0)); } println!();
         let br = w.place(DRAWBRIDGE, 0, 20, 0); assert!(br >= 0);
@@ -4880,6 +5008,7 @@ mod pathnet_tests {
         }
         // a gate in a wall: the marching route goes through the middle of the doorway
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        w.deposits.clear();
         for x in [-12, -6, 6, 12] { assert!(w.place(WALL, x, 30, 0) >= 0); }
         assert!(w.place(GATE, 0, 30, 0) >= 0);
         let p = w.find_path(&u, 1.0, 22.0, -1.0, 40.0).expect("through the gate");
@@ -4910,7 +5039,7 @@ mod pathnet_tests {
     }
 
     #[test]
-    fn a_waterwheel_at_a_moat_stands_at_the_moat_water_level() {
+    fn a_waterwheel_at_a_moat_keeps_its_mill_on_the_bank() {
         let mut w = village(); w.stock = [30000; N_RES]; w.flatten(40, 5.0);
         for i in 0..52 { let a = i as f32 / 52.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 24.0).round() as i32, (a.sin() * 24.0).round() as i32, 0); }
         let level = w.moat_level_at(0.0, 24.0);
@@ -4919,14 +5048,19 @@ mod pathnet_tests {
         assert!(!s.is_empty(), "the wheel snaps to the moat bank");
         let (dx, dy, rot) = (s[0] as i32, s[1] as i32, s[2] as u8);
         let (x, y) = ((w.ox + dx) as f32, (w.oy + dy) as f32);
-        let cap = w.wheel_pad_cap(x, y, rot);
+        let bank = w.height_ground(x, y);
+        let preview = w.placement_height(WATERWHEEL, x, y, rot);
         let (ux, uy) = World::wheel_dir(rot);
-        let surface = w.moat_level_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH);
-        assert!(surface > 1.0 && (cap - (surface + WHEEL_PAD_MAX)).abs() < 1e-4, "cap {cap} follows the visible surface {surface}");
+        let (wx, wy) = (x + ux * WHEEL_REACH, y + uy * WHEEL_REACH);
+        let bed = w.height_at(wx, wy);
+        let surface = w.shore_water_height(x, y, rot);
+        assert_eq!(surface, w.moat_level_at(wx, wy));
+        assert!(surface > 1.0);
         let i = w.place(WATERWHEEL, dx, dy, rot); assert!(i >= 0, "built: {i}");
         let pad = w.buildings[i as usize].pad_h;
-        assert!(pad > WHEEL_PAD_MAX + 0.5, "the house is not sunk to the sea-level cap, pad {pad}");
-        assert!(pad <= surface + WHEEL_PAD_MAX + 1e-4 && pad >= surface - 1.5, "pad {pad} sits at the water surface {surface}");
+        assert_eq!(pad, preview);
+        assert!(pad >= bank && pad >= surface + SHORE_CLEARANCE, "bank {bank}, pad {pad}, water {surface}");
+        assert!((w.height_at(wx, wy) - bed).abs() < 1e-4, "the house pad leaves the ground under the wheel alone");
     }
 
     #[test]
@@ -4951,10 +5085,11 @@ mod pathnet_tests {
             // turned the other way the wheel would be in the air over dry ground
             assert_eq!(w.place(WATERWHEEL, dx, dy, (rot + 4) & 7), -16, "wheel facing the land is refused");
             if seen == 1 {
+                let bank = w.height_ground(x, y);
+                let stage = w.shore_water_height(x, y, rot);
                 assert!(w.place(WATERWHEEL, dx, dy, rot) >= 0, "the snapped spot can be built on: {s:?}");
-                let stage = w.water_surface_at(x + ux * WHEEL_REACH, y + uy * WHEEL_REACH);
                 assert!(stage > 0.0, "the carved river has its own surface");
-                assert!(w.buildings.last().unwrap().pad_h <= stage + WHEEL_PAD_MAX + 1e-4);
+                assert!(w.buildings.last().unwrap().pad_h >= bank.max(stage + SHORE_CLEARANCE));
             }
         }
         assert!(seen >= 3, "the snap finds the bank from most clicks ({seen})");
@@ -4973,6 +5108,24 @@ mod pathnet_tests {
         let e = w.drawbridge_snap(17, 2); if e.len() == 3 { assert!(e[2] == 2.0 || e[2] == 6.0, "{e:?}"); }
         assert!(w.drawbridge_snap(100, 100).is_empty(), "nothing to snap to far from any moat");
         let br = w.place(DRAWBRIDGE, s[0] as i32, s[1] as i32, s[2] as u8); assert!(br >= 0, "the snapped spot can be built on: {br}");
+    }
+
+    #[test]
+    fn a_drawbridge_preview_and_deck_clear_water_even_when_the_nearby_gate_is_lower() {
+        let mut w = World::new(1337, 0, 0); w.cheat(3, 0, 0); w.flatten(50, 8.0);
+        for x in [-4, 0, 4] { assert!(w.place(MOAT, x, 24, 0) >= 0); }
+        assert!(w.place(WALL, 8, 14, 0) >= 0);
+        let gate = w.place(GATE, 0, 14, 0);
+        assert!(gate >= 0);
+        w.buildings[gate as usize].pad_h = 1.0;
+        let snap = w.drawbridge_snap(0, 23);
+        let (x, y, rot) = (snap[0], snap[1], snap[2] as u8);
+        let water = w.moat_level_at(x, y);
+        let deck = w.placement_height(DRAWBRIDGE, x, y, rot);
+        assert!(water > 4.0 && deck > water);
+        let i = w.place(DRAWBRIDGE, x as i32, y as i32, rot);
+        assert!(i >= 0);
+        assert_eq!(w.buildings[i as usize].pad_h, deck);
     }
 
     #[test]
@@ -5027,6 +5180,7 @@ mod pathnet_tests {
     #[test]
     fn a_bridge_placed_where_it_snapped_is_crossed_by_a_route_while_lowered() {
         let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.cheat(3, 0, 0);
+        w.deposits.clear();   // the endpoint at (0, 36) overlaps this seed's stone deposit
         for i in 0..44 { let a = i as f32 / 44.0 * std::f32::consts::TAU; w.place(MOAT, (a.cos() * 20.0).round() as i32, (a.sin() * 20.0).round() as i32, 0); }
         let s = w.drawbridge_snap(0, 18); assert_eq!(s.len(), 3);
         assert_eq!(s[2], 0.0, "south of the hall the deck runs south, away from it");

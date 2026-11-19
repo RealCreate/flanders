@@ -64,3 +64,11 @@ test('catalogue kinds are added before the ledger has seen them', () => {
   assert.deepEqual(p.kinds, [{ kind: 0, perDay: 0 }]);
   assert.deepEqual(m.kinds, [{ kind: 1, perDay: 30 }], 'no duplicate');
 });
+
+test('alternate smokehouse outputs are discoverable before production and highlight the current recipe', () => {
+  const defs = [{ inputs: [[12, 3]], outputs: [[13, 3]], alternateRecipe: { inputs: [[15, 3]], outputs: [[16, 3]] } }];
+  const source = addCatalogKinds({ kinds: [], extras: [] }, defs, 16, 1);
+  assert.deepEqual(source.kinds, [{ kind: 0, perDay: 0 }]);
+  const active = summarize([...b(0, 0), ...b(0, 0)], source.kinds, info, () => false, i => i === 1);
+  assert.deepEqual(active[0].idx, [1]);
+});

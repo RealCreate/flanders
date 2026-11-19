@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { trees_in } from '../wasm/game_core.js';
 import { HALF, type Terrain } from './terrain';
 
@@ -129,7 +129,11 @@ function foliageTexture() {
 
 const TILE = 60;
 const SECTOR = TILE * 4;
-const FAR_RANGE = 220;
+const NEAR_ENTER = 82;
+const NEAR_EXIT = 112;
+const FAR_ENTER = 300;
+const FAR_EXIT = 245;
+const VIEW_MARGIN = 12;
 export const TREE_SHADOW_LAYER = 1;
 
 type Disc = { x: number; z: number; r: number };
@@ -154,6 +158,16 @@ class TreeMesh extends THREE.InstancedMesh {
   override intersectsFrustum(frustum: THREE.Frustum) { return frustum.intersectsBox(this.boundingBox); }
 }
 
+/** Share smooth vertices in the crown tiers that use no foliage texture. */
+function compactTree(parts: THREE.BufferGeometry[]) {
+  const geometry = merge(parts);
+  geometry.deleteAttribute('uv');
+  const indexed = mergeVertices(geometry);
+  geometry.dispose();
+  parts.forEach(part => part.dispose());
+  return indexed;
+}
+
 /** Distant crowns retain each species' outline with fewer vertices, no leaf texture and no vertex wind. */
 function distantTree(type: number) {
   const shortTrunk = (h: number, r: number, color: number) => prep(new THREE.CylinderGeometry(r * 0.55, r, h, 5, 1, true).translate(0, h / 2, 0), color);
@@ -162,7 +176,7 @@ function distantTree(type: number) {
     const foliage = tiers.map(([r, h, y, color], i) => ({
       color, geo: new THREE.ConeGeometry(r, h, 6, 1, true).rotateY(i * 0.26).translate(0, y, 0),
     }));
-    return merge([shortTrunk(2.1, 0.32, 0x4a3524), ...finishFoliage(foliage, new THREE.Vector3(0, 3.3, 0), 2.4, 0.6, 6.0, 0.55)]);
+    return compactTree([shortTrunk(2.1, 0.32, 0x4a3524), ...finishFoliage(foliage, new THREE.Vector3(0, 3.3, 0), 2.4, 0.6, 6.0, 1)]);
   }
   const oak = type === 1;
   const foliage = oak ? [
@@ -173,8 +187,8 @@ function distantTree(type: number) {
     { geo: clump(1.46, -0.12, 4.28, 0, 0, 1.20, 2), color: 0x8cbf4e },
     { geo: clump(1.08, 0.52, 3.61, 0.25, 0, 1.05, 3), color: 0x9acb58 },
   ];
-  return merge([shortTrunk(oak ? 3.0 : 3.7, oak ? 0.50 : 0.24, oak ? 0x5e4128 : 0xe9e5da),
-    ...finishFoliage(foliage, new THREE.Vector3(0, oak ? 4.0 : 4.2, 0), oak ? 2.7 : 1.9, oak ? 2.2 : 3.0, 6.0)]);
+  return compactTree([shortTrunk(oak ? 3.0 : 3.7, oak ? 0.50 : 0.24, oak ? 0x5e4128 : 0xe9e5da),
+    ...finishFoliage(foliage, new THREE.Vector3(0, oak ? 4.0 : 4.2, 0), oak ? 2.7 : 1.9, oak ? 2.2 : 3.0, 6.0, 1)]);
 }
 
 /** The simplified silhouette used on the horizon and in the depth-only shadow pass. */
@@ -186,7 +200,7 @@ function treeSilhouette(type: number) {
     { color: 0x32633a, geo: new THREE.ConeGeometry(2.4, 4.5, 5, 1, true).translate(0, 2.7, 0) },
     { color: 0x45794a, geo: new THREE.ConeGeometry(1.45, 3.3, 5, 1, true).rotateY(0.3).translate(0, 4.15, 0) },
   ] : [{ color: oak ? 0x528d3e : 0x8cbc4c, geo: clump(oak ? 2.45 : 1.67, 0, 4.15, 0, 0, oak ? 0.8 : 1.12, 2) }];
-  return merge([trunk, ...finishFoliage(parts, new THREE.Vector3(0, pine ? 3.3 : 4.15, 0), oak ? 2.7 : 2.3, pine ? 0.6 : 2.2, 6.0)]);
+  return compactTree([trunk, ...finishFoliage(parts, new THREE.Vector3(0, pine ? 3.3 : 4.15, 0), oak ? 2.7 : 2.3, pine ? 0.6 : 2.2, 6.0, 1)]);
 }
 
 export class Forest {
@@ -194,10 +208,11 @@ export class Forest {
   private tiles = new Map<number, Tile>();
   private sectors = new Map<number, Sector>();
   private shadowGroup = new THREE.Group();
+  private shadowTiles = new Set<Tile>();
   private shapes = new Map<string, Mask>();
   private dirty = new Set<Batch>();
   private geos: THREE.BufferGeometry[][];
-  private mat: THREE.MeshStandardMaterial;
+  private mat: THREE.MeshLambertMaterial;
   private farMat = new THREE.MeshBasicMaterial({ vertexColors: true });
   private shadowMat = new THREE.MeshBasicMaterial();
   private uSun = { value: new THREE.Vector3(0, 1, 0) };
@@ -259,7 +274,7 @@ export class Forest {
       [oak(), distantTree(1), treeSilhouette(1)],
       [birch(), distantTree(2), treeSilhouette(2)],
     ];
-    this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: foliageTexture(), roughness: 0.95, metalness: 0 });
+    this.mat = new THREE.MeshLambertMaterial({ vertexColors: true, map: foliageTexture() });
     this.mat.onBeforeCompile = sh => {
       sh.uniforms.uTime = this.uTime;
       sh.vertexShader = 'uniform float uTime;\n' + sh.vertexShader.replace('#include <begin_vertex>', `
@@ -278,7 +293,8 @@ export class Forest {
         #include <color_vertex>
         #ifdef USE_INSTANCING_COLOR
           vec3 n = normalize(mat3(instanceMatrix) * normal);
-          vColor.rgb *= uForestSky + uForestDaylight * max(dot(n, uForestSun), 0.0);
+          float sun = max(dot(n, uForestSun), 0.0);
+          vColor.rgb *= uForestSky + uForestDaylight * (0.22 + 0.66 * sun);
         #endif`);
     };
     this.group.add(this.shadowGroup);
@@ -294,7 +310,7 @@ export class Forest {
       tile.batches.push(batch);
       tile.sector.batches.push(batch);
       this.dirty.add(batch);
-      tile.sector.local.add(mesh); this.shadowGroup.add(shadow);
+      tile.sector.local.add(mesh);
     }
     this.terrain.onHeightChange = (x0, z0, x1, z1) => {
       this.eachTile({ x0, z0, x1, z1 }, tile => {
@@ -336,29 +352,33 @@ export class Forest {
       if (shadowRange !== this.shadowRange) this.shadowVersion++;
       this.shadowFocus.copy(focus); this.shadowRange = shadowRange;
       this.shadowGroup.visible = shadowRange > 0;
-      if (shadowRange > 0) for (const sector of this.sectors.values()) for (const batch of sector.batches) this.updateShadow(batch);
+      this.updateShadows();
     }
   }
 
   private cameraProjection = new THREE.Matrix4();
 
   private updateSector(sector: Sector) {
+    if (sector.bounds.isEmpty() || !this.sectorInView(sector.bounds, false)) {
+      sector.distant.visible = sector.local.visible = false;
+      return;
+    }
     const dx = Math.abs(sector.x - this.camera.x), dz = Math.abs(sector.z - this.camera.z), span = (SECTOR - TILE) / 2;
     const min = Math.max(0, dx - span) ** 2 + Math.max(0, dz - span) ** 2;
     const max = (dx + span) ** 2 + (dz + span) ** 2, limit = this.drawDistance ** 2;
-    const distant = min >= FAR_RANGE ** 2 && max < limit && !sector.bounds.isEmpty() && this.sectorInView(sector.bounds);
+    const distant = min >= (sector.distant.visible ? FAR_EXIT : FAR_ENTER) ** 2 && max < limit && this.sectorInView(sector.bounds, true);
     sector.distant.visible = distant;
     sector.local.visible = !distant && min < limit;
     if (distant && sector.dirty) this.mergeSector(sector);
     if (sector.local.visible) for (const batch of sector.batches) this.updateView(batch);
   }
 
-  private sectorInView({ min, max }: THREE.Box3) {
+  private sectorInView({ min, max }: THREE.Box3, inside: boolean) {
     if (!this.useFrustum) return true;
     return this.viewFrustum.planes.every(plane => {
       const n = plane.normal;
-      this.viewCorner.set(n.x >= 0 ? min.x : max.x, n.y >= 0 ? min.y : max.y, n.z >= 0 ? min.z : max.z);
-      return plane.distanceToPoint(this.viewCorner) >= 0;
+      this.viewCorner.set((n.x >= 0) === inside ? min.x : max.x, (n.y >= 0) === inside ? min.y : max.y, (n.z >= 0) === inside ? min.z : max.z);
+      return plane.distanceToPoint(this.viewCorner) >= (inside ? 0 : -VIEW_MARGIN);
     });
   }
 
@@ -368,8 +388,8 @@ export class Forest {
     mesh.visible = mesh.count > 0 && flat < this.drawDistance ** 2;
     if (!mesh.visible) return;
     const dy = mesh.boundingSphere!.center.y - this.camera.y, distance = flat + dy * dy;
-    const near = this.detail && distance < (batch.lod === 0 ? 95 : 75) ** 2;
-    const far = distance >= (batch.lod === 2 ? 180 : FAR_RANGE) ** 2;
+    const near = this.detail && distance < (batch.lod === 0 ? NEAR_EXIT : NEAR_ENTER) ** 2;
+    const far = distance >= (batch.lod === 2 ? FAR_EXIT : FAR_ENTER) ** 2;
     const lod = near ? 0 : far ? 2 : 1;
     if (batch.lod !== lod) {
       batch.lod = lod; mesh.geometry = this.geos[type][lod];
@@ -378,10 +398,21 @@ export class Forest {
     mesh.receiveShadow = near;
   }
 
-  private updateShadow(batch: Batch) {
-    const { tile, shadow } = batch, dx = tile.x - this.shadowFocus.x, dz = tile.z - this.shadowFocus.z;
+  private updateShadows() {
     const reach = Math.min(this.drawDistance, this.shadowRange);
-    shadow.visible = shadow.count > 0 && dx * dx + dz * dz < reach * reach;
+    const { x, z } = this.shadowFocus, tiles = new Set<Tile>();
+    if (reach > 0) this.eachTile({ x0: x - reach, z0: z - reach, x1: x + reach, z1: z + reach }, tile => {
+      if ((tile.x - x) ** 2 + (tile.z - z) ** 2 >= reach ** 2) return;
+      tiles.add(tile);
+      if (!this.shadowTiles.has(tile)) for (const batch of tile.batches) {
+        batch.shadow.visible = batch.shadow.count > 0;
+        this.shadowGroup.add(batch.shadow);
+      }
+    });
+    for (const tile of this.shadowTiles) if (!tiles.has(tile)) {
+      for (const batch of tile.batches) this.shadowGroup.remove(batch.shadow);
+    }
+    this.shadowTiles = tiles;
   }
 
   private mergeSector(sector: Sector) {
@@ -551,6 +582,6 @@ export class Forest {
       mesh.boundingSphere!.radius = Math.hypot(span, span, (high - low) / 2);
     }
     mesh.visible = count > 0;
-    if (this.shadowRange >= 0) this.updateShadow(batch);
+    shadow.visible = count > 0 && this.shadowTiles.has(tile);
   }
 }

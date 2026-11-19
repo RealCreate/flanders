@@ -21,3 +21,11 @@ export function marchSlot(points: ArrayLike<number>, dispatch: number, rank: num
   if (rank > 0 && (distance <= 0 || distance >= points[points.length - 1])) return null;
   return marchPoint(points, distance);
 }
+
+/** A final slot follows an individual approach in reverse, after the head of the march has stopped. */
+export function arrivalSlot(points: ArrayLike<number>, dispatch: number, rank: number, troops: number, heading: number, settled: boolean) {
+  const distance = dispatch - rank * Math.min(0.45, 4 / Math.max(1, troops));
+  if (!settled && distance < 0) return null;
+  const at = marchPoint(points, settled ? -Infinity : -distance);
+  return at && { ...at, yaw: at.yaw === undefined ? heading : at.yaw + Math.PI };
+}

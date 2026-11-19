@@ -9,6 +9,7 @@
 use super::*;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::rc::Rc;
 
 const RC: f32 = 1.0;
 /// What a road is worth next to open ground: walking a road costs this much of the distance.
@@ -22,6 +23,7 @@ const MAX_CELLS: i32 = 100_000;
 pub struct Net {
     x0: f32, y0: f32, nx: i32, ny: i32,
     ok: Vec<bool>,
+    obstacles: Rc<members::Obst>,
     pub nodes: Vec<(f32, f32)>,
     /// The nodes of the doorstep ring round each building (indexed like the buildings; u32::MAX where a ring node would stand on ground that is not walkable). Empty for buildings without a ring.
     pub ring: Vec<Vec<u32>>,
@@ -97,21 +99,24 @@ pub fn field_distance(b: &Building, x: f32, y: f32) -> f32 {
 }
 
 impl Net {
-    fn empty() -> Net { Net { x0: 0.0, y0: 0.0, nx: 0, ny: 0, ok: vec![], nodes: vec![], ring: vec![], adj: vec![], comp: vec![] } }
+    fn empty(obstacles: Rc<members::Obst>) -> Net { Net { x0: 0.0, y0: 0.0, nx: 0, ny: 0, ok: vec![], obstacles, nodes: vec![], ring: vec![], adj: vec![], comp: vec![] } }
 
     fn cell(&self, x: f32, y: f32) -> Option<usize> {
         let (i, j) = (((x - self.x0) / RC).floor() as i32, ((y - self.y0) / RC).floor() as i32);
         if i < 0 || j < 0 || i >= self.nx || j >= self.ny { None } else { Some((j * self.nx + i) as usize) }
     }
-    pub fn ok_at(&self, x: f32, y: f32) -> bool { self.cell(x, y).map_or(false, |k| self.ok[k]) }
+    pub fn ok_at(&self, x: f32, y: f32) -> bool {
+        self.cell(x, y).is_some_and(|k| self.ok[k]) && self.obstacles.deposit_clear((x, y), (x, y), members::FOOT_MARGIN)
+    }
 
     /// Can one walk the straight line between two points? `slack`: the stretch at each end that is not checked (somebody standing in the margin of a building).
     pub fn clear(&self, a: (f32, f32), b: (f32, f32), slack: f32) -> bool {
+        if !self.obstacles.deposit_clear(a, b, members::FOOT_MARGIN) { return false; }
         let l = (b.0 - a.0).hypot(b.1 - a.1); let st = (l / (RC * 0.5)).ceil().max(1.0) as i32;
         (0..=st).all(|q| {
             let t = q as f32 / st as f32; let d = l * t;
             if d < slack || l - d < slack { return true; }
-            self.ok_at(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            self.cell(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t).is_some_and(|k| self.ok[k])
         })
     }
 
@@ -189,6 +194,7 @@ impl World {
         for l in &self.flats { for v in l { mix(v.to_bits() as u64); } }
         for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
         mix(self.battle.is_some() as u64); mix(self.terrain_ver as u64);
+        mix(self.deposit_layout_stamp());
         for pl in &self.links { mix(pl.len() as u64); for q in pl { mix(q.0.to_bits() as u64); mix(q.1.to_bits() as u64); } }
         h
     }
@@ -218,7 +224,8 @@ impl World {
     pub(crate) fn net(&self) -> std::rc::Rc<Net> { self.net_base() }
 
     pub(crate) fn build_net(&self) -> Net {
-        if self.buildings.is_empty() { return Net::empty(); }
+        let obstacles = self.obst();
+        if self.buildings.is_empty() { return Net::empty(obstacles); }
         let (mut bx0, mut by0, mut bx1, mut by1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for b in &self.buildings { bx0 = bx0.min(b.x); by0 = by0.min(b.y); bx1 = bx1.max(b.x); by1 = by1.max(b.y); }
         let m = 16.0;
@@ -299,7 +306,7 @@ impl World {
             for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] { let (p, q) = (i + di, j + dj); if p >= 0 && q >= 0 && p < nx && q < ny { sl = sl.max((h[(q * nx + p) as usize] - h[k]).abs() / RC); } }
             ok[k] = sl <= 1.6;
         } }
-        let mut net = Net { x0, y0, nx, ny, ok, nodes: vec![], ring: vec![], adj: vec![], comp: vec![] };
+        let mut net = Net { x0, y0, nx, ny, ok, obstacles, nodes: vec![], ring: vec![], adj: vec![], comp: vec![] };
 
         // a ring of nodes round every solid building
         let mut ring: Vec<Vec<u32>> = vec![vec![]; self.buildings.len()];
@@ -383,9 +390,9 @@ impl World {
         }
         // the roads the player laid: a node at every point of the curve (the pieces and the samples between them), joined as road edges, so people and soldiers prefer them; the end of a road
         // that runs into a building's node is joined to the ring node there (the end of the building's stub), and into a square to its node on that side
-        let remote_obstacles = std::cell::OnceCell::new();
+        let remote_obstacles = net.obstacles.clone();
         let remote_clear = |a: (f32, f32), b: (f32, f32)| {
-            let o = remote_obstacles.get_or_init(|| self.obst());
+            let o = &remote_obstacles;
             if !o.solid_clear(a, b, crate::members::FOOT_MARGIN) { return false; }
             let length = (b.0 - a.0).hypot(b.1 - a.1);
             let steps = (length / 0.5).ceil().max(1.0) as u32;
@@ -423,9 +430,12 @@ impl World {
         for pl in &self.links {
             let mut prev = u32::MAX;
             for q in pl {
+                if !net.obstacles.deposit_clear(*q, *q, members::FOOT_MARGIN) { prev = u32::MAX; continue; }
                 let key = ((q.0 / 1.2).round() as i32, (q.1 / 1.2).round() as i32);
                 let id = *shared.entry(key).or_insert_with(|| { let id = net.add(q.0, q.1); road_node.push(id); id });
-                if prev != u32::MAX && prev != id { net.link(prev, id, true); }
+                if prev != u32::MAX && prev != id && net.obstacles.deposit_clear(net.nodes[prev as usize], net.nodes[id as usize], members::FOOT_MARGIN) {
+                    net.link(prev, id, true);
+                }
                 prev = id;
             }
         }

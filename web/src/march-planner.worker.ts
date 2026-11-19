@@ -5,6 +5,7 @@ export interface MarchPreviewRequest {
   units: Uint32Array;
   from: [number, number];
   to: [number, number];
+  reinforce?: number;
   snapshot?: Uint8Array;
 }
 
@@ -41,7 +42,7 @@ scope.onmessage = async ({ data }) => {
     }
     if (data.snapshot) { world?.free(); world = world_restore(data.snapshot); }
     if (!world) { scope.postMessage(null); return; }
-    const plan = world.plan_march(data.units, ...data.from, ...data.to);
+    const plan = data.reinforce === undefined ? world.plan_march(data.units, ...data.from, ...data.to) : world.plan_reinforcement(data.reinforce);
     scope.postMessage(plan, [plan.buffer]);
   } catch {
     if (!('warm' in data)) scope.postMessage(null);

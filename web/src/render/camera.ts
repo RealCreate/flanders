@@ -97,7 +97,7 @@ export class CameraRig {
 
   /** Put the camera where the target, distance and angles say. */
   private place(dt = 0) {
-    this.target.y = Math.max(0, this.terrain.heightAt(this.target.x, this.target.z));
+    this.target.y = Math.max(0, this.terrain.heightAt(this.target.x, this.target.z, true));
     const cp = Math.cos(this.pitch);
     this.cam.position.set(
       this.target.x + Math.sin(this.yaw) * cp * this.dist,
@@ -105,7 +105,7 @@ export class CameraRig {
       this.target.z + Math.cos(this.yaw) * cp * this.dist,
     );
     // keep the camera above the ground
-    const g = this.terrain.heightAt(this.cam.position.x, this.cam.position.z) + 2.5;
+    const g = this.terrain.heightAt(this.cam.position.x, this.cam.position.z, true) + 2.5;
     if (this.cam.position.y < g) this.cam.position.y = g;
     if (dt > 0 && this.shakeAmt > 0.002) { this.cam.position.x += (Math.random() - 0.5) * this.shakeAmt; this.cam.position.y += (Math.random() - 0.5) * this.shakeAmt * 0.6; this.cam.position.z += (Math.random() - 0.5) * this.shakeAmt; this.shakeAmt *= Math.exp(-dt * 9); }
     this.cam.lookAt(this.target);

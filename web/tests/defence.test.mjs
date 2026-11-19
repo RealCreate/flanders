@@ -39,6 +39,8 @@ test('a sally takes everybody who is standing', () => {
 test('a drawbridge lent to an army is down even in a fight, and is announced once', () => {
   assert.equal(drawnUp(5, false), true); assert.equal(drawnUp(4, false), false); assert.equal(drawnUp(4, true), true);
   assert.equal(drawnUp(6, true), false); assert.equal(drawnUp(7, true), false); assert.equal(drawnUp(6, false), false);
+  assert.equal(drawnUp(8, true), false, 'a manual lowering overrides the raid');
+  assert.equal(drawnUp(8, false), false);
   const row = (kind, status) => [kind, 0, 0, 0, 0, 0, status, 0, 0, 0];
   const flat = [...row(0, 4), ...row(23, 6), ...row(23, 5)];
   let r = newlyLent(flat, new Set()); assert.deepEqual(r.fresh, [1]);

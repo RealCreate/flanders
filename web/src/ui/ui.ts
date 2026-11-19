@@ -3,13 +3,15 @@ import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
 import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, TIER_NAMES, tierName, type BuildingDef } from '../data';
 import { buildSearch } from '../buildsearch';
+import { ORDER_NAMES, TROOP_GROUPS } from '../battlefield';
+import type { BribeOffer } from '../bribe';
 import { stewardRisks, WATCH_MESSAGES, type StewardAction, type StewardMode, type WatchReport } from '../steward';
 import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
 import { group, workNote, verdict, understaffed, kindOutputs, FILTERS, SORTS, type WorkRow, type WorkTotals, type Filter, type Sort } from '../workview';
 
 /** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
-const FOOD_KEYS = ['grain', 'fish', 'smokedfish', 'bread', 'meat', 'smokedmeat'];
+const FOOD_KEYS = ['grain', 'fish', 'bread', 'meat'];
 const FOOD_ID = -2, CLOSED = -1;   // (the breakdown panel shows resource `i`, or all the foods at once)
 const bi = (name: string, size = 16) => icon(name, size, { mono: true });
 import { ACTIONS, keys, prettyKey, type Action } from '../keys';
@@ -91,6 +93,7 @@ export interface Hud {
 
 interface MilitaryUpgrade { id: number; name: string; desc: string; tier: number; prereq: number; cost: [number, number][] }
 interface BattleAction { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }
+interface RaidBribe { greed: number; offer?: BribeOffer; pay?: () => void }
 
 const BATTLE_TARGET_HINTS: Record<number, string> = {
   1: 'Right-click the position to hold',
@@ -98,8 +101,6 @@ const BATTLE_TARGET_HINTS: Record<number, string> = {
   3: 'Right-click a safe position to regroup',
   4: 'Right-click a point around the enemy to flank',
 };
-const BATTLE_ORDER_NAMES = ['Automatic', 'Hold line', 'Attack here', 'Fall back', 'Flank'];
-const BATTLE_GROUP_NAMES = ['Infantry', 'Archers', 'Knights', 'Siege'];
 
 export interface PeerRow { key: string; name: string; where?: string; online?: boolean; pop: number; buildings: number; sync: string; busy: boolean; rel?: number; married?: boolean; treaties?: number }
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
@@ -112,7 +113,8 @@ const findBuildCards = buildSearch([
   ...BUILDABLE.map(d => {
     const category = d.id === 37 || d.id === 38 ? 7 : d.cat;
     return { id: d.id, category, name: d.name,
-      keywords: [...(TIER_NAMES[d.id] ?? []), ...d.outputs.map(([r]) => RES[r].name), ...(d.id === 35 ? ['harbor', 'dock'] : [])],
+      outputs: [...d.outputs, ...(d.alternateRecipe?.outputs ?? [])].map(([r]) => RES[r].name),
+      keywords: [...(TIER_NAMES[d.id] ?? []), ...(d.id === 35 ? ['harbor', 'dock'] : [])],
       description: `${CATS[category].name} ${d.desc}` };
   }),
   { id: LEVEL_TOOL, category: defs[33].cat, name: 'Level Ground', keywords: ['flatten', 'terrain'], description: `Land ${LEVEL_DESC}` },
@@ -185,7 +187,13 @@ export class UI {
   </div>
   </div>
 </header>
-<div id="battle" hidden><div id="battle-text"></div></div>
+<div id="battle" hidden>
+  <div id="battle-text"></div>
+  <div id="battle-bribe" hidden>
+    <button type="button" id="battle-pay" class="pbtn">${bi('gold')} <span id="battle-pay-label"></span></button>
+    <span class="raid-greed" title="Higher greed makes future raids earlier, stronger and more expensive to pay off. It fades each day.">Greed <b id="battle-greed" aria-live="polite">0</b></span>
+  </div>
+</div>
 <button id="hall-exit" class="btn go" hidden>← Leave the test hall</button>
 <aside id="ledger" hidden>
   <div class="tabs" id="tabs">
@@ -195,7 +203,7 @@ export class UI {
     <div class="build-find" role="search" aria-label="Building catalog">
       <div class="build-search">
         ${bi('search', 18)}
-        <input id="build-search" type="search" placeholder="Search buildings and tools…" aria-label="Search buildings and tools" aria-controls="cards" autocomplete="off">
+        <input id="build-search" type="search" placeholder="Search buildings, tools or outputs…" aria-label="Search buildings, tools or outputs" aria-controls="cards" autocomplete="off">
         <button type="button" id="build-clear" aria-label="Clear search" title="Clear search" hidden>${bi('close', 14)}</button>
       </div>
       <div class="chips" id="cats" role="group" aria-label="Building categories"></div>
@@ -783,7 +791,8 @@ export class UI {
   private io(d: BuildingDef) {
     if (!d.cycle) return d.housing ? `<div class="io">Houses ${d.housing} villagers</div>` : '';
     const f = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)}${n}`).join(' ');
-    return `<span class="io">${d.inputs.length ? f(d.inputs) + ' → ' : ''}${f(d.outputs)} every ${d.cycle}s · ${d.jobs} workers</span>`;
+    const recipe = ({ inputs, outputs }: Pick<BuildingDef, 'inputs' | 'outputs'>) => `${inputs.length ? f(inputs) + ' → ' : ''}${f(outputs)}`;
+    return `<span class="io">${recipe(d)}${d.alternateRecipe ? '<br>' + recipe(d.alternateRecipe) : ''} every ${d.cycle}s · ${d.jobs} workers</span>`;
   }
 
   hotkeyKind(n: number): number | null { return BUILDABLE[n]?.id ?? null; }
@@ -808,7 +817,7 @@ export class UI {
       p.onclick = e => { if (this.rateClick(e, i)) return; this.openFlow(i); }; p.title = '';
       p.onmouseleave = () => { this.hoverPill = -1; this.stockOff(); this.lastTip = ''; $('tooltip').hidden = true; };
       t.appendChild(p); this.pills.push(p);
-      if (FOOD_KEYS.includes(r.key)) p.hidden = true;   // the foods are one pill: Food
+      if (FOOD_KEYS.includes(r.key)) p.hidden = true;
     });
     const fp = document.createElement('span'); fp.className = 'pill'; fp.dataset.i = String(RES.length);
     fp.innerHTML = `<span class="ic">${icon('food', 18)}</span><b>0</b><span class="d"></span>`;
@@ -948,7 +957,7 @@ export class UI {
       p.querySelector('b')!.textContent = String(Math.floor(t.meals));
       const d = p.querySelector('.d') as HTMLElement; d.textContent = Math.abs(t.rate) >= 1 ? fmtRate(t.rate) : ''; d.classList.toggle('neg', t.rate < 0);
       p.classList.toggle('low', t.meals < 25);
-      this.pillText[RES.length] = `<b>${icon('food', 18)} Food</b><small>${Math.floor(t.meals)} meals in store</small><small>${fmtRate(t.rate)} meals (steady, over the last day)</small>${left !== null ? `<small class="warn">Runs out in ${fmtDaysLeft(left)}</small>` : ''}<small>Grain, fish, bread and smoked fish, eaten together.</small><small class="muted">Click for what makes it and what uses it</small>`;
+      this.pillText[RES.length] = `<b>${icon('food', 18)} Food</b><small>${Math.floor(t.meals)} meals across all foods</small><small>${fmtRate(t.rate)} meals (steady, over the last day)</small>${left !== null ? `<small class="warn">Runs out in ${fmtDaysLeft(left)}</small>` : ''}<small class="muted">Click for what makes it and what uses it</small>`;
       if (this.hoverPill === RES.length) this.tipFor(RES.length);
     }
     h.stocks.forEach((v, i) => {
@@ -1040,9 +1049,24 @@ export class UI {
     hint.textContent = n ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.';
   }
 
-  /** Battle status and the click-to-focus shortcut. */
-  battle(text: string | null, onClick?: () => void) {
+  /** Battle status, the click-to-focus shortcut, and the local bandits' payment details. */
+  battle(text: string | null, onClick?: () => void, bribe?: RaidBribe) {
     const b = $('battle'); b.hidden = !text;
+    $('battle-bribe').hidden = !bribe || !text;
+    const pay = $<HTMLButtonElement>('battle-pay');
+    const offer = bribe?.offer;
+    pay.hidden = !text || !offer?.show;
+    pay.disabled = !bribe?.pay || !offer || offer.disabled;
+    pay.onclick = pay.disabled ? null : bribe?.pay ?? null;
+    if (bribe && text) {
+      const greed = $('battle-greed'), count = String(bribe.greed);
+      if (greed.textContent !== count) greed.textContent = count;
+      if (offer?.show) {
+        const label = $('battle-pay-label');
+        if (label.textContent !== offer.label) label.textContent = offer.label;
+        pay.title = offer.title;
+      }
+    }
     if (!text) return;
     const body = $('battle-text');
     body.innerHTML = text;
@@ -1055,10 +1079,10 @@ export class UI {
     orders.hidden = !order;
     const current = $('battle-current-orders');
     const modes = Array.from(issued ?? []);
-    const active = modes.flatMap((mode, i) => mode ? [`${BATTLE_GROUP_NAMES[i]} · ${BATTLE_ORDER_NAMES[mode]}`] : []);
+    const active = modes.flatMap((mode, i) => mode ? [`${TROOP_GROUPS[i]} · ${ORDER_NAMES[mode]}`] : []);
     current.hidden = !order || active.length === 0;
     current.textContent = modes.length === 4 && active.length === 4 && modes.every(mode => mode === modes[0])
-      ? `All troops · ${BATTLE_ORDER_NAMES[modes[0]]}` : active.join(' / ');
+      ? `All troops · ${ORDER_NAMES[modes[0]]}` : active.join(' / ');
     const sig = actions.map(a => a.label + (a.disabled ? '!' : '')).join('|');
     if (bar.dataset.sig !== sig) {
       bar.dataset.sig = sig; bar.innerHTML = '';

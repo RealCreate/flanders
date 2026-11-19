@@ -47,7 +47,7 @@ export class Deposits {
     }
   }
 
-  /** Deposits that a mine, quarry or clay pit stands against: the pile is drawn right up to the door, and the earth between is worked bare. */
+  /** Deposits that a mine, quarry or clay pit works. The pile stays at its map position. */
   private worked = new Map<number, { key: string; decal: THREE.Mesh; tinted: { rock: THREE.Mesh; mat: THREE.Material | THREE.Material[] }[] }>();
   private decalMat = new THREE.MeshStandardMaterial({ color: 0x4a3f33, roughness: 1, transparent: true, opacity: 0.88, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
 
@@ -70,9 +70,7 @@ export class Deposits {
       const key = `${w.x}:${w.z}:${w.dx.toFixed(2)}`, cur = this.worked.get(d);
       if (cur && cur.key === key) continue;
       if (cur) this.release(d);
-      const g = this.groups[d], door = 2.0, R = 1.5;   // the door stands 2 units from the building's middle; the middle of the biggest rock sits a little behind it
-      const px = w.x + w.dx * (door + R), pz = w.z + w.dz * (door + R);
-      g.position.x = px; g.position.z = pz; this.stamp(g);
+      const g = this.groups[d], door = 2.0;
       const decal = new THREE.Mesh(new THREE.CircleGeometry(2.7, 20).rotateX(-Math.PI / 2), this.decalMat);
       decal.position.set(w.x + w.dx * (door + 0.4), this.terrain.heightAt(w.x + w.dx * door, w.z + w.dz * door) + 0.07, w.z + w.dz * (door + 0.4)); decal.renderOrder = 2; this.group.add(decal);
       const tinted: { rock: THREE.Mesh; mat: THREE.Material | THREE.Material[] }[] = [];
@@ -84,14 +82,12 @@ export class Deposits {
       this.worked.set(d, { key, decal, tinted });
     }
     for (const d of [...this.worked.keys()]) if (!want.has(d)) this.release(d);
-    this.refit();
   }
 
   private release(d: number) {
     const w = this.worked.get(d); if (!w) return;
     this.group.remove(w.decal); w.decal.geometry.dispose();
     for (const t of w.tinted) { (t.rock.material as THREE.Material).dispose(); t.rock.material = t.mat; }
-    this.groups[d].position.x = this.flat[d * 5 + 1]; this.groups[d].position.z = this.flat[d * 5 + 2]; this.stamp(this.groups[d]);
     this.worked.delete(d);
   }
 

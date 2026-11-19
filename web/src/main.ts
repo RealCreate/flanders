@@ -19,7 +19,7 @@ import { AnchorGhost, anchorShape, doorInWorld } from './render/anchorghost';
 import { SelectionMark } from './render/selection';
 import { RadiusRings } from './render/coverage';
 import { parseRadii, describe as describeRadii, uncoveredByWells, wallsOutOfReach, FX_FIRE_FULL, FX_FIRE_HALF, FX_SHOOT, type Radius } from './coverage';
-import { drawbridgeDeckHeight } from './render/ringheight';
+import { OVER_WATER_KINDS } from './render/ringheight';
 import { buildShowroom } from './render/showroom';
 import { settings, onSettings, pixelRatio, type Settings } from './settings';
 import { auditModel, setNightLight } from './render/buildings';
@@ -32,13 +32,13 @@ import { Terrain, HALF, STEP, NV } from './render/terrain';
 import { Atmosphere } from './render/sky';
 import { CameraRig } from './render/camera';
 import { Forest } from './render/trees';
-import { buildModel, Effects } from './render/buildings';
+import { buildModel, Effects, type BuildingModel } from './render/buildings';
 import { Deposits } from './render/deposits';
 import { depositLabel, depositPanel, parseBuildingDeposit } from './depositinfo';
 import { Crowd } from './render/crowd';
 import { Travellers, type TVillage } from './render/travellers';
 import { JK, arrivedText } from './render/journey';
-import { Effects2 } from './render/fx';
+import { Effects2, EffectView } from './render/fx';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
 import { keys, digitOf, prettyKey, type Action } from './keys';
@@ -72,26 +72,21 @@ import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
 const GOLD = 8;   // the gold store (catalog GD)
 import { bribeOffer, bribeToast, bribeRefusal, BRIBE_CONSEQUENCE } from './bribe';
-import { roleOf, actionsFor, foeFocus, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent } from './defence';
+import { roleOf, actionsFor, foeFocus, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent, drawnUp, isLent, DB_UP, DB_MANUAL_DOWN } from './defence';
+import { arrivalTime, crossingSummary, objectiveName, orderPins, parseRaidObjective, type BattlePin, type RaidObjective } from './battlefield';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { cleanName, parseCmd, Sequence } from './net/validate';
 import { restartCmd, rebaseLog, restartBlocker, validArchive, type Archive, type Facts } from './restart';
 import { saveKept, loadKept, deleteKept } from './checkpoint';
 import { Village, type Shared } from './village';
 import { PathLine, STATE_TEXT } from './render/field';
+import { ArmyPicker } from './render/armypick';
 
 await init();
 
 const radii = defs.map(d => d.r);
 /** How much room a building takes at a tier (the core's rule: grander buildings spread out as they are upgraded). */
 const footprint = (kind: number, tier: number) => footprint_of(kind, tier);
-/** Deck height of a drawbridge about to be placed at (x, z), as the core works it out when it is built. */
-function drawbridgeDeckAt(w: World, x: number, z: number, rot: number): number {
-  const f = w.buildings_flat(), gates: { d: number; h: number }[] = [];
-  for (let i = 0; i + 9 < f.length; i += 10) if (f[i] === 22) gates.push({ d: Math.hypot(f[i + 2] - x, f[i + 3] - z), h: f[i + 5] });
-  const a = (rot & 7) * Math.PI / 4, sx = Math.sin(a), sz = Math.cos(a);
-  return drawbridgeDeckHeight(gates, w.height_at(x + sx * 9, z + sz * 9), w.height_at(x - sx * 9, z - sz * 9));
-}
 const sound = new Sound();
 const nextFrame = () => new Promise<void>(r => setTimeout(r, 20));
 /** Game ticks per real second at 1x. Half a tick per second keeps the pace of the village calm and readable. */
@@ -436,6 +431,7 @@ function connect() {
         if (c.op === 'style') r.village.syncFull();
         if (c.op === 'place' || c.op === 'level' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') refreshTerrain(r.village.world);
         r.village.syncFull(); r.village.afterTick(); r.tick = c.tick;
+        if (c.op === 'battleorder') battleBanner();
       } catch (e) { quarantine(r, e); return; }
       judged(r, r.track.recheck(r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));   // a hash that was waiting for this command can be judged now
       if ((c.op === 'attack' || c.op === 'sendatk') && c.to === identity.pub) defendAgainst(r, c);
@@ -464,7 +460,7 @@ function placedFx(kind: number, x: number, z: number, upgrade = false) {
   const wgt = defs[kind].weight;
   if (!upgrade) sound.place(wgt);
   for (let i = 0; i < 1 + Math.floor(wgt / 2); i++) fx.burst(x + (Math.random() - 0.5) * defs[kind].r, z + (Math.random() - 0.5) * defs[kind].r, false);
-  rig.shake(0.05 + wgt * 0.04);
+  if (!OVER_WATER_KINDS.has(kind) && kind !== 38) rig.shake(0.05 + wgt * 0.04);
   updateGoals();
 }
 
@@ -790,8 +786,18 @@ function armiesOnScreen() {
   for (const id of lv.field.ids()) { const p = lv.field.position(id); if (!p) continue; v.set(p.x, terrain.heightAt(p.x, p.z) + 1.5, p.z).project(rig.cam); if (v.z < 1) out.push({ id, sx: (v.x * 0.5 + 0.5) * innerWidth, sy: (-v.y * 0.5 + 0.5) * innerHeight }); }
   return out;
 }
-/** The army under (or near: banners are small) the pointer. */
-function pickArmy(e: { clientX: number; clientY: number }): number | null { const hit = nearestWithin(armiesOnScreen(), e.clientX, e.clientY, 34); return hit ? hit.id : null; }
+/** Troops and the banner select their army. A small screen-space margin also helps with distant banners. */
+function pickArmy(e: { clientX: number; clientY: number }, r = pointerRay(e), ground?: THREE.Vector3 | null): number | null {
+  const picker = new ArmyPicker(r.ray);
+  const troops = settings().crowds && crowd.group.visible && !showroom;
+  lv.field.pick(picker, troops);
+  if (troops) lv.army.pick(picker);
+  if (picker.hit) {
+    const land = ground === undefined ? terrain.pick(r.ray) : ground;
+    return !land || r.ray.origin.distanceTo(land) + 0.2 >= picker.hit.distance ? picker.hit.id : null;
+  }
+  return nearestWithin(armiesOnScreen(), e.clientX, e.clientY, 34)?.id ?? null;
+}
 let lastArmyClick = { t: 0, id: -1 };
 
 /** Draw the selected army's remaining route. */
@@ -801,7 +807,7 @@ function showRoute() {
   pathLine?.set(p.length >= 6 ? Array.from(p) : null);
 }
 
-interface MarchPreview { id: number; world: World; revision: bigint; request: MarchPreviewRequest }
+interface MarchPreview { id: number; world: World; revision: bigint; battleTick: bigint | null; request: MarchPreviewRequest }
 interface ArmyRouteJob {
   world: World;
   request: Omit<ArmyRouteRequest, 'snapshot'>;
@@ -812,21 +818,35 @@ let marchPreviewWorker: Worker | null = null;
 let marchPreviewUnavailable = false;
 let previewInFlight: MarchPreview | null = null, previewWanted: MarchPreview | null = null;
 let previewWorld: World | null = null, previewRevision: bigint | null = null;
+let previewBattleTick: bigint | null = null, previewShown: MarchPreview | null = null;
 let armyRouteInFlight: ArmyRouteJob | null = null;
 const armyRouteQueue: ArmyRouteJob[] = [];
 const pendingArmyOrders = new Map<number, symbol>();
 
-function cancelMarchPreview() { previewWanted = null; }
+function cancelMarchPreview() {
+  previewWanted = null;
+  if (!previewShown) return;
+  previewShown = null;
+  showRoute();
+  ui.hint(null);
+}
+
+function reinforcementPoint(x: number, z: number) {
+  return lv.world.battle_active() && foeNear(lv.world.battle_units_flat(), x, z, 18);
+}
 
 function queueMarchPreview(id: number, x: number, z: number) {
   if (marchPreviewUnavailable) return;
   const world = lv.world, revision = world.march_revision();
-  const previous = previewWanted;
+  const reinforce = reinforcementPoint(x, z) ? id : undefined;
+  const battleTick = reinforce === undefined ? null : world.tick();
+  const previous = previewWanted ?? previewShown;
   if (previous?.id === id && previous.world === world && previous.revision === revision
+      && previous.battleTick === battleTick && previous.request.reinforce === reinforce
       && Math.hypot(previous.request.to[0] - x, previous.request.to[1] - z) < 1) return;
   const units = detUnits(id), pos = lv.field.position(id);
   if (!units || !pos) return;
-  previewWanted = { id, world, revision, request: { seed: seedBig, units: Uint32Array.from(units), from: [pos.x, pos.z], to: [x, z] } };
+  previewWanted = { id, world, revision, battleTick, request: { seed: seedBig, units: Uint32Array.from(units), from: [pos.x, pos.z], to: [x, z], reinforce } };
   pumpMarchPreview();
 }
 
@@ -845,9 +865,12 @@ function getMarchWorker() {
       previewInFlight = null;
       if (!(data instanceof Float32Array)) { stopMarchPreviewWorker(); return; }
       if (finished && previewWanted === finished) {
-        cancelMarchPreview();
+        previewWanted = null;
         if (finished.id === selectedDet && lv.world === finished.world && selectedKind === null && !pendingBattleOrder) {
-          if (finished.revision === finished.world.march_revision()) drawMarchPreview(finished.request, data);
+          if (finished.revision === finished.world.march_revision() && (finished.request.reinforce === undefined || lv.world.battle_active())) {
+            previewShown = finished;
+            drawMarchPreview(finished.request, data);
+          }
           else queueMarchPreview(finished.id, ...finished.request.to);
         }
       }
@@ -874,11 +897,13 @@ function pumpMarchPreview() {
     if (!preview || selectedDet !== preview.id || lv.world !== preview.world || selectedKind !== null || pendingBattleOrder) { cancelMarchPreview(); return; }
     if (preview.revision !== preview.world.march_revision()) { cancelMarchPreview(); queueMarchPreview(preview.id, ...preview.request.to); return; }
     previewInFlight = preview;
-    if (previewWorld !== preview.world || previewRevision !== preview.revision) {
+    if (previewWorld !== preview.world || previewRevision !== preview.revision
+        || (preview.battleTick !== null && preview.battleTick !== previewBattleTick)) {
       const snapshot = preview.world.snapshot();
       worker.postMessage({ ...preview.request, snapshot }, [snapshot.buffer]);
       previewWorld = preview.world;
       previewRevision = preview.revision;
+      previewBattleTick = preview.battleTick;
     } else worker.postMessage(preview.request);
   } catch { stopMarchPreviewWorker(); }
 }
@@ -886,20 +911,29 @@ function pumpMarchPreview() {
 function stopMarchPreviewWorker() {
   marchPreviewWorker?.terminate(); marchPreviewWorker = null;
   marchPreviewUnavailable = true; previewInFlight = previewWanted = null; previewWorld = null;
+  cancelMarchPreview();
   armyRouteInFlight?.done(null); armyRouteInFlight = null;
   for (const order of armyRouteQueue.splice(0)) order.done(null);
 }
 
 function drawMarchPreview(request: MarchPreviewRequest, plan: Float32Array) {
   const [x, z] = request.from, [tx, tz] = request.to;
-  if (plan[0] !== 1) { pathLine.set([x, z, 0, tx, tz, 0], false); ui.hint(MARCH_ERRORS[plan[0]] ?? 'No way through to there.', true); return; }
-  const path = Array.from(plan.subarray(5));
-  pathLine.set(path, true);
-  const bits = [`${Math.round(plan[1])}s`];
-  if (plan[2]) bits.push(`${plan[2]} planks for a bridge`);
-  if (plan[3]) bits.push(`${plan[3]} wood for boats`);
-  if (path.some((v, i) => i % 3 === 2 && v === 1)) bits.push('cuts through forest');
-  ui.hint(`Right-click to march · ${bits.join(' · ')}`);
+  const reinforce = request.reinforce !== undefined;
+  if (plan[0] !== 1) {
+    pathLine.set([x, z, 0, tx, tz, 0], false);
+    ui.hint(plan[0] === -10 ? 'There is no fight to reinforce.' : (MARCH_ERRORS[plan[0]] ?? 'No way through to there.'), true);
+    return;
+  }
+  const path = [x, z, 0, ...plan.subarray(5)];
+  const stores = lv.world.stocks();
+  const { costs, shortage } = crossingSummary(plan[2], plan[3], stores[1], stores[0]);
+  pathLine.set(path, !shortage);
+  const eta = reinforce && plan[1] === 0 ? 'Joins now' : `ETA ~${arrivalTime(plan[1], TICK_RATE)} at 1×`;
+  const order = reinforce ? 'Right-click to reinforce' : 'Right-click to march';
+  const bits = [multiDets.length > 1 ? `Army ${selectedDet} · ${order}` : order, eta, costs];
+  if (shortage) bits.push(`${shortage} · may wait for supplies`);
+  if (path.some((v, i) => i % 3 === 2 && v === 1)) bits.push('Fells trees');
+  ui.hint(bits.join(' · '), !!shortage);
 }
 
 function updateDets() {
@@ -1170,7 +1204,7 @@ async function startGame(name: string, username: string) {
 
   renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: settings().antialias, powerPreference: 'high-performance' });
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, 1)); renderer.setSize(innerWidth, innerHeight);
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // the shadow map is redrawn every other frame (see frame())
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // Atmosphere schedules shadow redraws
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.72;
   scene = new THREE.Scene(); scene.matrixAutoUpdate = false;   // the scene itself never moves: with its matrix 'dirty' every frame, every object below was re-multiplied every frame
   ui.progress(10, 'Painting the sky…'); await nextFrame();
@@ -1191,7 +1225,7 @@ async function startGame(name: string, username: string) {
   crowd = new Crowd(); scene.add(crowd.group);
   travellers = new Travellers(terrain); scene.add(travellers.group);
   fx = new Effects2(terrain); scene.add(fx.group);
-  effects = new Effects(); scene.add(effects.smoke.points);
+  effects = new Effects(); scene.add(effects.group);
   covInit(); selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
   for (let i = 0; i < 8; i++) { const r = new SelectionMark(terrain, 0xff6a5a); blockRings.push(r); scene.add(r); }
   pathLine = new PathLine(terrain); scene.add(pathLine.mesh);
@@ -1280,6 +1314,7 @@ async function startGame(name: string, username: string) {
   ui.enterGame();                       // everything is ready: reveal the game
   if (watch.review && !document.hidden) ui.openSteward();
   renderWatch();
+  battleBanner();
   if (DEBUG_HOOKS) (window as unknown as { __dbg: unknown }).__dbg = { get lv() { return lv; }, rig, get terrain() { return terrain; }, view: (x: number, z: number, dist: number, yaw: number, pitch: number) => { const g = (rig as unknown as { goal: Record<string, number> }).goal; Object.assign(g, { x, z, dist, yaw, pitch }); rig.snap(); }, cheat: (a: number, x: number, y: number) => (a === 100 ? runModelVillage(false) : doCheat(a, x, y)), select: (i: number | null) => selectBuilding(i), kind: (k: number | null) => selectKind(k), after: () => afterLocalChange(), get tunnels() { return tunnels; }, get renderer() { return renderer; }, get scene() { return scene; }, get perf() { return perf; }, audit: auditModel };
   last = performance.now(); startBackgroundClock(); requestAnimationFrame(frame);
 }
@@ -1288,9 +1323,9 @@ async function startGame(name: string, username: string) {
  *  so nothing pops in or stalls once the player sees the world. */
 async function warmUp() {
   ui.progress(72, 'Compiling shaders…'); await nextFrame();
-  fx.warm(true); effects.smoke.points.visible = true;
+  fx.warm(true); effects.warm(true);
   try { await renderer.compileAsync(scene, rig.cam); } catch { /* older drivers: the warm-up frames below compile instead */ }
-  fx.warm(false);
+  fx.warm(false); effects.warm(false);
   ui.progress(86, 'Baking shadows…'); await nextFrame();
   const view = Math.max(90, rig.dist * 1.7 + 50);
   for (let i = 0; i < 4; i++) {
@@ -1425,6 +1460,37 @@ const raidWarningSeen = new Map<string, boolean>();
 
 interface BattleOrder { village: Village; peer: string | null; group: number; mode: number }
 let pendingBattleOrder: BattleOrder | null = null;
+let raidWagon: { x: number; z: number; yaw: number } | null = null;
+let visibleBattlePins: { pin: BattlePin; el: HTMLElement }[] = [];
+
+function setBattlefield(orders: BattlePin[], objective: RaidObjective | null, angle = 0) {
+  raidWagon = objective?.kind === 'caravan' && !objective.lost ? { x: objective.x, z: objective.z, yaw: -angle - Math.PI / 2 } : null;
+  const points = objective && !objective.lost
+    ? [...orders, { x: objective.x, z: objective.z, text: objectiveName(objective), objective: true }] : orders;
+  while (visibleBattlePins.length > points.length) visibleBattlePins.pop()!.el.remove();
+  points.forEach((pin, i) => {
+    let entry = visibleBattlePins[i];
+    if (!entry) {
+      const el = document.createElement('div');
+      el.className = 'lbl battle-pin';
+      ui.labels.append(el);
+      entry = visibleBattlePins[i] = { pin, el };
+    }
+    entry.pin = pin;
+    entry.el.classList.toggle('objective', !!pin.objective);
+    if (entry.el.textContent !== pin.text) entry.el.textContent = pin.text;
+  });
+}
+
+function drawBattlefieldPins() {
+  for (const { pin, el } of visibleBattlePins) {
+    const y = terrain.walkAt(pin.x, pin.z) + (pin.objective ? 5.8 : 0.85);
+    vtmp.set(pin.x, y, pin.z).project(rig.cam);
+    const visible = !showroom && vtmp.z >= -1 && vtmp.z <= 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1;
+    el.hidden = !visible;
+    if (visible) el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px,${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%,-100%)`;
+  }
+}
 
 function setPendingBattleOrder(order: BattleOrder | null) {
   pendingBattleOrder = order;
@@ -1469,7 +1535,7 @@ function battleBanner() {
     const warning = v.world.raid_warning_ticks() > 0, warned = raidWarningSeen.get(key) ?? false; raidWarningSeen.set(key, warning);
     if (warning && !warned) {
       const dir = compassWord(Math.cos(v.world.raid_warning_angle()), Math.sin(v.world.raid_warning_angle()));
-      const msg = `Bandits are gathering to attack ${mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village"} from the ${dir}. You have 30 seconds to prepare.`;
+      const msg = `Bandits are gathering to attack ${mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village"} from the ${dir}.`;
       ui.toast(msg, 'bad'); ui.log(msg, 'bad', Number(v.world.tick()));
     }
     if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
@@ -1480,12 +1546,18 @@ function battleBanner() {
   for (const { v, who, mine, key } of controllable ? [controllable] : list) {
     const w = v.world;
     if (!w.battle_active() && w.raid_warning_ticks() > 0) {
-      const seconds = w.raid_warning_ticks();
+      const seconds = arrivalTime(w.raid_warning_ticks(), TICK_RATE);
       const dir = compassWord(Math.cos(w.raid_warning_angle()), Math.sin(w.raid_warning_angle()));
       const bossWarning = w.raid_warning_boss() ? ' A warlord leads them.' : '';
-      const text = `Raid approaching from the ${dir} in ${seconds}s.${bossWarning} Muster troops, man towers and prepare your defences.`;
+      const objective = parseRaidObjective(w.raid_objective());
+      const text = `Raid approaching from the ${dir} in about ${seconds} at 1×.${bossWarning}`;
       const f = foeFocus(w.raid_warning_angle(), v.ox, v.oz, w.build_radius());
-      ui.battle(`${icon('attack', 18, { mono: true })} Raiders approaching<small>${esc(text)}</small><small>Countdown · ${seconds}s · Direction · ${dir}</small>`, () => rig.focus(f.x, f.z, 65));
+      setBattlefield([], objective, w.raid_warning_angle());
+      const briefing = objective
+        ? `<small class="raid-goal">${objectiveName(objective)} · ${objective.kind === 'gate' ? 'Keep it standing until the raiders break.' : 'Keep soldiers near the wagon until it can leave.'} Click to locate it.</small>`
+        : '<small>Muster troops and man your towers.</small>';
+      ui.battle(`${icon('attack', 18, { mono: true })} Raiders approaching<small>${esc(text)}</small>${briefing}`,
+        () => rig.focus(objective?.x ?? f.x, objective?.z ?? f.z, 65), mine ? { greed: w.bribe_greed() } : undefined);
       ui.battleControls();
       return;
     }
@@ -1496,32 +1568,42 @@ function battleBanner() {
     const boss = parseBoss(w.battle_boss()), lair = w.battle_lair().length > 0;
     const strip = boss ? `<span class="bossstrip" title="${esc(bosses[boss.kind - 1]?.desc ?? '')}">${icon(lair ? 'lair' : boss.kind === 1 ? 'horn' : 'boss', 16, { mono: true })} ${esc(bossLine(bosses, boss))}<i><b class="${boss.phase > 0 ? 'rage' : ''}" style="width:${Math.round(hpFraction(boss) * 100)}%"></b></i></span>` : '';
     const role = roleOf(mine, tag, myTag());
+    const objective = parseRaidObjective(w.raid_objective());
+    const canOrder = (mine || role === 'attack') && replay?.target !== v;
+    setBattlefield(canOrder ? orderPins(w.battle_order_points(mine ? 0 : myTag())) : [], objective, ang);
     const attacker = tag === 0 ? 'Bandits' : (tag === myTag() ? 'Your army' : rivalName(tag));
     const text = lair ? `Your army fights in the lair. March it away to break off.`
       : role === 'defend' ? `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You defend.`
       : role === 'attack' ? `Your army attacks from the ${dir}. You are the attacker.` : `${attacker} attack${tag === 0 ? '' : 's'} from the ${dir}. You are watching.`;
     const armies = fieldArmiesFree(), standing = w.battle_standing().reduce((x: number, y: number) => x + y, 0);
     const acts: { label: string; title: string; run: () => void; icon?: string; disabled?: boolean }[] = [];
+    if (objective && !objective.lost) acts.push({ icon: objective.kind, label: 'Find objective', title: objectiveName(objective), run: () => rig.focus(objective.x, objective.z, 55) });
     for (const act of actionsFor(role, { armies, standing, reserve: 0 })) {
       if (lair) continue;
       if (act === 'send-armies') acts.push({ icon: 'army', label: `Send armies out (${armies})`, title: 'Your field armies march to the raiders and join the defence', run: () => { void orderArmies(freeArmyIds(), orderDefend); } });
       else if (act === 'sally') acts.push({ icon: 'attack', label: `Sally out (${standing})`, title: 'The soldiers at their posts leave them and march out to meet the raiders as a field army', run: () => doSally() });
       else if (act === 'retreat') acts.push({ icon: 'halt', label: 'Retreat', title: 'Call off the attack: your soldiers break off and run for home', run: () => doRetreat(key) });
     }
-    const offer = role === 'defend' && !lair && tag === 0 ? bribeOffer(w.bribe_price(), w.stocks()[GOLD], w.bribe_greed()) : null;
-    if (offer?.show) acts.push({ icon: 'gold', label: offer.label, title: offer.title, disabled: offer.disabled, run: () => doBribe() });
+    const greed = role === 'defend' && !lair && tag === 0 ? w.bribe_greed() : undefined;
+    const offer = greed !== undefined && replay?.target !== v ? bribeOffer(w.bribe_price(), w.stocks()[GOLD], greed) : undefined;
     const bribeLine = offer?.show ? `<small class="bribe">The raiders will turn back for coin before the first blow. ${esc(offer.disabled ? offer.reason : BRIBE_CONSEQUENCE)}</small>` : '';
     const deployment = w.battle_deploy_remaining();
+    const objectiveLine = objective ? `<small class="raid-goal">${objectiveName(objective)} · ${objective.lost
+      ? 'Lost. Drive off the raiders.'
+      : objective.left > 0
+        ? `${arrivalTime(objective.left, TICK_RATE)} ${deployment > 0 ? 'after deployment' : 'remaining'} at 1×${objective.capture > 0 ? ` · Capture ${Math.round(objective.capture * 100)}%` : ''}`
+        : `Clear the wagon’s escape route · Capture ${Math.round(objective.capture * 100)}%`}</small>` : '';
     const elapsed = (deployment > 0 ? `Forming up · ${Math.ceil(deployment)}s` : `${Math.round(w.battle_time())}s`)
       + (speed > 1 && role !== 'watch' ? ' · Normal speed during battle' : '');
-    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}${bribeLine}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${elapsed} · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
-      () => lookAtAttackers(v));
-    const order = (mine || role === 'attack') && replay?.target !== v ? (group: number, mode: number) => chooseBattleOrder(v, mine ? null : key, group, mode) : undefined;
+    ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}${objectiveLine}${bribeLine}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${elapsed} · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
+      () => lookAtAttackers(v), greed === undefined ? undefined : { greed, offer, pay: doBribe });
+    const order = canOrder ? (group: number, mode: number) => chooseBattleOrder(v, mine ? null : key, group, mode) : undefined;
     ui.battleControls(acts, order, order ? w.battle_orders(mine ? 0 : myTag()) : undefined);
     return;
   }
   ui.battle(null);
   ui.battleControls();
+  setBattlefield([], null);
 }
 
 /** A fight has just begun in this village: if a boss leads it, say so (who, from where) and, for a lair, take the camera there. */
@@ -1610,9 +1692,10 @@ function doSally() {
 /** The attacker calls off the attack. In a village whose owner is here the owner's own copy carries it out (and tells everybody); in an away village the fight is local. */
 /** Pay the raiders at the gates to turn back (a bandit raid on your own village that has not struck yet). The core decides whether it is allowed and affordable; the command lets every copy of the village do the same at this tick. */
 function doBribe() {
+  if (replay?.target === lv) return;
   const w = lv.world, price = w.bribe_price(), boss = parseBoss(w.battle_boss())?.kind ?? 0, code = w.bribe();
   if (code !== 0) { ui.toast(bribeRefusal(code, price, w.stocks()[GOLD]), 'bad'); return; }
-  commit({ op: 'bribe' }); sound.coin(); ui.toast(bribeToast(price, boss), 'info'); afterLocalChange(); updateHud();
+  commit({ op: 'bribe' }); sound.coin(); ui.toast(bribeToast(price, boss), 'info'); afterLocalChange(); battleBanner();
 }
 
 function doRetreat(key: string) {
@@ -1650,7 +1733,12 @@ function stepLocal() {
   const t = Number(w.tick());
   if (t % 4 === 0) updateGoals();
   { const l = newlyLent(w.buildings_flat(), lentBridges); lentBridges = l.now; if (l.fresh.length) ui.toast('Lowering the drawbridge for the army', 'info', 'drawbridge'); }
-  pollTrade(); checkArrivals(); stepAwayFights(); updateDets(); if (selectedDet !== null) showRoute();
+  pollTrade(); checkArrivals(); stepAwayFights(); updateDets();
+  if (previewShown?.request.reinforce !== undefined && !previewWanted) {
+    if (selectedDet !== previewShown.id || !w.battle_active()) cancelMarchPreview();
+    else queueMarchPreview(previewShown.id, ...previewShown.request.to);
+  }
+  if (selectedDet !== null && !previewShown) showRoute();
   if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools, e: myEpoch });
   if (t % 15 === 0) { if (covOn) covOverlay(); if (covB !== null || covG) covRefocus(); }
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
@@ -1957,7 +2045,13 @@ function stockSummary(res: number[], sign: number) {
     if (ok === undefined) { const uc = upgrade_cost_flat(kind, tier + 1); ok = true; for (let i = 0; i < uc.length; i += 2) if (stocks[uc[i]] < uc[i + 1]) ok = false; afford.set(key, ok); }
     return ok;
   };
-  const sums = summarize(w.buildings_flat(), src.kinds, k => ({ maxTier: defs[k].maxTier, jobs: defs[k].jobs }), can);
+  const sums = summarize(w.buildings_flat(), src.kinds, k => ({ maxTier: defs[k].maxTier, jobs: defs[k].jobs }), can, (idx, kind) => {
+    const d = defs[kind];
+    if (!d.alternateRecipe) return true;
+    const recipe = w.smoke_mode(idx) === 1 ? d.alternateRecipe : d;
+    const has = (side: [number, number][]) => side.some(([r]) => res.includes(r));
+    return sign === 2 ? has(recipe.inputs) || has(recipe.outputs) : has(sign > 0 ? recipe.outputs : recipe.inputs);
+  });
   return { src, sums };
 }
 function stockInfo(res: number[], sign: number): { kind: number; html: string }[] {
@@ -2026,6 +2120,8 @@ function updateSelection() {
   const f = w.buildings_flat(), o = selectedIdx * 10, hp = w.building_health();
   const kind = f[o], tier = f[o + 1], x = f[o + 2], z = f[o + 3], status = f[o + 6], pct = f[o + 7];
   const d = defs[kind];
+  const smokeMode = kind === 42 ? w.smoke_mode(selectedIdx) : -1;
+  const recipe = smokeMode === 1 ? d.alternateRecipe ?? d : d;
   selRing.visible = true; selRing.set(x, z, footprint(kind, tier) + 1.1, kind, f[o + 5]);
   const stocks = Array.from(w.stocks());
   const io = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)} ${n} ${RES[r].name}`).join(', ');
@@ -2047,10 +2143,12 @@ function updateSelection() {
   if (kind === 28) { const mg = w.market_goods(); if (mg.length) html += ui.marketHtml(mg, stocks, Number(w.tick()), DAY_TICKS, w.storage_limit()); }
   if (kind === 38) { const sp = w.bridge_spans_flat(); for (let i = 0; i + 9 < sp.length; i += 10) if (sp[i] === selectedIdx) html += `<p class="muted">${sp[i + 4].toFixed(0)} units long. A footbridge spans up to 14 units of water, a timber bridge 22, a stone bridge 34 and a great bridge 50. Supports stand in the middle wherever the water is wide.</p>`; }
   if (kind === 23) {
-    const up = f[o + 6] === 5;
-    html += `<div><h3>Drawbridge</h3><div class="stats"><div class="stat"><b>${up ? 'Drawn up' : 'Lowered'}</b><span>State</span></div></div>
-      <div class="btnrow"><button class="pbtn primary" data-act="bridge">${up ? 'Lower the drawbridge' : 'Draw it up'}</button></div>
-      <p class="muted">${up ? 'Nobody crosses while it is up, your own armies included.' : 'Your people and armies cross freely.'} It is drawn up automatically when raiders attack, and lowered again afterwards.</p></div>`;
+    const up = drawnUp(status, w.battle_active());
+    const state = up ? (status === DB_UP ? 'Raised' : 'Raised for the raid')
+      : status === DB_MANUAL_DOWN ? 'Lowered by your order' : isLent(status) ? 'Lowered for the army' : 'Lowered';
+    html += `<div><h3>Drawbridge</h3><div class="stats"><div class="stat"><b>${state}</b><span>State</span></div></div>
+      <div class="btnrow"><button class="pbtn primary" data-act="bridge">${up ? 'Lower the drawbridge' : 'Raise the drawbridge'}</button></div>
+      <p class="muted">A raid raises the drawbridge automatically. If you lower it yourself, it stays down until you raise it or another raid begins.</p></div>`;
   }
   if (kind === 22) {
     if (tier >= 2) {
@@ -2069,17 +2167,17 @@ function updateSelection() {
         <p class="muted">Sowing every season wears the soil down and the harvest shrinks (to half at worst). A fallow field makes no grain but recovers. <b>Rotate</b> rests the field by itself when the soil is worn and sows it again when it is restored.${soil < 60 && mode === 0 ? ' <b>This soil is tired: try rotating.</b>' : ''}</p></div>`;
     }
   }
-  if (kind === 42) {   // a smokehouse smokes fish or meat
-    const sm = w.smoke_mode(selectedIdx);
-    if (sm >= 0) html += `<div><h3>What it smokes</h3><div class="btnrow" style="flex-wrap:wrap">${[['Fish', 0], ['Meat', 1]].map(([t, m]) => `<button class="pbtn ${sm === m ? 'on' : ''}" data-act="field:${m}">${sm === m ? '● ' : ''}${t}</button>`).join('')}</div>
-      <p class="muted">Set to fish it smokes raw fish into smoked fish; set to meat it smokes the hunters' meat into smoked meat. Either needs a little wood.</p></div>`;
+  if (smokeMode >= 0) {
+    const meat = smokeMode === 1;
+    html += `<div><h3>${meat ? 'Smoking meat' : 'Smoking fish'}</h3><div class="btnrow" style="flex-wrap:wrap">${['Fish', 'Meat'].map((label, mode) => `<button class="pbtn ${smokeMode === mode ? 'on' : ''}" data-act="field:${mode}" aria-pressed="${smokeMode === mode}">${label}</button>`).join('')}</div>
+      <p class="muted">${meat ? 'Turns meat from the Hunter’s Lodge into smoked meat using wood.' : 'Turns raw fish from the Fishing Hut into smoked fish using wood.'}</p></div>`;
   }
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.jobs > 0) html += workersHtml(selectedIdx);
   if (d.cycle) {
     html += `<div class="stats"><div class="stat"><b>${STATUS[status]}</b><span>Status</span></div><div class="stat"><b>${icon('worker', 20)} ${f[o + 8]} / ${d.jobs * (tier + 1)}</b><span>Workers</span></div></div>
       <div><div class="eyebrow">Production cycle</div><div class="bar"><i style="width:${pct}%"></i></div></div>${depositHtml(selectedIdx)}
-      <p class="muted">${d.inputs.length ? `Uses ${io(scaled(d.inputs, tier))}<br>` : ''}Makes ${io(scaled(d.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(d.outputs, tier + 1))}.` : ''}</p>`;
+      <p class="muted">${recipe.inputs.length ? `Uses ${io(scaled(recipe.inputs, tier))}<br>` : ''}Makes ${io(scaled(recipe.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(recipe.outputs, tier + 1))}.` : ''}</p>`;
   } else if (d.housing) html += `<div class="stats"><div class="stat"><b>${icon('house', 20)} ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
   if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p>`;
   if (kind === 19) {   // the lord who leads the defence
@@ -2192,7 +2290,7 @@ function onAct(a: string) {
     return;
   }
   if (a === 'bridge') {
-    const up = lv.world.buildings_flat()[selectedIdx * 10 + 6] === 5;   // status 5 = drawn up
+    const up = drawnUp(lv.world.buildings_flat()[selectedIdx * 10 + 6], lv.world.battle_active());
     const code = lv.world.drawbridge_set(selectedIdx, !up);
     if (code === 0) { commit({ op: 'bridge', idx: selectedIdx, kind: up ? 0 : 1 }); sound.click(); ui.toast(up ? 'The drawbridge is lowered.' : 'The drawbridge is drawn up.', 'info'); afterLocalChange(); }
     else if (code === -3) ui.toast('Soldiers are still crossing the drawbridge.', 'bad');
@@ -2222,7 +2320,7 @@ const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
 /** The in-game right-click menu: what it offers depends on what is under the pointer. */
 function openContext(e: PointerEvent) {
   const r = pointerRay(e), hit = terrain.pick(r.ray), items: Parameters<UI['ctxMenu']>[3] = [];
-  const det = lv.field.pick(r), idx = det === null ? pickBuilding(r) : null, ruin = det === null && idx === null ? lv.ruins.pick(r) : null;
+  const det = pickArmy(e, r, hit), idx = det === null ? pickBuilding(r) : null, ruin = det === null && idx === null ? lv.ruins.pick(r) : null;
   let title = 'The land';
   if (det !== null) {
     selectDet(det); title = `Army ${det}`;
@@ -2234,7 +2332,7 @@ function openContext(e: PointerEvent) {
     if (tier < defs[kind].maxTier) items.push({ label: 'Upgrade', run: () => { selectBuilding(idx); onAct('upgrade'); } });
     if (hurt) items.push({ label: 'Repair', run: () => { selectBuilding(idx); onAct('repair'); } });
     if (kind === 22 && tier >= 2) items.push({ label: f[o + 6] === 5 ? 'Open the gate' : 'Close the gate', run: () => { selectBuilding(idx); onAct('gate'); } });
-    if (kind === 23) items.push({ label: f[o + 6] === 5 ? 'Lower the drawbridge' : 'Draw up the drawbridge', run: () => { selectBuilding(idx); onAct('bridge'); } });
+    if (kind === 23) items.push({ label: drawnUp(f[o + 6], lv.world.battle_active()) ? 'Lower the drawbridge' : 'Raise the drawbridge', run: () => { selectBuilding(idx); onAct('bridge'); } });
     if (kind === 3 || kind === 26) items.push({ label: 'Fill with archers', run: () => { selectBuilding(idx); onAct('garfill'); } }, { label: 'Empty the tower', run: () => { selectBuilding(idx); onAct('garempty'); } });
     if (kind !== 15) items.push('-', { label: 'Demolish', run: () => { selectBuilding(idx); onAct('demolish'); } });
     if (items.length === 0) items.push({ label: 'Nothing to do here', disabled: true });
@@ -2433,7 +2531,7 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
-  if (!hit) { ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; covGhost(null); builderRangeRing.visible = false; return; }
+  if (!hit) { terrain.clearPreview(); previewKey = ''; ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; covGhost(null); builderRangeRing.visible = false; return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
   if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
     const bp = w.bridge_preview(dx, dy), code = bp[0];
@@ -2451,17 +2549,21 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
   let code = placementCheck(w, selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
-  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (selectedKind === 29 || selectedKind === 41) code = -16; }   // a mine or quarry snaps onto its deposit; a waterwheel with no bank to snap to cannot be built
+  const shore = selectedKind === 29 || selectedKind === 41;
+  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (shore) code = -16; }   // a shore building needs a bank to snap to
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
     if (t) { gx = Math.round(t.x - lv.ox); gy = Math.round(t.z - lv.oz); grot = t.rot; const st = Array.from(w.stocks()); code = defs[22].cost.every(([r, n]) => st[r] >= n) ? 0 : -6; } else code = -3;
   }
   const x = lv.ox + gx, z = lv.oz + gy, d = defs[selectedKind];
-  // the core levels the ground to the average of five samples: show the same levelling under the ghost so it never clips the terrain
-  const fr = d.r * 0.8; let h = w.height_at(x, z); for (const [px, pz] of [[fr, 0], [-fr, 0], [0, fr], [0, -fr]]) h += w.height_at(x + px, z + pz); h /= 5; if (selectedKind === 29 || selectedKind === 41) h = Math.min(h, w.wheel_pad_cap(x, z, grot & 7));   // (a waterwheel house stands low on the bank, WHEEL_PAD_MAX above the water under its wheel: a moat's own level, as the core)
-  const pad = !NOPAD.has(selectedKind), key = `${selectedKind}:${x}:${z}`;
+  const pad = !NOPAD.has(selectedKind) && !shore;
+  const h = pad || OVER_WATER_KINDS.has(selectedKind)
+    ? w.placement_height(selectedKind, x, z, grot)
+    : terrain.heightAt(x, z, true);
+  const key = `${selectedKind}:${x}:${z}:${h}`;
+  // Keep the bank and water stable while the shore building is only a preview.
   if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
-  if (!pad) h = selectedKind === 23 ? drawbridgeDeckAt(w, x, z, grot) : terrain.heightAt(x, z);   // (a drawbridge hangs at deck height over the water, not on the bed)
+  if (shore) (ghost.userData.model as BuildingModel).fitShore(h - w.shore_water_height(x, z, grot));
   if (isEarthwork(selectedKind)) {
     const ground = document.getElementById('lh-ground');
     if (ground) ground.textContent = `Ground here: ${w.height_at(x, z).toFixed(1)}`;
@@ -2514,10 +2616,10 @@ function bindInput() {
     }
     if (selectedKind === null && performance.now() - hoverT > 90 && !e.buttons) {
       hoverT = performance.now();
-      const idx = pickBuilding(pointerRay(e)); covHover(idx);
+      const r = pointerRay(e), armyId = pickArmy(e, r);
+      const idx = armyId === null ? pickBuilding(r) : null; covHover(idx);
       let hit: { r: Rival; i: number } | null = null;
-      if (idx === null) for (const r of rivals.values()) { const i = r.village.pick(ray); if (i !== null) { hit = { r, i }; break; } }
-      const armyId = idx === null ? pickArmy(e) : null;
+      if (idx === null && armyId === null) for (const rival of rivals.values()) { const i = rival.village.pick(r); if (i !== null) { hit = { r: rival, i }; break; } }
       if (armyId !== null) { const u = detUnits(armyId), n = u ? u.reduce((a, b) => a + b, 0) : 0; ui.tip(`<b>Army ${armyId}</b><small>${n} soldiers · click to select · Shift+click adds · double-click selects every army in view</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
       else if (idx !== null) { const f = lv.world.buildings_flat(), o = idx * 10; ui.tip(`<b>${tierName(f[o], f[o + 1])}</b><small>${defs[f[o]].name} · ${STATUS[f[o + 6]]}</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
       else if (hit) { const f = hit.r.village.world.buildings_flat(), o = hit.i * 10; ui.tip(`<b>${esc(hit.r.name)}: ${tierName(f[o], f[o + 1])}</b><small>${defs[f[o]].name} · click to open the Army tab</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
@@ -2567,10 +2669,10 @@ function bindInput() {
       }
       else { ui.hint(placementError(kind, res), true); sound.error(); }
     } else {
-      const det = pickArmy(e) ?? lv.field.pick(pointerRay(e));
+      const det = pickArmy(e);
       if (det !== null) {
         const now = performance.now();
-        if (now - lastArmyClick.t < 350 && lastArmyClick.id === det) { const all = armiesOnScreen().map(a => a.id); selectDets(all); ui.toast(`${all.length} armies selected.`, 'info'); lastArmyClick = { t: 0, id: -1 }; return; }   // double-click: every army on the screen
+        if (now - lastArmyClick.t < 350 && lastArmyClick.id === det) { const all = [...new Set([det, ...armiesOnScreen().map(a => a.id)])]; selectDets(all); ui.toast(`${all.length} armies selected.`, 'info'); lastArmyClick = { t: 0, id: -1 }; return; }   // double-click: every army on the screen
         lastArmyClick = { t: now, id: det };
         if (e.shiftKey || e.ctrlKey) selectDets(multiDets.includes(det) ? multiDets.filter(i => i !== det) : [...multiDets, det]); else selectDet(det);   // Shift or Ctrl: add to the selection, or take out
         return;
@@ -2597,7 +2699,7 @@ function bindInput() {
     if (selectedKind !== null) { selectKind(null); return; }                // right-click puts the building down again
     if (multiDets.length) {                                                 // armies selected: send them there, spread out a little
       const hit = terrain.pick(pointerRay(e).ray);
-      if (hit && lv.world.battle_active() && foeNear(lv.world.battle_units_flat(), hit.x, hit.z, 18)) void orderArmies(multiDets.slice(), orderDefend);   // right-click on the raiders: the army goes to meet them
+      if (hit && reinforcementPoint(hit.x, hit.z)) void orderArmies(multiDets.slice(), orderDefend);   // right-click on the raiders: the army goes to meet them
       else if (hit) void orderArmies(multiDets.slice(), (id, k) => { const a = k * 2.4, r = k ? 3 + 2 * Math.sqrt(k) : 0; return orderMarch(id, hit.x + Math.cos(a) * r, hit.z + Math.sin(a) * r); });
       return;
     }
@@ -2655,7 +2757,11 @@ function buildDepositLabels() {
       e.stopPropagation();
       if (performance.now() - armed > 4000) { armed = performance.now(); ui.toast('Click the label again to clear this deposit (40 wood, 10 tools).', 'info'); return; }
       armed = 0; const code = lv.world.clear_deposit(idx);
-      if (code === 0) { commit({ op: 'clear', idx }); sound.click(); ui.toast('The deposit is cleared away.', 'good'); forestDirtyFlag = true; afterLocalChange(); updateHud(); }
+      if (code === 0) {
+        commit({ op: 'clear', idx }); sound.click(); ui.toast('The deposit is cleared away.', 'good');
+        deposits.sync(lv.world.deposits_flat(), lv.world.deposits_asleep());
+        forestDirtyFlag = true; afterLocalChange();
+      }
       else ui.toast(code === -6 ? 'Clearing takes 40 wood and 10 tools.' : code === -4 ? 'A mine or quarry is working it.' : code === -2 ? 'It lies outside your border.' : 'Nothing to clear.', 'bad');
     };
   }
@@ -2685,13 +2791,13 @@ function setupPerf() {
   perf.setLayers([
     { name: 'Terrain', set: vis(() => [terrain.mesh]) },
     { name: 'Water', set: vis(() => [terrain.water, terrain.riverWater]) },
-    { name: 'Trees', set: vis(() => [forest.group]) },
+    { name: 'Trees', set: on => { forest.group.visible = on && settings().trees && !showroom; atmo.invalidateShadows(); } },
     { name: 'Buildings', set: vis(() => allVillages().flatMap(v => [v.view.root, v.view.batchRoot, v.walls.group, v.ruins.group])) },
     { name: 'Village paths', set: vis(() => allVillages().map(v => v.paths.group)) },
     { name: 'People and soldiers', set: vis(() => [crowd.group, ...allVillages().map(v => v.army.group)]) },
     { name: 'Animals', set: vis(() => [wildlife.group]) },
-    { name: 'Fire, smoke and arrows', set: vis(() => [fx.group, effects.smoke.points]) },
-    { name: 'Shadows', set: on => { atmo.sun.castShadow = on; } },
+    { name: 'Fire, smoke and arrows', set: on => { fx.group.visible = effects.group.visible = on && settings().particles; } },
+    { name: 'Shadows', set: on => { atmo.sun.castShadow = on && settings().shadows > 0; atmo.invalidateShadows(); } },
     { name: 'Sky', set: vis(() => [atmo.sky]) },
   ]);
 }
@@ -2739,6 +2845,7 @@ let worldShips: WorldShips | null = null;
 let travellers!: Travellers;
 let tideLevel = 0;   // the water rises and falls a little, slowly
 let noteT = 0, sCount = 0, sT = 0, fireBuf = new Float32Array(256);
+const effectView = new EffectView();
 let lastPhase = -1;   // the day phase the light was last set for
 let last = 0, miniT = 0, scareT = 0, scares: { x: number; z: number }[] = [];
 let forestShadowVersion = -1;
@@ -2749,7 +2856,7 @@ function applySettings(s: Settings) {
   forest.drawDistance = s.drawDistance; forest.detail = s.treeDetail; forest.group.visible = s.trees && !showroom;
   atmo.invalidateShadows();
   for (const wm of [terrain.water.material as THREE.MeshPhysicalMaterial, terrain.riverMaterial]) { const gloss = s.waterFx ? 1 : 0; if (wm.clearcoat !== gloss) { wm.clearcoat = gloss; wm.envMapIntensity = s.waterFx ? 1.8 : 0.6; wm.needsUpdate = true; } }
-  fx.group.visible = effects.smoke.points.visible = s.particles;
+  fx.group.visible = effects.group.visible = s.particles;
   wildlife.group.visible = crowd.group.visible = s.crowds && !showroom;
   perf.setBadge(s.showFps || perf.open);
 }
@@ -2846,7 +2953,7 @@ function frame(now: number) {
   }
   lightLamps(all, now);
   for (const v of all) v.people.group.visible = v.army.group.visible = drawCrowd;
-  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.water.position.y = tideLevel; worldShips?.update(dt, tideLevel); for (const v of all) v.boats.level = tideLevel;   // open water ebbs and flows; carved channels keep their own stage
+  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.setTide(tideLevel); worldShips?.update(dt, tideLevel); for (const v of all) v.boats.level = tideLevel;   // open water ebbs and flows; carved channels keep their own stage
   perf.stop('camera + world');
   const treeShadowRange = !s.shadows ? 0 : rig.dist <= 175 ? 135 : rig.pitch < 0.5 ? 65 : 85;
   perf.start('forest'); forest.tick(now / 1000, rig.cam.position, rig.target, treeShadowRange, rig.cam); perf.stop('forest');
@@ -2865,22 +2972,23 @@ function frame(now: number) {
     crowd.begin();
     all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view, rig.cam.position, detailRange));
     worldShips?.draw(crowd, rig.target.x, rig.target.z, view);
-    travellers.draw(crowd, rig.target.x, rig.target.z, view); crowd.end();
-  }
+    travellers.draw(crowd, rig.target.x, rig.target.z, view, raidWagon); crowd.end();
+  } else travellers.draw(null, rig.target.x, rig.target.z, view, showroom ? null : raidWagon);
   perf.stop('crowd upload');
   perf.start('fire + particles');
-  let nf = 0; for (const v of all) nf += v.fireData.length;
+  let nf = 0; if (fx.group.visible) for (const v of all) nf += v.fireData.length;
   if (fireBuf.length < nf) fireBuf = new Float32Array(Math.max(nf, fireBuf.length * 2));   // one buffer reused every frame
-  { let o = 0; for (const v of all) { fireBuf.set(v.fireData, o); o += v.fireData.length; } }
+  if (nf) { let o = 0; for (const v of all) { fireBuf.set(v.fireData, o); o += v.fireData.length; } }
   const fires = fireBuf.subarray(0, nf);
-  fx.update(dt, fires, rig.cam.position);
-  effects.update(dt, now / 1000, all.map(v => v.view), rig.target.x, rig.target.z, view);
+  if (fx.group.visible || effects.group.visible) effectView.update(rig.cam);
+  fx.update(dt, fires, rig.cam.position, effectView);
+  effects.update(dt, now / 1000, all.map(v => v.view), rig.target.x, rig.target.z, view, effectView);
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }
   perf.start('labels + minimap');
   updateHallLabels(all); updateJourneyLabels();
-  updateLabels(); updateCovLabels(); updateBossBar(); updateFoeTrack(now); updateFoeArrow();
+  updateLabels(); updateCovLabels(); drawBattlefieldPins(); updateBossBar(); updateFoeTrack(now); updateFoeArrow();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {
     miniT = now;

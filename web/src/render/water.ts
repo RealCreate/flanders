@@ -50,42 +50,67 @@ export function waterNormalTexture(size = 512): THREE.DataTexture {
  *  are two layers of the normal map moving across each other in world space (so they look the same on the sea and on a moat, and never repeat in an obvious grid).
  *  Works for a plane and for instanced discs. */
 /** Solid channels mark their outer vertices so they meet the current terrain after earthworks. */
-export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, time: { value: number }, instanced: boolean, solid = false) {
+export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, time: { value: number }, instanced: boolean, solid = false, seaLevel?: { value: number }) {
+  const naturalWater = !solid || seaLevel !== undefined;
   mat.onBeforeCompile = sh => {
     sh.uniforms.uTime = time; sh.uniforms.uGround = { value: src.heightTex }; sh.uniforms.uHalf = { value: src.half }; sh.uniforms.uStep = { value: src.step }; sh.uniforms.uNV = { value: src.nv };
+    if (seaLevel) sh.uniforms.uSeaLevel = seaLevel;
     const bankUniforms = solid ? 'attribute float aWaterBank; uniform sampler2D uGround; uniform float uHalf; uniform float uStep; uniform float uNV;' : '';
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\nvarying vec3 vWP; ${bankUniforms}`)
+    const tideUniform = seaLevel ? 'uniform float uSeaLevel;' : '';
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\nvarying vec3 vWP; ${bankUniforms} ${tideUniform}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vWP = (modelMatrix * ${instanced ? 'instanceMatrix * ' : ''}vec4(transformed, 1.0)).xyz;
+        ${solid || seaLevel ? 'float surface = vWP.y;' : ''}
+        ${seaLevel ? 'surface += uSeaLevel * (1.0 - smoothstep(0.0, 1.2, surface));' : ''}
         ${solid ? `if (aWaterBank > 0.5) {
           float bank = texture2D(uGround, ((vWP.xz + uHalf) / uStep + 0.5) / uNV).r;
           // Overlap the bank slightly to account for the height texture's half-float precision.
-          float drop = max(0.0, vWP.y - bank + 0.04);
-          transformed.y -= drop;
-          vWP.y -= drop;
-        }` : ''}`);
+          surface = min(surface, bank - 0.04);
+        }` : ''}
+        ${seaLevel ? 'surface = max(surface, uSeaLevel);' : ''}
+        ${solid || seaLevel ? 'transformed.y += surface - vWP.y; vWP.y = surface;' : ''}`);
     const normalChunk = THREE.ShaderChunk.normal_fragment_maps
       .replace('texture2D( normalMap, vNormalMapUv ).xyz', '(texture2D( normalMap, uvA ).xyz + texture2D( normalMap, uvB ).xyz) * 0.5');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
-        varying vec3 vWP; uniform float uTime; uniform sampler2D uGround; uniform float uHalf; uniform float uStep; uniform float uNV;`)
+        varying vec3 vWP; uniform float uTime; uniform sampler2D uGround; uniform float uHalf; uniform float uStep; uniform float uNV;
+        ${tideUniform}
+        float waterGround(vec2 worldXZ) {
+          if (max(abs(worldXZ.x), abs(worldXZ.y)) >= uHalf) return -9.0;
+          vec2 grid = clamp((worldXZ + uHalf) / uStep, vec2(0.0), vec2(uNV - 1.0));
+          // Use the same NE–SW diagonal as the terrain mesh, including on the opposite bank.
+          vec2 cell = min(floor(grid), vec2(uNV - 2.0));
+          vec2 f = grid - cell;
+          float dir = 1.0;
+          if (f.x + f.y > 1.0) { cell += 1.0; f = 1.0 - f; dir = -1.0; }
+          // Filter the two samples in the first row in hardware, then blend in the third vertex.
+          vec2 row = cell + vec2(dir * f.x / max(1.0 - f.y, 0.0001), 0.0);
+          float ab = texture2D(uGround, (row + 0.5) / uNV).r;
+          float c = texture2D(uGround, (cell + vec2(0.0, dir) + 0.5) / uNV).r;
+          return mix(ab, c, f.y);
+        }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
+        float depth = vWP.y - waterGround(vWP.xz);
+        ${naturalWater ? `// Ease in flooded ground so sub-centimetre height rounding cannot toggle a foam pixel.
+        if (depth <= 0.01) discard;
+        float shoreCoverage = smoothstep(0.01, 0.05, depth);` : 'depth = max(depth, 0.0);'}
         vec2 uvA = vWP.xz * 0.16 + vec2(uTime * 0.0045, uTime * 0.0031);
         vec2 uvB = mat2(0.8, -0.6, 0.6, 0.8) * vWP.xz * 0.43 + vec2(-uTime * 0.0072, uTime * 0.0108);
-        float ground = texture2D(uGround, ((vWP.xz + uHalf) / uStep + 0.5) / uNV).r;
-        float depth = max(vWP.y - ground, 0.0);
         float shallow = exp(-depth * 0.62);
         vec3 deepC = vec3(0.055, 0.215, 0.33), midC = vec3(0.10, 0.36, 0.46), shoreC = vec3(0.34, 0.66, 0.66);
-        vec3 wc = mix(mix(deepC, midC, smoothstep(5.0, 1.2, depth)), shoreC, shallow * 0.85);
+        vec3 wc = mix(mix(deepC, midC, 1.0 - smoothstep(1.2, 5.0, depth)), shoreC, shallow * 0.85);
         float nz = texture2D(normalMap, vWP.xz * 0.09 + vec2(uTime * 0.006, -uTime * 0.004)).g;
-        float edge = smoothstep(0.65, 0.0, depth + (nz - 0.5) * 0.5 + 0.12 * sin(uTime * 1.4 + vWP.x * 0.7 + vWP.z * 0.5));
-        float crest = smoothstep(0.78, 0.96, texture2D(normalMap, uvA * 2.1).g) * smoothstep(2.2, 0.4, depth) * 0.35;
+        float edge = 1.0 - smoothstep(0.0, 0.65, depth + (nz - 0.5) * 0.5 + 0.12 * sin(uTime * 1.4 + vWP.x * 0.7 + vWP.z * 0.5));
+        float crest = smoothstep(0.78, 0.96, texture2D(normalMap, uvA * 2.1).g) * (1.0 - smoothstep(0.4, 2.2, depth)) * 0.35;
         float foam = clamp(edge * smoothstep(0.35, 0.7, nz + 0.25) + crest, 0.0, 1.0);
         diffuseColor.rgb = mix(wc, vec3(0.93, 0.97, 0.98), foam * 0.9);
-        diffuseColor.a = ${solid ? '1.0;' : 'clamp(mix(0.985, 0.42, shallow) * smoothstep(0.0, 0.1, depth + 0.05) + foam * 0.7, 0.0, 1.0);'}`)
+        ${naturalWater ? `float seaAlpha = clamp(mix(0.985, 0.42, shallow) * smoothstep(0.0, 0.1, depth + 0.05) + foam * 0.7, 0.0, 1.0);
+        seaAlpha = mix(seaAlpha, 1.0, smoothstep(4.5, 7.5, depth));
+        ${seaLevel ? 'seaAlpha = mix(seaAlpha, 1.0, smoothstep(0.0, 0.55, vWP.y - uSeaLevel));' : ''}
+        diffuseColor.a = seaAlpha * shoreCoverage;` : 'diffuseColor.a = 1.0;'}`)
       .replace('#include <normal_fragment_maps>', normalChunk);
   };
   // Each material binds its own uniforms. The program can be reused by surfaces with the same shader variant.
-  mat.customProgramCacheKey = () => `water:${instanced}:${solid}`;
+  mat.customProgramCacheKey = () => `water:${instanced}:${solid}:${!!seaLevel}`;
   mat.needsUpdate = true;
 }

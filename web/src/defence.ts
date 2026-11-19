@@ -42,10 +42,10 @@ export function foeNear(flat: ArrayLike<number>, x: number, z: number, reach: nu
 export function sallyUnits(standing: ArrayLike<number>): number[] { return [0, 1, 2, 3, 4].map(k => Math.max(0, Math.floor(standing[k] ?? 0))); }
 
 /** The drawbridge states in `buildings_flat` (stride 10, status at +6): 5 drawn up by hand, 6 and 7 lowered for an army (see lend.rs in the core). */
-export const DB_UP = 5, DB_LENT = 6, DB_LENT_FIGHT = 7;
+export const DB_UP = 5, DB_LENT = 6, DB_LENT_FIGHT = 7, DB_MANUAL_DOWN = 8;
 export const isLent = (status: number) => status === DB_LENT || status === DB_LENT_FIGHT;
-/** Is this drawbridge drawn up as it is drawn on the screen? Raised by hand, or raised for the fight (every drawbridge is while raiders attack) unless it is lent to an army. */
-export const drawnUp = (status: number, fighting: boolean) => status === DB_UP || (fighting && !isLent(status));
+/** The current deck position, including orders and army crossings during a raid. */
+export const drawnUp = (status: number, fighting: boolean) => status === DB_UP || (fighting && status !== DB_MANUAL_DOWN && !isLent(status));
 
 /** The drawbridges (building indexes) that have just been lowered for an army: lent now, and not in `before`. Returns them with the new set to remember. */
 export function newlyLent(flat: ArrayLike<number>, before: ReadonlySet<number>): { fresh: number[]; now: Set<number> } {

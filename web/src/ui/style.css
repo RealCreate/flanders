@@ -159,6 +159,11 @@ table.res td.r { text-align: right; }
 #tooltip b { font-family: var(--f-display); font-weight: 400; color: var(--gold-soft); font-size: 15px; letter-spacing: .03em; }
 #tooltip small { color: #cdbb95; display: block; }
 .lbl { position: absolute; transform: translate(-50%, -100%); font-size: 18px; filter: drop-shadow(0 2px 3px #000c); pointer-events: none; text-align: center; }
+.lbl.battle-pin { left: 0; top: 0; padding: 4px 8px; border: 1px solid #9ac7da; border-radius: 4px; color: #e8f5fc; background: #142732e8; font: 700 12px var(--f-ui); white-space: pre; }
+.battle-pin::after { content: ''; position: absolute; left: calc(50% - 3px); bottom: -4px; width: 6px; height: 6px; border-radius: 0 0 2px; background: #9ac7da; transform: rotate(45deg); }
+.lbl.battle-pin.objective { border-color: #eabf71; background: #463318f0; color: #fff0ca; }
+.battle-pin.objective::after { background: #eabf71; }
+#battle small.raid-goal { color: #ffe1a6; font-weight: 700; }
 .lbl.dormant { opacity: .7; filter: grayscale(1) drop-shadow(0 2px 3px #000c); } .lbl.dormant span { font-style: italic; color: #cfcfcf; }
 .lbl span { display: block; font-family: var(--f-ui); font-size: 11px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; letter-spacing: .04em; }
 
@@ -202,6 +207,10 @@ table.res td.r { text-align: right; }
 #battle.clickable { pointer-events: auto; }
 #battle.clickable #battle-text { cursor: pointer; }
 #battle.clickable:hover { background: #6a1c14ee; }
+#battle-bribe { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 8px; letter-spacing: 0; }
+#battle-pay { pointer-events: auto; padding: 5px 11px; }
+#battle-pay .gi { vertical-align: -3px; }
+.raid-greed { padding: 4px 8px; border: 1px solid #ffc78666; border-radius: 3px; background: #36120dc9; color: #ffe0ae; font: 600 13px var(--f-ui); font-variant-numeric: tabular-nums; }
 #battle-controls { flex-direction: column; }
 #battle-acts:empty { display: none; }
 #battle-target-hint { color: #ffe08a; text-align: center; }

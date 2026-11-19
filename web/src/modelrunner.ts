@@ -1,7 +1,7 @@
 // Builds the planned model village in your own village through signed commands (a testing tool; see modelvillage.ts for the plan).
-import type { World } from './wasm/game_core.js';
+import { natural_river_level, type World } from './wasm/game_core.js';
 import { defs } from './data';
-import { buildModelVillage, type ModelApi } from './modelvillage';
+import { buildModelVillage, modelGroundTenths, type ModelApi } from './modelvillage';
 import type { Cmd } from './net/p2p';
 
 /** The level of ground the whole site is flattened to: the city, its moat and the farmland and workshops outside it. */
@@ -22,7 +22,8 @@ export function runModelVillageIn(ctx: ModelCtx): boolean {
   w.cheat(7, 0, 0) && commit({ op: 'cheat', kind: 7, x: 0, y: 0 });
   for (let i = w.building_count() - 1; i >= 1; i--) if (w.demolish(i)) commit({ op: 'demolish', idx: i });
   // level the whole site first: the castle is only raised once the ground under it is flat
-  if (w.flatten(MODEL_FLAT_RADIUS, -1) === 0) commit({ op: 'flatten', x: MODEL_FLAT_RADIUS, y: -10 });
+  const height = modelGroundTenths(natural_river_level());
+  if (w.flatten(MODEL_FLAT_RADIUS, height / 10) === 0) commit({ op: 'flatten', x: MODEL_FLAT_RADIUS, y: height });
   ctx.changed();
   const fill = () => { if (w.cheat(3, 0, 0)) commit({ op: 'cheat', kind: 3, x: 0, y: 0 }); };
   const api: ModelApi = {

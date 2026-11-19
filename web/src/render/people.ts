@@ -69,6 +69,7 @@ export class People {
   hidden = false;           // villagers shelter indoors during a battle
   /** The invisible lines of the world (the grid plus the village paths, see march.rs): a dry route from one point to another as [1, x, z, x, z, ...], or empty when there is none. */
   router: ((sx: number, sz: number, gx: number, gz: number) => ArrayLike<number>) | null = null;
+  depositClear?: (ax: number, az: number, bx: number, bz: number) => boolean;
   private roadGrid = new Map<string, number[]>();
   private layout: Float32Array = new Float32Array(0);
   private terrainVersion = -1;
@@ -225,10 +226,17 @@ export class People {
     }
     const net = this.viaNet(from, to, fromPos);
     const fallback = net ?? this.routeRaw(from, to, fromPos);
-    const route = net || !this.wades(fallback) ? fallback : [fromPos.clone()];
+    const route = net || (!this.crossesDeposits(fallback) && !this.wades(fallback)) ? fallback : [fromPos.clone()];
     if (this.routes.size >= 512) this.routes.delete(this.routes.keys().next().value!);
     this.routes.set(key, route);
     return route;
+  }
+
+  private crossesDeposits(points: THREE.Vector2[]) {
+    return points.some((b, i) => {
+      const a = points[i - 1];
+      return a && this.depositClear?.(a.x, a.y, b.x, b.y) === false;
+    });
   }
 
   private routeRaw(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] {

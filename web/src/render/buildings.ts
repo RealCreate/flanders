@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { packFlag, type Flag } from '../flag';
 import { flagTexture } from './flagtex';
 import { drawnUp } from '../defence';
+import { Particles, type EffectView } from './fx';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // ---------- procedural textures & materials ----------
@@ -796,19 +797,22 @@ const waterwheel: Model = b => {
   const FOOT = 3.2, back = -(W / 2 + 0.2), footing = b.box(FOOT - back, 0.4, D + 0.4, m.stone, (FOOT + back) / 2, -0.1, 0); footing.name = 'footing'; b.box(W, h, D, wm, 0, 0.3, 0); b.gable(W, D, 1.6 + t * 0.3, t >= 1 ? m.tile : m.thatch, 0, h + 0.3, 0, 0.5);
   b.box(0.9, 1.6, 0.14, m.door, 0, 0.3, D / 2 + 0.03); b.window(W * 0.28, 1.6, D / 2 + 0.02); b.chimney(-W * 0.3, h + 1.2, -0.4, 1.2);
   // the wheel hangs out over the water on a long axle (the core snaps the house to the bank so the point WHEEL_REACH out from its middle is over the water) and dips below the pad
-  const R = 1.7 + t * 0.15, AX = 5.2, DIP = 0.9, pivot = new THREE.Group(); pivot.position.set(AX, R - DIP, 0); pivot.rotation.y = Math.PI / 2; pivot.name = 'wheel'; b.g.add(pivot);
-  const wheel = new THREE.Group(); pivot.add(wheel);
-  const part = (geo: THREE.BufferGeometry, mat: THREE.Material) => { const q = new THREE.Mesh(geo, mat); q.castShadow = true; return q; };
-  for (const s of [-0.5, 0.5]) { const rim = part(new THREE.TorusGeometry(R, 0.1, 6, 20), m.darkwood); rim.position.z = s; wheel.add(rim); }
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2, arm = part(new THREE.BoxGeometry(0.12, R * 2, 0.12), m.darkwood); arm.rotation.z = a; wheel.add(arm);
-    const pad = part(new THREE.BoxGeometry(0.2, 0.5, 1.1), m.wood); pad.position.set(Math.cos(a) * R, Math.sin(a) * R, 0); pad.rotation.z = a; wheel.add(pad);
-  }
-  wheel.add(part(new THREE.CylinderGeometry(0.22, 0.22, 1.3, 8).rotateX(Math.PI / 2), m.iron));
-  b.spin.push(wheel);
-  b.box(AX - W / 2 + 0.2, 0.22, 0.22, m.iron, (AX + W / 2) / 2 - 0.1, R - DIP - 0.11, 0);   // the axle running back into the mill house
-  b.box(0.8, 0.5, 2.6, new THREE.MeshStandardMaterial({ color: 0x4a7fa0, roughness: 0.2 }), AX - 0.3, R * 2 - DIP + 0.4, 0);   // the flume that feeds the wheel
-  for (const z of [-1.4, 1.4]) { b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, AX, -DIP, z); b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, W / 2 + 0.3, -DIP, z); b.box(AX - W / 2 - 0.1, 0.12, 0.14, m.darkwood, (AX + W / 2) / 2 + 0.1, R * 2 - DIP + 0.1, z); }
+  const R = 1.7 + t * 0.15, AX = 5.2, DIP = 0.9;
+  b.slot('millrace', {}, () => {
+    const pivot = new THREE.Group(); pivot.position.set(AX, R - DIP, 0); pivot.rotation.y = Math.PI / 2; pivot.name = 'wheel'; b.g.add(pivot);
+    const wheel = new THREE.Group(); pivot.add(wheel);
+    const part = (geo: THREE.BufferGeometry, mat: THREE.Material) => { const q = new THREE.Mesh(geo, mat); q.castShadow = true; return q; };
+    for (const s of [-0.5, 0.5]) { const rim = part(new THREE.TorusGeometry(R, 0.1, 6, 20), m.darkwood); rim.position.z = s; wheel.add(rim); }
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2, arm = part(new THREE.BoxGeometry(0.12, R * 2, 0.12), m.darkwood); arm.rotation.z = a; wheel.add(arm);
+      const pad = part(new THREE.BoxGeometry(0.2, 0.5, 1.1), m.wood); pad.position.set(Math.cos(a) * R, Math.sin(a) * R, 0); pad.rotation.z = a; wheel.add(pad);
+    }
+    wheel.add(part(new THREE.CylinderGeometry(0.22, 0.22, 1.3, 8).rotateX(Math.PI / 2), m.iron));
+    b.spin.push(wheel);
+    b.box(AX - W / 2 + 0.2, 0.22, 0.22, m.iron, (AX + W / 2) / 2 - 0.1, R - DIP - 0.11, 0);   // the axle running back into the mill house
+    b.box(0.8, 0.5, 2.6, new THREE.MeshStandardMaterial({ color: 0x4a7fa0, roughness: 0.2 }), AX - 0.3, R * 2 - DIP + 0.4, 0);   // the flume that feeds the wheel
+    for (const z of [-1.4, 1.4]) { b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, AX, -DIP, z); b.box(0.14, R * 2 + 0.6, 0.14, m.darkwood, W / 2 + 0.3, -DIP, z); b.box(AX - W / 2 - 0.1, 0.12, 0.14, m.darkwood, (AX + W / 2) / 2 + 0.1, R * 2 - DIP + 0.1, z); }
+  });
   b.box(0.6, 0.6, 0.6, m.wood, -W / 2 - 0.7, 0, 0.8); b.box(0.5, 0.5, 0.5, m.wood, -W / 2 - 0.6, 0, -0.4);
   if (t === 3) b.flag(-W / 2 + 0.4, h + 1.7, 0, 2.0);
 };
@@ -846,11 +850,17 @@ const riverPiece: Model = b => {
 const moundPiece: Model = b => { b.cone(2.6, 1.8, M().mound, 0, 0, 0, 14); };
 const pitPiece: Model = b => { const g = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 1.6, 0.4, 14), new THREE.MeshStandardMaterial({ color: 0x2f2a22, roughness: 1 })); g.position.y = 0.02; b.g.add(g); };
 
+const portWarehouse = (tier: number) => ({ width: 5.6 + tier * 0.6, depth: 3.8, x: -1.5, z: -1.0 });
+function portFooting(b: B, mat: THREE.Material, height = 0.45) {
+  const { width, depth, x, z } = portWarehouse(b.t);
+  b.box(width + 0.6, height, depth + 0.6, mat, x, 0.35 - height, z);
+}
 // Port: a quay with a warehouse, a crane and a merchant ship moored at the end of the pier. The pier runs out to the front (+Z): turn it with R so it reaches the water.
 const port: Model = b => {
-  const t = b.t, m = M(), W = 5.6 + t * 0.6, D = 3.8, h = 2.6 + t * 0.4, wm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
-  b.box(W + 0.6, 0.45, D + 0.6, t >= 1 ? m.stone : m.earth, -1.5, -0.1, -1.0);
-  b.box(W, h, D, wm, -1.5, 0.35, -1.0); b.gable(W, D, 1.6 + t * 0.3, t >= 1 ? m.tile : m.thatch, -1.5, h + 0.35, -1.0, 0.5);
+  const t = b.t, m = M(), { width: W, depth: D, x, z } = portWarehouse(t);
+  const h = 2.6 + t * 0.4, wm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
+  b.slot('warehouseFooting', {}, () => portFooting(b, t >= 1 ? m.stone : m.earth));
+  b.box(W, h, D, wm, x, 0.35, z); b.gable(W, D, 1.6 + t * 0.3, t >= 1 ? m.tile : m.thatch, x, h + 0.35, z, 0.5);
   b.box(1.8, h - 0.4, 0.14, m.door, -1.5, 0.35, D / 2 - 0.9); b.box(2.2, 0.2, 0.3, m.darkwood, -1.5, h - 0.05, D / 2 - 0.85);
   for (const [x, z, s] of [[1.8, -2.4, 0.9], [2.8, -1.4, 0.7], [-5.2, 0.4, 0.8]] as const) b.box(s, s, s, m.wood, x, 0, z);
   b.cyl(0.45, 0.45, 0.9, m.wood, 2.4, 0, 0.6, 10);
@@ -960,16 +970,20 @@ const fishingHut: Model = b => {
   // the jetty: planks on piles, from the house out over the water
   const J0 = W / 2 - 0.45, J1 = 5.6, JW = 1.5, n = Math.round((J1 - J0) / 0.5);
   for (let i = 0; i < n; i++) b.box(0.44, 0.1, JW, i % 2 ? m.wood : m.log, J0 + 0.25 + i * 0.5, 0.0, 0);
-  for (const x of [J0 + 0.5, J0 + 2.0, J0 + 3.5, J1 - 0.2]) for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.11, 0.13, 2.0, m.darkwood, x, -1.7, z, 6);
+  b.slot('jettyPosts', {}, () => {
+    for (const x of [J0 + 0.5, J0 + 2.0, J0 + 3.5, J1 - 0.2]) for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.11, 0.13, 2.0, m.darkwood, x, -2.0, z, 6);
+  });
   for (const z of [-JW / 2, JW / 2]) b.box(J1 - J0, 0.1, 0.14, m.darkwood, (J0 + J1) / 2, -0.12, z);
   for (const z of [-JW / 2 - 0.05, JW / 2 + 0.05]) b.cyl(0.13, 0.14, 0.9, m.darkwood, J1 - 0.1, 0.1, z, 6);   // the mooring bollards
   // a rowboat tied alongside: a hull, thwarts, an oar and the catch
-  const bx = J0 + 3.0, bz = JW / 2 + 1.0;
-  b.box(2.3, 0.14, 0.9, m.wood, bx, -0.55, bz);
-  for (const sz of [-1, 1]) { b.box(2.1, 0.4, 0.08, m.wood, bx, -0.5, bz + sz * 0.45); b.box(0.5, 0.4, 0.08, m.wood, bx + 1.25, -0.42, bz + sz * 0.2, sz * 0.5); }
-  for (const dx of [-0.5, 0.4]) b.box(0.1, 0.07, 0.8, m.darkwood, bx + dx, -0.2, bz);
-  b.box(1.1, 0.05, 0.05, m.darkwood, bx - 0.2, -0.1, bz + 0.1).rotation.z = 0.2;
-  b.box(0.5, 0.08, 0.3, f.silver, bx + 0.5, -0.46, bz); fish(b, f.silver, bx + 0.1, -0.45, bz + 0.15, 0.4, 0.3);
+  b.slot('rowboat', {}, () => {
+    const bx = J0 + 3.0, bz = JW / 2 + 1.0;
+    b.box(2.3, 0.14, 0.9, m.wood, bx, -0.55, bz);
+    for (const sz of [-1, 1]) { b.box(2.1, 0.4, 0.08, m.wood, bx, -0.5, bz + sz * 0.45); b.box(0.5, 0.4, 0.08, m.wood, bx + 1.25, -0.42, bz + sz * 0.2, sz * 0.5); }
+    for (const dx of [-0.5, 0.4]) b.box(0.1, 0.07, 0.8, m.darkwood, bx + dx, -0.2, bz);
+    b.box(1.1, 0.05, 0.05, m.darkwood, bx - 0.2, -0.1, bz + 0.1).rotation.z = 0.2;
+    b.box(0.5, 0.08, 0.3, f.silver, bx + 0.5, -0.46, bz); fish(b, f.silver, bx + 0.1, -0.45, bz + 0.15, 0.4, 0.3);
+  });
   // nets drying on a frame beside the house, and a rack of fish
   const nx = -0.6 - W / 2 - 0.9;
   for (const z of [-2.3, -0.9]) b.cyl(0.07, 0.09, 2.2, m.darkwood, nx, 0, z, 6);
@@ -1118,6 +1132,14 @@ export class BuildingModel {
 
   get options() { return this.opts; }
 
+  /** Fit the equipment to the water while the house and its foundation stay at bank height. */
+  fitShore(clearance: number) {
+    const millrace = this.slots.get('millrace'), boat = this.slots.get('rowboat'), posts = this.slots.get('jettyPosts');
+    if (millrace) millrace.position.y = 0.7 - clearance;
+    if (boat) boat.position.y = 0.55 - clearance;
+    if (posts) posts.scale.y = Math.max(1, (clearance + 1.5) / 2);
+  }
+
   /** Make the upgrades that are on be exactly `next` (a bit mask). Returns the groups that were added (to be built up with the scaffold) and the ones taken away. */
   setOptions(next: number): { added: THREE.Group[]; removed: THREE.Group[] } {
     const added: THREE.Group[] = [], removed: THREE.Group[] = [], changed = this.opts ^ next, deps = DEPENDS[this.kind] ?? {}, repl = REPLACES[this.kind] ?? {};
@@ -1183,7 +1205,7 @@ export function buildModel(kind: number, tier: number, banner = 0x2f5fa8, seed =
  *  added or taken away on its own and the result is the same whatever the order. */
 interface OptionCtx { solid: THREE.Box3[]; all: THREE.Box3; cx: number; cz: number; hw: number; hd: number; reach: number; top: number; seed: number; tier: number; opts: number; slots: Map<string, THREE.Group> }
 /** Which slot of the base model an option takes the place of, and which options an option's look depends on (it is drawn again when one of them is switched). */
-const REPLACES: Record<number, Record<number, string>> = { 3: { 2: 'roof' } };
+const REPLACES: Record<number, Record<number, string>> = { 3: { 2: 'roof' }, 35: { 3: 'warehouseFooting' } };
 const DEPENDS: Record<number, Record<number, number[]>> = { 3: { 0: [2] } };
 /** Where the fishing hut's land ends in its model frame (+x is towards the water): the jetty starts here, so nothing but the jetty goes past it. */
 const hutLandX = (tier: number) => (3.0 + tier * 0.3) / 2 - 0.45;
@@ -1287,6 +1309,10 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(0)) for (const s of [-1, 1]) b.flag(cx + s * (hw - 0.4), 0, cz + hd + 0.5, 2.6);
       if (has(1)) for (const s of [-1, 1]) { b.cyl(0.05, 0.06, 1.5, m.darkwood, cx + s * (hw - 0.4), 0, cz - hd - 0.5, 6); b.box(0.24, 0.3, 0.24, m.glow, cx + s * (hw - 0.4), 1.45, cz - hd - 0.5); }
       break;
+    case 35: // port
+      if (has(3)) portFooting(b, m.stoneMat, 0.65);
+      else generic(bit);
+      break;
     case 39: { // hospital: herb garden, quarantine ward, chapel ward, banner
       if (has(0)) { const p = spot(4.2, 3.0, 1.0); if (p) { b.box(4.2, 0.45, 0.12, m.stone, p[0], 0, p[1] - 1.5); b.box(4.2, 0.45, 0.12, m.stone, p[0], 0, p[1] + 1.5); for (const x of [-2.1, 2.1]) b.box(0.12, 0.45, 3.1, m.stone, p[0] + x, 0, p[1]); const g2 = new THREE.MeshStandardMaterial({ color: 0x5a9a3a, roughness: 0.9 }); for (let i = 0; i < 3; i++) { b.box(1.0, 0.22, 2.4, m.earth, p[0] - 1.3 + i * 1.3, 0, p[1]); for (let k = 0; k < 4; k++) b.sphere(0.2, g2, p[0] - 1.3 + i * 1.3, 0.4, p[1] - 0.9 + k * 0.6); } } }
       if (has(1)) { const p = spot(3.4, 2.6, 2.4); if (p) { b.box(3.2, 1.9, 2.4, m.plaster, p[0], 0, p[1]); b.gable(3.4, 2.6, 1.1, m.tile, p[0], 1.9, p[1], 0.3); b.box(0.9, 1.4, 0.1, m.door, p[0], 0, p[1] + 1.22); for (let i = -1; i <= 1; i += 2) b.box(0.08, 1.0, 0.08, m.darkwood, p[0] + i * 1.9, 0, p[1] + 1.7); b.flag(p[0] - 1.5, 1.9, p[1] - 1.0, 1.4); } }
@@ -1314,41 +1340,8 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   }
 }
 
-// ---------- smoke particles ----------
-class Smoke {
-  points: THREE.Points;
-  private n = 700; private pos = new Float32Array(this.n * 3); private age = new Float32Array(this.n).fill(99); private vel = new Float32Array(this.n * 3);
-  private attrs: { a: THREE.BufferAttribute; s: THREE.BufferAttribute }; private cursor = 0;
-  constructor() {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
-    const a = new THREE.BufferAttribute(new Float32Array(this.n), 1), s = new THREE.BufferAttribute(new Float32Array(this.n), 1);
-    g.setAttribute('aAlpha', a); g.setAttribute('aSize', s); this.attrs = { a, s };
-    const mat = new THREE.ShaderMaterial({
-      transparent: true, depthWrite: false,
-      vertexShader: 'attribute float aAlpha; attribute float aSize; varying float vA; void main(){ vA=aAlpha; vec4 mv=modelViewMatrix*vec4(position,1.); gl_PointSize=aSize*(220./-mv.z); gl_Position=projectionMatrix*mv; }',
-      fragmentShader: 'varying float vA; void main(){ float d=length(gl_PointCoord-.5)*2.; float a=smoothstep(1.,.2,d)*vA; gl_FragColor=vec4(vec3(.62,.6,.58),a); }',
-    });
-    this.points = new THREE.Points(g, mat); this.points.frustumCulled = false;
-  }
-  emit(x: number, y: number, z: number) {
-    const i = this.cursor++ % this.n; this.age[i] = 0;
-    this.pos.set([x + (Math.random() - 0.5) * 0.2, y, z + (Math.random() - 0.5) * 0.2], i * 3);
-    this.vel.set([0.25 + Math.random() * 0.3, 0.9 + Math.random() * 0.5, (Math.random() - 0.5) * 0.3], i * 3);
-  }
-  update(dt: number) {
-    for (let i = 0; i < this.n; i++) {
-      const a = this.age[i] += dt;
-      if (a > 5) { this.attrs.a.setX(i, 0); continue; }
-      this.pos[i * 3] += this.vel[i * 3] * dt; this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt; this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
-      this.attrs.a.setX(i, Math.min(1, a * 2) * (1 - a / 5) * 0.55); this.attrs.s.setX(i, 0.8 + a * 0.9);
-    }
-    (this.points.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true; this.attrs.a.needsUpdate = this.attrs.s.needsUpdate = true;
-  }
-}
-
 // ---------- scene sync ----------
-interface Item { sig: string; opt: number; tier: number; rotation: number; model?: BuildingModel; group: THREE.Group; status: number; pop?: number; cell: string; build?: Construction }
+interface Item { sig: string; opt: number; tier: number; rotation: number; model?: BuildingModel; group: THREE.Group; status: number; pop?: number; cell: string; build?: Construction; shoreClearance?: number }
 interface BuildingBatch {
   original: { mesh: THREE.Mesh; parent: THREE.Object3D; group: THREE.Group }[];
   merged: THREE.Mesh[];
@@ -1403,7 +1396,7 @@ export class VillageView {
   animateNew = false;
   private items = new Map<number, Item>();
   get isBatched() { return this.dirtyCells.size === 0; }
-  constructor(private banner: number) {}
+  constructor(private banner: number, private shoreWater?: (x: number, z: number, rot: number) => number) {}
   private flag: Flag | undefined;
   /** Change the flag every banner flies (or go back to the plain colour with null): the buildings are rebuilt with it. */
   setFlag(f: Flag | null, color: number) {
@@ -1435,6 +1428,7 @@ export class VillageView {
     for (let i = 0; i < n; i++) {
       const [kind, tier, x, z, rot, pad, status] = [flat[i * 10], flat[i * 10 + 1], flat[i * 10 + 2], flat[i * 10 + 3], flat[i * 10 + 4], flat[i * 10 + 5], flat[i * 10 + 6]];
       const opt = options?.[i] ?? 0, sig = `${kind}:${tier}:${x}:${z}:${rot}`;
+      const shoreClearance = this.shoreWater && (kind === 29 || kind === 41) ? pad - this.shoreWater(x, z, rot) : undefined;
       let it = this.items.get(i);
       if (it) it.group.userData.idx = i;
       const prevTier = it && it.sig.split(':')[0] === String(kind) && it.sig.split(':')[2] === String(x) ? 1 : 0;   // (same building, new tier: an upgrade, built a little quicker)
@@ -1449,14 +1443,21 @@ export class VillageView {
         // walls are drawn by the Walls renderer as one connected structure; keep an empty placeholder so indices line up
         const model = PLAIN.has(kind) ? undefined : new BuildingModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), this.flag);
         model?.setOptions(opt);
+        if (shoreClearance !== undefined) model?.fitShore(shoreClearance);
         const g = model ? model.group : Object.assign(new THREE.Group(), { userData: { smoke: [], spin: [] } });
         g.userData.variant = Math.floor(Math.abs(x * 7.3 + z * 13.1)) % 4;
         g.position.set(x, pad, z); g.rotation.y = rot * Math.PI / 4;
         g.userData.idx = i; g.userData.kind = kind;
-        this.root.add(g); it = { sig, opt, tier, rotation: rot, model, group: g, status, cell: cellOf(x, z) };
+        this.root.add(g); it = { sig, opt, tier, rotation: rot, model, group: g, status, cell: cellOf(x, z), shoreClearance };
         this.items.set(i, it); this.touch(it.cell);
         if (this.animateNew) { if (NO_SCAFFOLD.has(kind) || PLAIN.has(kind)) { g.scale.setScalar(0.02); it.pop = 0; } else it.build = this.startBuild(g, radii[kind] ?? 3, tier, !!prevTier); }
         this.updateEffects(g);
+      }
+      if (shoreClearance !== undefined && it.shoreClearance !== shoreClearance) {
+        this.touch(it.cell);
+        this.endBuild(it);
+        it.model?.fitShore(shoreClearance);
+        it.shoreClearance = shoreClearance;
       }
       if (it.build || it.pop !== undefined) this.animating.add(it);
       this.status(it, status, pad, health, i);
@@ -1648,14 +1649,25 @@ export class VillageView {
 }
 
 export class Effects {
-  smoke = new Smoke();
+  group = new THREE.Group();
+  private smoke = new Particles(700, false, 0, 0, 220);
   private acc = 0;
   private v = new THREE.Vector3();
-  update(dt: number, t: number, views: VillageView[], x: number, z: number, range: number) {
+
+  constructor() {
+    this.smoke.points.renderOrder = 0;
+    this.group.add(this.smoke.points);
+  }
+
+  warm(on: boolean) { this.smoke.warm(on); }
+
+  update(dt: number, t: number, views: VillageView[], x: number, z: number, range: number, visible?: EffectView) {
     this.acc += dt;
-    const emit = this.acc > 0.28; if (emit) this.acc = 0;
+    const emit = this.group.visible && this.acc >= 0.28;
+    if (this.acc >= 0.28) this.acc %= 0.28;
+    const range2 = range * range;
     for (const view of views) for (const g of view.effects) {
-      if ((g.position.x - x) ** 2 + (g.position.z - z) ** 2 > range ** 2) continue;
+      if ((g.position.x - x) ** 2 + (g.position.z - z) ** 2 > range2) continue;
       const sp: THREE.Object3D[] = g.userData.spin;
       for (const o of sp) {
         if (o.parent === g || o.parent?.parent === g || o.parent?.parent?.parent === g) {
@@ -1665,7 +1677,13 @@ export class Effects {
         }
       }
       if (emit && g.userData.status === 0) {
-        for (const s of g.userData.smoke as THREE.Vector3[]) { this.v.copy(s).applyEuler(g.rotation).add(g.position); this.smoke.emit(this.v.x, this.v.y, this.v.z); }
+        for (const s of g.userData.smoke as THREE.Vector3[]) {
+          this.v.copy(s).applyEuler(g.rotation).add(g.position);
+          const { x, y, z } = this.v;
+          if (visible && !visible.includes(x, y + 4, z, 10)) continue;
+          this.smoke.emit(x + (Math.random() - 0.5) * 0.2, y, z + (Math.random() - 0.5) * 0.2,
+            0.25 + Math.random() * 0.3, 0.9 + Math.random() * 0.5, (Math.random() - 0.5) * 0.3, 5, 0.8, 5.3, 0.62, 0.6, 0.58, 0.5);
+        }
       }
     }
     this.smoke.update(dt);

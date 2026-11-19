@@ -1,12 +1,12 @@
 // Builds the model village in Node (no browser) and reports how complete its walls are. Usage: node --experimental-strip-types tests/demo.mjs
 import { createRequire } from 'node:module';
-import { buildModelVillage } from '../src/modelvillage.ts';
+import { buildModelVillage, modelGroundTenths } from '../src/modelvillage.ts';
 const require = createRequire(import.meta.url);
-const { World, catalog } = require('./.wasm/game_core.js');
+const { World, catalog, natural_river_level } = require('./.wasm/game_core.js');
 const defs = JSON.parse(catalog());
 export function buildDemo(seed = 1337n) {
   const w = new World(seed, 0, 0);
-  w.cheat(8, 0, 0); w.flatten(Number(process.env.FLAT ?? 108), -1);
+  w.cheat(8, 0, 0); w.flatten(Number(process.env.FLAT ?? 108), modelGroundTenths(natural_river_level()) / 10);
   const fill = () => w.cheat(3, 0, 0);
   const api = {
     place(kind, x, y, rot = 0, search = 8, ok = () => true) {

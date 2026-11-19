@@ -5,6 +5,7 @@ import { loadModule, closeModels } from './models.mjs';
 
 const { Forest, TREE_SHADOW_LAYER } = await loadModule('/src/render/trees.ts');
 const { ShadowRefresh } = await loadModule('/src/render/sky.ts');
+const { EffectView, Effects2, Particles } = await loadModule('/src/render/fx.ts');
 test.after(() => closeModels());
 
 function forest(heightAt = () => 6) {
@@ -65,26 +66,38 @@ test('committed terrain edits resample touched trees and leave other batches alo
 
 test('camera altitude selects cheaper crowns while a low-poly proxy casts the shadow', () => {
   const { view } = forest();
-  const mesh = batches(view)[0], proxy = batches(view, TREE_SHADOW_LAYER)[0];
-  const triangles = () => mesh.geometry.attributes.position.count / 3;
+  const mesh = batches(view)[0];
+  const triangles = geometry => (geometry.index?.count ?? geometry.attributes.position.count) / 3;
   const bound = mesh.boundingSphere.clone(), matrixVersion = mesh.instanceMatrix.version;
   view.tick(0, new THREE.Vector3(30, 20, 30));
-  const near = triangles();
+  const proxy = batches(view, TREE_SHADOW_LAYER)[0], near = triangles(mesh.geometry);
   assert.ok(!mesh.castShadow && mesh.receiveShadow && mesh.material.map);
+  assert.ok(mesh.material.isMeshLambertMaterial);
   assert.ok(proxy.castShadow && proxy.visible && !proxy.layers.isEnabled(0));
+  assert.equal(batches(view, TREE_SHADOW_LAYER).length, 2, 'only nearby casters join the scene');
   assert.equal(proxy.instanceMatrix, mesh.instanceMatrix);
-  assert.ok(proxy.geometry.attributes.position.count / 3 < near / 3);
+  assert.ok(triangles(proxy.geometry) < near / 3);
   view.tick(1, new THREE.Vector3(30, 110, 30));
-  const mid = triangles();
+  assert.ok(mesh.material.map, 'keep the close-up model until the camera leaves its wider band');
+  view.tick(2, new THREE.Vector3(30, 140, 30));
+  const mid = triangles(mesh.geometry);
   assert.ok(mid < near && !mesh.material.map);
-  const far = new THREE.Vector3(30, 310, 30);
-  view.tick(2, far);
-  assert.ok(triangles() < mid && mesh.material.isMeshBasicMaterial);
+  assert.ok(mesh.geometry.attributes.position.count < mesh.geometry.index.count / 2, 'shared crown vertices cut the vertex workload');
+  view.tick(3, new THREE.Vector3(30, 260, 30));
+  assert.equal(triangles(mesh.geometry), mid, 'keep individual crowns through normal zoom-out');
+  const far = new THREE.Vector3(30, 325, 30);
+  view.tick(4, far);
+  const silhouette = triangles(mesh.geometry);
+  assert.ok(silhouette < mid && mesh.material.isMeshBasicMaterial);
   assert.ok(!mesh.castShadow && !mesh.receiveShadow);
+  view.tick(5, new THREE.Vector3(30, 280, 30));
+  assert.equal(triangles(mesh.geometry), silhouette, 'returning briefly into the band does not switch the model again');
+  view.tick(6, new THREE.Vector3(30, 240, 30));
+  assert.equal(triangles(mesh.geometry), mid);
   assert.equal(mesh.instanceMatrix.version, matrixVersion);
   assert.ok(mesh.boundingSphere.equals(bound));
   view.drawDistance = 0;
-  view.tick(3, far);
+  view.tick(7, far);
   assert.equal(batches(view, 0, true).length, 0);
   assert.equal(batches(view, TREE_SHADOW_LAYER, true).length, 0);
 });
@@ -107,6 +120,10 @@ test('distant tiles share a draw call and clearings update the combined instance
   camera.lookAt(600, 6, 440); camera.updateMatrixWorld();
   view.tick(1, cam, cam, 0, camera);
   assert.equal(batches(view, 0, true).length, 16, 'keep tile culling when the sector crosses the edge of the view');
+  camera.lookAt(-600, 6, 0); camera.updateMatrixWorld();
+  view.tick(1.5, cam, cam, 0, camera);
+  assert.equal(batches(view, 0, true).length, 0, 'entire sectors behind the camera are skipped');
+  camera.lookAt(600, 6, 440); camera.updateMatrixWorld();
   view.drawDistance = 560;
   view.tick(2, cam, cam, 0, camera);
   assert.ok(batches(view, 0, true).reduce((n, mesh) => n + mesh.count, 0) < 16);
@@ -116,7 +133,7 @@ test('static shadow maps stay cached and a wide view refreshes moving shadows le
   const schedule = new ShadowRefresh(), focus = new THREE.Vector3(), sun = new THREE.Vector3(0, 1, 0);
   assert.equal(schedule.update(0, focus, sun, 250, false), true);
   assert.equal(schedule.update(200, focus, sun, 250, true), false);
-  assert.equal(schedule.update(240, focus, sun, 250, true), true);
+  assert.equal(schedule.update(275, focus, sun, 250, true), true);
   assert.equal(schedule.update(900, focus, sun, 250, false), true);
   assert.equal(schedule.update(1000, focus, sun, 250, false), false);
   focus.x = 8;
@@ -125,4 +142,39 @@ test('static shadow maps stay cached and a wide view refreshes moving shadows le
   assert.equal(schedule.update(1032, focus, sun, 250, false), true);
   sun.set(0.05, 1, 0).normalize();
   assert.equal(schedule.update(1200, focus, sun, 250, false), true);
+  assert.equal(schedule.update(1216, focus, sun, 40, false, 62), false);
+  assert.equal(schedule.update(1300, focus, sun, 40, false, 62), true, 'zoom refreshes the footprint after the cooldown');
+});
+
+test('particle buffers draw and upload only live entries, including after an expiry in the middle', () => {
+  const pool = new Particles(100, false, 0, 0);
+  const emit = (x, life) => pool.emit(x, 0, 0, 0, 0, 0, life, 1, 1, 1, 1, 1, 1);
+  emit(1, 4); emit(2, 1); emit(3, 5);
+  pool.update(2);
+  const geometry = pool.points.geometry;
+  assert.equal(geometry.drawRange.count, 2);
+  assert.deepEqual([...geometry.attributes.position.array.slice(0, 6)], [1, 0, 0, 3, 0, 0]);
+  assert.deepEqual(geometry.attributes.position.updateRanges, [{ start: 0, count: 6 }]);
+  pool.update(4);
+  assert.equal(geometry.drawRange.count, 0);
+  assert.equal(pool.points.visible, false);
+  emit(4, 5);
+  pool.update(1);
+  assert.equal(geometry.drawRange.count, 1);
+  assert.equal(pool.points.visible, true);
+});
+
+test('offscreen fires are skipped and come into view with fresh particles', () => {
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.5, 1000);
+  camera.position.set(0, 20, 0); camera.lookAt(150, 0, 0); camera.updateMatrixWorld();
+  const view = new EffectView();
+  const effects = new Effects2({ heightAt: () => 0 });
+  const fires = Float32Array.of(0, -150, 0, 4);
+  const draws = () => effects.group.children.some(child => child.isPoints && child.geometry.drawRange.count > 0);
+  view.update(camera); effects.update(0.1, fires, camera.position, view);
+  assert.equal(draws(), false);
+  camera.lookAt(-150, 0, 0); camera.updateMatrixWorld();
+  view.update(camera); effects.update(0.1, fires, camera.position, view);
+  assert.equal(draws(), true);
+  assert.equal(effects.group.children.filter(child => child.isPointLight).length, 1);
 });

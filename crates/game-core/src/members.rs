@@ -17,6 +17,7 @@ pub(crate) struct Obst {
 #[derive(Clone)]
 enum Solid {
     Circle(f32, f32, f32),
+    Deposit(f32, f32, f32),
     Wall(f32, f32, f32, f32, f32),
     Field(Rc<Building>),
 }
@@ -35,6 +36,18 @@ fn seg_dist(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
 }
 
 impl World {
+    pub(crate) fn deposit_layout_stamp(&self) -> u64 {
+        if let Some(stamp) = self.deposit_layout.get() { return stamp; }
+        let mut stamp = 0xcbf29ce484222325u64;
+        for d in self.deposits.iter().filter(|d| d.max > 0) {
+            for part in [d.kind as u32, d.x.to_bits(), d.y.to_bits()] {
+                stamp = (stamp ^ u64::from(part)).wrapping_mul(0x100000001b3);
+            }
+        }
+        self.deposit_layout.set(Some(stamp));
+        stamp
+    }
+
     pub(crate) fn obst(&self) -> Rc<Obst> {
         let mut h: u64 = self.net_stamp() ^ 0x9e3779b97f4a7c15;
         let mut mix = |v: u64| { h ^= v; h = h.wrapping_mul(0x100000001b3); };
@@ -61,6 +74,9 @@ impl World {
                 }
             }
         }
+        for d in self.deposits.iter().filter(|d| d.max > 0) {
+            o.add(Solid::Deposit(d.x, d.y, d.walk_radius()));
+        }
         let (segs, _) = self.wall_lines();
         for sg in &segs { o.add(Solid::Wall(sg.ax, sg.ay, sg.bx, sg.by, sg.r)); }
         for c in self.crossings() {
@@ -73,14 +89,18 @@ impl World {
     }
 
     fn blocked_with(&self, o: &Obst, x: f32, y: f32, m: f32) -> bool {
-        !o.solid_clear((x, y), (x, y), m) || (self.ground_is_wet(x, y, self.height_ground(x, y)) && !o.on_deck(x, y, false))
+        !o.solid_clear((x, y), (x, y), m) || self.member_wet(o, x, y)
+    }
+
+    fn member_wet(&self, o: &Obst, x: f32, y: f32) -> bool {
+        self.ground_is_wet(x, y, self.height_ground(x, y)) && !o.on_deck(x, y, false)
     }
 
     /// Is this a place a person (`lvl` < 3) or an engine or rider (`lvl` 3: needs more room) may not stand?
     pub(crate) fn member_blocked_inner(&self, x: f32, y: f32, lvl: u8) -> bool { let o = self.obst(); self.blocked_with(&o, x, y, margin(lvl)) }
 
     /// One step of up to `step` from (x, y) towards (tx, ty), never into a blocked place: when the straight way is blocked it slides off to either side. [x, y, how]: how 0 straight, 1 round
-    /// something, 2 could not move. A soldier standing in a blocked place (pushed there, or a building rose under it) is led out by the first free direction.
+    /// something, 2 could not move. A soldier already on a deposit can always try moving away from its centre.
     pub(crate) fn member_step_inner(&self, x: f32, y: f32, tx: f32, ty: f32, step: f32, lvl: u8) -> [f32; 3] {
         let (dx, dy) = (tx - x, ty - y); let d = dx.hypot(dy);
         if !(d > 1e-4) || !(step > 0.0) { return [x, y, 0.0]; }
@@ -89,7 +109,8 @@ impl World {
         for (k, a) in [0.0f32, 0.45, -0.45, 0.9, -0.9, 1.4, -1.4, 2.0, -2.0].iter().enumerate() {
             let (c, sn) = ((base + a).cos(), (base + a).sin());
             let (px, py) = (x + c * s, y + sn * s);
-            if !self.blocked_with(&o, px, py, m) && !self.blocked_with(&o, x + c * s * 0.5, y + sn * s * 0.5, m) { return [px, py, if k == 0 { 0.0 } else { 1.0 }]; }
+            if o.movement_clear((x, y), (px, py), m) && !self.member_wet(&o, px, py)
+                && !self.member_wet(&o, x + c * s * 0.5, y + sn * s * 0.5) { return [px, py, if k == 0 { 0.0 } else { 1.0 }]; }
         }
         [x, y, 2.0]
     }
@@ -122,7 +143,7 @@ impl World {
 impl Obst {
     fn add(&mut self, solid: Solid) {
         let (ax, ay, bx, by, r) = match &solid {
-            Solid::Circle(x, y, r) => (*x, *y, *x, *y, *r),
+            Solid::Circle(x, y, r) | Solid::Deposit(x, y, r) => (*x, *y, *x, *y, *r),
             Solid::Wall(ax, ay, bx, by, r) => (*ax, *ay, *bx, *by, *r),
             Solid::Field(b) => (b.x, b.y, b.x, b.y, 18.0),
         };
@@ -134,6 +155,22 @@ impl Obst {
     }
 
     pub(crate) fn solid_clear(&self, a: (f32, f32), b: (f32, f32), room: f32) -> bool {
+        self.segment_clear(a, b, room, false, false)
+    }
+
+    pub(crate) fn deposit_clear(&self, a: (f32, f32), b: (f32, f32), room: f32) -> bool {
+        self.segment_clear(a, b, room, true, false)
+    }
+
+    pub(crate) fn movement_clear(&self, a: (f32, f32), b: (f32, f32), room: f32) -> bool {
+        self.segment_clear(a, b, room, false, true)
+    }
+
+    pub(crate) fn deposit_exit_clear(&self, a: (f32, f32), b: (f32, f32), room: f32) -> bool {
+        self.segment_clear(a, b, room, true, true)
+    }
+
+    fn segment_clear(&self, a: (f32, f32), b: (f32, f32), room: f32, deposits_only: bool, allow_exit: bool) -> bool {
         if [a.0, a.1, b.0, b.1].iter().any(|v| !v.is_finite() || v.abs() > MAP_LIMIT) { return false; }
         let (ax, ay, bx, by) = (a.0.min(b.0) - room, a.1.min(b.1) - room, a.0.max(b.0) + room, a.1.max(b.1) + room);
         let steps = ((b.0 - a.0).hypot(b.1 - a.1) / 0.45).ceil().max(1.0) as u32;
@@ -145,8 +182,15 @@ impl Obst {
             for x in bucket(ax)..=bucket(bx) {
                 let Some(solids) = self.solids.get(&(x, y)) else { continue; };
                 for solid in solids {
+                    if deposits_only && !matches!(solid, Solid::Deposit(..)) { continue; }
+                    if let Solid::Deposit(x, y, r) = *solid {
+                        // Older saves may have an army inside a deposit. Let it move out without cutting across the pile.
+                        let (dx, dy) = (a.0 - x, a.1 - y);
+                        if allow_exit && a != b && dx * dx + dy * dy < (r + room).powi(2)
+                            && dx * (b.0 - a.0) + dy * (b.1 - a.1) >= 0.0 { continue; }
+                    }
                     let clear = match *solid {
-                        Solid::Circle(x, y, r) => x + r < ax || x - r > bx || y + r < ay || y - r > by
+                        Solid::Circle(x, y, r) | Solid::Deposit(x, y, r) => x + r < ax || x - r > bx || y + r < ay || y - r > by
                             || seg_dist(x, y, a.0, a.1, b.0, b.1) >= r + room,
                         Solid::Wall(x0, y0, x1, y1, r) => x0.max(x1) + r < ax || x0.min(x1) - r > bx || y0.max(y1) + r < ay || y0.min(y1) - r > by
                             || samples().all(|(x, y)| seg_dist(x, y, x0, y0, x1, y1) >= r + room),
@@ -173,6 +217,11 @@ impl Obst {
 
 #[wasm_bindgen]
 impl World {
+    /// Check a leg of a client-side walking fallback against resource deposits.
+    pub fn deposit_leg_clear(&self, ax: f32, ay: f32, bx: f32, by: f32) -> bool {
+        self.obst().deposit_clear((ax, ay), (bx, by), FOOT_MARGIN)
+    }
+
     /// Is this a place a soldier may not stand (inside a building, wall, field, or in water)? `lvl` 3 is the engine width.
     pub fn member_blocked(&self, x: f32, y: f32, lvl: u8) -> bool { self.member_blocked_inner(x, y, lvl) }
     /// One step towards a goal that never enters a blocked place: [x, y, 0 straight / 1 round an obstacle / 2 stuck].

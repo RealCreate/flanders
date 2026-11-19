@@ -26,6 +26,9 @@ export interface ModelApi {
   forestSpot(minR: number, maxR: number, fromDeg: number, toDeg: number): [number, number, number] | null;
 }
 
+/** Grade the demonstration site above the highest natural river, using the command log's tenths. */
+export const modelGroundTenths = (riverLevel: number) => Math.round(riverLevel * 10) + 5;
+
 const HOUSE = 0, FARM = 1, WALL = 2, TOWER = 3, WOODCUTTER = 4, SAWMILL = 5, QUARRY = 6, CLAY_PIT = 7, BRICKWORKS = 8, IRON_MINE = 9, GOLD_MINE = 10, CHARCOAL = 11, BLACKSMITH = 13, WELL = 16, CHAPEL = 17, BARRACKS = 19, BUILDERS = 20, GATE = 22, DRAWBRIDGE = 23, MOAT = 24,
   STOREHOUSE = 25, KEEP = 26, COURTHOUSE = 27, MARKET = 28, GARDEN = 30, PARK = 31;
 

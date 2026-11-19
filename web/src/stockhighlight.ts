@@ -28,10 +28,12 @@ export function stockSources(d: FlowData | undefined, res: number, sign: number)
 }
 
 /** Add the kinds the catalogue says make (`sign` > 0) or use a resource, even when the ledger has not seen them work yet (a new farm, a kiln waiting for wood). Rate 0 until the ledger knows. */
-export function addCatalogKinds(src: Source, defs: ArrayLike<{ inputs: [number, number][]; outputs: [number, number][] }>, res: number, sign: number): Source {
+type Recipe = { inputs: [number, number][]; outputs: [number, number][] };
+export function addCatalogKinds(src: Source, defs: ArrayLike<Recipe & { alternateRecipe?: Recipe }>, res: number, sign: number): Source {
+  const side = sign > 0 ? 'outputs' : 'inputs';
   for (let k = 0; k < defs.length; k++) {
-    const list = sign > 0 ? defs[k].outputs : defs[k].inputs;
-    if (list.some(([r]) => r === res) && !src.kinds.some(x => x.kind === k)) src.kinds.push({ kind: k, perDay: 0 });
+    const d = defs[k], makesOrUses = (recipe: Recipe) => recipe[side].some(([r]) => r === res);
+    if ((makesOrUses(d) || (d.alternateRecipe && makesOrUses(d.alternateRecipe))) && !src.kinds.some(x => x.kind === k)) src.kinds.push({ kind: k, perDay: 0 });
   }
   return src;
 }
@@ -54,11 +56,11 @@ export interface KindSummary {
 export interface KindInfo { maxTier: number; jobs: number }
 
 /** Count the buildings of the given kinds in the core's flat list. `canUpgrade(kind, tier)` says whether the next tier can be paid for. */
-export function summarize(f: ArrayLike<number>, sources: Source['kinds'], info: (kind: number) => KindInfo, canUpgrade: (kind: number, tier: number) => boolean): KindSummary[] {
+export function summarize(f: ArrayLike<number>, sources: Source['kinds'], info: (kind: number) => KindInfo, canUpgrade: (kind: number, tier: number) => boolean, include = (_idx: number, _kind: number) => true): KindSummary[] {
   const by = new Map<number, KindSummary>();
   for (const s of sources) by.set(s.kind, { kind: s.kind, count: 0, perDay: s.perDay, tiers: [], upgradable: 0, maxed: 0, noWorkers: 0, waiting: 0, exhausted: 0, full: 0, idx: [] });
   for (let i = 0, n = Math.floor(f.length / STRIDE); i < n; i++) {
-    const o = i * STRIDE, k = by.get(f[o]); if (!k) continue;
+    const o = i * STRIDE, k = by.get(f[o]); if (!k || !include(i, k.kind)) continue;
     const tier = f[o + 1], status = f[o + 6], inf = info(k.kind);
     k.count++; k.idx.push(i); k.tiers[tier] = (k.tiers[tier] ?? 0) + 1;
     if (tier >= inf.maxTier) k.maxed++; else if (canUpgrade(k.kind, tier)) k.upgradable++;

@@ -1,25 +1,79 @@
-/** Positive samples mark the footprint. Their neighbouring bank vertices keep the same stage instead of dropping to sea level. */
-export function riverGrid(stages: ArrayLike<number>, size: number, step: number, i0: number, j0: number, i1: number, j1: number) {
+const CHANNEL = 2;
+const TIDE_MARGIN = 1;
+
+/** Partition the grid into river and sea. One ring of cells lets the river meet the flat tide before the seam. */
+export function riverFootprint(stages: ArrayLike<number>, size: number) {
+  const stride = size - 1, cells = new Uint8Array(stride * stride);
+  for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+    if (!(stages[j * size + i] > 0)) continue;
+    for (let y = Math.max(0, j - 2); y < Math.min(stride, j + 2); y++) {
+      for (let x = Math.max(0, i - 2); x < Math.min(stride, i + 2); x++) {
+        const at = y * stride + x;
+        const channel = x >= i - 1 && x <= i && y >= j - 1 && y <= j;
+        if (channel) cells[at] = CHANNEL;
+        else if (!cells[at]) cells[at] = TIDE_MARGIN;
+      }
+    }
+  }
+  return cells;
+}
+
+/** Cover the river and its margin. The outer vertices sit exactly on the sea surface. */
+export function riverGrid(stages: ArrayLike<number>, cells: Uint8Array, size: number, step: number, i0: number, j0: number, i1: number, j1: number) {
   const positions: number[] = [], indices: number[] = [], banks: number[] = [];
   const cols = i1 - i0 + 1, rows = j1 - j0 + 1, half = (size - 1) * step / 2;
+  const stride = size - 1;
+  const channelAt = (i: number, j: number) => i >= 0 && i < stride && j >= 0 && j < stride && cells[j * stride + i] === CHANNEL;
   const vertices = new Int32Array(cols * rows).fill(-1);
   const vertex = (i: number, j: number) => {
     const at = (j - j0) * cols + i - i0;
     if (vertices[at] < 0) {
       vertices[at] = positions.length / 3;
-      const stage = stages[j * size + i];
+      const stage = (channelAt(i, j) || channelAt(i - 1, j) || channelAt(i, j - 1) || channelAt(i - 1, j - 1))
+        ? stages[j * size + i] : 0;
       positions.push(i * step - half, Math.abs(stage), j * step - half);
       banks.push(stage <= 0 ? 1 : 0);
     }
     return vertices[at];
   };
   for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
-    const k = i + j * size;
-    const a = stages[k], b = stages[k + size], c = stages[k + 1], d = stages[k + size + 1];
-    if (a > 0 || b > 0 || c > 0) indices.push(vertex(i, j), vertex(i, j + 1), vertex(i + 1, j));
-    if (b > 0 || c > 0 || d > 0) indices.push(vertex(i, j + 1), vertex(i + 1, j + 1), vertex(i + 1, j));
+    if (!cells[j * stride + i]) continue;
+    const nw = vertex(i, j), sw = vertex(i, j + 1), ne = vertex(i + 1, j), se = vertex(i + 1, j + 1);
+    indices.push(nw, sw, ne, sw, se, ne);
   }
   return { positions, indices, banks };
+}
+
+/** Combine adjacent sea cells into rectangles, and close the four offshore strips beyond the terrain. */
+export function seaGrid(cells: Uint8Array, size: number, step: number, extent: number) {
+  const positions: number[] = [], indices: number[] = [];
+  const stride = size - 1, half = stride * step / 2;
+  const rect = (x0: number, z0: number, x1: number, z1: number) => {
+    const a = positions.length / 3;
+    positions.push(x0, 0, z0, x0, 0, z1, x1, 0, z0, x1, 0, z1);
+    indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  };
+  const withGrid = (i0: number, j0: number, i1: number, j1: number) =>
+    rect(i0 * step - half, j0 * step - half, i1 * step - half, j1 * step - half);
+  let spans = new Map<number, number>();
+  for (let j = 0; j <= stride; j++) {
+    const next = new Map<number, number>();
+    if (j < stride) for (let i = 0; i < stride;) {
+      if (cells[j * stride + i]) { i++; continue; }
+      const start = i++;
+      while (i < stride && !cells[j * stride + i]) i++;
+      const key = start * size + i;
+      next.set(key, spans.get(key) ?? j);
+      spans.delete(key);
+    }
+    for (const [key, top] of spans) withGrid(Math.floor(key / size), top, key % size, j);
+    spans = next;
+  }
+  rect(-extent, -extent, extent, -half);
+  rect(-extent, half, extent, extent);
+  rect(-extent, -half, -half, half);
+  rect(half, -half, extent, half);
+  return { positions, indices };
 }
 
 export function riverStageAt(stages: ArrayLike<number>, size: number, step: number, x: number, z: number) {

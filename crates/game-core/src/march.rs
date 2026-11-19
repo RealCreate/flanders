@@ -8,11 +8,20 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::rc::Rc;
 
+#[path = "march_formation.rs"]
+mod formation;
+
 pub const CELL: f32 = 2.5;
 pub const NC: i32 = 960; // cells per side, covering [-1200, 1200)
 const ORG: f32 = -1200.0;
 const MAX_FERRY: f32 = 64.0;
 const BRIDGE_MAX: f32 = 16.0;
+const FIELD_BRIDGE_LIMIT: usize = 60;
+
+fn crossing_cost(len: f32, bridges: usize, soldiers: u32) -> (bool, usize, i32) {
+    if len <= BRIDGE_MAX && bridges < FIELD_BRIDGE_LIMIT { (true, PL as usize, (len * 1.5).ceil() as i32) }
+    else { (false, W as usize, 10 + soldiers as i32 / 3) }
+}
 
 pub const S_IDLE: u8 = 0;
 pub const S_MARCH: u8 = 1;
@@ -24,6 +33,7 @@ pub const S_WAIT: u8 = 6;
 pub const S_HOME: u8 = 7;
 pub const S_FIGHT: u8 = 8;   // its soldiers are in the battle (see battle::det_join)
 pub const S_BLOCKED: u8 = 9;
+pub const S_FORMATION: u8 = 10;
 pub(crate) const ROUTE_PENDING: i32 = -11;
 
 #[derive(PartialEq, Eq)]
@@ -42,6 +52,16 @@ pub struct Wp { pub x: f32, pub y: f32, pub mode: u8 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct FilePoint { wp: Wp, dist: f32 }
 
+fn file_position(path: &[FilePoint], distance: f32) -> Option<(f32, f32)> {
+    let first = path.first()?;
+    let i = path.partition_point(|p| p.dist < distance);
+    if i == 0 { return Some((first.wp.x, first.wp.y)); }
+    let a = path[i - 1];
+    let b = path.get(i).copied().unwrap_or(a);
+    let t = if b.dist > a.dist { (distance - a.dist) / (b.dist - a.dist) } else { 0.0 };
+    Some((lerp(a.wp.x, b.wp.x, t), lerp(a.wp.y, b.wp.y, t)))
+}
+
 /// A verified track shared by the soldiers in a file. Each soldier has a dispatch distance based on its place in line.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MarchFile {
@@ -52,6 +72,18 @@ pub(crate) struct MarchFile {
 }
 
 impl MarchFile {
+    fn approach(path: Vec<(f32, f32)>) -> Vec<FilePoint> {
+        let length = path.windows(2).map(|p| (p[0].0 - p[1].0).hypot(p[0].1 - p[1].1)).sum::<f32>();
+        let mut distance = -length;
+        let mut previous = path[0];
+        let last = path.len() - 1;
+        path.into_iter().enumerate().map(|(i, (x, y))| {
+            distance += (x - previous.0).hypot(y - previous.1);
+            previous = (x, y);
+            FilePoint { wp: Wp { x, y, mode: 0 }, dist: if i == last { 0.0 } else { distance } }
+        }).collect()
+    }
+
     fn record(&mut self, x: f32, y: f32, mode: u8) {
         let wp = Wp { x, y, mode };
         let dist = match self.points.last() {
@@ -67,7 +99,16 @@ impl MarchFile {
     }
 
     fn gap(units: &[u32; NK]) -> f32 {
-        if units[4] + units[5] > 0 { 3.5 } else if units[3] > 0 { 1.9 } else { 1.05 }
+        if units[4] + units[5] > 0 { SIEGE_SPACING + 0.4 } else if units[3] > 0 { 1.9 } else { 1.05 }
+    }
+
+    fn formation_spacing(units: &[u32; NK]) -> f32 {
+        match units[4] + units[5] {
+            0 if units[3] > 0 => 1.8,
+            0 => 1.25,
+            engines if engines == units.iter().sum::<u32>() => SIEGE_SPACING,
+            _ => 2.6,
+        }
     }
 
     fn lag(units: &[u32; NK]) -> f32 { units.iter().sum::<u32>().saturating_sub(1) as f32 * Self::gap(units) }
@@ -117,7 +158,10 @@ impl MarchFile {
     pub(crate) fn mustered(&self) -> bool { self.points.len() == 1 && !self.approaches.is_empty() }
 
     pub(crate) fn write_approaches(&self, id: u32, kind: u8, out: &mut Vec<f32>) {
-        for (rank, path) in self.approaches.iter().enumerate().filter(|(_, p)| p.len() > 1) {
+        let mut anchor_drawn = self.approaches.first().is_some_and(|path| path.len() == 1);
+        for (rank, path) in self.approaches.iter().enumerate() {
+            if path.is_empty() || (path.len() == 1 && anchor_drawn) { continue; }
+            anchor_drawn |= path.len() == 1;
             out.extend([id as f32, kind as f32, rank as f32, path.len() as f32]);
             for p in path { out.extend([p.wp.x, p.wp.y, 0.0, p.dist]); }
         }
@@ -143,14 +187,7 @@ impl MarchFile {
             let d = self.dispatch - gap * rank as f32;
             if d > last.dist { continue; }
             let path = if d < 0.0 { self.approaches.get(rank as usize).map_or(&[][..], Vec::as_slice) } else { &self.points };
-            let Some(first) = path.first() else { continue };
-            let i = path.partition_point(|p| p.dist < d);
-            let point = if i == 0 { (first.wp.x, first.wp.y) } else {
-                let a = path[i - 1]; let b = path.get(i).copied().unwrap_or(a);
-                let t = if b.dist > a.dist { (d - a.dist) / (b.dist - a.dist) } else { 0.0 };
-                (lerp(a.wp.x, b.wp.x, t), lerp(a.wp.y, b.wp.y, t))
-            };
-            if on(point.0, point.1) { return true; }
+            if file_position(path, d).is_some_and(|(x, y)| on(x, y)) { return true; }
         }
         false
     }
@@ -209,6 +246,9 @@ pub(crate) struct SavedMarch {
 impl Det {
     pub(crate) fn occupied(&self, on: impl Fn(f32, f32) -> bool) -> bool {
         if self.state == S_FIGHT { return false; }
+        if self.file.mustered() && matches!(self.state, S_IDLE | S_ARRIVED | S_FORMATION) {
+            return on(self.x, self.y) || self.file.formation_occupied(&self.units, self.state == S_FORMATION, on);
+        }
         on(self.x, self.y) || self.file.occupied(&World::head_units(self), &on)
             || self.grp.iter().any(|g| on(g.x, g.y) || g.file.occupied(&g.units, &on))
     }
@@ -466,6 +506,9 @@ impl World {
             let (dx, dy) = (br[2] - br[0], br[3] - br[1]); let l = (dx * dx + dy * dy).sqrt().max(0.1); let steps = (l / 1.0).ceil() as i32;
             for k in 0..=steps { let t = k as f32 / steps as f32; stamp(&mut ov.bridge, br[0] + dx * t, br[1] + dy * t, 1.6); }
         }
+        for d in self.deposits.iter().filter(|d| d.max > 0) {
+            stamp(&mut ov.blocked, d.x, d.y, d.walk_radius());
+        }
         for l in &self.levels { stamp(&mut ov.edited, l[0], l[1], l[2] + LEVEL_BLEND + 5.0); }
         for l in &self.flats { stamp(&mut ov.edited, l[0], l[1], l[2] + flatten::FLAT_SHOULDER + 5.0); }
         let ns = nav_static(self.seed);
@@ -537,7 +580,10 @@ impl World {
     }
 
     fn walk_segment_with(&self, ns: &NavStatic, obst: &members::Obst, a: (f32, f32), b: (f32, f32), room: f32, slope: f32, lend: bool, height: impl Fn(f32, f32) -> f32) -> bool {
-        if !obst.solid_clear(a, b, room) { return false; }
+        obst.solid_clear(a, b, room) && self.walk_surface_with(ns, obst, a, b, slope, lend, height)
+    }
+
+    fn walk_surface_with(&self, ns: &NavStatic, obst: &members::Obst, a: (f32, f32), b: (f32, f32), slope: f32, lend: bool, height: impl Fn(f32, f32) -> f32) -> bool {
         let distance = (b.0 - a.0).hypot(b.1 - a.1);
         let steps = (distance / 0.5).ceil().max(1.0) as u32;
         let mut previous = None;
@@ -651,7 +697,7 @@ impl World {
         let workers = units[0] + units[2];
         let start = (sx, sy); let goal = (tx, ty);
         let walkable_start = walk(start, start); let walkable_goal = walk(goal, goal);
-        let nearest = |p: (f32, f32), exact| {
+        let nearest = |p: (f32, f32), exact: bool, departure: bool| {
             let k = ns.idx(p.0, p.1)?;
             let (i, j) = (k as i32 % NC, k as i32 / NC);
             let mut best = None;
@@ -664,13 +710,15 @@ impl World {
                     if !matches!(cl(k), Cl::Free(_)) { continue; }
                     let q = cell_xy(k);
                     let d = (p.0 - q.0).hypot(p.1 - q.1);
-                    if best.is_none_or(|(distance, _)| d < distance) && walk(q, if exact { p } else { q }) { best = Some((d, k)); }
+                    if best.is_none_or(|(distance, _)| d < distance)
+                        && walk(q, if exact { p } else { q })
+                        && (!departure || obst.deposit_exit_clear(p, q, room)) { best = Some((d, k)); }
                 } }
                 if best.is_some_and(|(d, _)| d <= (r as f32 + 0.5) * CELL) { break; }
             }
             best.map(|(_, k)| k)
         };
-        let (Some(s), Some(g)) = (nearest(start, walkable_start), nearest(goal, walkable_goal)) else { return Err(-2) };
+        let (Some(s), Some(g)) = (nearest(start, walkable_start, !walkable_start), nearest(goal, walkable_goal, false)) else { return Err(-2) };
         let ((scx, scy), (gcx, gcy)) = (cell_xy(s), cell_xy(g));
         let i0 = (((scx.min(gcx) - margin - ORG) / CELL).floor() as i32).max(0); let i1 = (((scx.max(gcx) + margin - ORG) / CELL).ceil() as i32).min(NC - 1);
         let j0 = (((scy.min(gcy) - margin - ORG) / CELL).floor() as i32).max(0); let j1 = (((scy.max(gcy) + margin - ORG) / CELL).ceil() as i32).min(NC - 1);
@@ -906,14 +954,19 @@ impl World {
     fn det_index(&self, id: u32) -> Option<usize> { self.dets.iter().position(|d| d.id == id) }
 
     /// A single reverse search from the path entry gives each muster position its own shortest local approach.
-    fn muster_approaches(&self, ns: &NavStatic, anchor: (f32, f32), units: &[u32; NK]) -> Vec<Vec<FilePoint>> {
+    fn muster_approaches(&self, ns: &NavStatic, anchor: (f32, f32), units: &[u32; NK], heading: f32, occupied: &[(f32, f32)]) -> Vec<Vec<FilePoint>> {
         let count = units.iter().sum::<u32>() as usize;
-        let step = if units[4] + units[5] > 0 { 2.6 } else if units[3] > 0 { 1.8 } else { 1.25 };
+        let engine_start = count - (units[4] + units[5]) as usize;
+        let step = MarchFile::formation_spacing(units);
         let room = if units[4] + units[5] > 0 { 0.95 } else { members::FOOT_MARGIN };
         let radius = ((count as f32).sqrt().ceil() as i32 + 2).clamp(3, 24);
         let side = 2 * radius + 1;
         let center = (radius * side + radius) as usize;
-        let p = |i: usize| (anchor.0 + (i as i32 % side - radius) as f32 * step, anchor.1 + (i as i32 / side - radius) as f32 * step);
+        let (sin, cos) = heading.sin_cos();
+        let p = |i: usize| {
+            let (x, y) = ((i as i32 % side - radius) as f32 * step, (i as i32 / side - radius) as f32 * step);
+            (anchor.0 + x * cos - y * sin, anchor.1 + x * sin + y * cos)
+        };
         let obst = self.obst();
         let terrain = self.ground_samples();
         let walk = |a, b| self.walk_segment_with(ns, &obst, a, b, room, if room > 0.6 { 0.85 } else { 1.6 }, false, |x, y| terrain.height(self, x, y));
@@ -924,35 +977,37 @@ impl World {
         let mut dist = vec![f32::MAX; (side * side) as usize];
         let mut from = vec![usize::MAX; dist.len()];
         let mut open = BinaryHeap::new();
-        let mut approaches = Vec::with_capacity(count);
+        let wanted = count.saturating_sub(occupied.len());
+        if wanted == 0 { return vec![]; }
+        let mut approaches: Vec<Vec<FilePoint>> = Vec::with_capacity(wanted);
         dist[center] = 0.0;
         open.push(Node { f: 0.0, i: center as u32 });
         while let Some(Node { f, i }) = open.pop() {
             let i = i as usize;
             if f > dist[i] { continue; }
-            let mut indices = vec![i];
-            let mut at = i;
-            while at != center { at = from[at]; indices.push(at); }
             let start = p(i);
-            let direct = (start.0 - anchor.0).hypot(start.1 - anchor.1);
-            let base_length = if walk(start, anchor) { direct } else { f };
-            let entry = if i == center { None } else {
-                entrances.iter().copied().map(|q| ((start.0 - q.0).hypot(start.1 - q.1), q))
-                    .filter(|&(d, q)| d < base_length && walk(start, q)).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, q)| q)
-            };
-            let path: Vec<_> = if let Some(q) = entry { vec![start, q, anchor] }
-                else if base_length == direct && i != center { vec![start, anchor] }
-                else { indices.into_iter().map(p).collect() };
-            let length = path.windows(2).map(|pair| (pair[0].0 - pair[1].0).hypot(pair[0].1 - pair[1].1)).sum::<f32>();
-            let mut distance = -length;
-            let mut prev = start;
-            let approach = path.into_iter().map(|(x, y)| {
-                distance += (x - prev.0).hypot(y - prev.1);
-                prev = (x, y);
-                FilePoint { wp: Wp { x, y, mode: 0 }, dist: if (x, y) == anchor { 0.0 } else { distance } }
-            }).collect();
-            approaches.push(approach);
-            if approaches.len() == count { break; }
+            let rank = occupied.len() + approaches.len();
+            let room_between_engines = rank < engine_start || occupied.iter().copied()
+                .chain(approaches.iter().map(|p| (p[0].wp.x, p[0].wp.y))).skip(engine_start)
+                .all(|(x, y)| (start.0 - x).hypot(start.1 - y) >= SIEGE_SPACING * 0.94);
+            if room_between_engines && occupied.iter().all(|&(x, y)| (start.0 - x).hypot(start.1 - y) >= step * 0.94) {
+                let direct = (start.0 - anchor.0).hypot(start.1 - anchor.1);
+                let base_length = if walk(start, anchor) { direct } else { f };
+                let entry = if i == center { None } else {
+                    entrances.iter().copied().map(|q| ((start.0 - q.0).hypot(start.1 - q.1), q))
+                        .filter(|&(d, q)| d < base_length && walk(start, q)).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, q)| q)
+                };
+                let path = if let Some(q) = entry { vec![start, q, anchor] }
+                    else if base_length == direct && i != center { vec![start, anchor] }
+                    else {
+                        let mut path = vec![start];
+                        let mut at = i;
+                        while at != center { at = from[at]; path.push(p(at)); }
+                        path
+                    };
+                approaches.push(MarchFile::approach(path));
+                if approaches.len() == wanted { break; }
+            }
             let (x, y) = (i as i32 % side, i as i32 / side);
             for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)] {
                 let (x, y) = (x + dx, y + dy);
@@ -991,7 +1046,7 @@ impl World {
         let (x, y) = entry.map_or(spawn, |&(_, p)| p);
         let mut file = MarchFile::default();
         file.record(x, y, 0);
-        file.assign_approaches(self.muster_approaches(&ns, (x, y), &units), &units);
+        file.assign_approaches(self.muster_approaches(&ns, (x, y), &units, 0.0, &[]), &units);
         if !self.battle_release_army(units) { return 0; }
         for k in 0..NK { self.army[k] -= units[k]; }
         self.next_det += 1;
@@ -1023,6 +1078,7 @@ impl World {
         let (hu, gus) = Self::split_groups(&u);
         let route_units = if u[4] + u[5] > 0 { u } else { hu };
         let path = self.order_path(&route_units, x, y, tx, ty, false, cached_only)?;
+        if d.state == S_FORMATION { d.file.hold_formation(&u); }
         let mut groups = Vec::new();
         let unstarted = d.grp.is_empty() && d.file.mustered() && d.file.points[0].wp.x == x && d.file.points[0].wp.y == y;
         let head_count = hu.iter().sum::<u32>() as usize;
@@ -1072,7 +1128,24 @@ impl World {
         for k in 0..NK { self.dets[i].units[k] -= take[k]; }
         self.next_det += 1;
         self.dets[i].grp.clear();
-        let mut n = d; n.id = self.next_det; n.units = take; n.grp.clear(); self.dets.push(n);
+        let mut n = d;
+        n.id = self.next_det;
+        if n.file.mustered() && matches!(n.state, S_IDLE | S_ARRIVED | S_FORMATION) {
+            if n.state == S_FORMATION {
+                n.file.hold_formation(&n.units);
+                n.state = if n.atk.is_some() { S_ARRIVED } else { S_IDLE };
+            }
+            let kept = &mut self.dets[i];
+            let mut approaches = std::mem::take(&mut n.file.approaches);
+            let kept_count = kept.units.iter().sum::<u32>() as usize;
+            let split = approaches.split_off(kept_count.min(approaches.len()));
+            kept.state = n.state;
+            kept.file.assign_approaches(approaches, &kept.units);
+            n.file.assign_approaches(split, &take);
+        }
+        n.units = take;
+        n.grp.clear();
+        self.dets.push(n);
         self.next_det
     }
 
@@ -1096,11 +1169,25 @@ impl World {
         let obst = self.obst();
         let stamp = self.navigation_stamp();
         let terrain = self.ground_samples();
-        let walk = |w: &World, a, b, lend| w.walk_segment_with(&ns, &obst, a, b, members::FOOT_MARGIN, 1.6, lend, |x, y| terrain.height(w, x, y));
+        let walk = |w: &World, a, b, lend| obst.movement_clear(a, b, members::FOOT_MARGIN)
+            && w.walk_surface_with(&ns, &obst, a, b, 1.6, lend, |x, y| terrain.height(w, x, y));
         let leg = |w: &World, a, b| if walk(w, a, b, false) { Leg::Clear } else if walk(w, a, b, true) { Leg::WaitingForDeck } else { Leg::Blocked };
         let mut dets = std::mem::take(&mut self.dets);
         dets.retain_mut(|mut d| {
             let mut remove = false;
+            if matches!(d.state, S_IDLE | S_ARRIVED | S_FORMATION) && d.file.mustered()
+                && !d.file.check_formation(stamp, |a, b| walk(self, (a.x, a.y), (b.x, b.y), false))
+            {
+                d.file = self.arrival_formation(&ns, (d.x, d.y), d.heading, &d.units);
+                if d.state != S_FORMATION {
+                    let approaches = std::mem::take(&mut d.file.approaches);
+                    d.file.assign_approaches(approaches, &d.units);
+                }
+            }
+            if d.state == S_FORMATION {
+                if d.file.formation_step(&d.units) { d.state = if d.atk.is_some() { S_ARRIVED } else { S_IDLE }; }
+                return true;
+            }
             if d.state == S_BLOCKED && d.blocked_stamp != stamp {
                 d.state = if d.home { S_HOME } else { S_MARCH };
             }
@@ -1165,8 +1252,7 @@ impl World {
                             d.sx = d.x; d.sy = d.y;
                             let len = ((wp.x - d.x).powi(2) + (wp.y - d.y).powi(2)).sqrt();
                             let total: u32 = d.units.iter().sum();
-                            let bridge = len <= BRIDGE_MAX && self.bridges.len() < 60;
-                            let (res, cost) = if bridge { (PL as usize, (len * 1.5).ceil() as i32) } else { (W as usize, 10 + total as i32 / 3) };
+                            let (bridge, res, cost) = crossing_cost(len, self.bridges.len(), total);
                             if self.stock[res] < cost { if d.state != S_WAIT { d.state = S_WAIT; self.push_event(EV_NEEDMAT, res as i32, cost); } }
                             else {
                                 self.stock[res] -= cost; d.phase = 1;
@@ -1210,7 +1296,10 @@ impl World {
             } else if travelling && d.wi >= d.path.len() && d.file.finish(&hu, base) && groups_done {   // everybody is there
                 d.path.clear(); d.phase = 0; d.grp.clear(); d.file = Default::default(); d.destination = None;
                 if d.home { for k in 0..NK { self.army[k] += d.units[k]; } remove = true; }
-                else if d.atk.is_some() { d.state = S_ARRIVED; } else { d.state = S_IDLE; }
+                else {
+                    d.file = self.arrival_formation(&ns, (d.x, d.y), d.heading, &d.units);
+                    d.state = if d.file.mustered() { S_FORMATION } else if d.atk.is_some() { S_ARRIVED } else { S_IDLE };
+                }
             }
             if !remove { let (rx, ry) = (d.x, d.y); let scouts = d.units.iter().sum::<u32>() <= 4; self.reveal(rx, ry, if scouts { 120.0 } else { 70.0 }); }   // a small party travels light and sees further   // an army on the march lifts the fog round it
             !remove
@@ -1290,22 +1379,29 @@ impl World {
 
     /// A planned route without giving any order: [ok, seconds, planks, wood, count, x, y, mode, ...].
     pub(crate) fn plan(&self, units: &[u32; NK], sx: f32, sy: f32, tx: f32, ty: f32) -> Vec<f32> {
-        let (head, gus) = Self::split_groups(units); let units = if units[4] + units[5] > 0 { units } else { &head };
-        match self.find_path(units, sx, sy, tx, ty) {
+        let (head, gus) = Self::split_groups(units);
+        let route_units = if units[4] + units[5] > 0 { units } else { &head };
+        match self.find_path(route_units, sx, sy, tx, ty) {
             Err(e) => vec![e as f32, 0.0, 0.0, 0.0, 0.0],
             Ok(p) => {
-                let base = Self::march_speed(&head); let workers = (units[0] + units[2]) as f32; let total: u32 = units.iter().sum();
+                let base = Self::march_speed(&head); let workers = (head[0] + head[2]) as f32; let total: u32 = units.iter().sum();
                 let (mut t, mut planks, mut wood, mut prev) = (0.0f32, 0i32, 0i32, (sx, sy));
+                let mut bridges = self.bridges.len();
+                let ns = nav_static(self.seed);
                 for w in &p {
                     let len = ((w.x - prev.0).powi(2) + (w.y - prev.1).powi(2)).sqrt();
                     match w.mode {
                         0 if len > 0.0 => {
                             let (x, y) = ((prev.0 + w.x) * 0.5, (prev.1 + w.y) * 0.5);
-                            t += len / self.army_walk_speed(base, x, y, 0.0, self.on_road(x, y));
+                            t += len / self.army_walk_speed(base, x, y, ns.dens_at(x, y) as f32, self.on_road(x, y));
                         }
                         0 => {}
                         1 => t += len / (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base),
-                        _ => if len <= BRIDGE_MAX { planks += (len * 1.5).ceil() as i32; t += len * 2.5 / workers.max(1.0).powf(0.8) + len / (base * 0.8); } else { wood += 10 + total as i32 / 3; t += 6.0 + len / 2.4; },
+                        _ => {
+                            let (bridge, _, cost) = crossing_cost(len, bridges, total);
+                            if bridge { planks += cost; bridges += 1; t += len * 2.5 / workers.max(1.0).powf(0.8) + len / (base * 0.8); }
+                            else { wood += cost; t += 6.0 + len / 2.4; }
+                        }
                     }
                     prev = (w.x, w.y);
                 }

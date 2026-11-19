@@ -127,7 +127,7 @@ pub static DEFS: [Def; 45] = [
     Def { name: "Infirmary", cat: 5, r: 4.2, weight: 3, cost: &[(ST, 40), (PL, 25), (W, 20)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Monks and nurses tend the sick in a ward of beds with a herb garden. Every bed cures people during a plague and fewer die; it needs its staff. Upgrade it into a hospital, a great hospital and a royal hospital for more beds." },
     Def { name: "Graveyard", cat: 5, r: 3.6, weight: 2, cost: &[(ST, 20), (W, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.4, pad: true, desc: "Consecrated ground where the dead are laid to rest. A gravedigger buries them; when plots run out, or there is no one to bury, bodies lie unburied and sickness and misery follow. Upgrade it for more plots." },
     Def { name: "Fishing Hut", cat: 1, r: 3.0, weight: 1, cost: &[(W, 20), (PL, 6)], jobs: 1, inputs: &[], outputs: &[(FI, 4)], cycle: 8, req: 3, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "A fisher's hut on the bank with a jetty, nets and drying racks. Stands at the edge of a river, lake, sea or moat and lands raw fish. Smoke it in a smokehouse to eat it." },
-    Def { name: "Smokehouse", cat: 3, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(FI, 3), (W, 1)], outputs: &[(SF, 3)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Smokes raw fish over a slow wood fire. Smoked fish keeps and feeds the village before any grain is eaten." },
+    Def { name: "Smokehouse", cat: 3, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(FI, 3), (W, 1)], outputs: &[(SF, 3)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Uses a slow wood fire to smoke fish or meat. Smoked food feeds more villagers than raw food." },
     Def { name: "Bakery", cat: 1, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(GR, 3), (W, 1)], outputs: &[(BD, 4)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A brick oven and a trough for kneading: grain is milled and baked into bread. Bread fills a villager half as much again as raw grain, so the same harvest feeds more mouths." },
     Def { name: "Plaza", cat: 5, r: 5.0, weight: 1, cost: &[(ST, 25)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A paved square. It has four connection nodes, one on each side, where roads you lay snap on; people cross it on the way. Choose its design: benches, trees, a fountain, lanterns." },
 ];
@@ -178,9 +178,12 @@ fn options_json(kind: u8) -> String {
 pub fn catalog_json() -> String {
     let amt = |a: &[Amount]| a.iter().map(|(r, n)| format!("[{},{}]", r, n)).collect::<Vec<_>>().join(",");
     let items: Vec<String> = DEFS.iter().enumerate().map(|(i, d)| {
+        let alternate = if i == SMOKEHOUSE as usize {
+            format!(",\"alternateRecipe\":{{\"inputs\":[{}],\"outputs\":[{}]}}", amt(crate::SMOKE_MEAT_IN), amt(crate::SMOKE_MEAT_OUT))
+        } else { String::new() };
         format!(
-            "{{\"id\":{},\"name\":\"{}\",\"cat\":{},\"r\":{},\"weight\":{},\"cost\":[{}],\"jobs\":{},\"inputs\":[{}],\"outputs\":[{}],\"cycle\":{},\"req\":{},\"reqArg\":{},\"housing\":{},\"maxTier\":{},\"opts\":[{}],\"desc\":\"{}\"}}",
-            i, d.name, d.cat, d.r, d.weight, amt(d.cost), d.jobs, amt(d.inputs), amt(d.outputs), d.cycle, d.req, d.req_arg, d.housing, max_tier(i as u8), options_json(i as u8), d.desc
+            "{{\"id\":{},\"name\":\"{}\",\"cat\":{},\"r\":{},\"weight\":{},\"cost\":[{}],\"jobs\":{},\"inputs\":[{}],\"outputs\":[{}],\"cycle\":{},\"req\":{},\"reqArg\":{},\"housing\":{},\"maxTier\":{},\"opts\":[{}],\"desc\":\"{}\"{}}}",
+            i, d.name, d.cat, d.r, d.weight, amt(d.cost), d.jobs, amt(d.inputs), amt(d.outputs), d.cycle, d.req, d.req_arg, d.housing, max_tier(i as u8), options_json(i as u8), d.desc, alternate
         )
     }).collect();
     format!("[{}]", items.join(","))
