@@ -1348,6 +1348,15 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const generic = (bit: number) => { if (bit === 0) pole(2.8); else if (bit === 1) { lantern(); lantern(); } else if (bit === 2) awning(); else if (bit === 3) footing(); };
   const has = (n: number) => n === bit;
   switch (kind) {
+    case 47:
+      if (bit === 0) {
+        for (const x of [-2.32, 2.32]) {
+          b.box(0.6, 0.46, 0.22, m.darkwood, x, 1.44, -2.45);
+          b.box(0.76, 0.12, 0.31, m.wood, x, 1.84, -2.43);
+          b.box(0.07, 0.8, 0.08, m.iron, x + 0.22, 0.96, -2.28);
+        }
+      }
+      break;
     case 0: // house
       if (has(0)) b.chimney(cx - hw * 0.45, Math.max(1.2, top - 1.1), cz, 1.7, m.stone);
       if (has(1)) { const p = spot(1.6, 0.4, 0.8); if (p) { b.box(1.6, 0.34, 0.4, m.darkwood, p[0], 0, p[1]); for (let i = 0; i < 6; i++) b.sphere(0.12, new THREE.MeshStandardMaterial({ color: [0xe04a5a, 0xf2c14e, 0xf0f0f0, 0xd070d0][i % 4] }), p[0] - 0.65 + i * 0.26, 0.5, p[1]); } }

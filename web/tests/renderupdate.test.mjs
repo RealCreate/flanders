@@ -117,6 +117,26 @@ test('villager names are reproducible and unique across the visible roster', asy
   assert.equal(roster[25], villagerName(25, -100, 43));
 });
 
+test('rowboat passengers sit on the benches with horizontal thighs and lowered heads', async () => {
+  const { Crowd } = await load('src/render/crowd.ts', true);
+  const { Boats } = await load('src/render/boats.ts', true);
+  const boats = new Boats({ heightAt: () => -2, renderedWaterAt: () => 1 }, () => 1);
+  const flat = [];
+  for (let i = 0; i < 12; i++) flat.push(32, 0, i * 4, 0, 0, 0, 0, 0, 0, 0);
+  boats.sync(Float32Array.from(flat), 1); boats.update(0.1);
+  const passengers = [];
+  boats.draw({ add: d => passengers.push(d) }, 0, 0, 100);
+  assert.ok(passengers.length > 0);
+  assert.ok(passengers.every(d => d.pose === 5 && d.tool === undefined));
+  const crowd = new Crowd();
+  crowd.begin(); crowd.add({ ...passengers[0], yaw: 0 }); crowd.end();
+  const thigh = new Matrix4(), head = new Matrix4();
+  crowd.thighL.getMatrixAt(0, thigh); crowd.head.getMatrixAt(0, head);
+  const legDirection = new Vector3(0, -1, 0).transformDirection(thigh);
+  assert.ok(Math.abs(legDirection.y) < 0.01 && legDirection.z > 0.99);
+  assert.ok(head.elements[13] - passengers[0].y < 1, 'head is below standing height');
+});
+
 test('the named woodcutters and builders take matching staffed jobs, with a market fallback for RealCBroTwo', async () => {
   const { villagerJob, villagerWorkplaces } = await load('src/villagernames.ts', true);
   const kinds = [15, 1, 28, 4, 20];

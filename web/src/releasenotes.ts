@@ -4,6 +4,34 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.2.3', date: '2026-11-20', title: 'Helping hands, happy livestock and clearer workshops',
+    added: [
+      'Workshops explain exactly what is holding up production, including missing materials, protected reserves, workers and full storage. Follow Show or Build links to the supplier from the building panel or work overview.',
+      'Markets sell emergency tools for 15 gold each, with a village-wide stock of two and one replacement every three days. Reopen your Iron Mine when your own tool supply runs out.',
+      'Touchscreen building uses a movable preview and a Build here button. Obstruction markers show what blocks placement, and demolition panels show the materials you will recover.',
+      'Pigsties raise pigs for year-round meat using grain. Stables house visible horses, and the Caravan horses upgrade makes new caravans travel 50% faster.',
+      'Set grain and firewood reserves to protect essential supplies from automatic processing, livestock feeding and trade.',
+      'Turn on Googly Eyes in display options for a sillier herd. Switch it off to restore the usual animal appearance.',
+    ],
+    changed: [
+      'Food rations scale more smoothly with population. Working pastures have herders, and named villagers can be followed around the village.',
+      'Villagers have unique names, with numbered namesakes when needed. Special residents keep their assigned woodcutting, building and market jobs.',
+      'Villager clothing, animal coats, roofs, timber and farm ground have richer textures, with less roof shimmer at a distance.',
+      'Boats have improved hulls and seating. Villagers and troops sit inside their small boats while travelling.',
+      'Port placement snaps more reliably to the bank, faces open water and keeps its boat afloat. Waterfront supports fit the ground beneath them.',
+      'Rivers no longer show the animated flow effect. Connected moat water stays level, and shoreline rendering reduces water spikes and gaps.',
+      'Building search includes stables, horses and caravan transport. Search all categories when the current category has no matches.',
+      'Demolition controls show the exact refund before you demolish. Raid warnings can pause the countdown so you have time to respond.',
+    ],
+    fixed: [
+      'Pause freezes villagers, farm animals, boats and their simulation animations.',
+      'Touchscreen twisting rotates the camera in the expected direction, and camera gestures no longer accidentally place buildings.',
+      'Successful placement no longer leaves a misleading Something is in the way warning. Placement previews and building confirmation use the same obstruction checks.',
+      'Farmers hold their hoes the right way round.',
+      'Choose your flag on the start screen. Inside the village it is display-only, and the town hall flies your chosen flag.',
+    ],
+  },
+  {
     version: '0.2.2', date: '2026-11-19', title: 'Battlefield orders and safer villages',
     added: [
       'Your village pauses by default while you are away. You can leave the steward in charge for up to one village day of routine work. The steward pauses for trouble or decisions and gives you a report when you return.',

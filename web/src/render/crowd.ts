@@ -8,7 +8,7 @@ import { surfaceTexture, type Surface } from './surfaces';
 export interface Draw {
   x: number; y: number; z: number; yaw: number;
   fall?: number;                      // pose 4 only: 0 standing .. 1 lying flat (default 1)
-  pose: 0 | 1 | 2 | 3 | 4;           // idle, walk, work, fight, dead
+  pose: 0 | 1 | 2 | 3 | 4 | 5;       // idle, walk, work, fight, dead, seated
   phase: number;                      // walking: gait angle in radians (advances with distance walked); otherwise a clock in seconds
   speed?: number;                     // ground speed in units/s (drives stride length, knee bend, lean)
   swing?: number;                     // 0..1 remaining attack swing
@@ -275,7 +275,7 @@ export class Crowd {
     }
 
     // ---- pelvis and torso frames
-    const hipY = 0.8;
+    const hipY = d.pose === 5 ? 0.38 : 0.8;
     this.frame(this.Pm, this.B, 0, hipY + bob, 0, 0, -twist * 0.6);
     this.frame(this.Tm, this.B, 0, hipY + bob + idle * 0.012, 0, lean, twist);
     this.put(this.torso, this.n.torso, this.Tm, d.body);
@@ -288,7 +288,8 @@ export class Crowd {
     // ---- legs: thigh swings at the hip, shin folds at the knee
     const legsHex = d.legs ?? 0x4a3a2a, K = clamp(0.45 + 0.22 * sp, 0.4, 1.5);
     let fL: number, fR: number, kL: number, kR: number;
-    if (d.mounted) { fL = fR = 1.15; kL = kR = 1.25; }
+    if (d.pose === 5) { fL = fR = Math.PI / 2; kL = kR = Math.PI / 2; }
+    else if (d.mounted) { fL = fR = 1.15; kL = kR = 1.25; }
     else if (walk) { fL = A * s; fR = -A * s; kL = K * Math.pow(pos(Math.cos(ph - 0.3)), 1.4) + 0.05; kR = K * Math.pow(pos(-Math.cos(ph - 0.3)), 1.4) + 0.05; }
     else if (d.pose === 3) { fL = 0.4; fR = -0.28; kL = 0.25; kR = 0.45; }
     else if (dead) { fL = -0.15; fR = 0.2; kL = 0.1; kR = 0.3; }
@@ -304,6 +305,7 @@ export class Crowd {
     let uR = A * 0.85 * s, uL = -A * 0.85 * s, eR = -(0.2 + 0.1 * sp + 0.3 * pos(uR)), eL = -(0.2 + 0.1 * sp + 0.3 * pos(uL));
     if (d.pose === 0) { uR = 0.04 * idle; uL = -0.04 * idle; eR = eL = -0.12; }
     if (d.pose === 2) { const sw = Math.sin(ph * 6); uR = 0.9 + 0.7 * sw; eR = -(0.5 + 0.9 * pos(Math.sin(ph * 6 + 1))); uL = 0.5; eL = -0.6; }
+    if (d.pose === 5) { uR = uL = 0.65 + 0.14 * Math.sin(ph * 2); eR = eL = -0.85; }
     if (d.pose === 3) {
       const sw = d.swing ?? 0;
       if (t === TOOL.SPEAR) { uR = 0.68 + 0.60 * Math.sin(sw * Math.PI); eR = -0.48; }

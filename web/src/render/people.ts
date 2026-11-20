@@ -450,6 +450,17 @@ export class People {
     const r2 = radius * radius, detail2 = detailRange ** 2;
     const detailed = (x: number, y: number, z: number) => !camera || (x - camera.x) ** 2 + (y - camera.y) ** 2 + (z - camera.z) ** 2 <= detail2;
     this.drawCarts(cx, cz, r2); this.drawStations(crowd, cx, cz, r2, detailed);
+    for (let i = 0; i < this.layout.length; i += S) {
+      if (this.layout[i] !== 47) continue;
+      const x = this.layout[i + 2], z = this.layout[i + 3];
+      if ((x - cx) ** 2 + (z - cz) ** 2 > r2) continue;
+      const turn = this.layout[i + 4] * Math.PI / 4;
+      for (const side of [-1, 1]) {
+        const px = x + side * 2.32 * Math.cos(turn) + 3.25 * Math.sin(turn);
+        const pz = z - side * 2.32 * Math.sin(turn) + 3.25 * Math.cos(turn);
+        crowd.addHorse(px, this.layout[i + 5] + 0.16, pz, turn, this.t, 0, side < 0 ? 0x896044 : 0xb0a08b, 0.9);
+      }
+    }
     for (const a of this.agents) {
       if ((a.x - cx) ** 2 + (a.z - cz) ** 2 > r2) continue;
       const walking = a.route.length > 0 && a.at < a.route.length;

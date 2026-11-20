@@ -38,3 +38,8 @@ test('resource searches favor producers and match alternate recipes', () => {
   assert.deepEqual(search('smoked meat', -1), [42, 18]);
   assert.deepEqual(search('smok mea', 3), [42]);
 });
+
+test('stables can be found by name, horses and transport terms', () => {
+  const search = buildSearch([{ id: 47, category: 5, name: 'Stable', keywords: ['stables', 'horse', 'horses', 'packhorse', 'caravan', 'transport'] }]);
+  for (const query of ['stable', 'stables', 'horse', 'packhorse', 'caravan', 'transport']) assert.deepEqual(search(query, -1), [47]);
+});

@@ -93,7 +93,7 @@ export interface Hud {
   radius: number; buildings: number; storage: number;
   vitals?: number[]; beds?: number; devotion?: number;
   /** Everybody's work, only filled while the work overview is open. */
-  work?: { rows: WorkRow[]; totals: WorkTotals };
+  work?: { rows: WorkRow[]; totals: WorkTotals; problems?: Record<number, string> };
   winter?: number[];   // the core's winter_numbers()
   army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
   militaryTech: number; bridgeShortcuts: boolean;
@@ -122,7 +122,7 @@ const findBuildCards = buildSearch([
     const category = d.id === 37 || d.id === 38 ? 7 : d.cat;
     return { id: d.id, category, name: d.name,
       outputs: [...d.outputs, ...(d.alternateRecipe?.outputs ?? [])].map(([r]) => RES[r].name),
-      keywords: [...(TIER_NAMES[d.id] ?? []), ...(d.id === 35 ? ['harbor', 'dock'] : [])],
+      keywords: [...(TIER_NAMES[d.id] ?? []), ...(d.id === 35 ? ['harbor', 'dock'] : []), ...(d.id === 47 ? ['stables', 'horse', 'horses', 'packhorse', 'caravan', 'transport'] : [])],
       description: `${CATS[category].name} ${d.desc}` };
   }),
   { id: LEVEL_TOOL, category: defs[33].cat, name: 'Level Ground', keywords: ['flatten', 'terrain'], description: `Land ${LEVEL_DESC}` },
@@ -221,7 +221,7 @@ export class UI {
     </div>
     <div id="build-results">
       <div class="cards" id="cards"></div>
-      <div id="build-empty" hidden><p class="muted">No matching buildings or tools.</p><button type="button" id="build-reset" class="chip">Clear filters</button></div>
+      <div id="build-empty" hidden><p class="muted">No matching buildings or tools.</p><button type="button" id="build-reset" class="chip">Search all categories</button></div>
       <p id="build-help" class="muted">Pick a building, then click the ground. <b>R</b> rotates, <b>Esc</b> cancels. Buildings level the ground beneath them and clear the trees.</p>
     </div>
   </section>
@@ -480,7 +480,7 @@ export class UI {
     search.oninput = () => this.updateBuildResults();
     const clearSearch = () => { search.value = ''; this.updateBuildResults(); search.focus(); };
     $('build-clear').onclick = clearSearch;
-    $('build-reset').onclick = () => { this.filter = -1; clearSearch(); };
+    $('build-reset').onclick = () => { this.filter = -1; this.updateBuildResults(); $('build-search').focus(); };
     search.onkeydown = e => {
       if (e.isComposing) return;
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (search.value) clearSearch(); else search.blur(); }
@@ -836,6 +836,14 @@ export class UI {
     return true;
   }
 
+  showBuildKind(kind: number) {
+    if ($('ledger').classList.contains('min')) this.toggleLedger();
+    this.filter = -1;
+    $<HTMLInputElement>('build-search').value = defs[kind].name;
+    this.setTab('build');
+    this.updateBuildResults();
+  }
+
   /** The cost line of the level-ground card for the patch size now chosen: flat [resource, amount, ...]. */
   setLevelCost(flat: number[]) {
     const c = this.cards.get(LEVEL_TOOL)?.querySelector('.cost'); if (!c) return;
@@ -915,6 +923,8 @@ export class UI {
   openWork() { this.modal('work', true); this.h.act('wk:refresh'); }
   private workClick(e: Event) {
     const t = e.target as HTMLElement;
+    const action = t.closest<HTMLButtonElement>('[data-act]');
+    if (action) { this.modal('work', false); this.h.act(action.dataset.act!); return; }
     const f = t.closest<HTMLElement>('[data-wf]'); if (f) { this.workFilter = f.dataset.wf as Filter; if (this.lastHud) this.renderWork(this.lastHud); return; }
     const s = t.closest<HTMLElement>('[data-ws]'); if (s) { this.workSort = s.dataset.ws as Sort; if (this.lastHud) this.renderWork(this.lastHud); return; }
     const a = t.closest<HTMLButtonElement>('[data-wa]'); if (a && !a.disabled) { this.h.workAll(a.dataset.wa!); return; }
@@ -949,7 +959,7 @@ export class UI {
           <span class="wc"><button class="pbtn" data-wset="${r.idx}:${Math.max(0, wanted - 1)}" ${wanted <= 0 ? 'disabled' : ''} aria-label="Fewer workers">−</button><input type="range" min="0" max="${r.max}" value="${wanted}" data-wslide="${r.idx}" aria-label="Workers"><button class="pbtn" data-wset="${r.idx}:${Math.min(r.max, wanted + 1)}" ${wanted >= r.max ? 'disabled' : ''} aria-label="More workers">+</button>
           <button class="pbtn ${r.want < 0 ? 'on' : ''}" data-wset="${r.idx}:-1" title="Let the village decide">Auto</button></span>
           <span class="wt"><b>${r.staff}</b> / ${wanted}${r.want < 0 ? '' : ` of ${r.max}`}${r.scaled ? ' <span class="neg" title="Not enough workers: scaled back">▾</span>' : ''}</span>
-          <span class="ws ${v === 'working' ? 'ok' : 'bad'}">${v}</span></div>`;
+          <span class="ws ${v === 'working' ? 'ok' : 'bad'}">${v}</span></div>${h.work.problems?.[r.idx] ?? ''}`;
       }
     }
     const body = $('work-body'), keep = body.parentElement!.scrollTop; body.innerHTML = html; body.parentElement!.scrollTop = keep;
@@ -990,7 +1000,7 @@ export class UI {
     if (visible) { marker.style.left = x + 'px'; marker.style.top = y + 'px'; }
   }
 
-  private openReserves() {
+  openReserves() {
     const h = this.lastHud;
     if (!h) return;
     $<HTMLInputElement>('reserve-grain').value = String(h.reserves[0]);

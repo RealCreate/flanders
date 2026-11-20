@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_land_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names, military_upgrades } from './wasm/game_core.js';
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
-import { parseRows, parseTotals, stepWant } from './workview';
+import { parseRows, parseTotals, stepWant, parseProductionProblems, productionProblemText } from './workview';
 import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL, ST_RESERVE } from './stockhighlight';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
@@ -1447,6 +1447,9 @@ function updateHud() {
   const w = lv.world;
   let barracks = -1; const f = w.buildings_flat(); for (let i = 0; i < f.length; i += 10) if (f[i] === 19) barracks = Math.max(barracks, f[i + 1]);
   const flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS); for (let i = 0; i < rates.length; i++) rates[i] = steadyRate(flow, i);
+  const workRows = ui.workOpen ? parseRows(w.staffing_flat(), f) : undefined;
+  const workProblems = workRows?.filter(r => r.want === 0 || r.staff === 0 || [1, 2, 3, 7, 8].includes(r.status))
+    .map(r => [r.idx, productionProblemsHtml(r.idx)]);
   const kinds = new Array(defs.length).fill(0); for (let i = 0; i < f.length; i += 10) kinds[f[i]]++;
   showPopulationInfo(w); showVillageFlag();
   showChoice(w, doDecide);
@@ -1457,7 +1460,7 @@ function updateHud() {
     army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
     militaryTech: w.military_tech(), bridgeShortcuts: w.army_bridge_shortcuts(),
     vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(), winter: Array.from(w.winter_numbers()),
-    work: ui.workOpen ? { rows: parseRows(w.staffing_flat(), f), totals: parseTotals(w.staffing_totals()) } : undefined,
+    work: workRows ? { rows: workRows, totals: parseTotals(w.staffing_totals()), problems: Object.fromEntries(workProblems ?? []) } : undefined,
   });
   ui.maxAttack(Array.from(w.army())); updateDets();
   { // the border follows what has been built; redrawn only when the land changed
@@ -2200,6 +2203,31 @@ function demolitionTip(world: World, idx: number) {
   return materials.length ? `Returns ${materials.join(', ')} to your stock.` : '0 materials recovered.';
 }
 
+function productionProblemsHtml(idx: number): string {
+  const w = lv.world, f = w.buildings_flat(), kind = f[idx * 10], status = f[idx * 10 + 6];
+  if (!defs[kind]?.cycle) return '';
+  const problems = parseProductionProblems(w.production_problems_flat(idx));
+  if (!problems.length) return status === 1 || status === 8 ? '<p class="muted">Inputs ready. Production resumes on the next cycle.</p>' : '';
+  const present = new Set<number>();
+  for (let i = 0; i < f.length; i += 10) present.add(f[i]);
+  const lines = problems.map(p => {
+    const text = productionProblemText(p, RES[p.resource]?.name.toLowerCase());
+    const buttons: string[] = [];
+    if (p.reason === 1 || p.reason === 2) {
+      const suppliers = defs.filter(d => [...d.outputs, ...(d.alternateRecipe?.outputs ?? [])].some(([r]) => r === p.resource));
+      for (const d of suppliers) {
+        const exists = present.has(d.id);
+        buttons.push(`<button class="pbtn" data-act="supply:${p.resource}:${d.id}">${exists ? 'Show' : 'Build'} ${esc(d.name)}</button>`);
+      }
+      if (p.reason === 2) buttons.push('<button class="pbtn" data-act="supply:reserves">Adjust reserves</button>');
+    }
+    if (p.reason === 3) buttons.push(`<button class="pbtn" data-act="supply:storage:${p.resource}">Show ${esc(RES[p.resource].name.toLowerCase())} use</button><button class="pbtn" data-act="supply:-1:25">Build Storehouse</button>`);
+    if (p.reason === 4 || p.reason === 5) buttons.push('<button class="pbtn" data-act="wk:overview">Work overview</button>');
+    return `<p>${esc(text)}</p>${buttons.length ? `<div class="btnrow wrap">${buttons.join('')}</div>` : ''}`;
+  });
+  return `<div class="production-problem"><h3>${status === 0 ? 'Next production batch' : 'Production'}</h3>${lines.join('')}</div>`;
+}
+
 function updateSelection() {
   const w = lv.world;
   if (selectedRuin !== null) {   // a ruined building: offer to rebuild it
@@ -2228,6 +2256,7 @@ function updateSelection() {
   let html = `<div><div class="eyebrow">${CATS[d.cat].name} · Tier ${tier + 1} of ${d.maxTier + 1}</div><h2>${tierName(kind, tier)}</h2><p class="muted">${d.name}</p></div><p>${d.desc}</p>`;
   html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
   html += reachHtml(kind, tier);
+  html += productionProblemsHtml(selectedIdx);
   if (health < 0.995 && !burning) {   // damaged: offer repairs
     const rc = w.repair_cost(selectedIdx), rcost: [number, number][] = []; for (let i = 0; i < rc.length; i += 2) rcost.push([rc[i], rc[i + 1]]);
     const rok = rcost.every(([r, n]) => stocks[r] >= n);
@@ -2280,6 +2309,10 @@ function updateSelection() {
       <p class="muted">${recipe.inputs.length ? `Uses ${io(scaled(recipe.inputs, tier))}<br>` : ''}Makes ${io(scaled(recipe.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(recipe.outputs, tier + 1))}.` : ''}</p>`;
   } else if (d.housing) html += `<div class="stats"><div class="stat"><b>${icon('house', 20)} ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
   if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p>`;
+  if (kind === 47) {
+    const equipped = ((w.options_flat()[selectedIdx] ?? 0) & 1) !== 0;
+    html += `<p>${equipped && !burning ? 'Caravan horses ready. Newly dispatched caravans travel 50% faster.' : equipped ? 'The stable is burning. Horse transport resumes when the fire is out.' : 'Equip Caravan horses below to supply faster transport.'} Loading takes 60 seconds. Horses from one stable serve the village.</p>`;
+  }
   if (kind === 19) {   // the lord who leads the defence
     const h = w.hero_flat();
     html += h.length ? `<div><h3>${w.hero_name()}</h3><div class="stats"><div class="stat"><b>Level ${h[1]}</b><span>lord</span></div><div class="stat"><b>${h[2]}${h[3] ? ' / ' + h[3] : ''}</b><span>experience</span></div></div><p class="muted">Defenders hit harder and break less easily under a lord. He learns with every defence won, and may fall in a defeat.</p></div>`
@@ -2337,6 +2370,18 @@ function workersHtml(idx: number): string {
 }
 
 function onAct(a: string) {
+  if (a.startsWith('supply:')) {
+    const [, resource, kindText] = a.split(':');
+    if (resource === 'reserves') { ui.openReserves(); return; }
+    if (resource === 'storage') { ui.openFlow(Number(kindText)); return; }
+    const kind = Number(kindText), res = Number(resource);
+    const f = lv.world.buildings_flat(), suppliers: number[] = [];
+    for (let i = 0; i < f.length; i += 10) if (f[i] === kind) suppliers.push(i / 10);
+    if (res >= 0 && suppliers.length) {
+      if (!stockGo([res], 1, kind)) { const idx = suppliers[0]; rig.focus(f[idx * 10 + 2], f[idx * 10 + 3]); selectBuilding(idx); }
+    } else { selectKind(kind); ui.showBuildKind(kind); }
+    return;
+  }
   if (a === 'wk:refresh') { updateHud(); return; }
   if (a === 'wk:overview') { ui.openWork(); return; }
   if (a === 'people:work' && selectedIdx !== null) { ui.openVillagers(selectedIdx); return; }
