@@ -7,6 +7,28 @@ export interface WorkTotals { adults: number; workers: number; children: number;
 /** Building status codes of the core (`buildings_flat`, offset 6). */
 export const ST = { working: 0, wait: 1, exhausted: 2, full: 3, passive: 4, dormant: 7, reserve: 8 } as const;
 
+export interface ProductionProblem { reason: number; resource: number; needed: number; available: number }
+export function parseProductionProblems(flat: ArrayLike<number>): ProductionProblem[] {
+  const problems: ProductionProblem[] = [];
+  for (let i = 0; i + 3 < flat.length; i += 4) problems.push({ reason: flat[i], resource: flat[i + 1], needed: flat[i + 2], available: flat[i + 3] });
+  return problems;
+}
+
+export function productionProblemText(p: ProductionProblem, resource = ''): string {
+  const available = Math.max(0, p.available);
+  switch (p.reason) {
+    case 1: return `Needs ${p.needed} ${resource} per batch. ${available} stored, ${p.needed - available} short.`;
+    case 2: return `Needs ${p.needed} ${resource} above the reserve. ${available} available to spend.`;
+    case 3: return `Needs room for ${p.needed} ${resource}. ${available} storage space remains.`;
+    case 4: return 'Production is paused. Assign workers or choose Auto to resume.';
+    case 5: return 'No workers available for production. Check worker assignments in the work overview.';
+    case 6: return 'This field is resting to restore its soil. Choose Always sow to resume immediately.';
+    case 7: return 'No usable deposit nearby. Check the deposit or build beside another vein.';
+    case 8: return 'The deposit is dormant. Production resumes when it has regrown.';
+    default: return '';
+  }
+}
+
 /** Read `staffing_flat()` (five numbers per building: kind, max, wanted (-1 auto), assigned, scaled) together with `buildings_flat()` (stride 10) into rows. Buildings that employ nobody are left out. */
 export function parseRows(staffing: ArrayLike<number>, buildings: ArrayLike<number>, stride = 10): WorkRow[] {
   const rows: WorkRow[] = [];

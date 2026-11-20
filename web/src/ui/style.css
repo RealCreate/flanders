@@ -373,6 +373,8 @@ kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5
 .pane { overflow-x: hidden; }
 .pane > *, #selected-details > *, .pane .stats > *, .pane .sect > * { min-width: 0; }
 #selected-details { display: contents; }
+.production-problem { border-left: 3px solid var(--gold); padding: 4px 10px; margin: 4px 0 10px; }
+.production-problem p { margin: 4px 0 8px; }
 .pane input[type=number], .pane select { min-width: 0; max-width: 100%; box-sizing: border-box; }
 .muted.tiny { font-size: 12.5px; line-height: 1.4; }
 .sect { border: 1px solid var(--paper-edge); background: #f3e9cd88; border-radius: 3px; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }

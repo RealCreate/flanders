@@ -1,12 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRows, parseTotals, verdict, keep, understaffed, group, workNote, kindOutputs, stepWant, ST } from '../src/workview.ts';
+import { parseRows, parseTotals, verdict, keep, understaffed, group, workNote, kindOutputs, stepWant, ST, parseProductionProblems, productionProblemText } from '../src/workview.ts';
 
 // staffing_flat: kind, max, want, staff, scaled. buildings_flat (stride 10): kind, tier, x, z, _, pad, status, pct, workers, residents
 const S = [1, 4, -1, 4, 0,   0, 0, -1, 0, 0,   1, 2, 2, 1, 1,   4, 2, 0, 0, 0,   1, 4, -1, 1, 0];
 const B = (kind, tier, status) => [kind, tier, 0, 0, 0, 0, status, 0, 0, 0];
 const bld = [...B(1, 0, 0), ...B(0, 0, 4), ...B(1, 0, ST.wait), ...B(4, 1, 0), ...B(1, 0, ST.full)];
 const rows = parseRows(S, bld);
+
+test('production notes show the missing amount and distinguish protected stock from full stores', () => {
+  const problems = parseProductionProblems([1, 9, 2, 0, 2, 0, 3, -20, 3, 11, 2, 1]);
+  assert.match(productionProblemText(problems[0], 'charcoal'), /Needs 2 charcoal.*0 stored, 2 short/);
+  assert.match(productionProblemText(problems[1], 'wood'), /above the reserve.*0 available/);
+  assert.match(productionProblemText(problems[2], 'tools'), /room for 2 tools.*1 storage space/);
+  assert.deepEqual(parseProductionProblems([]), []);
+});
 
 test('rows skip buildings that employ nobody and carry tier and status', () => {
   assert.deepEqual(rows.map(r => r.idx), [0, 2, 3, 4]);

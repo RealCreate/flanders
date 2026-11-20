@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
-import { HAT, TOOL, type Crowd } from './crowd';
+import { HAT, type Crowd } from './crowd';
 import { makeBoat } from './field';
 import { makeShip } from './ships';
 
@@ -144,8 +144,8 @@ export class Boats {
       const p = b.mesh.position; if ((p.x - cx) ** 2 + (p.z - cz) ** 2 > r2) continue;
       const fx = Math.sin(b.yaw), fz = Math.cos(b.yaw);
       b.crew.forEach((c, i) => {
-        const off = (i - (b.crew.length - 1) / 2) * 0.9;
-        crowd.add({ x: p.x + fx * off, y: p.y + 0.3, z: p.z + fz * off, yaw: b.yaw, pose: 2, phase: this.t * 1.2 + b.seed + i, speed: 0, body: c.body, skin: 0xd9a877, hat: c.hat, tool: TOOL.STAFF, scale: 0.9 });
+        const off = (i === 0 ? -0.13 : 1.04) * 0.55;
+        crowd.add({ x: p.x + fx * off, y: p.y - 0.15, z: p.z + fz * off, yaw: b.yaw, pose: 5, phase: this.t * 1.2 + b.seed + i, speed: 0, body: c.body, skin: 0xd9a877, hat: c.hat, scale: 0.9 });
       });
     }
   }

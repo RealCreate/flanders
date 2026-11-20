@@ -135,7 +135,7 @@ pub static DEFS: [Def; 48] = [
     Def { name: "Plaza", cat: 5, r: 5.0, weight: 1, cost: &[(ST, 25)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A paved square. It has four connection nodes, one on each side, where roads you lay snap on; people cross it on the way. Choose its design: benches, trees, a fountain, lanterns." },
     Def { name: "Pasture", cat: 1, r: 7.0, weight: 2, cost: &[(W, 30), (PL, 6)], jobs: 2, inputs: &[], outputs: &[(ME, 7)], cycle: 12, req: 0, req_arg: 0, housing: 0, max_slope: 0.29, pad: true, desc: "Herders raise sheep and cattle for meat. Livestock graze during the warmer seasons and need grain in winter. The grain reserve protects your larder from winter feed use." },
     Def { name: "Pigsty", cat: 1, r: 7.0, weight: 2, cost: &[(W, 24), (PL, 6)], jobs: 2, inputs: &[(GR, 2)], outputs: &[(ME, 8)], cycle: 12, req: 0, req_arg: 0, housing: 0, max_slope: 0.29, pad: true, desc: "Pig keepers feed grain to pigs and produce meat year-round. Feeding leaves your grain reserve for the village." },
-    Def { name: "Stable", cat: 5, r: 5.2, weight: 0, cost: &[(W, 20), (PL, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.35, pad: true, desc: "A timber stable with stalls, hay and tack. Decorative." },
+    Def { name: "Stable", cat: 5, r: 5.2, weight: 0, cost: &[(W, 20), (PL, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.35, pad: true, desc: "Houses packhorses for trade. Equip Caravan horses to make new caravans travel 50% faster. The bonus applies once across the village." },
 ];
 
 /// Resources needed to upgrade to `new_tier` (1..=3).
@@ -169,7 +169,8 @@ pub fn options(kind: u8) -> &'static [Opt] {
         HOSPITAL => &[("Herb garden", "A walled garden of healing herbs: patients recover a little faster.", 0), ("Quarantine ward", "A separate ward for the worst cases: fewer die.", 1), ("Chapel ward", "A chapel in the ward: the dying are comforted and spirits rise.", 1), ("Banner", "The hospital's pennant.", 0)],
         GRAVEYARD => &[("Chapel of rest", "A small chapel by the gate: funerals bring comfort.", 0), ("Memorial cross", "A tall stone cross for the village's dead.", 0), ("Yew trees", "Old yews, the churchyard's guardians.", 0), ("Charnel house", "A bone house, so old graves can be reused: 50% more plots.", 1)],
         PLAZA => &[("Benches", "Stone benches round the edge of the square. Purely for looks.", 0), ("Trees", "Lime trees in the corners, with shade for the benches. Purely for looks.", 0), ("Fountain", "A stone fountain in the middle. Purely for looks.", 0), ("Lanterns", "Lanterns on posts at the four nodes. Purely for looks.", 0)],
-        MOAT | RIVER | RAISE | LOWER | FENCE | ROAD | PASTURE | PIGSTY | STABLE => &[],
+        STABLE => &[("Caravan horses", "Packhorses make newly dispatched caravans travel 50% faster. One equipped stable supplies the village. A burning stable cannot supply horses.", 0)],
+        MOAT | RIVER | RAISE | LOWER | FENCE | ROAD | PASTURE | PIGSTY => &[],
         _ => &[("Banner", "A pennant on a pole. Defenders fight 1% harder (up to +15% in all).", 0), ("Lanterns", "Lanterns at the door. +1 happiness (up to +10 from such pride).", 0), ("Awning", "A cloth awning. Shade for the workers: this building works 10% faster.", 0), ("Stone footing", "A stone plinth. A dry, solid floor: this building works 5% faster.", 1)],
     }
 }

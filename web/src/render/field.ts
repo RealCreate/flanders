@@ -268,8 +268,8 @@ export class FieldView {
         if (!m.drawn) continue;
         const working = d.state === 2 && i === 0;
         const walking = m.spd > 0.35 && m.mode !== 2;
-        m.y = m.mode === 2 ? this.waterline(m.x, m.z) + 0.19 : this.terrain.walkAt(m.x, m.z);
-        crowd.add({ x: m.x, y: m.y, z: m.z, yaw: m.yaw, pose: working ? 2 : walking ? 1 : 0, phase: walking ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...lookOf(m.kind, this.friend), ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}) } as Draw);
+        m.y = m.mode === 2 ? this.waterline(m.x, m.z) - 0.21 : this.terrain.walkAt(m.x, m.z);
+        crowd.add({ x: m.x, y: m.y, z: m.z, yaw: m.yaw, pose: m.mode === 2 ? 5 : working ? 2 : walking ? 1 : 0, phase: walking ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...lookOf(m.kind, this.friend), ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}), ...(m.mode === 2 ? { mounted: false, tool: undefined, shield: undefined, scale: 0.9 } : {}) } as Draw);
       }
     }
   }

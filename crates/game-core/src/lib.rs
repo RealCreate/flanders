@@ -2345,13 +2345,19 @@ impl World {
     /// Treaties in force: [tag, kind, days left] each.
     pub fn treaties_flat(&self) -> Vec<i32> { self.treaties.iter().filter(|t| t.until > self.tick).flat_map(|t| [t.tag, t.kind as i32, ((t.until - self.tick) / DAY) as i32]).collect() }
 
-    /// Send goods to another village (tag) over `distance` units of road, with `escort` spearmen taken from the barracks to guard them. 0 ok, -1 bad amount or resource, -2 not enough goods, -3 not enough soldiers.
+    /// Travel speed of newly dispatched caravans, as a percentage of the usual pace.
+    pub fn caravan_speed_percent(&self) -> u32 {
+        if self.buildings.iter().any(|b| b.kind == STABLE && b.opts & 1 != 0 && b.burning <= 0.0) { 150 } else { 100 }
+    }
+
+    /// Send goods with an optional escort. Already dispatched caravans keep their arrival time.
     pub fn caravan_send(&mut self, res: u8, amount: i32, to: i32, distance: f32, escort: u32) -> i32 {
         if res as usize >= N_RES || amount <= 0 || amount > 500 || to == 0 || self.caravans.len() >= 8 || !(0.0..=3000.0).contains(&distance) { return -1; }
         if self.stock[res as usize] < amount { return -2; }
         if escort > self.army[0] { return -3; }
         self.stock[res as usize] -= amount; self.army[0] -= escort;
-        self.caravans.push(Caravan { res, amount, to, start: self.tick, eta: self.tick + 60 + (distance / CARAVAN_SPEED) as u64, escort });
+        let speed = CARAVAN_SPEED * self.caravan_speed_percent() as f32 / 100.0;
+        self.caravans.push(Caravan { res, amount, to, start: self.tick, eta: self.tick + 60 + (distance / speed) as u64, escort });
         0
     }
     /// Send an errand to another village (tag) over `distance` units of road: kind 0..2 a treaty offer (arg = days), 3 an envoy with gifts (20 coins), 4 a royal marriage (150 coins), 5 a declaration of war.
@@ -2749,6 +2755,42 @@ impl World {
         self.buildings.iter().flat_map(|b| { let max = DEFS[b.kind as usize].jobs * (b.tier as u32 + 1); let want = if b.target >= 0 { (b.target as u32).min(max) } else { max };
             [b.kind as i32, max as i32, if b.target >= 0 { want as i32 } else { -1 }, b.staff as i32, (b.staff < want && b.target >= 0) as i32] }).collect()
     }
+
+    /// Current production blockers as [reason, resource, needed, available] records.
+    /// Reasons: 1 input, 2 reserve, 3 storage, 4 paused, 5 workers, 6 fallow, 7 deposit, 8 dormant.
+    pub fn production_problems_flat(&self, idx: u32) -> Vec<i32> {
+        let Some(b) = self.buildings.get(idx as usize) else { return vec![] };
+        let d = &DEFS[b.kind as usize];
+        if d.cycle == 0 { return vec![]; }
+        if b.target == 0 { return vec![4, -1, 0, 0]; }
+        if b.beff == 0 { return vec![5, -1, 1, b.staff as i32]; }
+        if b.kind == FARM && matches!(b.mode, 1 | 3) { return vec![6, -1, 0, 0]; }
+        if d.req == 1 && self.nearest_deposit(b.x, b.y, d.req_arg, false).is_none() {
+            let dormant = b.aux >= 0 && self.deposits.get(b.aux as usize).is_some_and(|dep| dep.max > 0);
+            return vec![if dormant { 8 } else { 7 }, -1, 0, 0];
+        }
+        let season = self.season();
+        let (inputs, outputs) = match b.kind {
+            SMOKEHOUSE if b.mode == 1 => (SMOKE_MEAT_IN, SMOKE_MEAT_OUT),
+            PASTURE if season == 3 => (estate::WINTER_PASTURE_FEED, d.outputs),
+            _ => (d.inputs, d.outputs),
+        };
+        let scale = |n: i32| ((n * (4 + 5 * b.tier as i32) + 2) / 4).max(n);
+        let missing: Vec<i32> = inputs.iter().filter(|&&(r, n)| self.stock[r as usize] < scale(n))
+            .flat_map(|&(r, n)| [1, r as i32, scale(n), self.stock[r as usize]]).collect();
+        if !missing.is_empty() { return missing; }
+        let reserved: Vec<i32> = inputs.iter().filter(|&&(r, n)| !self.can_spend_surplus(r, scale(n)))
+            .flat_map(|&(r, n)| [2, r as i32, scale(n), self.stock[r as usize] - self.reserve_for(r)]).collect();
+        if !reserved.is_empty() { return reserved; }
+        let cap = self.storage_cap();
+        let seasonal = if b.kind == FARM && season == 3 && b.opts & 2 != 0 { WINTER_GRAIN_HAYSTACKS } else { GRAIN_BY_SEASON[season as usize] };
+        let soil = if b.kind == FARM { 500 + b.fert as i32 / 20 } else { 1000 };
+        outputs.iter().filter_map(|&(r, n)| {
+            let amount = if r == GR { (scale(n) * seasonal * soil / 100_000).max(1) } else { scale(n) };
+            let room = cap - self.stock[r as usize];
+            (amount > room).then_some([3, r as i32, amount, room])
+        }).flatten().collect()
+    }
     /// The workforce in numbers: adults, workers (70% of the healthy adults, fewer in quarantine), children, elders, sick, jobs, workers placed, workers idle (placed nowhere), efficiency, workers promised by hand.
     pub fn staffing_totals(&self) -> Vec<u32> {
         let workers = (self.adults().saturating_sub(self.sick)) * 7 / 10 * if self.tick < self.quarantine_until { 7 } else { 10 } / 10;
@@ -2981,6 +3023,35 @@ mod tests {
             for pair in refund.chunks_exact(2) { expected_stock[pair[0] as usize] += pair[1]; }
             assert_eq!(w.stock, expected_stock);
         }
+    }
+
+    #[test]
+    fn production_diagnostics_follow_tiers_recipes_reserves_and_storage() {
+        let mut w = World::new(1337, 0, 0);
+        w.stock = [500; N_RES]; w.population = 100; w.flatten(60, 5.0);
+        let smith = w.place(13, 16, 0, 0) as u32;
+        assert!(smith < w.building_count());
+        assert_eq!(w.upgrade(smith), 0);
+        w.stock[CH as usize] = 0;
+        let hash = w.state_hash();
+        assert_eq!(w.production_problems_flat(smith), vec![1, CH as i32, 2, 0]);
+        assert_eq!(w.state_hash(), hash);
+        w.stock[CH as usize] = 10; w.stock[TL as usize] = w.storage_cap();
+        assert_eq!(w.production_problems_flat(smith), vec![3, TL as i32, 2, 0]);
+        assert_eq!(w.set_workers(smith, 0), 0);
+        assert_eq!(w.production_problems_flat(smith), vec![4, -1, 0, 0]);
+        let bakery = w.place(BAKERY, -16, 0, 0) as u32;
+        assert!(bakery < w.building_count());
+        w.set_reserves(500, 500);
+        let problems = w.production_problems_flat(bakery);
+        assert!(!problems.is_empty());
+        assert!(problems.chunks_exact(4).all(|p| p[0] == 2));
+        w.set_reserves(0, 0);
+        let smoke = w.place(SMOKEHOUSE, 0, 20, 0) as u32;
+        assert!(smoke < w.building_count());
+        w.buildings[smoke as usize].mode = 1; w.stock[ME as usize] = 0;
+        assert!(w.production_problems_flat(smoke).chunks_exact(4).any(|p| p[0] == 1 && p[1] == ME as i32));
+        assert!(w.production_problems_flat(u32::MAX).is_empty());
     }
 
     #[test]
@@ -4046,6 +4117,31 @@ mod trade_tests {
         // limits
         assert_eq!(sender.caravan_send(IR, 9999, 7, 10.0, 0), -1); assert_eq!(sender.caravan_send(IR, 40, 7, 10.0, 99), -3);
         sender.stock[IR as usize] = 5; assert_eq!(sender.caravan_send(IR, 40, 7, 10.0, 0), -2);
+    }
+
+    #[test]
+    fn equipped_stables_speed_new_caravans_without_stacking_or_changing_existing_trips() {
+        let mut w = rich(); w.flatten(60, 5.0);
+        let stable = w.place(STABLE, 16, 0, 0);
+        assert!(stable >= 0);
+        assert_eq!(w.caravan_speed_percent(), 100);
+        assert_eq!(w.caravan_send(W, 10, 7, 180.0, 0), 0);
+        let old_eta = w.caravans[0].eta;
+        assert_eq!(w.set_option(stable as u32, 0, true), 0);
+        assert_eq!(w.caravan_speed_percent(), 150);
+        assert_eq!(w.caravan_send(W, 10, 8, 180.0, 0), 0);
+        assert!(w.caravans[1].eta < old_eta);
+        assert_eq!(w.caravans[0].eta, old_eta);
+        let second = w.place(STABLE, -16, 0, 0);
+        assert!(second >= 0);
+        assert_eq!(w.set_option(second as u32, 0, true), 0);
+        assert_eq!(w.caravan_speed_percent(), 150);
+        w.buildings[stable as usize].burning = 1.0;
+        w.buildings[second as usize].burning = 1.0;
+        assert_eq!(w.caravan_speed_percent(), 100);
+        let restored = world_restore(&w.snapshot()).unwrap();
+        assert_eq!(restored.state_hash(), w.state_hash());
+        assert_eq!(restored.caravans[0].eta, old_eta);
     }
 
     #[test]
