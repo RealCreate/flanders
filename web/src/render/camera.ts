@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Terrain } from './terrain';
 import { HALF } from './terrain';
 import { keys } from '../keys';
-import { DragCounter, grabShift, rayOnPlane, zoomAbout, type P2 } from './camerafx';
+import { DragCounter, grabShift, rayOnPlane, TOUCH_DRAG_PIXELS, touchFrame, zoomAbout, type P2, type TouchPoint } from './camerafx';
 
 /** RTS camera. Keys come from the shared bindings (WASD, ZQSD and arrows move). Right-drag turns it, middle-drag or Shift-drag grabs the ground (the spot under the pointer stays
  *  under the pointer), and the wheel zooms towards the pointer. A right-click that wobbles a few pixels is still a click. */
@@ -15,13 +15,16 @@ export class CameraRig {
   private counter = new DragCounter();
   private grab: P2 | null = null; private grabY = 0;
   private ray = new THREE.Raycaster(); private ndc = new THREE.Vector2();
+  private tracked: { read: () => P2 | null; stop: () => void } | null = null;
+  get following() { return this.tracked !== null; }
   /** Has the pointer been dragged (more than a few pixels in all) since the button went down? */
   get moved() { return this.counter.dragged; }
+  touchConsumed = false;
   private shakeAmt = 0;
   /** A short rumble, e.g. when a heavy building lands. */
   shake(a: number) { this.shakeAmt = Math.min(1.2, this.shakeAmt + a); }
 
-  constructor(private dom: HTMLElement, private terrain: Terrain) {
+  constructor(private dom: HTMLElement, private terrain: Terrain, touchDrawing = () => false) {
     this.cam = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.5, 4000);
     dom.addEventListener('contextmenu', e => e.preventDefault());
     /** The ray under the pointer. */
@@ -29,16 +32,67 @@ export class CameraRig {
       const r = dom.getBoundingClientRect(); this.ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -(((e.clientY - r.top) / r.height) * 2 - 1));
       this.cam.updateMatrixWorld(true); this.ray.setFromCamera(this.ndc, this.cam); return this.ray.ray;
     };
+    const touches = new Map<number, TouchPoint>();
+    let touchStart: TouchPoint, touchDrawingStroke = false;
+    let touchGrab: P2 | null = null, touchY = 0;
+    const startTouchPan = (point: TouchPoint) => {
+      this.stopFollowing();
+      const ray = aim(point), hit = terrain.pick(ray);
+      touchY = hit?.y ?? this.target.y;
+      touchGrab = hit ? { x: hit.x, z: hit.z } : rayOnPlane(ray.origin, ray.direction, touchY);
+    };
     dom.addEventListener('pointerdown', e => {
+      if (e.pointerType === 'touch') {
+        if (!touches.size) {
+          touchStart = e;
+          this.touchConsumed = false;
+          touchDrawingStroke = touchDrawing();
+        }
+        touches.set(e.pointerId, e);
+        if (touches.size === 2) {
+          this.touchConsumed = true;
+          startTouchPan(touchFrame([...touches.values()]).center);
+        }
+        dom.setPointerCapture(e.pointerId);
+        return;
+      }
       this.counter.reset();
       if (e.button === 2) { this.drag = { x: e.clientX, y: e.clientY, mode: 'rot' }; dom.style.cursor = 'move'; }
       else if (e.button === 1 || e.shiftKey) {
+        this.stopFollowing();
         this.drag = { x: e.clientX, y: e.clientY, mode: 'pan' }; dom.style.cursor = 'grabbing';
         const ray = aim(e), hit = terrain.pick(ray); this.grabY = hit ? hit.y : this.target.y; this.grab = hit ? { x: hit.x, z: hit.z } : rayOnPlane(ray.origin, ray.direction, this.grabY);
       }
       if (this.drag) dom.setPointerCapture(e.pointerId);
     });
     dom.addEventListener('pointermove', e => {
+      if (e.pointerType === 'touch') {
+        if (!touches.has(e.pointerId)) return;
+        const before = touchFrame([...touches.values()]);
+        touches.set(e.pointerId, e);
+        const after = touchFrame([...touches.values()]);
+        if (!this.touchConsumed && !touchDrawingStroke
+          && Math.hypot(e.clientX - touchStart.clientX, e.clientY - touchStart.clientY) > TOUCH_DRAG_PIXELS) {
+          this.touchConsumed = true;
+          startTouchPan(touchStart);
+        }
+        if (!this.touchConsumed) return;
+        if (after.distance) {
+          this.dist = this.goal.dist = THREE.MathUtils.clamp(this.dist * before.distance / after.distance, 12, 260);
+          const twist = after.angle - before.angle;
+          this.yaw = this.goal.yaw = this.yaw - Math.atan2(Math.sin(twist), Math.cos(twist));
+          this.place();
+        }
+        if (touchGrab) {
+          const ray = aim(after.center), hit = rayOnPlane(ray.origin, ray.direction, touchY);
+          if (hit) {
+            const shift = grabShift(touchGrab, hit);
+            this.goal.x = this.target.x += shift.x; this.goal.z = this.target.z += shift.z;
+            this.place();
+          }
+        }
+        return;
+      }
       if (!this.drag) return;
       const dx = e.clientX - this.drag.x, dy = e.clientY - this.drag.y;
       this.drag.x = e.clientX; this.drag.y = e.clientY; this.counter.add(dx, dy);
@@ -51,22 +105,44 @@ export class CameraRig {
         if (now) { const d = grabShift(this.grab, now); this.goal.x += d.x; this.goal.z += d.z; this.target.x += d.x; this.target.z += d.z; this.place(); }
       }
     });
-    const end = () => { this.drag = null; this.grab = null; dom.style.cursor = ''; };
+    const end = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        if (!touches.delete(e.pointerId)) return;
+        if (touches.size && this.touchConsumed) startTouchPan(touchFrame([...touches.values()]).center);
+        else touchGrab = null;
+        return;
+      }
+      this.drag = null; this.grab = null; dom.style.cursor = '';
+    };
     dom.addEventListener('pointerup', end); dom.addEventListener('pointercancel', end);
+    dom.addEventListener('lostpointercapture', end);
     dom.addEventListener('wheel', e => {
       e.preventDefault();
       const old = this.goal.dist, next = THREE.MathUtils.clamp(old * Math.exp(e.deltaY * 0.0012), 12, 260), ratio = next / old;
-      const hit = terrain.pick(aim(e));   // zoom towards what is under the pointer, away from it when zooming out
+      const hit = this.tracked ? null : terrain.pick(aim(e));   // a tracked villager stays in the centre when zooming
       if (hit && ratio !== 1) { const t = zoomAbout({ x: this.goal.x, z: this.goal.z }, { x: hit.x, z: hit.z }, ratio); this.goal.x = t.x; this.goal.z = t.z; }
       this.goal.dist = next;
     }, { passive: false });
     addEventListener('resize', () => { this.cam.aspect = innerWidth / innerHeight; this.cam.updateProjectionMatrix(); });
   }
 
-  focus(x: number, z: number, dist?: number) { this.goal.x = x; this.goal.z = z; if (dist) this.goal.dist = dist; }
+  focus(x: number, z: number, dist?: number) { this.stopFollowing(); this.goal.x = x; this.goal.z = z; if (dist) this.goal.dist = dist; }
+  follow(read: () => P2 | null, stop: () => void, dist = 23) {
+    const point = read();
+    if (!point) return false;
+    this.focus(point.x, point.z, dist);
+    this.tracked = { read, stop };
+    return true;
+  }
+  stopFollowing() {
+    const tracked = this.tracked;
+    this.tracked = null;
+    tracked?.stop();
+  }
   snap() { this.target.set(this.goal.x, 0, this.goal.z); this.yaw = this.goal.yaw; this.pitch = this.goal.pitch; this.dist = this.goal.dist; }
 
   private pan(right: number, forward: number) {
+    this.stopFollowing();
     const s = Math.sin(this.goal.yaw), c = Math.cos(this.goal.yaw);
     this.goal.x += right * c + forward * s;
     this.goal.z += -right * s + forward * c;
@@ -84,6 +160,11 @@ export class CameraRig {
     if (keys.isDown('tiltDown')) this.goal.pitch = THREE.MathUtils.clamp(this.goal.pitch - dt * 0.9, 0.18, 1.45);
     if (keys.isDown('zoomIn')) this.goal.dist = THREE.MathUtils.clamp(this.goal.dist * Math.exp(-dt * 1.4), 12, 260);
     if (keys.isDown('zoomOut')) this.goal.dist = THREE.MathUtils.clamp(this.goal.dist * Math.exp(dt * 1.4), 12, 260);
+    if (this.tracked) {
+      const point = this.tracked.read();
+      if (point) { this.goal.x = point.x; this.goal.z = point.z; }
+      else this.stopFollowing();
+    }
     this.goal.x = THREE.MathUtils.clamp(this.goal.x, -HALF + 30, HALF - 30);
     this.goal.z = THREE.MathUtils.clamp(this.goal.z, -HALF + 30, HALF - 30);
     const a = 1 - Math.exp(-dt * 10);

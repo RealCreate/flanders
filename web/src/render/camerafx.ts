@@ -24,6 +24,16 @@ export class DragCounter {
   get dragged() { return this.total > DRAG_PIXELS; }
 }
 
+export const TOUCH_DRAG_PIXELS = 9;
+export interface TouchPoint { clientX: number; clientY: number }
+
+export function touchFrame(points: TouchPoint[]) {
+  const [a, b] = points;
+  if (!b) return { center: a, distance: 0, angle: 0 };
+  const x = b.clientX - a.clientX, y = b.clientY - a.clientY;
+  return { center: { clientX: a.clientX + x / 2, clientY: a.clientY + y / 2 }, distance: Math.max(4, Math.hypot(x, y)), angle: Math.atan2(y, x) };
+}
+
 /** The nearest of some screen positions to the pointer, within `max` pixels (a forgiving click target for small things such as an army's banner). */
 export function nearestWithin<T extends { sx: number; sy: number }>(items: T[], x: number, y: number, max: number): T | null {
   let best: T | null = null, bd = max * max;

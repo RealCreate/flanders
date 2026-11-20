@@ -9,6 +9,7 @@ const ROWS: { title: string; rows: Row[] }[] = [
     { key: 'fpsCap', label: 'Frame rate limit', hint: 'Lower limits save battery and keep a laptop cool.', kind: 'select', options: [['0', 'Unlimited (screen speed)'], ['60', '60 per second'], ['30', '30 per second']] },
     { key: 'showPaths', label: 'Show walking paths', hint: 'Draws the invisible path network as red lines (bright on roads): where soldiers and villagers may walk. For checking how they get about.', kind: 'toggle' },
     { key: 'jumpToRaiders', label: 'Jump to raiders', hint: 'When raiders attack your village, the camera moves to them by itself at the start of the fight (the red banner also takes you there when you click it).', kind: 'toggle' },
+    { key: 'pauseForRaids', label: 'Pause at bandit warnings', hint: 'Pause your village when a bandit warning begins, giving you time to check defences and resume the countdown.', kind: 'toggle' },
     { key: 'showFps', label: 'Show frame rate', hint: 'The small counter in the corner (also F3 for details).', kind: 'toggle' },
   ] },
   { title: 'Image', rows: [
@@ -24,6 +25,7 @@ const ROWS: { title: string; rows: Row[] }[] = [
     { key: 'drawDistance', label: 'Draw distance', hint: 'How far away forests are drawn.', kind: 'select', options: [['450', 'Short'], ['750', 'Medium'], ['1300', 'Long'], ['2600', 'Very long']] },
     { key: 'particles', label: 'Fire, smoke and dust', hint: 'Particle effects.', kind: 'toggle' },
     { key: 'crowds', label: 'People, soldiers and animals', hint: 'The moving figures. Turning them off does not change the game, only what you see.', kind: 'toggle' },
+    { key: 'googlyEyes', label: 'Googly Eyes', hint: 'Give animals oversized eyes that seem to look in two directions at once.', kind: 'toggle' },
   ] },
 ];
 

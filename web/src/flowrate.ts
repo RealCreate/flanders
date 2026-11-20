@@ -39,8 +39,16 @@ export function fmtRate(perDayN: number): string {
 export function daysLeft(stock: number, rate: number): number | null { return rate < 0 && stock > 0 ? stock / -rate : null; }
 export function fmtDaysLeft(days: number): string {
   if (days < 0.1) return 'less than a tenth of a day';
+  if (days === 1) return 'about one day';
   if (days < 10) return `about ${days.toFixed(1)} days`;
   return `about ${Math.round(days)} days`;
+}
+
+/** A reserve uses today's appetite even when the ledger is still empty or the stock is growing. */
+export function foodReserveText(days: number): string {
+  if (days < 0) return 'There is no food demand at the current headcount.';
+  if (days === 0) return 'The food reserve is empty.';
+  return `Food in store covers ${fmtDaysLeft(days)} at the current appetite without new supplies.`;
 }
 
 export interface Row { key: string; cat: number; perDay: number; count: number }

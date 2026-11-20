@@ -11,7 +11,7 @@ import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
 import { parseRows, parseTotals, stepWant } from './workview';
-import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL } from './stockhighlight';
+import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL, ST_RESERVE } from './stockhighlight';
 import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
@@ -48,10 +48,10 @@ import { Sound } from './audio';
 import { Minimap, type MapVillage } from './ui/minimap';
 import { Tunnels } from './render/tunnels';
 import { startAgentBridge } from './agent';
-import { nearestWithin } from './render/camerafx';
-import { mountFlagDesigner } from './ui/flagdesigner';
+import { nearestWithin, TOUCH_DRAG_PIXELS } from './render/camerafx';
+import { paintFlag } from './ui/flagdesigner';
 import { keyNames } from './ui/ui';
-import { loadFlag, saveFlag, packFlag, unpackFlag, hasSavedFlag, type Flag } from './flag';
+import { loadFlag, packFlag, unpackFlag, hasSavedFlag, type Flag } from './flag';
 import { territoryOutline } from './render/border';
 import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
@@ -81,6 +81,7 @@ import { saveKept, loadKept, deleteKept } from './checkpoint';
 import { Village, type Shared } from './village';
 import { PathLine, STATE_TEXT } from './render/field';
 import { ArmyPicker } from './render/armypick';
+import { PASTURE } from './pasture';
 
 await init();
 
@@ -108,6 +109,9 @@ const ui: UI = new UI({
   stockGo: (res, sign, kind) => stockGo(res, sign, kind),
   setWorkers: (idx, n) => setWorkers(idx, n),
   workAll: a => workAll(a),
+  setReserves: (grain, wood) => setReserves(grain, wood),
+  villagers: () => ({ rows: lv.people.roster(), sheltering: lv.people.hidden }),
+  followVillager: id => followVillager(id),
   goBuilding: i => { const f = lv.world.buildings_flat(); rig.focus(f[i * STRIDE + 2], f[i * STRIDE + 3]); selectBuilding(i); },
   speed: n => setSpeed(n),
   steward: action => stewardAction(action),
@@ -267,7 +271,7 @@ function pickSite() {
 /** Rebuild your village at another site from your signed history (used when two players picked the same spot). */
 function moveToSite(i: number) {
   mySite = i; const o = siteOrigin(i), keep = Number(lv.world.tick());
-  const w = new World(seedBig, o.x, o.z);
+  const w = World.new_legacy(seedBig, o.x, o.z);
   for (const s of myLog) { const c = JSON.parse(s.cmd) as Cmd; stepTo(w, c.tick); applyCmd(w, c); }
   stepTo(w, keep);
   lv.setWorld(w);
@@ -280,7 +284,7 @@ function moveToSite(i: number) {
 function quarantine(r: Rival, e: unknown) {
   console.warn('A rival village could not be replayed; ignoring it until it sends a fresh history.', e);
   r.broken = true; r.sync = 'broken';
-  try { r.village.setWorld(new World(seedBig, siteOrigin(r.site).x, siteOrigin(r.site).z)); r.village.syncFull(); } catch { /* keep the old copy */ }
+  try { r.village.setWorld(World.new_legacy(seedBig, siteOrigin(r.site).x, siteOrigin(r.site).z)); r.village.syncFull(); } catch { /* keep the old copy */ }
   startResync(r, 'the copy could not be replayed'); updatePeers();
 }
 
@@ -294,7 +298,7 @@ async function loadReplica(r: Rival, cmds: Cmd[]) {
   const seq = r.loadSeq = (r.loadSeq ?? 0) + 1, n = cmds.length;
   r.loading = true;
   try {
-    const o = siteOrigin(r.site), w = new World(seedBig, o.x, o.z);
+    const o = siteOrigin(r.site), w = World.new_legacy(seedBig, o.x, o.z);
     // a long history is replayed a few milliseconds at a time: the game keeps running (and painting) while a copy is rebuilt
     const res = await replayInSlices(w, cmds, applyCmd, 0, { cancelled: () => r.loadSeq !== seq || replay?.target === r.village });
     if (!res.ok) { if (r.loadSeq === seq) r.loading = false; return; }
@@ -391,7 +395,7 @@ function connect() {
       let r = rivals.get(h.pub);
       if (!r) {
         const o = siteOrigin(h.site);
-        const village = new Village(new World(seedBig, o.x, o.z), 'rival:' + h.pub, h.name, false, shared, 0xb03030); village.foeColor = foeColorOf;
+        const village = new Village(World.new_legacy(seedBig, o.x, o.z), 'rival:' + h.pub, h.name, false, shared, 0xb03030); village.foeColor = foeColorOf;
         village.onReport = rep => onRivalReport(h.pub, rep);
         r = { key: h.pub, peerId, name: h.name, site: h.site, village, online: true, sync: 'syncing…', tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0 };
         rivals.set(h.pub, r); ui.toast(`${h.name} has joined the world.`, 'good');
@@ -495,6 +499,8 @@ async function restartInfo() {
 
 /** Put the screen back in step with a village that was just replaced from the inside (the same world object, a new life). */
 function showFreshVillage() {
+  lv.people.resetRoster();
+  rig.stopFollowing();
   const o = siteOrigin(mySite);
   showWorld(lv, lv.world, true);
   deposits.sync(lv.world.deposits_flat(), lv.world.deposits_asleep()); deposits.attach(lv.world.buildings_flat());
@@ -516,7 +522,7 @@ async function restartVillage(): Promise<string | null> {
     const arch: Archive = { format: 'flanders-archive', version: 1, epoch: myEpoch, log: myLog.slice(), site: mySite, name: myName, savedAt: now, tick: Number(w.tick()), archivedAt: now, days: Math.floor(Number(w.tick()) / DAY_TICKS) + 1, buildings: w.building_count(), v: SYNC_PROTOCOL, rules: myRules };
     if (!(await saveKept(archiveKey(), arch))) return 'This browser would not keep a copy of your village (storage is full or blocked), so nothing was changed. Download a backup file first, or free some space.';
     // 2. the first command of the new epoch, signed; after this nothing can fail
-    const epoch = myEpoch + 1, cmd = restartCmd(epoch), signed = await identity.sign(cmd);
+    const epoch = myEpoch + 1, cmd: Cmd = { ...restartCmd(epoch), kind: 1 }, signed = await identity.sign(cmd);
     clearTimeout(saveTimer);
     myLog.length = 0; myLog.push(signed); cmdN = 1; sharedCount = 1; usedTools = false; myEpoch = epoch; lastRestartAt = now;
     applyCmd(w, cmd);   // the core starts the village again (World::restart)
@@ -545,9 +551,13 @@ async function restoreArchivedVillage(): Promise<string | null> {
     const cmds = rebaseLog(old, myEpoch + 1), signed: Signed[] = [];
     for (const c of cmds) signed.push(await identity.sign(c));
     // build it first, so that a village that cannot be played never replaces the one we have
-    const o = siteOrigin(mySite), w = new World(seedBig, o.x, o.z);
+    const o = siteOrigin(mySite), w = World.new_legacy(seedBig, o.x, o.z);
     const res = await replayInSlices(w, cmds, applyCmd, a.tick, {});
     if (!res.ok) return 'The archived village could not be rebuilt.';
+    if (!w.estate_active()) {
+      const rules: Cmd = { op: 'reserve', x: 0, y: 0, tick: Number(w.tick()), n: cmds.length, e: myEpoch + 1 };
+      applyCmd(w, rules); cmds.push(rules); signed.push(await identity.sign(rules));
+    }
     clearTimeout(saveTimer);
     myEpoch += 1; myLog.length = 0; myLog.push(...signed); cmdN = cmds.length; sharedCount = countShared(cmds.map(cmd => ({ cmd }))); lastRestartAt = null;
     lv.setWorld(w);
@@ -1147,7 +1157,7 @@ function startReplay(key: string) {
   const cmds: Cmd[] = own ? validSavedLog(myLog).map(x => x.cmd) : r!.log.slice();
   if (!cmds.length) { ui.toast('There is no history to watch yet.', 'info'); return; }
   const target = own ? lv : r!.village, o = siteOrigin(own ? mySite : r!.site);
-  const src = { make: () => new World(seedBig, o.x, o.z), apply: applyCmd, cmds };
+  const src = { make: () => World.new_legacy(seedBig, o.x, o.z), apply: applyCmd, cmds };
   const end = own ? Number(lv.world.tick()) : r!.tick;
   const rp = new Replay<Cmd>(src, end);
   rp.onWorld = w => showWorld(target, w, true);
@@ -1170,7 +1180,7 @@ function stopReplay() {
   const o = siteOrigin(own ? mySite : r?.site ?? mySite);
   const cmds: Cmd[] = own ? validSavedLog(myLog).map(x => x.cmd) : (r?.log ?? []);
   const to = own ? s.r.end : r?.tick ?? 0;
-  const live = new Replay<Cmd>({ make: () => new World(seedBig, o.x, o.z), apply: applyCmd, cmds }, to);
+  const live = new Replay<Cmd>({ make: () => World.new_legacy(seedBig, o.x, o.z), apply: applyCmd, cmds }, to);
   live.advanceTo(to);
   showWorld(s.target, live.world, true);
   if (r) { r.track.reset(cmds.map(c => c.op)); r.forked = false; }
@@ -1215,7 +1225,7 @@ async function startGame(name: string, username: string) {
   terrain = new Terrain(seedBig, land);
   scene.add(terrain.mesh, terrain.water, terrain.riverWater);
   tunnels = new Tunnels(terrain, tunnels_flat(seedBig)); scene.add(tunnels.group);
-  rig = new CameraRig(ui.canvas, terrain);
+  rig = new CameraRig(ui.canvas, terrain, () => selectedKind !== null && !!PEN_SPACING[selectedKind] && penShape !== 'path');
   ui.progress(38, 'Planting the forests…'); await nextFrame();
   const treeRows = trees_in_row_count(-HALF, HALF);
   const treeData = await collectInSlices(treeRows, (a, b) => trees_in_rows(seedBig, -HALF, -HALF, HALF, a, b), 4, { onProgress: f => ui.progress(38 + Math.round(f * 8), 'Planting the forests…') });
@@ -1259,7 +1269,7 @@ async function startGame(name: string, username: string) {
   mySite = saved && saved.site < sites.length ? saved.site : 0;
   try { myRules = rules_fingerprint(seedBig); ui.setRules(myRules); } catch { /* without a fingerprint other players cannot tell our build */ }
   const o = siteOrigin(mySite);
-  let w = new World(seedBig, o.x, o.z);
+  let w = World.new_legacy(seedBig, o.x, o.z);
   if (saved) {
     const entries = validSavedLog(saved.log);
     for (const s of entries) { myLog.push(s.signed); cmdN = Math.max(cmdN, s.cmd.n + 1); }
@@ -1277,6 +1287,12 @@ async function startGame(name: string, username: string) {
     console.info(`Replayed your history: ${rep.timing.commands} commands and ${rep.timing.ticks} ticks in ${Math.round(rep.timing.totalMs)} ms (ticks alone ${Math.round(rep.timing.stepMs)} ms; slowest commands: ${slow || 'none'}).`);
   }
   lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf;
+  if (saved?.paused === true) speed = 0;
+  watch.mode = saved?.steward === 'steward' ? 'steward' : 'pause';
+  if (!w.estate_active()) {
+    w.set_reserves(0, 0);
+    await commit({ op: 'reserve', x: 0, y: 0 });
+  }
   lv.onReport = onLocalReport;
   Village.onBossFx = (k, x, z) => { if (Math.hypot(x - rig.target.x, z - rig.target.z) < 200) { if (k === 3) sound.warhorn(); else sound.slam(); } };   // a horn or a slam near the camera is heard
   deposits = new Deposits(w.deposits_flat(), terrain); scene.add(deposits.group); deposits.refit();
@@ -1289,14 +1305,12 @@ async function startGame(name: string, username: string) {
   await warmUp();
   PART_NAMES = state_hash_part_names().split(','); LEDGER_EXTRAS = ledger_extra_names().split(',');
   try { myRules = rules_fingerprint(seedBig); ui.setRules(myRules); } catch { /* without a fingerprint other players cannot tell our build */ }
-  if (saved && (saved.v !== SYNC_PROTOCOL || saved.rules !== myRules)) console.warn(`This village was last saved by another build (${saved.v ?? 'unknown'}/${saved.rules ?? 'unknown'}); its history is replayed with the rules of this one (${SYNC_PROTOCOL}/${myRules}).`);
+  if (saved && (saved.v !== SYNC_PROTOCOL || saved.rules !== myRules)) console.info('This village was saved by an older build. Its history was restored before applying the current ration rules.');
   ui.setTab('build');
   ui.hint('Choose a building on the right, then click the ground. Start with houses and a farm.');
   setTimeout(() => ui.hint(null), 7000);
   addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); });
   bindInput();
-  if (saved?.paused === true) speed = 0;
-  watch.mode = saved?.steward === 'steward' ? 'steward' : 'pause';
   watch.openSave(performance.now(), saved ? openedAt - saved.savedAt : 0);
   startVillageWatch();
   connect();
@@ -1310,7 +1324,7 @@ async function startGame(name: string, username: string) {
   }, agentPort, agentToken);
   setInterval(() => { save(); updatePeers(); checkpoint(); }, 8000);
   tutorial.begin(!saved); updateGoals();
-  if (hasSavedFlag()) applyFlag(loadFlag());   // the flag designed on the home screen
+  if (hasSavedFlag() || !lv.world.style()) applyFlag(loadFlag());
   ui.enterGame();                       // everything is ready: reveal the game
   if (watch.review && !document.hidden) ui.openSteward();
   renderWatch();
@@ -1403,13 +1417,11 @@ function settleTerrain() {
 }
 function refreshAll() { refreshTerrain(lv.world); for (const r of rivals.values()) refreshTerrain(r.village.world); lv.syncFull(); for (const r of rivals.values()) r.village.syncFull(); }
 
-/** The flag designer in the Village pane: change your village's flag whenever you like. */
-let flagDesigner: ReturnType<typeof mountFlagDesigner> | null = null;
-function showFlagDesigner() {
-  const el = document.getElementById('flag-design'); if (!el) return;
-  const cur = unpackFlag(lv.world.style()) ?? loadFlag();
-  if (!flagDesigner) flagDesigner = mountFlagDesigner(el, cur, f => { saveFlag(f); applyFlag(f); });
-  else if (!el.firstChild) flagDesigner = mountFlagDesigner(el, cur, f => { saveFlag(f); applyFlag(f); });
+function showVillageFlag() {
+  const canvas = document.querySelector<HTMLCanvasElement>('#village-flag'); if (!canvas) return;
+  const flag = unpackFlag(lv.world.style()) ?? loadFlag(), style = String(packFlag(flag));
+  if (canvas.dataset.style === style) return;
+  paintFlag(canvas, flag); canvas.dataset.style = style;
 }
 /** Fly this flag from now on: part of the village's state, so everyone sees it. */
 function applyFlag(f: Flag) {
@@ -1433,10 +1445,11 @@ function updateHud() {
   let barracks = -1; const f = w.buildings_flat(); for (let i = 0; i < f.length; i += 10) if (f[i] === 19) barracks = Math.max(barracks, f[i + 1]);
   const flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS); for (let i = 0; i < rates.length; i++) rates[i] = steadyRate(flow, i);
   const kinds = new Array(defs.length).fill(0); for (let i = 0; i < f.length; i += 10) kinds[f[i]]++;
-  showPopulationInfo(w); if (!document.getElementById('flag-design')?.firstChild) showFlagDesigner();
+  showPopulationInfo(w); showVillageFlag();
   showChoice(w, doDecide);
   ui.update({
-    tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, flow, kinds, food: Array.from(World.food_table()), pop: w.population(), cap: w.capacity(), sick: w.sick(),
+    tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, flow, kinds, food: Array.from(World.food_table()), foodReserveDays: w.food_reserve_days(), pop: w.population(), cap: w.capacity(), sick: w.sick(),
+    reserves: Array.from(w.reserves()), canSetReserves: replay?.target !== lv,
     joy: w.happiness(), eff: w.efficiency(), jobs: w.jobs(), radius: w.build_radius(), buildings: w.building_count(), storage: w.storage(),
     army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
     militaryTech: w.military_tech(), bridgeShortcuts: w.army_bridge_shortcuts(),
@@ -1452,6 +1465,33 @@ function updateHud() {
       borderRing.geometry.dispose(); const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); borderRing.geometry = g;
     }
   }
+}
+
+function setReserves(grain: number, wood: number): boolean {
+  if (replay?.target === lv || !Number.isInteger(grain) || !Number.isInteger(wood)) return false;
+  const w = lv.world, current = w.reserves();
+  if (current[0] === grain && current[1] === wood) return true;
+  if (!w.set_reserves(grain, wood)) return false;
+  void commit({ op: 'reserve', x: grain, y: wood });
+  updateHud();
+  ui.toast('Stock reserves saved.', 'good');
+  return true;
+}
+
+let followedVillager: number | null = null;
+function followVillager(id: number | null): boolean {
+  if (id === null) { rig.stopFollowing(); return true; }
+  const w = lv.world, person = lv.people.villager(id);
+  if (!person || lv.people.hidden) return false;
+  const started = rig.follow(() => lv.world === w && !lv.people.hidden ? lv.people.villager(id) ?? null : null, () => {
+    followedVillager = null;
+    ui.setFollowing(null);
+  });
+  if (started) {
+    followedVillager = id;
+    ui.setFollowing(person.name);
+  }
+  return started;
 }
 
 /** Was a fight going on in each village at the last look (to notice the start of one). */
@@ -1537,6 +1577,10 @@ function battleBanner() {
       const dir = compassWord(Math.cos(v.world.raid_warning_angle()), Math.sin(v.world.raid_warning_angle()));
       const msg = `Bandits are gathering to attack ${mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village"} from the ${dir}.`;
       ui.toast(msg, 'bad'); ui.log(msg, 'bad', Number(v.world.tick()));
+      if (mine && replay?.target !== v) {
+        sound.warhorn();
+        if (settings().pauseForRaids && speed > 0 && !watch.away && !document.hidden) setSpeed(0);
+      }
     }
     if (shouldAutoJump(was, on, settings().jumpToRaiders, roleOf(mine, v.world.battle_tag(), myTag()))) lookAtAttackers(v);
     if (on && !was) announceBoss(v, mine, key);
@@ -1553,12 +1597,22 @@ function battleBanner() {
       const text = `Raid approaching from the ${dir} in about ${seconds} at 1×.${bossWarning}`;
       const f = foeFocus(w.raid_warning_angle(), v.ox, v.oz, w.build_radius());
       setBattlefield([], objective, w.raid_warning_angle());
+      const preparing = mine && replay?.target !== v;
+      const towers = preparing ? openGarrisons(w, objective ?? f) : [];
+      const ready = preparing ? Math.min(w.army()[1], towers.reduce((n, tower) => n + tower.slots, 0)) : 0;
+      const paused = preparing && (speed === 0 || !!watch.review);
       const briefing = objective
         ? `<small class="raid-goal">${objectiveName(objective)} · ${objective.kind === 'gate' ? 'Keep it standing until the raiders break.' : 'Keep soldiers near the wagon until it can leave.'} Click to locate it.</small>`
         : '<small>Muster troops and man your towers.</small>';
-      ui.battle(`${icon('attack', 18, { mono: true })} Raiders approaching<small>${esc(text)}</small>${briefing}`,
+      ui.battle(`${icon('attack', 18, { mono: true })} Raiders approaching<small>${esc(text)}${paused ? ' Countdown paused.' : ''}</small>${briefing}`,
         () => rig.focus(objective?.x ?? f.x, objective?.z ?? f.z, 65), mine ? { greed: w.bribe_greed() } : undefined);
-      ui.battleControls();
+      const actions: Parameters<UI['battleControls']>[0] = [];
+      if (preparing) {
+        actions.push({ label: 'Army panel', icon: 'army', title: 'Check your standing army and training queue', run: () => ui.setTab('army') });
+        if (ready > 0) actions.push({ label: `Man towers (${ready})`, icon: 'watchtower', title: 'Station available archers at towers and keeps nearest the raid', run: () => manRaidTowers(w, objective ?? f) });
+        if (paused) actions.push({ label: 'Resume countdown', icon: 'play', title: 'Let the raid countdown continue at normal speed', run: () => { playerPresent(); setSpeed(1); battleBanner(); } });
+      }
+      ui.battleControls(actions);
       return;
     }
     if (!w.battle_active()) continue;
@@ -1604,6 +1658,35 @@ function battleBanner() {
   ui.battle(null);
   ui.battleControls();
   setBattlefield([], null);
+}
+
+function openGarrisons(w: World, target: { x: number; z: number }) {
+  const buildings = w.buildings_flat(), garrison = w.garrison_flat();
+  const towers: { idx: number; slots: number; occupied: number; distance: number }[] = [];
+  for (let i = 0; i < buildings.length; i += STRIDE) {
+    const idx = i / STRIDE, occupied = garrison[idx], slots = w.garrison_cap(idx) - occupied;
+    if (slots > 0) towers.push({ idx, slots, occupied, distance: (buildings[i + 2] - target.x) ** 2 + (buildings[i + 3] - target.z) ** 2 });
+  }
+  return towers.sort((a, b) => a.distance - b.distance || a.idx - b.idx);
+}
+
+function manRaidTowers(w: World, target: { x: number; z: number }) {
+  if (lv.world !== w || replay?.target === lv || w.raid_warning_ticks() === 0 || w.battle_active()) return;
+  playerPresent();
+  let available = w.army()[1], stationed = 0;
+  for (const tower of openGarrisons(w, target)) {
+    const add = Math.min(tower.slots, available);
+    if (!add) break;
+    const count = tower.occupied + add;
+    if (w.garrison_set(tower.idx, count) !== 0) continue;
+    void commit({ op: 'garrison', idx: tower.idx, kind: count });
+    stationed += add; available -= add;
+  }
+  if (stationed > 0) {
+    afterLocalChange();
+    ui.toast(`${stationed} ${stationed === 1 ? 'archer has' : 'archers have'} taken up a post.`, 'good');
+  }
+  battleBanner();
 }
 
 /** A fight has just begun in this village: if a boss leads it, say so (who, from where) and, for a lair, take the camera there. */
@@ -1826,6 +1909,7 @@ function selectKind(k: number | null) {
   if (k !== null) cancelMarchPreview();
   if (k !== null && pendingBattleOrder) setPendingBattleOrder(null);
   selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
+  showTouchTools();
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
   terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false;
   if (k === LEVEL_TOOL) { selectedIdx = null; updateSelection(); ui.setLevelCost(Array.from(World.level_cost_flat(levelR))); ui.hint(placeHint(k)); }
@@ -1925,7 +2009,7 @@ function penCommit(kind: number, o: { pts: P[]; closed: boolean }) {
 function penReset() { penStart = null; penPath = []; penPreview?.clear(); }
 
 /** The row of drawing modes shown while a wall, fence, moat or earthwork is selected: line, path of corners, and ready-made figures. */
-function setPenShape(sh: Shape) { penShape = sh; penReset(); drawPenBar(); if (selectedKind !== null) ui.hint(placeHint(selectedKind)); }
+function setPenShape(sh: Shape) { penShape = sh; penReset(); drawPenBar(); showTouchTools(); if (selectedKind !== null) ui.hint(placeHint(selectedKind)); }
 function drawPenBar() {
   let bar = document.getElementById('penbar');
   if (selectedKind === null || !PEN_SPACING[selectedKind]) { bar?.remove(); return; }
@@ -2036,7 +2120,8 @@ const hlOn = () => hlState.active !== null || performance.now() < hlPinUntil;
 /** `sign` 1 = what makes the resources, -1 = what uses them, 2 = both. */
 function stockSummary(res: number[], sign: number) {
   const w = lv.world, flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS);
-  const side = (sg: number) => mergeSources(res.map(r => addCatalogKinds(stockSources(flow, r, sg), defs, r, sg)));
+  const winter = w.season() === 3;
+  const side = (sg: number) => mergeSources(res.map(r => addCatalogKinds(stockSources(flow, r, sg), defs, r, sg, winter)));
   const src = side(sign === 2 ? 1 : sign);
   if (sign === 2) { const b = side(-1); src.kinds.push(...b.kinds.filter(k => !src.kinds.some(x => x.kind === k.kind))); }
   const stocks = w.stocks(), afford = new Map<number, boolean>();
@@ -2047,8 +2132,8 @@ function stockSummary(res: number[], sign: number) {
   };
   const sums = summarize(w.buildings_flat(), src.kinds, k => ({ maxTier: defs[k].maxTier, jobs: defs[k].jobs }), can, (idx, kind) => {
     const d = defs[kind];
-    if (!d.alternateRecipe) return true;
-    const recipe = w.smoke_mode(idx) === 1 ? d.alternateRecipe : d;
+    if (!d.alternateRecipe && !d.winterRecipe) return true;
+    const recipe = d.alternateRecipe && w.smoke_mode(idx) === 1 ? d.alternateRecipe : winter ? d.winterRecipe ?? d : d;
     const has = (side: [number, number][]) => side.some(([r]) => res.includes(r));
     return sign === 2 ? has(recipe.inputs) || has(recipe.outputs) : has(sign > 0 ? recipe.outputs : recipe.inputs);
   });
@@ -2069,7 +2154,7 @@ function applyHighlight() {
   for (const k of sums) for (const i of k.idx) {
     if (n >= HL_MAX) break;
     if (hlState.active ? !hlState.ringed(i, selectedIdx) : i === selectedIdx) continue;   // the selected building keeps its own ring
-    const o = i * STRIDE, tier = f[o + 1], status = f[o + 6], held = (defs[k.kind].jobs > 0 && f[o + 8] === 0) || status === ST_WAIT || status === ST_EXHAUSTED || status === ST_FULL;
+    const o = i * STRIDE, tier = f[o + 1], status = f[o + 6], held = (defs[k.kind].jobs > 0 && f[o + 8] === 0) || status === ST_WAIT || status === ST_EXHAUSTED || status === ST_FULL || status === ST_RESERVE;
     let up = false; if (tier < defs[k.kind].maxTier) { const uc = upgrade_cost_flat(k.kind, tier + 1); up = true; for (let c = 0; c < uc.length; c += 2) if (stocks[uc[c]] < uc[c + 1]) up = false; }
     const r = hlRings[n] ?? (hlRings[n] = (() => { const m = new SelectionMark(terrain); scene.add(m); return m; })());
     r.set(f[o + 2], f[o + 3], footprint(f[o], tier) + 1.1, f[o], f[o + 5]);
@@ -2121,12 +2206,12 @@ function updateSelection() {
   const kind = f[o], tier = f[o + 1], x = f[o + 2], z = f[o + 3], status = f[o + 6], pct = f[o + 7];
   const d = defs[kind];
   const smokeMode = kind === 42 ? w.smoke_mode(selectedIdx) : -1;
-  const recipe = smokeMode === 1 ? d.alternateRecipe ?? d : d;
+  const recipe = smokeMode === 1 ? d.alternateRecipe ?? d : w.season() === 3 ? d.winterRecipe ?? d : d;
   selRing.visible = true; selRing.set(x, z, footprint(kind, tier) + 1.1, kind, f[o + 5]);
   const stocks = Array.from(w.stocks());
   const io = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)} ${n} ${RES[r].name}`).join(', ');
   const health = hp[selectedIdx * 3] / hp[selectedIdx * 3 + 1], burning = hp[selectedIdx * 3 + 2] > 0;
-  let html = `<div><div class="eyebrow">${CATS[d.cat].name} · Tier ${tier + 1} of 4</div><h2>${tierName(kind, tier)}</h2><p class="muted">${d.name}</p></div><p>${d.desc}</p>`;
+  let html = `<div><div class="eyebrow">${CATS[d.cat].name} · Tier ${tier + 1} of ${d.maxTier + 1}</div><h2>${tierName(kind, tier)}</h2><p class="muted">${d.name}</p></div><p>${d.desc}</p>`;
   html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
   html += reachHtml(kind, tier);
   if (health < 0.995 && !burning) {   // damaged: offer repairs
@@ -2170,8 +2255,9 @@ function updateSelection() {
   if (smokeMode >= 0) {
     const meat = smokeMode === 1;
     html += `<div><h3>${meat ? 'Smoking meat' : 'Smoking fish'}</h3><div class="btnrow" style="flex-wrap:wrap">${['Fish', 'Meat'].map((label, mode) => `<button class="pbtn ${smokeMode === mode ? 'on' : ''}" data-act="field:${mode}" aria-pressed="${smokeMode === mode}">${label}</button>`).join('')}</div>
-      <p class="muted">${meat ? 'Turns meat from the Hunter’s Lodge into smoked meat using wood.' : 'Turns raw fish from the Fishing Hut into smoked fish using wood.'}</p></div>`;
+      <p class="muted">${meat ? 'Turns meat from pastures and hunting lodges into smoked meat using wood.' : 'Turns raw fish from the Fishing Hut into smoked fish using wood.'}</p></div>`;
   }
+  if (kind === PASTURE) html += `<div class="btnrow"><button class="pbtn" data-act="people:work">${icon('pop', 16)} Find herders</button></div>`;
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.jobs > 0) html += workersHtml(selectedIdx);
   if (d.cycle) {
@@ -2240,6 +2326,7 @@ function workersHtml(idx: number): string {
 function onAct(a: string) {
   if (a === 'wk:refresh') { updateHud(); return; }
   if (a === 'wk:overview') { ui.openWork(); return; }
+  if (a === 'people:work' && selectedIdx !== null) { ui.openVillagers(selectedIdx); return; }
   if (selectedRuin !== null) {
     if (a === 'deselect') { selectRuin(null); return; }
     if (a === 'rebuild') {
@@ -2585,21 +2672,60 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
 }
 
+function showTouchTools() {
+  document.getElementById('touch-tools')!.hidden = selectedKind === null;
+  const path = selectedKind === 37 || (selectedKind !== null && !!PEN_SPACING[selectedKind] && penShape === 'path');
+  document.getElementById('touch-finish')!.hidden = !path;
+  document.getElementById('touch-undo')!.hidden = !path;
+  const rotate = document.getElementById('touch-rotate')!;
+  rotate.hidden = path && selectedKind !== 24;
+  rotate.textContent = selectedKind === LEVEL_TOOL ? 'Size' : selectedKind === 24 ? 'Width' : 'Rotate';
+}
+
+function finishStroke() {
+  if (selectedKind === 37 && roadPts.length >= 2) { roadCommit(); return true; }
+  if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) {
+    penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); return true;
+  }
+  return false;
+}
+
+function undoStroke() {
+  if (selectedKind === 37 && roadPts.length) { roadPts.pop(); if (!roadPts.length) roadSnapped = [false, false]; roadPreview(null); return true; }
+  if (penShape === 'path' && penPath.length) { penPath.pop(); if (!penPath.length) penPreview.clear(); return true; }
+  return false;
+}
+
+function rotateTool() {
+  if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); return; }
+  rot = (rot + 1) % 8;
+  if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); }
+  ghostCode = 99; previewKey = '';
+  if (lastGhostE && selectedKind !== null) updateGhost(lastGhostE);
+}
+
 function bindInput() {
   const cv = ui.canvas;
-  let down: { x: number; y: number } | null = null, hoverT = 0, routeT = 0;
+  let down: { x: number; y: number; id: number; at: number } | null = null, hoverT = 0, routeT = 0;
+  document.getElementById('touch-rotate')!.onclick = rotateTool;
+  document.getElementById('touch-finish')!.onclick = () => { if (!finishStroke()) ui.hint('Tap at least two points to finish the path.', true); };
+  document.getElementById('touch-undo')!.onclick = undoStroke;
+  document.getElementById('touch-cancel')!.onclick = () => selectKind(null);
   const dropStroke = () => { down = null; penStart = null; if (penShape !== 'path') penPreview.clear(); ui.selBox(null); };
-  cv.addEventListener('pointercancel', dropStroke); cv.addEventListener('lostpointercapture', () => { if (down) dropStroke(); });
+  const cancelPointer = (e: PointerEvent) => { if (down?.id === e.pointerId) dropStroke(); };
+  cv.addEventListener('pointercancel', cancelPointer); cv.addEventListener('lostpointercapture', cancelPointer);
   cv.addEventListener('pointerleave', cancelMarchPreview);
   cv.addEventListener('pointerdown', e => {
     cancelMarchPreview();
+    if (e.pointerType === 'touch' && rig.touchConsumed) { dropStroke(); return; }
     if (e.button !== 0) { dropStroke(); return; }   // any other button (the right one turns the camera) abandons a selection or pen stroke: it must never carry on under a camera drag
-    down = { x: e.clientX, y: e.clientY };
+    down = { x: e.clientX, y: e.clientY, id: e.pointerId, at: performance.now() };
     try { cv.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
     if (!e.shiftKey && selectedKind !== null && PEN_SPACING[selectedKind] && penShape !== 'path') { const h = terrain.pick(pointerRay(e).ray); penStart = h ? { x: h.x, z: h.z } : null; }
   });
   cv.addEventListener('pointermove', e => {
-    if (down && e.buttons === 1 && selectedKind === null && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) ui.selBox({ x0: down.x, y0: down.y, x1: e.clientX, y1: e.clientY });
+    if (e.pointerType === 'touch' && rig.touchConsumed) { if (down) dropStroke(); return; }
+    if (e.pointerType !== 'touch' && down && e.buttons === 1 && selectedKind === null && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) ui.selBox({ x0: down.x, y0: down.y, x1: e.clientX, y1: e.clientY });
     if (pendingBattleOrder) { cv.style.cursor = 'crosshair'; return; }
     updateGhost(e);
     if (selectedKind !== null && PEN_SPACING[selectedKind]) {   // the pen: preview a stroke being dragged, or the next stretch of a path
@@ -2628,16 +2754,20 @@ function bindInput() {
   });
   cv.addEventListener('pointerleave', () => { ui.tip(null); covHover(null); });
   cv.addEventListener('pointerup', e => {
-    if (e.button !== 0 || !down) return;
+    if (e.button !== 0 || down?.id !== e.pointerId) return;
+    const touch = e.pointerType === 'touch';
+    if (touch && rig.touchConsumed) { dropStroke(); return; }
     const d0 = down, moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); down = null;
+    const tap = moved <= (touch ? TOUCH_DRAG_PIXELS : 5);
+    if (touch && tap && (pendingBattleOrder || performance.now() - d0.at >= 500)) { dropStroke(); contextAction(e); return; }
     if (penStart && selectedKind !== null) {
       const a = penStart; penStart = null; penPreview.clear();
       if (moved > 8) { const h = terrain.pick(pointerRay(e).ray), o = h ? penOutline(a, { x: h.x, z: h.z }, e.altKey) : null; if (o) penCommit(selectedKind, o); ghostCode = 99; previewKey = ''; ui.hint(placeHint(selectedKind)); return; }
       if (isFigure(penShape)) { ui.hint('Press and drag to draw the figure', true); return; }
     }
-    if (selectedKind === LEVEL_TOOL && moved <= 5) { levelClick(e); return; }
-    if (selectedKind === 37 && moved <= 5) { const h = terrain.pick(pointerRay(e).ray); if (h) roadClick(h.x, h.z); return; }
-    if (selectedKind !== null && PEN_SPACING[selectedKind] && penShape === 'path' && moved <= 5) {   // a click adds a corner; a quick second click, or a click on the first corner, builds
+    if (selectedKind === LEVEL_TOOL && tap) { levelClick(e); return; }
+    if (selectedKind === 37 && tap) { const h = terrain.pick(pointerRay(e).ray); if (h) roadClick(h.x, h.z); return; }
+    if (selectedKind !== null && PEN_SPACING[selectedKind] && penShape === 'path' && tap) {   // a click adds a corner; a quick second click, or a click on the first corner, builds
       const h = terrain.pick(pointerRay(e).ray); if (!h) return;
       const p = { x: h.x, z: h.z }, now = performance.now(), last = penPath[penPath.length - 1];
       if (closesPath(penPath, p, 3.5)) { penCommit(selectedKind, { pts: [...penPath], closed: true }); penReset(); }
@@ -2645,7 +2775,7 @@ function bindInput() {
       else penPath.push(penPath.length && !e.altKey ? snap45(last, p) : p);
       penLastClick = now; ui.hint(placeHint(selectedKind)); return;
     }
-    if (moved > 5) { ui.selBox(null); if (moved > 8 && selectedKind === null && !e.shiftKey) boxSelect(d0.x, d0.y, e.clientX, e.clientY, e.ctrlKey); return; }
+    if (!tap) { ui.selBox(null); if (!touch && moved > 8 && selectedKind === null && !e.shiftKey) boxSelect(d0.x, d0.y, e.clientX, e.clientY, e.ctrlKey); return; }
     if (selectedKind !== null) {
       const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
       const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), kind = selectedKind;
@@ -2684,9 +2814,7 @@ function bindInput() {
       if (idx === null) { selectBuilding(null); selectRuin(null); if (selectedDet !== null) selectDet(null); }
     }
   });
-  // right click without dragging: send the selected army there
-  cv.addEventListener('pointerup', e => {
-    if (e.button !== 2 || rig.moved) return;
+  function contextAction(e: PointerEvent) {
     if (pendingBattleOrder) {
       const hit = terrain.pick(pointerRay(e).ray);
       if (!hit) return;
@@ -2704,7 +2832,8 @@ function bindInput() {
       return;
     }
     openContext(e);
-  });
+  }
+  cv.addEventListener('pointerup', e => { if (e.pointerType !== 'touch' && e.button === 2 && !rig.moved) contextAction(e); });
   addEventListener('keydown', e => {
     if (ui.captureKey(e)) return;                                   // rebinding a key in the help screen
     if (e.ctrlKey || e.metaKey || e.altKey) return;                 // browser shortcuts (Ctrl+F, Ctrl+R...) are not game commands
@@ -2715,10 +2844,10 @@ function bindInput() {
     const n = digitOf(e);
     if (n !== null) { const kind = ui.hotkeyKind(n - 1); if (kind !== null) { ui.setTab('build'); selectKind(kind); } return; }
     switch (keys.actionOf(e)) {
-      case 'penFinish': if (selectedKind === 37 && roadPts.length >= 2) { e.preventDefault(); roadCommit(); break; } if (selectedKind !== null && penShape === 'path' && penPath.length >= 2) { e.preventDefault(); penCommit(selectedKind, { pts: [...penPath], closed: false }); penReset(); } break;
-      case 'penUndo': if (selectedKind === 37 && roadPts.length) { e.preventDefault(); roadPts.pop(); roadPreview(null); break; } if (penShape === 'path' && penPath.length) { e.preventDefault(); penPath.pop(); if (!penPath.length) penPreview.clear(); } break;
-      case 'cancel': if (pendingBattleOrder) setPendingBattleOrder(null); else if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
-      case 'rotateBuilding': if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); break; } rot = (rot + 1) % 8; if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); } ghostCode = 99; previewKey = ''; if (lastGhostE && selectedKind !== null) updateGhost(lastGhostE); break;
+      case 'penFinish': if (finishStroke()) e.preventDefault(); break;
+      case 'penUndo': if (undoStroke()) e.preventDefault(); break;
+      case 'cancel': if (rig.following) rig.stopFollowing(); else if (pendingBattleOrder) setPendingBattleOrder(null); else if (roadPts.length) roadReset(); else if (penPath.length) penReset(); else if (selectedKind !== null) selectKind(null); else if (selectedDet !== null) selectDet(null); else selectBuilding(null); break;
+      case 'rotateBuilding': rotateTool(); break;
       case 'focusBuild': if (ui.focusBuildSearch()) e.preventDefault(); break;
       case 'deposits': toggleResources(); break;
       case 'coverage': toggleCoverage(); break;
@@ -2769,6 +2898,13 @@ function buildDepositLabels() {
 function toggleResources() { showDeposits = !showDeposits; ui.setResourcesToggle(showDeposits); if (!showDeposits) depLabels.forEach(l => (l.hidden = true)); }
 const vtmp = new THREE.Vector3();
 function updateLabels() {
+  if (followedVillager !== null) {
+    const person = lv.people.villager(followedVillager);
+    if (person && !lv.people.hidden) {
+      vtmp.set(person.x, terrain.walkAt(person.x, person.z) + 2 * person.scale, person.z).project(rig.cam);
+      ui.moveFollowMarker((vtmp.x + 1) * innerWidth / 2, (1 - vtmp.y) * innerHeight / 2, vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1);
+    } else ui.moveFollowMarker(0, 0, false);
+  }
   if (!showDeposits) return;
   const flat = lv.world.deposits_flat(), asleep = lv.world.deposits_asleep();
   for (let i = 0; i < Math.min(depLabels.length, flat.length / 5); i++) {
@@ -2858,6 +2994,7 @@ function applySettings(s: Settings) {
   for (const wm of [terrain.water.material as THREE.MeshPhysicalMaterial, terrain.riverMaterial]) { const gloss = s.waterFx ? 1 : 0; if (wm.clearcoat !== gloss) { wm.clearcoat = gloss; wm.envMapIntensity = s.waterFx ? 1.8 : 0.6; wm.needsUpdate = true; } }
   fx.group.visible = effects.group.visible = s.particles;
   wildlife.group.visible = crowd.group.visible = s.crowds && !showroom;
+  wildlife.setGooglyEyes(s.googlyEyes); crowd.setGooglyEyes(s.googlyEyes);
   perf.setBadge(s.showFps || perf.open);
 }
 
@@ -2894,7 +3031,7 @@ function lightLamps(all: Village[], now: number) {
 
 /** Animation and background timers use the same watch. A battle already committed by two players
  *  keeps running, even if one player switches tabs or tries to pause the clock. */
-let bgLast = 0, frameAt = 0;
+let bgLast = 0, frameAt = 0, sceneTime = 0;
 const liveSpeed = () => lv.world.battle_active() || awayFights.size > 0 ? Math.min(speed, 1) : speed;
 function runClock(dt: number, now: number) {
   if (replay?.target === lv) { acc = 0; return; }
@@ -2914,6 +3051,7 @@ function runClock(dt: number, now: number) {
     }
     acc -= 1;
     stepLocal();
+    if (speed === 0 && !playerBattle) { acc = 0; break; }
     if (watch.away && !playerBattle) {
       watch.afterStep(watchRisk);
       if (!watch.working) renderWatch();
@@ -2944,30 +3082,37 @@ function frame(now: number) {
   perf.start('simulation');
   if (replay) tickReplay(dt);
   runClock(dt, frameAt);
+  const replayDt = replay?.playing ? dt : 0;
+  const liveDt = watch.pace(liveSpeed(), livePlayerBattle()) > 0 ? dt : 0;
+  const worldDt = replay?.target === lv ? replayDt : liveDt;
+  sceneTime += worldDt;
   perf.stop('simulation');
   const all = allVillages();
-  const s = settings(), drawCrowd = s.crowds && !showroom;
+  const s = settings(), drawCrowd = (s.crowds || rig.following) && !showroom;
   { // the time of day: the light follows the village clock, smoothly between ticks
     const ph = dayPhase(Number(lv.world.tick()) + (replay ? 0 : acc));
     if (Math.abs(ph - lastPhase) > 0.0008 || lastPhase < 0) { lastPhase = ph; atmo.setClock(ph); forest.setLight(atmo.lightDirection, atmo.sun, atmo.hemi); setNightLight(atmo.night); for (const v of all) v.props.setNight(atmo.night); }
   }
   lightLamps(all, now);
   for (const v of all) v.people.group.visible = v.army.group.visible = drawCrowd;
-  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target); terrain.animate(now / 1000); tideLevel = -0.25 + Math.sin(now / 1000 * 0.09) * 0.19 + Math.sin(now / 1000 * 0.031) * 0.07; terrain.setTide(tideLevel); worldShips?.update(dt, tideLevel); for (const v of all) v.boats.level = tideLevel;   // open water ebbs and flows; carved channels keep their own stage
+  perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target);
+  terrain.animate(sceneTime, now / 1000);
+  tideLevel = -0.25 + Math.sin(sceneTime * 0.09) * 0.19 + Math.sin(sceneTime * 0.031) * 0.07;
+  terrain.setTide(tideLevel); worldShips?.update(worldDt, tideLevel);
   perf.stop('camera + world');
   const treeShadowRange = !s.shadows ? 0 : rig.dist <= 175 ? 135 : rig.pitch < 0.5 ? 65 : 85;
-  perf.start('forest'); forest.tick(now / 1000, rig.cam.position, rig.target, treeShadowRange, rig.cam); perf.stop('forest');
+  perf.start('forest'); forest.tick(sceneTime, rig.cam.position, rig.target, treeShadowRange, rig.cam); perf.stop('forest');
   if (forestShadowVersion !== forest.shadowVersion) { forestShadowVersion = forest.shadowVersion; if (forest.group.visible) atmo.invalidateShadows(); }
   const detailRange = innerHeight * 1.65 / (2 * Math.tan(THREE.MathUtils.degToRad(rig.cam.fov / 2)) * 36);
-  perf.start('villages (people, army)'); all.forEach(v => v.frame(dt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd)); perf.stop('villages (people, army)');
+  perf.start('villages (people, army)'); all.forEach(v => v.frame(v === replay?.target ? replayDt : worldDt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd)); perf.stop('villages (people, army)');
   perf.start('animals');
   deposits.cull(rig.target.x, rig.target.z, Math.max(160, rig.dist * 1.7 + 120));   // deposits far from the camera are not drawn or traversed
   if (now - scareT > 250) { scareT = now; scares = all.flatMap(v => [...v.people.positions(), ...v.army.positions()]); }
   const view = Math.max(90, rig.dist * 1.7 + 50);        // simulate and draw crowds and animals only around the camera
-  wildlife.update(dt, scares, rig.target.x, rig.target.z, view);
+  wildlife.update(worldDt, scares, rig.target.x, rig.target.z, view);
   perf.stop('animals');
   perf.start('crowd upload');
-  travellers.update(dt, now / 1000, travellerVillages());
+  travellers.update(worldDt, sceneTime, travellerVillages());
   if (drawCrowd && crowd.group.visible) {
     crowd.begin();
     all.forEach(v => v.draw(crowd, rig.target.x, rig.target.z, view, rig.cam.position, detailRange));
@@ -2981,8 +3126,8 @@ function frame(now: number) {
   if (nf) { let o = 0; for (const v of all) { fireBuf.set(v.fireData, o); o += v.fireData.length; } }
   const fires = fireBuf.subarray(0, nf);
   if (fx.group.visible || effects.group.visible) effectView.update(rig.cam);
-  fx.update(dt, fires, rig.cam.position, effectView);
-  effects.update(dt, now / 1000, all.map(v => v.view), rig.target.x, rig.target.z, view, effectView);
+  fx.update(worldDt, fires, rig.cam.position, effectView);
+  effects.update(worldDt, sceneTime, all.map(v => v.view), rig.target.x, rig.target.z, view, effectView);
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }

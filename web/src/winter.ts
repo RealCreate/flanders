@@ -34,7 +34,7 @@ export function winterWarning(w: WinterNumbers, season: number, seasonDay: numbe
 export interface Line { icon: string; title: string; text: string; tone?: 'good' | 'bad' }
 /** The rows of the Winter panel: exactly what winter does here, with this village's numbers. */
 export function winterLines(w: WinterNumbers, pop: number, season: number): Line[] {
-  const left = woodDays(w), enough = left === null || left >= 10;
+  const left = woodDays(w), enough = left === null || left >= (season === 3 ? w.winterLeft : 10);
   const lines: Line[] = [
     { icon: 'farm', title: `Farms make ${w.grain}% of the usual grain`, text: `Spring 100%, summer 125%, autumn 150%. With haystacks beside the field a farm makes ${w.grainHay}% in winter. Fish, game and smoked food are not touched by winter.` },
     { icon: 'wood', title: `Firewood: ${w.woodPerDay} a day for ${pop} villagers`,

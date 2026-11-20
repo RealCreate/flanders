@@ -4,6 +4,8 @@ import { flagTexture } from './flagtex';
 import { drawnUp } from '../defence';
 import { Particles, type EffectView } from './fx';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { PEN_HALF_DEPTH, PEN_HALF_WIDTH } from '../pasture';
+import { makeBoat } from './field';
 
 // ---------- procedural textures & materials ----------
 const TILE = 2; // one texture repeat covers 2 world units
@@ -211,10 +213,11 @@ class B {
       this.box(long ? 0.78 : 0.42, 0.56, long ? 0.42 : 0.78, mat, sx * (w / 2 + 0.02), y0 + k * 0.62, sz * (d / 2 + 0.02));
     }
   }
-  flag(x: number, y: number, z: number, h = 2.2) {
+  flag(x: number, y: number, z: number, h = 2.2, width = 1.1) {
     this.cyl(0.05, 0.05, h, M().darkwood, x, y, z, 6);
-    const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.7), this.flagDesign ? new THREE.MeshStandardMaterial({ map: flagTexture(this.flagDesign), side: THREE.DoubleSide, roughness: 0.8 }) : new THREE.MeshStandardMaterial({ color: this.banner, side: THREE.DoubleSide, roughness: 0.8 }));
-    cloth.userData.fixed = true; this.add(cloth, x + 0.55, y + h - 0.4, z);
+    const height = width * 2 / 3;
+    const cloth = new THREE.Mesh(new THREE.PlaneGeometry(width, height).translate(width * 0.5, 0, 0), this.flagDesign ? new THREE.MeshStandardMaterial({ map: flagTexture(this.flagDesign), side: THREE.DoubleSide, roughness: 0.8 }) : new THREE.MeshStandardMaterial({ color: this.banner, side: THREE.DoubleSide, roughness: 0.8 }));
+    cloth.name = 'village-flag'; cloth.userData.fixed = true; this.add(cloth, x, y + h - height * 0.5 - 0.05, z);
     this.spin.push(cloth); // waves
   }
   chimney(x: number, y: number, z: number, h = 1.4, mat: THREE.Material = M().stone) { this.box(0.6, h, 0.6, mat, x, y, z); this.smoke.push(new THREE.Vector3(x, y + h + 0.1, z)); }
@@ -565,13 +568,13 @@ const townhall: Model = b => {
     b.smoke.push(new THREE.Vector3(2.5, 6.2, -0.5)); b.smoke.push(new THREE.Vector3(-2.5, 6.2, -0.5));
     for (let i = 0; i < 34; i++) { const a = (i / 34) * Math.PI * 2 + 0.1; if (Math.abs(((a + Math.PI * 2) % (Math.PI * 2)) - Math.PI / 2) < 0.28) continue; b.cyl(0.2, 0.22, 2.3, m.log, Math.cos(a) * 6.3, 0, Math.sin(a) * 6.3, 6); b.cone(0.2, 0.5, m.log, Math.cos(a) * 6.3, 2.3, Math.sin(a) * 6.3, 6); }
     for (const x of [-5.3, 5.3]) b.cyl(0.7, 0.8, 0.9, m.hay, x, 0, -4.2, 10);
-    b.flag(-4.8, 0, 3.4, 5.2);
+    b.flag(-2.8, 6.05, 0, 3.3, 2.3);
   } else if (t === 1) {
     b.box(9.4, 3.6, 5.6, m.timber, 0, 0, 0); b.box(9.5, 0.25, 5.7, m.darkwood, 0, 3.4, 0); b.joists(9.4, 3.2, 2.95, 9, 1); b.joists(9.4, 3.2, 2.95, 9, -1); b.gable(9.4, 5.6, 3.1, m.tile, 0, 3.6, 0, 0.7);
     b.box(4, 3.1, 4.6, m.timber, 3.8, 0, 4.4); b.gable(4.6, 4, 2.4, m.tile, 3.8, 3.1, 4.4, 0.5);
     b.box(1.4, 2.3, 0.15, m.door, 0, 0, 2.85); for (const x of [-3.2, -1.6, 1.6]) { b.window(x, 2.0, 2.88); b.shutters(x, 2.0, 2.9, m.shutterBlue, 0, 0.5); }
     b.cyl(1.3, 1.4, 5.8, m.stone, -4.2, 0, 2.8, 14); b.cone(1.7, 2.7, m.slate, -4.2, 5.8, 2.8, 14);
-    b.chimney(2.4, 5.6, -1.2, 1.6); b.flag(-4.2, 8.5, 2.8, 2.2);
+    b.chimney(2.4, 5.6, -1.2, 1.6); b.flag(-4.2, 8.5, 2.8, 2.8, 2.3);
     for (let i = 0; i < 22; i++) { const a = (i / 22) * Math.PI * 2; if (Math.abs(a - Math.PI / 2) < 0.4) continue; b.box(0.18, 1.1, 0.18, m.darkwood, Math.cos(a) * 6.6, 0, Math.sin(a) * 6.6); }
   } else if (t === 2) {
     // Flemish cloth hall: arcaded ground floor, stepped gables, central belfry
@@ -589,6 +592,7 @@ const townhall: Model = b => {
     b.pyramid(3.2, 3.2, 3.8, m.slate, 0, 13.5, -0.3); b.box(0.16, 1.2, 0.16, m.gold, 0, 17.2, -0.3); b.sphere(0.32, m.gold, 0, 17.6, -0.3);
     for (const [x, z] of [[-1.3, 1.0], [1.3, 1.0], [-1.3, -1.6], [1.3, -1.6]]) b.cone(0.26, 1.1, m.slate, x, 13.5, z, 6);
     b.cyl(0.65, 0.65, 0.12, m.gold, 0, 8.6, 1.33, 16).rotation.x = Math.PI / 2;   // clock face
+    b.flag(0, 17.9, -0.3, 3, 2.5);
     b.flag(-5.2, 5.6, 1.0, 2.4); b.flag(5.2, 5.6, 1.0, 2.4);
   } else {
     // The Castle: a rectangular walled castle in the manner of Caerphilly or Harlech, not a square of four towers. A curtain wall 18 x 12 with round corner and side towers and a
@@ -624,7 +628,7 @@ const townhall: Model = b => {
     merlons(-2.6, dz - 2.6, 2.6, dz - 2.6, 11.6, 6); merlons(-2.6, dz + 2.6, 2.6, dz + 2.6, 11.6, 6); merlons(-2.6, dz - 2.6, -2.6, dz + 2.6, 11.6, 6); merlons(2.6, dz - 2.6, 2.6, dz + 2.6, 11.6, 6);
     for (const [x, z] of [[-2.4, dz - 2.4], [2.4, dz - 2.4], [2.4, dz + 2.4], [-2.4, dz + 2.4]]) { b.cyl(0.8, 0.9, 3.0, m.stone, x, 11.2, z, 10); b.cone(1.05, 2.0, m.slate, x, 14.2, z, 10); }
     for (const y of [7.0, 9.4]) { b.window(-0.9, y, dz + 2.42, 0, 0.45, 1.0); b.window(0.9, y, dz + 2.42, 0, 0.45, 1.0); }
-    b.cyl(1.7, 1.8, 1.0, m.darkstone, 0, 11.4, dz, 14); b.cone(1.8, 4.2, m.slate, 0, 12.4, dz, 14); b.sphere(0.35, m.gold, 0, 16.7, dz); b.flag(0, 17.0, dz, 3.0);
+    b.cyl(1.7, 1.8, 1.0, m.darkstone, 0, 11.4, dz, 14); b.cone(1.8, 4.2, m.slate, 0, 12.4, dz, 14); b.sphere(0.35, m.gold, 0, 16.7, dz); b.flag(0, 17.0, dz, 3.2, 2.5);
     // the courtyard: a chapel with a small spire (west), a stable (east), a smithy by the gate, a well, hay
     b.box(2.4, 3.4, 3.6, m.stone, -6.6, 0, 2.4); b.gableZ(3.6, 2.4, 1.6, m.slate, -6.6, 3.4, 2.4, 0.3); b.cyl(0.5, 0.6, 2.2, m.stone, -6.6, 3.4, 3.7, 10); b.cone(0.75, 2.0, m.slate, -6.6, 5.6, 3.7, 10);
     b.box(2.2, 2.3, 4.4, m.wood, 7.0, 0, 2.2); b.gableZ(4.4, 2.2, 1.0, m.thatch, 7.0, 2.3, 2.2, 0.3);
@@ -870,12 +874,6 @@ const port: Model = b => {
   for (let z = 2.5; z < L + 2; z += 2.2) for (const x of [0.9, 3.5]) b.box(0.28, 2.6, 0.28, m.darkwood, x, -1.6, z);
   // a crane at the quayside
   b.box(0.3, 4.0 + t * 0.6, 0.3, m.darkwood, 3.2, 0.5, 2.6); b.box(3.0, 0.25, 0.25, m.darkwood, 1.9, 4.2 + t * 0.6, 2.6); b.box(0.05, 1.6, 0.05, m.iron, 0.6, 2.7 + t * 0.6, 2.6);
-  // a merchant cog moored alongside the end of the pier
-  const hull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.1, 7.0), m.wood); hull.position.set(5.2, 0.35, L - 1.0); hull.castShadow = true; b.g.add(hull);
-  const bow = new THREE.Mesh(new THREE.ConeGeometry(1.3, 2.0, 4), m.wood); bow.rotation.x = Math.PI / 2; bow.rotation.y = Math.PI / 4; bow.position.set(5.2, 0.35, L + 3.4); b.g.add(bow);
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 6.4, 7), m.darkwood); mast.position.set(5.2, 4.0, L - 1.2); b.g.add(mast);
-  const sail = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.2), new THREE.MeshStandardMaterial({ color: 0xeadfc2, side: THREE.DoubleSide, roughness: 0.95 })); sail.position.set(5.2, 4.4, L - 1.2); sail.rotation.y = 0.15; b.g.add(sail);
-  for (let i = 0; i < 4; i++) b.box(0.7, 0.7, 0.7, m.wood, 4.7 + (i % 2) * 0.9, 1.0, L - 3.0 + i * 0.9);
   if (t >= 2) { b.cyl(1.0, 1.2, 5.5, m.stone, -4.8, -0.2, 1.4, 12); b.cone(1.3, 1.8, m.slate, -4.8, 5.3, 1.4, 12); b.flag(-4.8, 7.0, 1.4, 2.2); }
 };
 
@@ -909,6 +907,28 @@ const plaza: Model = b => {
     const px = x ? x * 5.3 : 0, pz = z ? z * 5.3 : 0, sx = x ? 0 : 1.5, sz = z ? 1.5 : 0;
     for (const s of [-1, 1]) { b.box(0.5, 0.7, 0.5, m.stone, px + sx * s, 0, pz + sz * s); b.box(0.62, 0.12, 0.62, m.darkstone, px + sx * s, 0.7, pz + sz * s); }
   }
+};
+const pastureGrass = new THREE.MeshStandardMaterial({ color: 0x788d4b, roughness: 1, vertexColors: true });
+const pasture: Model = b => {
+  const m = M(), x = PEN_HALF_WIDTH, z = PEN_HALF_DEPTH;
+  const post = b.t === 2 ? m.stone : m.darkwood;
+  b.box(2 * x, 0.07, 2 * z, pastureGrass, 0, 0.025, 0);
+  for (const side of [-1, 1]) {
+    for (const dz of [-z, 0, z]) b.box(0.22, 1.18, 0.22, post, side * x, 0, dz);
+    b.box(0.22, 1.28, 0.22, post, side * 0.9, 0, z);
+    b.box(0.22, 1.18, 0.22, post, side * x / 2, 0, -z);
+    for (const y of [0.35, 0.75]) {
+      b.box(0.12, 0.14, 2 * z, m.wood, side * x, y, 0);
+      b.box(x - 0.9, 0.14, 0.12, m.wood, side * (x + 0.9) / 2, y, z);
+    }
+  }
+  for (const y of [0.35, 0.75]) b.box(2 * x, 0.14, 0.12, m.wood, 0, y, -z);
+  const shed = b.t > 0 ? 3.4 : 2.5;
+  b.box(shed, 1.55, 0.18, m.wood, -2.5, 0.07, -3.95);
+  for (const dx of [-1, 1]) b.box(0.19, 1.68, 0.2, m.darkwood, -2.5 + dx * (shed / 2 - 0.18), 0, -2.3);
+  b.gable(shed + 0.4, 2.03, 0.65, b.t === 2 ? m.tile : m.thatch, -2.5, 1.65, -3.1, 0.24);
+  b.box(2.5, 0.44, 0.67, m.wood, 2.51, 0, -3.73);
+  b.box(2.27, 0.08, 0.44, m.hay, 2.51, 0.38, -3.73);
 };
 const roadPiece: Model = b => { b.box(2.2, 0.12, 2.2, M().mud, 0, 0.02, 0); };
 
@@ -978,10 +998,9 @@ const fishingHut: Model = b => {
   // a rowboat tied alongside: a hull, thwarts, an oar and the catch
   b.slot('rowboat', {}, () => {
     const bx = J0 + 3.0, bz = JW / 2 + 1.0;
-    b.box(2.3, 0.14, 0.9, m.wood, bx, -0.55, bz);
-    for (const sz of [-1, 1]) { b.box(2.1, 0.4, 0.08, m.wood, bx, -0.5, bz + sz * 0.45); b.box(0.5, 0.4, 0.08, m.wood, bx + 1.25, -0.42, bz + sz * 0.2, sz * 0.5); }
-    for (const dx of [-0.5, 0.4]) b.box(0.1, 0.07, 0.8, m.darkwood, bx + dx, -0.2, bz);
-    b.box(1.1, 0.05, 0.05, m.darkwood, bx - 0.2, -0.1, bz + 0.1).rotation.z = 0.2;
+    const boat = makeBoat(); boat.position.set(bx, -0.55, bz); boat.scale.set(0.43, 0.55, 0.4);
+    boat.traverse(o => { const mesh = o as THREE.Mesh; if (mesh.isMesh) mesh.geometry = mesh.geometry.clone(); });
+    b.g.add(boat);
     b.box(0.5, 0.08, 0.3, f.silver, bx + 0.5, -0.46, bz); fish(b, f.silver, bx + 0.1, -0.45, bz + 0.15, 0.4, 0.3);
   });
   // nets drying on a frame beside the house, and a rack of fish
@@ -1048,7 +1067,7 @@ const bakery: Model = b => {
   if (t >= 2) b.box(W + 0.6, 0.2, 0.5, m.timber, 0, h + 0.1, D / 2 + 0.3);   // an awning over the counter
   if (t >= 3) b.flag(-W / 2 + 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza];
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza, pasture];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,

@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { build } from 'vite';
+import { Matrix4, Vector3 } from 'three';
 
 const dir = new URL('./.tmp/', import.meta.url);
 async function load(entry, minify) {
@@ -42,4 +43,123 @@ for (const minify of [false, true]) {
     }
   });
 }
+
+test('villagers and wildlife build and draw their coloured, instanced parts', async () => {
+  const { Crowd, TOOL } = await load('src/render/crowd.ts', true);
+  const { Wildlife } = await load('src/render/wildlife.ts', true);
+  const crowd = new Crowd();
+  const villager = { x: 0, y: 5, z: 0, yaw: 1, pose: 1, phase: 1, body: 0x815453, skin: 0xc68e63, dress: true };
+  crowd.begin();
+  crowd.addVillager(villager, true);
+  crowd.addVillager({ ...villager, x: 1 }, false);
+  crowd.add({ ...villager, x: 2, mounted: true, dress: false });
+  crowd.add({ ...villager, yaw: 0, pose: 2, tool: TOOL.HOE });
+  crowd.end();
+  const grip = new Matrix4(); crowd.tools[TOOL.HOE - 1].getMatrixAt(0, grip);
+  const bladeDirection = new Vector3(0, 1, 0).transformDirection(grip);
+  assert.ok(bladeDirection.y < -0.2 && bladeDirection.z > 0.2, 'a working farmer hoes the ground in front of them');
+  const wildlife = new Wildlife(31n, { heightAt: () => 5 }, [{ x: 20, z: 0 }], [0, 0]);
+  wildlife.syncDomestic('village', Float32Array.from([45, 1, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 10, 0, 0, 5, 0, 0, 0, 0]));
+  wildlife.update(0.1, [], 0, 0, 80);
+  assert.equal(wildlife.group.children.filter(mesh => mesh.count > 0).length, 20);
+  for (const group of [crowd.group, wildlife.group]) {
+    assert.ok(group.children.some(mesh => mesh.count > 0));
+    for (const mesh of group.children) {
+      const { position, normal, color } = mesh.geometry.attributes;
+      assert.equal(color.count, position.count);
+      assert.equal(normal.count, position.count);
+      for (const attribute of [position, normal, color]) assert.ok(attribute.array.every(Number.isFinite));
+      assert.ok(mesh.instanceMatrix.array.subarray(0, mesh.count * 16).every(Number.isFinite));
+    }
+  }
+  for (let i = 0; i < 80; i++) wildlife.update(0.1, [{ x: 0, z: 0 }], 0, 0, 80);
+  const penned = wildlife.animals.filter(animal => animal.pen !== undefined);
+  assert.ok(penned.length > 0);
+  assert.ok(penned.every(animal => Math.hypot(animal.x - animal.hx, animal.z - animal.hz) <= animal.pen + 1e-6));
+  const paused = JSON.stringify(wildlife.animals);
+  const poses = wildlife.heads.map(head => Array.from(head.instanceMatrix.array.slice(0, head.count * 16)));
+  const normal = wildlife.heads.map(head => head.geometry);
+  wildlife.setGooglyEyes(true); crowd.setGooglyEyes(true);
+  wildlife.update(0, [{ x: 0, z: 0 }, { x: 18, z: 0 }], 0, 0, 80);
+  assert.equal(JSON.stringify(wildlife.animals), paused);
+  assert.deepEqual(wildlife.heads.map(head => Array.from(head.instanceMatrix.array.slice(0, head.count * 16))), poses);
+  assert.ok(wildlife.heads.every((head, i) => head.geometry.attributes.position.count > normal[i].attributes.position.count));
+  assert.equal(crowd.horseEyes.visible, true);
+  assert.equal(crowd.horseEyes.instanceMatrix, crowd.horse.instanceMatrix);
+  wildlife.setGooglyEyes(false); crowd.setGooglyEyes(false);
+  assert.ok(wildlife.heads.every((head, i) => head.geometry === normal[i]));
+  assert.equal(crowd.horseEyes.visible, false);
+  wildlife.update(0.1, [], 200, 200, 10);
+  assert.ok(wildlife.group.children.every(mesh => mesh.count === 0));
+});
+
+test('villager names are reproducible and unique across the visible roster', async () => {
+  const { villagerName } = await load('src/villagernames.ts', true);
+  const roster = Array.from({ length: 2400 }, (_, i) => villagerName(i, -100, 43));
+  assert.deepEqual(roster.slice(0, 6), ['REALICUS CREATIUS MAXIMUS', 'Logg VanDerTree', 'Dtree', 'RealCreate', 'RealCBro', 'RealCBroTwo']);
+  assert.ok(roster.some(name => name.endsWith(' the 2nd')));
+  assert.ok(roster.some(name => name.endsWith(' the 3rd')));
+  assert.equal(new Set(roster.map(name => name.toLowerCase())).size, roster.length);
+  assert.equal(roster[25], villagerName(25, -100, 43));
+});
+
+test('the named woodcutters and builders take matching staffed jobs, with a market fallback for RealCBroTwo', async () => {
+  const { villagerJob, villagerWorkplaces } = await load('src/villagernames.ts', true);
+  const kinds = [15, 1, 28, 4, 20];
+  assert.deepEqual(villagerWorkplaces([1, 1], kinds, 8), [0, 0, 0, 0, 0, 0, 1, 1]);
+  assert.deepEqual(villagerWorkplaces([1, 2, 3, 3, 4, 4, 4, 4], kinds, 8), [4, 3, 3, 4, 4, 4, 1, 2]);
+  const market = villagerWorkplaces([1, 2, 3, 4, 4, 4], kinds, 8);
+  assert.deepEqual(market, [4, 3, 0, 4, 4, 2, 1, 0]);
+  assert.deepEqual(market.slice(0, 6).map((building, i) => villagerJob(i, kinds[building])),
+    ['Builder', 'Woodcutter', 'Woodcutter', 'Builder', 'Builder', 'Market attendant']);
+});
+
+test('a port’s cog berths in shallow or rotated channels and rides the rendered water while docked', async () => {
+  const { Boats, portBerth } = await load('src/render/boats.ts', true);
+  const open = portBerth(0, 0, 0, (_x, z) => z > 3 ? 2 : -1);
+  assert.ok(open && open.x > 3.6 && open.scale === 0.83);
+  const narrow = portBerth(0, 0, Math.PI / 2, (x, z) => z > 5 && z < 8 && x > -15 && x < 15 ? 1 : -1);
+  assert.ok(narrow && narrow.z > 5 && narrow.z < 8);
+  assert.equal(portBerth(0, 0, 0, () => -1), null);
+  let tide = -0.25;
+  const boats = new Boats({
+    renderedWaterAt: (_x, _z, forced) => forced ?? tide,
+    heightAt: (_x, z) => z > 4 ? -2 : 2,
+  }, () => -Infinity);
+  boats.sync(Float32Array.of(35, 0, 0, 0, 0, 0, 0, 0, 0, 0), 1);
+  assert.equal(boats.group.children.length, 1);
+  const ship = boats.group.children[0], paused = ship.position.clone();
+  boats.update(0); assert.deepEqual(ship.position, paused);
+  tide += 0.2; boats.update(0);
+  assert.ok(Math.abs(ship.position.y - paused.y - 0.2) < 1e-9);
+});
+
+test('touch pans and pinches without delivering a tap, and preserves deliberate pen strokes', async () => {
+  Object.assign(globalThis, { addEventListener() {}, innerWidth: 800, innerHeight: 600 });
+  const { CameraRig } = await load('src/render/camera.ts', true);
+  class Surface extends EventTarget {
+    style = {};
+    setPointerCapture() {}
+    getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; }
+    send(type, id, x, y) { this.dispatchEvent(Object.assign(new Event(type), { pointerType: 'touch', pointerId: id, clientX: x, clientY: y })); }
+  }
+  const dom = new Surface();
+  let pen = false;
+  const rig = new CameraRig(dom, { heightAt: () => 0, pick: () => null }, () => pen);
+  rig.update(0);
+  dom.send('pointerdown', 1, 380, 300); dom.send('pointermove', 1, 385, 301); dom.send('pointerup', 1, 385, 301);
+  assert.equal(rig.touchConsumed, false);
+  dom.send('pointerdown', 2, 380, 300); dom.send('pointermove', 2, 426, 315);
+  assert.equal(rig.touchConsumed, true);
+  assert.ok(Math.hypot(rig.target.x, rig.target.z) > 1);
+  const { dist, yaw } = rig;
+  dom.send('pointerdown', 3, 530, 315); dom.send('pointermove', 3, 581, 343);
+  assert.ok(rig.dist < dist);
+  assert.notEqual(rig.yaw, yaw);
+  dom.send('pointerup', 2, 426, 315); dom.send('pointerup', 3, 581, 343);
+  assert.equal(rig.touchConsumed, true);
+  pen = true;
+  dom.send('pointerdown', 4, 400, 340); dom.send('pointermove', 4, 470, 350); dom.send('pointerup', 4, 470, 350);
+  assert.equal(rig.touchConsumed, false);
+});
 test.after(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });

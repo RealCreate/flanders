@@ -6,9 +6,11 @@ import { buildSearch } from '../buildsearch';
 import { ORDER_NAMES, TROOP_GROUPS } from '../battlefield';
 import type { BribeOffer } from '../bribe';
 import { stewardRisks, WATCH_MESSAGES, type StewardAction, type StewardMode, type WatchReport } from '../steward';
-import { foodTotals, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
+import { foodTotals, foodReserveText, breakdown, daysLeft, fmtDaysLeft, fmtRate, DAY_TICKS, MIN_TICKS, EXTRA_INFO, type FlowData, type Row } from '../flowrate';
 import { icon, kindIcon, unitIcon, type IconName } from './icons';
 import { group, workNote, verdict, understaffed, kindOutputs, FILTERS, SORTS, type WorkRow, type WorkTotals, type Filter, type Sort } from '../workview';
+import { RESERVE_MAX } from '../net/validate';
+import type { VillagerEntry } from '../villagernames';
 
 /** A one-colour icon for a button or label (takes the text colour). Names are fixed ids from icons.ts, never user text. */
 const FOOD_KEYS = ['grain', 'fish', 'bread', 'meat'];
@@ -27,7 +29,7 @@ import { renderNotes } from '../releasenotes';
 export const keyNames = (a: Action) => keys.binds[a].map(k => `<kbd>${prettyKey(k).toUpperCase()}</kbd>`).join(' ');
 /** What the controls are, written from the real bindings, so the home screen and the help screen can never disagree with the game. */
 export function controlsHtml() {
-  return `<b>Left-click</b> builds and selects · <b>left-drag</b> draws a box round armies · <b>right-click</b> sends the selected army there · <b>right-drag</b> turns the camera · <b>middle-drag</b> or <b>Shift-drag</b> grabs the ground · <b>wheel</b> zooms towards the pointer.<br>Move the camera: ${keyNames('panUp')} forward, ${keyNames('panLeft')} left, ${keyNames('panDown')} back, ${keyNames('panRight')} right · turn: ${keyNames('rotLeft')} ${keyNames('rotRight')} · tilt: ${keyNames('tiltUp')} ${keyNames('tiltDown')} · zoom: ${keyNames('zoomIn')} ${keyNames('zoomOut')} · cancel: ${keyNames('cancel')} · help: ${keyNames('help')}.`;
+  return `<b>Left-click</b> builds and selects · <b>left-drag</b> draws a box round armies · <b>right-click</b> sends the selected army there · <b>right-drag</b> turns the camera · <b>middle-drag</b> or <b>Shift-drag</b> grabs the ground · <b>wheel</b> zooms towards the pointer.<br>Move the camera: ${keyNames('panUp')} forward, ${keyNames('panLeft')} left, ${keyNames('panDown')} back, ${keyNames('panRight')} right · turn: ${keyNames('rotLeft')} ${keyNames('rotRight')} · tilt: ${keyNames('tiltUp')} ${keyNames('tiltDown')} · zoom: ${keyNames('zoomIn')} ${keyNames('zoomOut')} · cancel: ${keyNames('cancel')} · help: ${keyNames('help')}.<br><b>Touchscreen</b> · Tap to build or select. Drag to pan, pinch to zoom, twist with two fingers to turn, and hold to open the action menu or send an army. When a drawing tool is active, drag with one finger to draw and use two fingers to move the map.`;
 }
 
 /** Names come from other players: never put them into HTML unescaped. */
@@ -78,10 +80,16 @@ export interface Handlers {
   workAll(action: string): void;
   /** Centre the camera on a building and select it. */
   goBuilding(idx: number): void;
+  setReserves(grain: number, wood: number): boolean;
+  villagers(): { rows: VillagerEntry[]; sheltering: boolean };
+  followVillager(id: number | null): boolean;
 }
 
 export interface Hud {
   tick: number; stocks: number[]; rates: number[]; flow?: FlowData; kinds?: number[]; food?: number[]; pop: number; cap: number; sick: number; joy: number; eff: number; jobs: number;
+  foodReserveDays: number;
+  reserves: readonly number[];
+  canSetReserves: boolean;
   radius: number; buildings: number; storage: number;
   vitals?: number[]; beds?: number; devotion?: number;
   /** Everybody's work, only filled while the work overview is open. */
@@ -158,7 +166,7 @@ export class UI {
   <div class="brand"><h1>Flanders</h1><span class="sub" id="sub">Day 1 · Spring</span></div>
   <div class="treasury" id="treasury"></div>
   <div class="vitals">
-    <span class="pill" id="v-pop" title="Villagers / housing"><span class="ic">${icon('pop', 16)}</span><b>0</b></span>
+    <button type="button" class="pill" id="v-pop" aria-label="Open villagers" title="Villagers / housing"><span class="ic">${icon('pop', 16)}</span><b>0</b></button>
     <span class="pill" id="v-army" title="Soldiers in your army"><span class="ic">${icon('army', 16)}</span><b>0</b></span>
     <span class="pill" id="v-sick" title="Villagers sick with plague"><span class="ic">${icon('plague', 16)}</span><b>0</b></span>
     <span class="pill" id="v-joy" title="Happiness: gardens, parks, chapels, markets and courts lift it; hunger, plague and overcrowding lower it. Happy villages grow faster and pay more tax."><span class="ic">${icon('happy', 16)}</span><b>50</b></span>
@@ -166,7 +174,7 @@ export class UI {
   </div>
   <div class="tools">
   <div class="speed" id="speed">
-    <button class="btn" data-s="0" title="Pause"><svg viewBox="0 0 16 16"><rect x="3" y="2" width="3.6" height="12" rx=".6"/><rect x="9.4" y="2" width="3.6" height="12" rx=".6"/></svg></button>
+    <button class="btn" data-s="0" title="Pause" aria-label="Pause"><svg viewBox="0 0 16 16"><rect x="3" y="2" width="3.6" height="12" rx=".6"/><rect x="9.4" y="2" width="3.6" height="12" rx=".6"/></svg></button>
     <button class="btn on" data-s="1" title="Normal speed (calm)"><svg viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg></button>
     <button class="btn" data-s="2" title="Fast x2"><svg viewBox="0 0 16 16"><path d="M1 2l7 6-7 6zM8 2l7 6-7 6z"/></svg></button>
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
@@ -187,6 +195,8 @@ export class UI {
   </div>
   </div>
 </header>
+<button type="button" id="follow-stop" class="btn" hidden></button>
+<div id="follow-marker" class="lbl" hidden></div>
 <div id="battle" hidden>
   <div id="battle-text"></div>
   <div id="battle-bribe" hidden>
@@ -236,18 +246,19 @@ export class UI {
   </section>
   <section class="pane" id="pane-village">
     <div><div class="eyebrow" id="v-sub">Your settlement</div><h2>The Village</h2></div>
-    <div class="btnrow"><button class="pbtn" data-steward="open">${bi('townhall')} Village steward</button></div>
+    <div class="btnrow wrap"><button class="pbtn" data-steward="open">${bi('townhall')} Village steward</button><button class="pbtn" id="find-villager">${bi('pop')} Villagers</button></div>
     <div class="stats"><div class="stat"><b id="s-pop">0</b><span>Villagers</span></div><div class="stat"><b id="s-cap">0</b><span>Housing</span></div><div class="stat"><b id="s-sick">0</b><span>Sick</span></div></div>
     <div class="stats"><div class="stat"><b id="s-eff">0%</b><span>Workforce</span></div><div class="stat"><b id="s-bld">0</b><span>Buildings</span></div><div class="stat"><b id="s-rad">0</b><span>Border radius</span></div></div>
     <div><h3>Health &amp; death care</h3><div class="stats" id="care-stats"></div><p class="muted" id="care-info"></p></div>
     <div><div class="eyebrow">Housing used</div><div class="bar"><i id="b-house" style="width:0"></i></div></div>
     <div><div class="eyebrow">Storage (per resource)</div><div class="bar"><i id="b-store" style="width:0"></i></div><p class="muted" id="t-store"></p></div>
-    <div><h3>Your flag</h3><div id="flag-design"></div></div>
+    <div><h3>Your flag</h3><canvas id="village-flag" class="flagprev" width="120" height="80" role="img" aria-label="Your village flag"></canvas></div>
     <div><h3>Neighbours</h3><ul class="log" id="peer-list"><li class="muted">Nobody else is here yet.</li></ul></div>
     <div><h3>Chronicle</h3><ul class="log" id="log"><li><small>Day 1</small> Your people have arrived. Build houses and farms, and find stone, clay, iron and gold nearby.</li></ul></div>
   </section>
   <section class="pane" id="pane-stock">
     <div><div class="eyebrow">Warehouse</div><h2>Stock &amp; Industry</h2></div>
+    <button class="pbtn" data-reserves>${bi('storehouse')} Set reserves</button>
     <table class="res" id="restable"></table>
     <div><h3>Production chains</h3><div class="chain">
       ${icon('wood', 16)} Wood <span class="arrow">→</span> Sawmill <span class="arrow">→</span> ${icon('planks', 16)} Planks<br>
@@ -271,6 +282,12 @@ export class UI {
 <div id="toasts"></div>
 <div id="tool-dock">
   <div id="hint" hidden></div>
+  <div id="touch-tools" class="tool-row" aria-label="Touch building controls" hidden>
+    <button type="button" class="tool-action" id="touch-rotate">Rotate</button>
+    <button type="button" class="tool-action" id="touch-undo">Undo point</button>
+    <button type="button" class="tool-action" id="touch-finish">Finish path</button>
+    <button type="button" class="tool-action" id="touch-cancel">Cancel</button>
+  </div>
   <section id="battle-controls" class="tool-panel" aria-label="Battle controls" hidden>
     <div id="battle-orders" class="tool-row">
       <label class="tool-select">
@@ -311,7 +328,7 @@ export class UI {
     <div class="btnrow"><button class="pbtn primary" data-close="notes">Back</button></div></div>
 </div>
 <div class="overlay" id="flag-page" hidden style="z-index:21">
-  <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. You can change it later from the Village tab.</p><div id="intro-flag"></div>
+  <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. Flag design is available here on the start screen.</p><div id="intro-flag"></div>
     <div class="btnrow"><button class="pbtn primary" id="flag-done">Done</button></div></div>
 </div>
 <div class="overlay clear" id="display" hidden>
@@ -355,7 +372,7 @@ export class UI {
 </div>
 <div class="overlay clear" id="flow" hidden>
   <div class="sheet flowsheet"><h2 id="flow-title"></h2><div id="flow-body"></div>
-    <div class="btnrow"><button class="pbtn primary" data-close="flow">Close</button></div></div>
+    <div class="btnrow"><button class="pbtn" data-reserves>${bi('storehouse')} Set reserves</button><button class="pbtn primary" data-close="flow">Close</button></div></div>
 </div>
 <div class="overlay clear" id="work" hidden>
   <div class="sheet flowsheet worksheet"><h2 id="work-title">${icon('work', 26)} Work</h2><div id="work-body"></div>
@@ -363,7 +380,28 @@ export class UI {
 </div>
 <div class="overlay clear" id="winter" hidden>
   <div class="sheet flowsheet"><h2 id="winter-title"></h2><div id="winter-body"></div>
-    <div class="btnrow"><button class="pbtn primary" data-close="winter">Close</button></div></div>
+    <div class="btnrow"><button class="pbtn" data-reserves>${bi('storehouse')} Set reserves</button><button class="pbtn primary" data-close="winter">Close</button></div></div>
+</div>
+<div class="overlay clear" id="reserves" hidden>
+  <form class="sheet" id="reserve-form" aria-labelledby="reserve-title" role="dialog" aria-modal="true">
+    <h2 id="reserve-title">${icon('storehouse', 26)} Stock reserves</h2>
+    <p class="muted">Workplaces, ports and automatic repairs spend only the surplus. Villagers can still eat the grain and burn the wood for heat. You can spend either with a direct order.</p>
+    <div class="reserve-fields">
+      <label>${icon('grain', 18)} Grain<input id="reserve-grain" type="number" min="0" max="${RESERVE_MAX}" step="1" required></label>
+      <label>${icon('wood', 18)} Firewood<input id="reserve-wood" type="number" min="0" max="${RESERVE_MAX}" step="1" required></label>
+    </div>
+    <p class="muted" id="reserve-stock"></p>
+    <div class="btnrow"><button type="button" class="pbtn" data-close="reserves">Close</button><button id="reserve-save" class="pbtn primary">Save reserves</button></div>
+  </form>
+</div>
+<div class="overlay clear" id="villagers" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="villagers-title">
+    <h2 id="villagers-title">${icon('pop', 26)} Villagers</h2>
+    <label for="villager-search">Search by name or workplace</label><input id="villager-search" type="search" autocomplete="off">
+    <p class="muted" id="villagers-note"></p>
+    <ul id="villagers-list" class="villagers-list"></ul>
+    <div class="btnrow"><button class="pbtn primary" data-close="villagers">Close</button></div>
+  </div>
 </div>
 <div class="overlay clear" id="steward" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="steward-title">
@@ -447,7 +485,7 @@ export class UI {
     };
     $('army-bridging').onchange = e => this.h.bridgeShortcuts((e.target as HTMLInputElement).checked);
     $('military-upgrades').onclick = e => { const id = (e.target as HTMLElement).closest('button')?.dataset.research; if (id !== undefined) this.h.research(Number(id)); };
-    $('speed').onclick = e => { const s = (e.target as HTMLElement).dataset.s; if (s !== undefined) this.h.speed(Number(s)); };
+    $('speed').onclick = e => { const button = (e.target as Element).closest<HTMLButtonElement>('button[data-s]'); if (button) this.h.speed(Number(button.dataset.s)); };
     { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
       btn.onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); };
       menu.addEventListener('click', e => { if ((e.target as HTMLElement).closest('.btn') && !(e.target as HTMLElement).closest('#btn-sound,#btn-res')) close(); });   // choosing something closes the menu (sound and deposits are toggles: it stays)
@@ -473,6 +511,28 @@ export class UI {
       if (e.key === 'Escape') { e.stopPropagation(); closeWatch(); }
     };
     $('v-work').onclick = () => this.openWork();
+    $('v-pop').onclick = $('find-villager').onclick = () => this.openVillagers();
+    $('follow-stop').onclick = () => this.h.followVillager(null);
+    $('villager-search').oninput = () => this.renderVillagers();
+    $('villagers-list').onclick = e => {
+      const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-follow]');
+      if (btn && this.h.followVillager(Number(btn.dataset.follow))) this.modal('villagers', false);
+    };
+    document.querySelectorAll<HTMLButtonElement>('[data-reserves]').forEach(btn => {
+      btn.onclick = () => {
+        const from = btn.closest<HTMLElement>('.overlay');
+        if (from) this.modal(from.id, false);
+        this.openReserves();
+      };
+    });
+    $<HTMLFormElement>('reserve-form').onsubmit = e => {
+      e.preventDefault();
+      const grain = $<HTMLInputElement>('reserve-grain').valueAsNumber, wood = $<HTMLInputElement>('reserve-wood').valueAsNumber;
+      if (this.h.setReserves(grain, wood)) this.modal('reserves', false);
+    };
+    for (const id of ['reserves', 'villagers']) $(id).onkeydown = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); this.modal(id, false); }
+    };
     $('work-body').onclick = e => this.workClick(e); $('work-body').onchange = e => this.workChange(e);
     for (const id of ['work-body', 'pane-sel']) $(id).addEventListener('pointerdown', e => { if ((e.target as HTMLElement).matches?.('input[type=range]')) this.sliding = true; });
     addEventListener('pointerup', () => { setTimeout(() => (this.sliding = false), 0); });
@@ -882,6 +942,54 @@ export class UI {
     const body = $('work-body'), keep = body.parentElement!.scrollTop; body.innerHTML = html; body.parentElement!.scrollTop = keep;
   }
   private flowOpen = CLOSED; private lastHud: Hud | null = null;
+  private workplaceFilter: number | null = null;
+  private villagersSig = '';
+  openVillagers(workplace: number | null = null) {
+    this.workplaceFilter = workplace;
+    $<HTMLInputElement>('villager-search').value = '';
+    this.modal('villagers', true); this.renderVillagers();
+    $('villager-search').focus();
+  }
+  private renderVillagers() {
+    const { rows, sheltering } = this.h.villagers();
+    const query = $<HTMLInputElement>('villager-search').value.trim().toLowerCase();
+    const work = (v: VillagerEntry) => v.job ?? (v.kind === 15 ? 'Village resident' : defs[v.kind]?.name ?? 'Village resident');
+    const visible = rows.filter(row => (this.workplaceFilter === null || row.workplace === this.workplaceFilter)
+      && `${row.name} ${work(row)}`.toLowerCase().includes(query));
+    const sig = JSON.stringify([visible, sheltering]);
+    if (sig === this.villagersSig) return;
+    this.villagersSig = sig;
+    $('villagers-note').textContent = sheltering ? 'Villagers are sheltering indoors.' : visible.length ? '' : 'No villagers match.';
+    $('villagers-list').innerHTML = visible.map(v => `<li><span><b>${esc(v.name)}</b><small>${esc(work(v))}</small></span>
+      <button class="pbtn" data-follow="${v.id}" ${sheltering ? 'disabled' : ''}>Follow</button></li>`).join('');
+  }
+  setFollowing(name: string | null) {
+    const button = $('follow-stop');
+    button.hidden = name === null;
+    const marker = $('follow-marker');
+    marker.textContent = name ?? '';
+    if (!name) marker.hidden = true;
+    if (name) button.textContent = `Following ${name} · Stop`;
+  }
+  moveFollowMarker(x: number, y: number, visible: boolean) {
+    const marker = $('follow-marker');
+    marker.hidden = !visible;
+    if (visible) { marker.style.left = x + 'px'; marker.style.top = y + 'px'; }
+  }
+
+  private openReserves() {
+    const h = this.lastHud;
+    if (!h) return;
+    $<HTMLInputElement>('reserve-grain').value = String(h.reserves[0]);
+    $<HTMLInputElement>('reserve-wood').value = String(h.reserves[1]);
+    this.modal('reserves', true); this.renderReserveStock(h);
+    $('reserve-grain').focus();
+  }
+  private renderReserveStock(h: Hud) {
+    $('reserve-stock').textContent = `In store now · ${h.stocks[10]} grain · ${h.stocks[0]} wood. Set a reserve to zero to turn off its limit.`;
+    $<HTMLButtonElement>('reserve-save').disabled = !h.canSetReserves;
+    for (const id of ['reserve-grain', 'reserve-wood']) $<HTMLInputElement>(id).disabled = !h.canSetReserves;
+  }
   /** The breakdown of one resource: what makes it and what uses it, per day (from the core's ledger of the last day). */
   openFlow(i: number) { this.flowOpen = i; this.modal('flow', true); if (this.lastHud) this.renderFlow(this.lastHud); }
   private flowTables(h: Hud, i: number) {
@@ -901,7 +1009,8 @@ export class UI {
     if (i === FOOD_ID) {   // all the foods together, then each one's own breakdown
       const table = h.food ?? [], t = foodTotals(h.stocks, h.rates, table), left = daysLeft(t.meals, t.rate);
       $('flow-title').innerHTML = `${icon('food', 26)} Food`;
-      let body = `<p class="muted">${Math.floor(t.meals)} meals in store · steady rate <b class="${t.rate < 0 ? 'neg' : t.rate > 0 ? 'pos' : ''}">${fmtRate(t.rate)}</b> (in meals)${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)}</b>` : ''}</p><p class="muted">The village eats from all its stores together, taking from whichever holds the most food. Raw grain and raw fish fill less than bread and smoked fish, so cooked food feeds more mouths.</p>`;
+      let body = `<p class="muted">${Math.floor(t.meals)} meals in store · steady rate <b class="${t.rate < 0 ? 'neg' : t.rate > 0 ? 'pos' : ''}">${h.flow.covered >= MIN_TICKS ? fmtRate(t.rate) : 'still measuring'}</b>${left !== null ? ` · <b class="neg">runs out in ${fmtDaysLeft(left)} at this rate</b>` : ''}</p><p>${esc(foodReserveText(h.foodReserveDays))}</p><p class="muted">The village eats from whichever store holds the most meals. Bread and smoked food provide half again as many meals per item as raw food.</p>`;
+      if (h.reserves[0] > 0) body += `<p class="muted">Grain reserve · ${h.reserves[0]} kept for meals.</p>`;
       let covered = 0;
       for (let k = 0; k + 1 < table.length; k += 2) {
         const r = table[k], q = table[k + 1], { b, html } = this.flowTables(h, r); covered = b.covered;
@@ -919,6 +1028,9 @@ export class UI {
   private renderWinter(h: Hud) {
     if (!h.winter) return;
     const season = Math.floor((Math.floor(h.tick / 240)) / 10) % 4, lines = winterLines(parseWinter(h.winter), h.pop, season);
+    const [grain, wood] = h.reserves;
+    lines.splice(1, 0, { icon: 'food', title: 'Food reserves', text: foodReserveText(h.foodReserveDays), tone: h.foodReserveDays === 0 ? 'bad' : undefined });
+    if (grain > 0 || wood > 0) lines.push({ icon: 'storehouse', title: 'Stock limits', text: `${grain} grain and ${wood} wood protected from automatic spending.` });
     $('winter-title').innerHTML = `${icon('cold', 26)} Winter`;
     $('winter-body').innerHTML = `<table class="flowtab winter">${lines.map(l => `<tr><td>${icon(l.icon as IconName, 22)}</td><td><b class="${l.tone === 'bad' ? 'neg' : l.tone === 'good' ? 'pos' : ''}">${esc(l.title)}</b><div class="muted">${esc(l.text)}</div></td></tr>`).join('')}</table>`;
   }
@@ -951,13 +1063,16 @@ export class UI {
       if (!$('winter').hidden) this.renderWinter(h);
     }
     this.lastHud = h; if (this.flowOpen >= 0 && !$('flow').hidden) this.renderFlow(h);
+    if (!$('reserves').hidden) this.renderReserveStock(h);
+    if (!$('villagers').hidden) this.renderVillagers();
     if (!$('work').hidden) this.renderWork(h);
     if (h.food) {
       const t = foodTotals(h.stocks, h.rates, h.food), p = this.pills[RES.length], left = daysLeft(t.meals, t.rate);
       p.querySelector('b')!.textContent = String(Math.floor(t.meals));
       const d = p.querySelector('.d') as HTMLElement; d.textContent = Math.abs(t.rate) >= 1 ? fmtRate(t.rate) : ''; d.classList.toggle('neg', t.rate < 0);
-      p.classList.toggle('low', t.meals < 25);
-      this.pillText[RES.length] = `<b>${icon('food', 18)} Food</b><small>${Math.floor(t.meals)} meals across all foods</small><small>${fmtRate(t.rate)} meals (steady, over the last day)</small>${left !== null ? `<small class="warn">Runs out in ${fmtDaysLeft(left)}</small>` : ''}<small class="muted">Click for what makes it and what uses it</small>`;
+      p.classList.toggle('low', h.foodReserveDays >= 0 && h.foodReserveDays < 0.1);
+      const trend = h.flow && h.flow.covered >= MIN_TICKS ? `${fmtRate(t.rate)} meals (steady, over the last day)` : 'Measuring the food trend…';
+      this.pillText[RES.length] = `<b>${icon('food', 18)} Food</b><small>${Math.floor(t.meals)} meals across all foods</small><small>${esc(foodReserveText(h.foodReserveDays))}</small><small>${trend}</small>${left !== null ? `<small class="warn">Runs out in ${fmtDaysLeft(left)} at this rate</small>` : ''}<small class="muted">Click for what makes it and what uses it</small>`;
       if (this.hoverPill === RES.length) this.tipFor(RES.length);
     }
     h.stocks.forEach((v, i) => {
@@ -1128,7 +1243,12 @@ export class UI {
     const t = $('tooltip'); t.hidden = !html; if (!html) return;
     t.innerHTML = html; t.style.left = Math.min(innerWidth - 280, x + 16) + 'px'; t.style.top = (y + 18) + 'px';
   }
-  setSpeed(n: number) { $('speed').querySelectorAll('.btn').forEach(b => b.classList.toggle('on', Number((b as HTMLElement).dataset.s) === n)); }
+  setSpeed(n: number) {
+    $('speed').querySelectorAll<HTMLButtonElement>('button[data-s]').forEach(button => {
+      const active = Number(button.dataset.s) === n;
+      button.classList.toggle('on', active); button.setAttribute('aria-pressed', String(active));
+    });
+  }
   setCoverageToggle(on: boolean) { $('btn-cov').setAttribute('aria-pressed', String(on)); $('btn-cov').classList.toggle('on', on); }
   setResourcesToggle(on: boolean) { $('btn-res').setAttribute('aria-pressed', String(on)); $('btn-res').classList.toggle('on', on); }
   netStatus(s: string) { $('net-status').textContent = s; }

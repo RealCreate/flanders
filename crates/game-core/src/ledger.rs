@@ -33,6 +33,9 @@ impl Ledger {
         Ledger { nk, ncat, gain: vec![0; WIN * ncat * N_RES], loss: vec![0; WIN * ncat * N_RES], stamp: [0; WIN], ticks: [0; WIN], last: None, start: [0; N_RES], noted: [0; N_RES], slot: 0 }
     }
     pub fn extra(&self, e: usize) -> usize { self.nk + e }
+    pub fn ensure_kinds(&mut self, nk: usize) {
+        if self.nk != nk { *self = Self::new(nk); }
+    }
     fn at(&self, slot: usize, cat: usize, r: usize) -> usize { (slot * self.ncat + cat) * N_RES + r }
 
     /// Start of a tick (`tick` is the new tick number): anything the stock changed by since the last tick ended was done by the player's orders.

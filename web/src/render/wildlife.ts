@@ -1,54 +1,28 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { tint } from './geomutil';
+import { deer, boar, rabbit, wolf, sheep, cow, chicken } from './animalmodels';
 import type { Terrain } from './terrain';
 import type { Huntable, WildLike } from './people';
-
-const bx = (w: number, h: number, d: number, hex: number, x: number, y: number, z: number, rx = 0) => { const g = new THREE.BoxGeometry(w, h, d); g.rotateX(rx); g.translate(x, y, z); return tint(g, hex); };
-const sp = (r: number, hex: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1) => { const g = new THREE.IcosahedronGeometry(r, 1); g.scale(sx, sy, sz); g.translate(x, y, z); return tint(g, hex); };
-const merge = (p: THREE.BufferGeometry[]) => { p.forEach(g => g.computeVertexNormals()); return mergeGeometries(p)!; };
-const leg = (w: number, len: number, hex: number, hoof = 0x2a2018) => merge([bx(w, len, w, hex, 0, -len / 2, 0), bx(w * 1.15, len * 0.1, w * 1.3, hoof, 0, -len * 0.97, w * 0.1)]);
+import { GRAZING_RADIUS, PASTURE } from '../pasture';
 
 type Gait = 'quad' | 'biped' | 'hop';
 interface Spec {
   name: string; max: number; huntable: boolean; gait: Gait;
   walk: number; run: number;           // units/s while ambling and when fleeing (before individual variation)
   stride: number;                      // distance covered by one full gait cycle at a walk
-  body: () => THREE.BufferGeometry; head: () => THREE.BufferGeometry; legGeo: () => THREE.BufferGeometry | null;
+  body: () => THREE.BufferGeometry; head: (googly?: boolean) => THREE.BufferGeometry; legGeo: () => THREE.BufferGeometry | null;
   legs: [number, number, number][];    // hip anchors: FL, FR, BL, BR
   neck: [number, number, number];      // where the head pivots
   size: number;
 }
 
 const SPECIES: Spec[] = [
-  { name: 'deer', max: 40, huntable: true, gait: 'quad', walk: 1.2, run: 9, stride: 1.5, size: 1, neck: [0, 1.2, 0.5], legs: [[0.14, 0.82, 0.4], [-0.14, 0.82, 0.4], [0.14, 0.82, -0.4], [-0.14, 0.82, -0.4]],
-    legGeo: () => leg(0.09, 0.82, 0x6a4a2a),
-    body: () => merge([bx(0.45, 0.5, 1.1, 0x9a6a3a, 0, 1.0, 0), bx(0.12, 0.14, 0.1, 0xe8d8b8, 0, 1.05, -0.58)]),
-    head: () => merge([bx(0.18, 0.5, 0.2, 0x9a6a3a, 0, 0.22, 0.1, -0.5), bx(0.16, 0.2, 0.34, 0x8a5a2e, 0, 0.5, 0.3), bx(0.04, 0.5, 0.04, 0xd8c8a0, 0.1, 0.78, 0.2, 0.3), bx(0.04, 0.5, 0.04, 0xd8c8a0, -0.1, 0.78, 0.2, 0.3), bx(0.3, 0.04, 0.04, 0xd8c8a0, 0, 0.92, 0.24)]) },
-  { name: 'boar', max: 16, huntable: true, gait: 'quad', walk: 1.1, run: 6.5, stride: 0.95, size: 1, neck: [0, 0.62, 0.45], legs: [[0.16, 0.42, 0.3], [-0.16, 0.42, 0.3], [0.16, 0.42, -0.3], [-0.16, 0.42, -0.3]],
-    legGeo: () => leg(0.1, 0.42, 0x3a2c24),
-    body: () => merge([bx(0.5, 0.5, 0.95, 0x4a3a30, 0, 0.62, 0), bx(0.5, 0.12, 0.5, 0x2a2018, 0, 0.9, 0.1)]),
-    head: () => merge([bx(0.38, 0.38, 0.42, 0x3a2c24, 0, 0, 0.2), bx(0.14, 0.1, 0.22, 0x2a1e18, 0, -0.05, 0.5), bx(0.04, 0.04, 0.14, 0xe8e0c8, 0.09, -0.03, 0.56), bx(0.04, 0.04, 0.14, 0xe8e0c8, -0.09, -0.03, 0.56)]) },
-  { name: 'rabbit', max: 40, huntable: true, gait: 'hop', walk: 0.9, run: 6, stride: 0.6, size: 1, neck: [0, 0.3, 0.2], legs: [],
-    legGeo: () => null,
-    body: () => merge([sp(0.18, 0xb0a090, 0, 0.2, 0, 1, 0.9, 1.3), sp(0.06, 0xf0f0f0, 0, 0.22, -0.26), bx(0.1, 0.05, 0.22, 0x9a8a7a, 0.1, 0.08, -0.1), bx(0.1, 0.05, 0.22, 0x9a8a7a, -0.1, 0.08, -0.1)]),
-    head: () => merge([sp(0.12, 0xb0a090, 0, 0, 0.04), bx(0.05, 0.22, 0.04, 0xb0a090, 0.05, 0.2, 0), bx(0.05, 0.22, 0.04, 0xb0a090, -0.05, 0.2, 0)]) },
-  { name: 'wolf', max: 10, huntable: false, gait: 'quad', walk: 1.5, run: 10, stride: 1.4, size: 1, neck: [0, 1.0, 0.45], legs: [[0.12, 0.76, 0.34], [-0.12, 0.76, 0.34], [0.12, 0.76, -0.34], [-0.12, 0.76, -0.34]],
-    legGeo: () => leg(0.08, 0.76, 0x55555b),
-    body: () => merge([bx(0.38, 0.42, 1.0, 0x6a6a70, 0, 0.92, 0), bx(0.1, 0.1, 0.6, 0x5a5a60, 0, 0.9, -0.75, 0.5)]),
-    head: () => merge([bx(0.26, 0.3, 0.3, 0x5a5a60, 0, 0.02, 0.15), bx(0.14, 0.14, 0.3, 0x4a4a50, 0, -0.06, 0.4), bx(0.05, 0.12, 0.05, 0x4a4a50, 0.07, 0.22, 0.1), bx(0.05, 0.12, 0.05, 0x4a4a50, -0.07, 0.22, 0.1)]) },
-  { name: 'sheep', max: 70, huntable: false, gait: 'quad', walk: 0.6, run: 4, stride: 0.7, size: 1, neck: [0, 0.72, 0.4], legs: [[0.14, 0.42, 0.25], [-0.14, 0.42, 0.25], [0.14, 0.42, -0.25], [-0.14, 0.42, -0.25]],
-    legGeo: () => leg(0.06, 0.42, 0x3a3430),
-    body: () => merge([sp(0.36, 0xf2efe6, 0, 0.62, 0, 1, 0.9, 1.3)]),
-    head: () => merge([bx(0.16, 0.2, 0.22, 0x3a3430, 0, 0, 0.1), bx(0.22, 0.04, 0.05, 0x3a3430, 0, 0.1, 0.04)]) },
-  { name: 'cow', max: 30, huntable: false, gait: 'quad', walk: 0.55, run: 3.5, stride: 1.2, size: 1, neck: [0, 1.15, 0.65], legs: [[0.18, 0.62, 0.45], [-0.18, 0.62, 0.45], [0.18, 0.62, -0.45], [-0.18, 0.62, -0.45]],
-    legGeo: () => leg(0.1, 0.62, 0xe8e0d0),
-    body: () => merge([bx(0.55, 0.62, 1.3, 0xf0ece0, 0, 0.95, 0), bx(0.5, 0.3, 0.5, 0x6a4a32, 0.02, 1.15, 0.2), bx(0.5, 0.3, 0.4, 0x6a4a32, -0.02, 1.1, -0.35), bx(0.04, 0.4, 0.04, 0xe8e0d0, 0, 0.8, -0.68)]),
-    head: () => merge([bx(0.3, 0.3, 0.38, 0xe8e0d0, 0, -0.05, 0.22), bx(0.04, 0.12, 0.04, 0xd8d0b0, 0.14, 0.15, 0.2), bx(0.04, 0.12, 0.04, 0xd8d0b0, -0.14, 0.15, 0.2)]) },
-  { name: 'chicken', max: 60, huntable: false, gait: 'biped', walk: 0.5, run: 3, stride: 0.3, size: 1, neck: [0, 0.34, 0.1], legs: [[0.05, 0.2, 0], [-0.05, 0.2, 0]],
-    legGeo: () => leg(0.025, 0.2, 0xd8a020, 0xd8a020),
-    body: () => merge([sp(0.13, 0xd8a050, 0, 0.26, 0, 1, 1, 1.3), bx(0.06, 0.16, 0.12, 0xb87a30, 0, 0.32, -0.2, -0.6)]),
-    head: () => merge([sp(0.07, 0xd8a050, 0, 0.04, 0.04), bx(0.04, 0.05, 0.07, 0xd8a020, 0, 0.03, 0.12), bx(0.02, 0.06, 0.05, 0xc02020, 0, 0.12, 0.03)]) },
+  { ...deer, name: 'deer', max: 40, huntable: true, gait: 'quad', walk: 1.2, run: 9, stride: 1.5, size: 1, neck: [0, 1.14, 0.45], legs: [[0.14, 0.91, 0.38], [-0.14, 0.91, 0.38], [0.14, 0.91, -0.4], [-0.14, 0.91, -0.4]] },
+  { ...boar, name: 'boar', max: 16, huntable: true, gait: 'quad', walk: 1.1, run: 6.5, stride: 0.95, size: 1, neck: [0, 0.64, 0.39], legs: [[0.16, 0.46, 0.3], [-0.16, 0.46, 0.3], [0.16, 0.46, -0.3], [-0.16, 0.46, -0.3]] },
+  { ...rabbit, name: 'rabbit', max: 40, huntable: true, gait: 'hop', walk: 0.9, run: 6, stride: 0.6, size: 1, neck: [0, 0.275, 0.14], legs: [] },
+  { ...wolf, name: 'wolf', max: 10, huntable: false, gait: 'quad', walk: 1.5, run: 10, stride: 1.4, size: 1, neck: [0, 0.98, 0.42], legs: [[0.12, 0.79, 0.34], [-0.12, 0.79, 0.34], [0.12, 0.79, -0.34], [-0.12, 0.79, -0.34]] },
+  { ...sheep, name: 'sheep', max: 70, huntable: false, gait: 'quad', walk: 0.6, run: 4, stride: 0.7, size: 1, neck: [0, 0.72, 0.37], legs: [[0.14, 0.42, 0.25], [-0.14, 0.42, 0.25], [0.14, 0.42, -0.25], [-0.14, 0.42, -0.25]] },
+  { ...cow, name: 'cow', max: 30, huntable: false, gait: 'quad', walk: 0.55, run: 3.5, stride: 1.2, size: 1, neck: [0, 1.13, 0.55], legs: [[0.18, 0.77, 0.42], [-0.18, 0.77, 0.42], [0.18, 0.77, -0.45], [-0.18, 0.77, -0.45]] },
+  { ...chicken, name: 'chicken', max: 60, huntable: false, gait: 'biped', walk: 0.5, run: 3, stride: 0.3, size: 1, neck: [0, 0.34, 0.1], legs: [[0.05, 0.2, 0], [-0.05, 0.2, 0]] },
 ];
 
 interface Animal extends Huntable {
@@ -58,9 +32,18 @@ interface Animal extends Huntable {
   speed: number;     // current ground speed
   gait: number;      // gait angle, advances with distance covered
   headT: number;     // head behaviour clock
+  pen?: number;      // fenced livestock stay within this distance of their home
 }
 
 const rng = (seed: number) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+
+function upload(mesh: THREE.InstancedMesh, count: number) {
+  mesh.count = count;
+  if (count === 0) return;
+  mesh.instanceMatrix.clearUpdateRanges();
+  mesh.instanceMatrix.addUpdateRange(0, count * 16);
+  mesh.instanceMatrix.needsUpdate = true;
+}
 
 /** Deer, boar, rabbits and wolves in the forests; sheep, cows and chickens around farms and houses.
  *  Each species walks, trots and gallops with its own stride; each animal has its own pace. Only animals near the camera are simulated and drawn. */
@@ -68,6 +51,8 @@ export class Wildlife implements WildLike {
   group = new THREE.Group();
   private animals: Animal[] = [];
   private bodies: THREE.InstancedMesh[] = []; private heads: THREE.InstancedMesh[] = []; private legMeshes: (THREE.InstancedMesh | null)[] = [];
+  private normalHeads: THREE.BufferGeometry[] = [];
+  private googlyHeads?: THREE.BufferGeometry[];
   private m = new THREE.Matrix4(); private b = new THREE.Matrix4(); private h = new THREE.Matrix4(); private q = new THREE.Quaternion(); private p = new THREE.Vector3(); private s = new THREE.Vector3(); private e = new THREE.Euler(); private lm = new THREE.Matrix4(); private t4 = new THREE.Matrix4();
   private t = 0;
   private domSig = new Map<string, string>();
@@ -78,7 +63,8 @@ export class Wildlife implements WildLike {
     SPECIES.forEach(spec => {
       const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
       const mk = (g: THREE.BufferGeometry, max: number) => { const m = new THREE.InstancedMesh(g, mat, max); m.castShadow = true; m.frustumCulled = false; m.count = 0; this.group.add(m); return m; };
-      this.bodies.push(mk(spec.body(), spec.max)); this.heads.push(mk(spec.head(), spec.max));
+      this.normalHeads.push(spec.head());
+      this.bodies.push(mk(spec.body(), spec.max)); this.heads.push(mk(this.normalHeads.at(-1)!, spec.max));
       const lg = spec.legGeo(); this.legMeshes.push(lg && spec.legs.length ? mk(lg, spec.max * spec.legs.length) : null);
     });
     const near = (x: number, z: number) => { for (let i = 0; i < sites.length; i += 2) if (Math.hypot(x - sites[i], z - sites[i + 1]) < 120) return true; return false; };
@@ -92,6 +78,11 @@ export class Wildlife implements WildLike {
     };
     const counts = [[0, 9, 4], [1, 5, 2], [2, 9, 3], [3, 3, 3]];
     if (pool.length) for (const [spi, herds, size] of counts) for (let hd = 0; hd < herds; hd++) { const t = pool[Math.floor(r() * pool.length)]; spawn(spi, 1 + Math.floor(r() * size), t.x, t.z); }
+  }
+
+  setGooglyEyes(on: boolean) {
+    const variants = on ? this.googlyHeads ??= SPECIES.map(spec => spec.head(true)) : this.normalHeads;
+    this.heads.forEach((head, index) => { head.geometry = variants[index]; });
   }
 
   private make(si: number, x: number, z: number, y: number, hx: number, hz: number, roam: number, r: () => number, domestic: boolean, owner?: string): Animal {
@@ -114,16 +105,26 @@ export class Wildlife implements WildLike {
   /** Farm animals follow the buildings of a village. `key` identifies the village. */
   syncDomestic(key: string, buildings: Float32Array) {
     const S = 10; const parts: string[] = [];
-    for (let i = 0; i < buildings.length; i += S) { const k = buildings[i]; if (k === 1 || (k === 0 && buildings[i + 1] <= 1)) parts.push(`${k}:${buildings[i + 2]}:${buildings[i + 3]}:${buildings[i + 1]}`); }
+    for (let i = 0; i < buildings.length; i += S) { const k = buildings[i]; if (k === PASTURE || k === 1 || (k === 0 && buildings[i + 1] <= 1)) parts.push(`${k}:${buildings[i + 2]}:${buildings[i + 3]}:${buildings[i + 1]}`); }
     const sig = parts.join('|'); if (this.domSig.get(key) === sig) return; this.domSig.set(key, sig);
     this.animals = this.animals.filter(a => a.owner !== key);
     const r = rng(parts.length * 977 + 3);
     for (let i = 0; i < buildings.length; i += S) {
       const k = buildings[i], x = buildings[i + 2], z = buildings[i + 3];
-      const add = (si: number, n: number, ox: number, oz: number, roam: number) => {
-        for (let j = 0; j < n; j++) { const ax = ox + (r() - 0.5) * roam, az = oz + (r() - 0.5) * roam; this.animals.push(this.make(si, ax, az, this.terrain.heightAt(ax, az), ox, oz, roam, r, true, key)); }
+      const add = (si: number, n: number, ox: number, oz: number, roam: number, pen?: number) => {
+        for (let j = 0; j < n; j++) {
+          const ax = ox + (r() - 0.5) * roam, az = oz + (r() - 0.5) * roam;
+          const animal = this.make(si, ax, az, this.terrain.heightAt(ax, az), ox, oz, roam, r, true, key);
+          animal.pen = pen;
+          this.animals.push(animal);
+        }
       };
-      if (k === 1) { add(4, 3 + buildings[i + 1], x + 1, z + 2, 8); if (buildings[i + 1] >= 1) add(5, 2, x, z + 2, 8); }
+      if (k === PASTURE) {
+        const tier = buildings[i + 1];
+        add(4, 4 + tier, x, z, 4.5, GRAZING_RADIUS);
+        if (tier > 0) add(5, tier, x, z, 4.5, GRAZING_RADIUS);
+      }
+      else if (k === 1) add(4, 2, x, z + 4, 5);
       else if (k === 0 && buildings[i + 1] <= 1) add(6, 2, x, z + 3.5, 4);
     }
   }
@@ -139,6 +140,7 @@ export class Wildlife implements WildLike {
       if (a.state === 'gone') { a.deadT += dt; if (a.deadT > 120 && !a.domestic) { a.state = 'graze'; a.alive = true; a.x = a.hx + (Math.random() - 0.5) * 8; a.z = a.hz + (Math.random() - 0.5) * 8; a.huntable = spec.huntable; } continue; }
       if ((a.x - cx) ** 2 + (a.z - cz) ** 2 > r2) continue;       // far from the camera: frozen and not drawn
       shown++;
+      if (dt === 0) { this.draw(a, spec, counts, legCounts); continue; }
       if (a.state === 'dead') { a.deadT += dt; if (a.deadT > 40) { a.state = 'gone'; a.deadT = 0; } this.draw(a, spec, counts, legCounts); continue; }
       // fear
       let danger = false, fx = 0, fz = 0;
@@ -153,7 +155,7 @@ export class Wildlife implements WildLike {
       }
       if (danger && spec.name !== 'wolf') { a.state = 'flee'; const l = Math.hypot(fx, fz) || 1; a.tx = a.x + (fx / l) * 14; a.tz = a.z + (fz / l) * 14; a.timer = 0; }
       else if (a.state === 'flee' && spec.name !== 'wolf') { a.timer -= dt; if (a.timer < -2) a.state = 'graze'; }
-      if (a.state === 'graze') { a.timer -= dt; if (a.timer <= 0) { a.state = 'walk'; const ang = Math.random() * 6.28, d = 2 + Math.random() * a.roam; a.tx = a.hx + Math.cos(ang) * d; a.tz = a.hz + Math.sin(ang) * d; } }
+      if (a.state === 'graze') { a.timer -= dt; if (a.timer <= 0) { a.state = 'walk'; const ang = Math.random() * 6.28, d = a.pen === undefined ? 2 + Math.random() * a.roam : 0.5 + Math.random() * (a.pen - 0.65); a.tx = a.hx + Math.cos(ang) * d; a.tz = a.hz + Math.sin(ang) * d; } }
 
       // ---- movement: accelerate towards the wanted speed, turn smoothly, advance the gait by distance
       let want = 0;
@@ -170,12 +172,24 @@ export class Wildlife implements WildLike {
         a.gait += Math.PI * 2 * mv / (spec.stride * (1 + 0.12 * a.speed / spec.walk));
         if (this.terrain.heightAt(a.x, a.z) < 0.7) { a.x -= Math.sin(a.yaw) * mv * 2; a.z -= Math.cos(a.yaw) * mv * 2; a.state = 'graze'; a.timer = 2; a.speed = 0; }
       }
+      if (a.pen !== undefined) {
+        const dx = a.x - a.hx, dz = a.z - a.hz, r = Math.hypot(dx, dz);
+        if (r > a.pen) {
+          a.x = a.hx + dx * a.pen / r; a.z = a.hz + dz * a.pen / r;
+          a.state = 'graze'; a.timer = 0.8; a.speed = 0;
+        }
+      }
       a.y = this.terrain.heightAt(a.x, a.z);
       a.headT += dt;
       this.draw(a, spec, counts, legCounts);
     }
     this.visible = shown;
-    this.bodies.forEach((m, i) => { m.count = counts[i]; m.instanceMatrix.needsUpdate = true; this.heads[i].count = counts[i]; this.heads[i].instanceMatrix.needsUpdate = true; const lm = this.legMeshes[i]; if (lm) { lm.count = legCounts[i]; lm.instanceMatrix.needsUpdate = true; } });
+    this.bodies.forEach((mesh, i) => {
+      upload(mesh, counts[i]);
+      upload(this.heads[i], counts[i]);
+      const legs = this.legMeshes[i];
+      if (legs) upload(legs, legCounts[i]);
+    });
   }
 
   private draw(a: Animal, spec: Spec, counts: number[], legCounts: number[]) {

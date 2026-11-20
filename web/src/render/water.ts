@@ -49,26 +49,18 @@ export function waterNormalTexture(size = 512): THREE.DataTexture {
 /** Give a water material depth: shallow water over the ground is pale and see-through with foam at the shore, deep water is dark and almost opaque, and the ripples
  *  are two layers of the normal map moving across each other in world space (so they look the same on the sea and on a moat, and never repeat in an obvious grid).
  *  Works for a plane and for instanced discs. */
-/** Solid channels mark their outer vertices so they meet the current terrain after earthworks. */
+/** Clip all surfaces to the actual terrain triangles so earthworks move the shoreline without changing the water. */
 export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, time: { value: number }, instanced: boolean, solid = false, seaLevel?: { value: number }) {
   const naturalWater = !solid || seaLevel !== undefined;
   mat.onBeforeCompile = sh => {
     sh.uniforms.uTime = time; sh.uniforms.uGround = { value: src.heightTex }; sh.uniforms.uHalf = { value: src.half }; sh.uniforms.uStep = { value: src.step }; sh.uniforms.uNV = { value: src.nv };
     if (seaLevel) sh.uniforms.uSeaLevel = seaLevel;
-    const bankUniforms = solid ? 'attribute float aWaterBank; uniform sampler2D uGround; uniform float uHalf; uniform float uStep; uniform float uNV;' : '';
     const tideUniform = seaLevel ? 'uniform float uSeaLevel;' : '';
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\nvarying vec3 vWP; ${bankUniforms} ${tideUniform}`)
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>\nvarying vec3 vWP; ${tideUniform}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vWP = (modelMatrix * ${instanced ? 'instanceMatrix * ' : ''}vec4(transformed, 1.0)).xyz;
-        ${solid || seaLevel ? 'float surface = vWP.y;' : ''}
-        ${seaLevel ? 'surface += uSeaLevel * (1.0 - smoothstep(0.0, 1.2, surface));' : ''}
-        ${solid ? `if (aWaterBank > 0.5) {
-          float bank = texture2D(uGround, ((vWP.xz + uHalf) / uStep + 0.5) / uNV).r;
-          // Overlap the bank slightly to account for the height texture's half-float precision.
-          surface = min(surface, bank - 0.04);
-        }` : ''}
-        ${seaLevel ? 'surface = max(surface, uSeaLevel);' : ''}
-        ${solid || seaLevel ? 'transformed.y += surface - vWP.y; vWP.y = surface;' : ''}`);
+        ${seaLevel ? `float surface = max(uSeaLevel, vWP.y + uSeaLevel * (1.0 - smoothstep(0.0, 1.2, vWP.y)));
+        transformed.y += surface - vWP.y; vWP.y = surface;` : ''}`);
     const normalChunk = THREE.ShaderChunk.normal_fragment_maps
       .replace('texture2D( normalMap, vNormalMapUv ).xyz', '(texture2D( normalMap, uvA ).xyz + texture2D( normalMap, uvB ).xyz) * 0.5');
     sh.fragmentShader = sh.fragmentShader
@@ -91,9 +83,8 @@ export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, ti
         }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         float depth = vWP.y - waterGround(vWP.xz);
-        ${naturalWater ? `// Ease in flooded ground so sub-centimetre height rounding cannot toggle a foam pixel.
         if (depth <= 0.01) discard;
-        float shoreCoverage = smoothstep(0.01, 0.05, depth);` : 'depth = max(depth, 0.0);'}
+        float shoreCoverage = smoothstep(0.01, 0.06, depth);
         vec2 uvA = vWP.xz * 0.16 + vec2(uTime * 0.0045, uTime * 0.0031);
         vec2 uvB = mat2(0.8, -0.6, 0.6, 0.8) * vWP.xz * 0.43 + vec2(-uTime * 0.0072, uTime * 0.0108);
         float shallow = exp(-depth * 0.62);
@@ -103,7 +94,7 @@ export function patchWater(mat: THREE.MeshStandardMaterial, src: DepthSource, ti
         float edge = 1.0 - smoothstep(0.0, 0.65, depth + (nz - 0.5) * 0.5 + 0.12 * sin(uTime * 1.4 + vWP.x * 0.7 + vWP.z * 0.5));
         float crest = smoothstep(0.78, 0.96, texture2D(normalMap, uvA * 2.1).g) * (1.0 - smoothstep(0.4, 2.2, depth)) * 0.35;
         float foam = clamp(edge * smoothstep(0.35, 0.7, nz + 0.25) + crest, 0.0, 1.0);
-        diffuseColor.rgb = mix(wc, vec3(0.93, 0.97, 0.98), foam * 0.9);
+        diffuseColor.rgb = mix(wc, vec3(0.93, 0.97, 0.98), foam * 0.82 * shoreCoverage);
         ${naturalWater ? `float seaAlpha = clamp(mix(0.985, 0.42, shallow) * smoothstep(0.0, 0.1, depth + 0.05) + foam * 0.7, 0.0, 1.0);
         seaAlpha = mix(seaAlpha, 1.0, smoothstep(4.5, 7.5, depth));
         ${seaLevel ? 'seaAlpha = mix(seaAlpha, 1.0, smoothstep(0.0, 0.55, vWP.y - uSeaLevel));' : ''}

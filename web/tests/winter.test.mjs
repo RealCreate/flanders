@@ -23,4 +23,5 @@ test('the panel lists the grain, firewood, days left, the cold and what helps, w
   assert.match(lines[0].title, /55%/); assert.match(lines[1].title, /72 a day for 40/); assert.match(lines[2].title, /10 days/); assert.match(lines[3].text, /grows by 15%/);
   for (const l of lines) { assert.ok(ICONS[l.icon], l.icon); assert.ok(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(l.title + l.text)); }
   assert.equal(winterLines(mk({ 3: 20 }), 40, 2)[2].tone, 'bad');
+  assert.equal(winterLines(mk({ 3: 20, 14: 2 }), 40, 3)[2].tone, 'good');
 });

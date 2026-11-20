@@ -10,12 +10,12 @@ test('every step has a title and text, and the conditions are functions', () => 
 });
 test('a new village stays on the first (waiting) step', () => { assert.equal(stepAfter(0, counts()), 0); });
 test('a step completes when the village has what it asks for, and the guide moves on', () => {
-  const house = STEPS.findIndex(s => s.title === 'Homes first');
-  assert.equal(stepAfter(house, counts({ 0: 1 })), house, 'one house is not enough');
-  assert.ok(stepAfter(house, counts({ 0: 2 })) > house);
+  const house = STEPS.findIndex(s => s.title === 'A home for new villagers');
+  assert.equal(stepAfter(house, counts()), house);
+  assert.equal(STEPS[stepAfter(house, counts({ 0: 1 }))].title, 'Grain for the table');
 });
 test('it skips ahead past several finished steps but stops at one that waits for Next', () => {
-  const house = STEPS.findIndex(s => s.title === 'Homes first');
+  const house = STEPS.findIndex(s => s.title === 'A home for new villagers');
   const after = stepAfter(house, counts({ 0: 5, 1: 1, 4: 1, 5: 1 }));
   assert.ok(!STEPS[after].done, 'it stops at an information step: ' + STEPS[after].title);
   assert.ok(after > house + 2);

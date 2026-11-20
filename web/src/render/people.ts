@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import type { Terrain } from './terrain';
 import { HAT, TOOL, type Crowd, type Draw } from './crowd';
 import { door_info } from '../wasm/game_core.js';
+import { PASTURE, PEN_HALF_DEPTH } from '../pasture';
+import { NAMED_VILLAGERS, villagerJob, villagerName, villagerProfession, villagerWorkplaces, type VillagerEntry } from '../villagernames';
 
 const S = 10;
 const MAX = 260;
@@ -11,8 +13,8 @@ export interface WildLike { nearest(x: number, z: number, r: number): Huntable |
 export interface Hooks { wild: WildLike | null; arrow(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void; splash(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void }
 
 /** Workplaces whose workers haul goods to the storehouse, and the colour of what they carry. */
-const HAULS: Record<number, boolean> = { 1: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: true, 14: true, 29: true, 30: true, 41: true, 42: true, 43: true };
-const LOAD: Record<number, number> = { 1: 0xd9b95a, 4: 0x7a5230, 5: 0xc9a56a, 6: 0x9a9a9a, 7: 0xb5693a, 8: 0xa4553b, 9: 0x6a5a50, 10: 0xb0902a, 11: 0x2a2a2a, 12: 0x8a8a90, 13: 0x777777, 14: 0xe0b030, 29: 0xc9a56a, 30: 0x6a9a3a, 41: 0xaab8be, 42: 0x9a6a2e, 43: 0xd9a860 };
+const HAULS: Record<number, boolean> = { 1: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: true, 14: true, 29: true, 30: true, 41: true, 42: true, 43: true, [PASTURE]: true };
+const LOAD: Record<number, number> = { 1: 0xd9b95a, 4: 0x7a5230, 5: 0xc9a56a, 6: 0x9a9a9a, 7: 0xb5693a, 8: 0xa4553b, 9: 0x6a5a50, 10: 0xb0902a, 11: 0x2a2a2a, 12: 0x8a8a90, 13: 0x777777, 14: 0xe0b030, 29: 0xc9a56a, 30: 0x6a9a3a, 41: 0xaab8be, 42: 0x9a6a2e, 43: 0xd9a860, [PASTURE]: 0xa16457 };
 
 const SKIN = [0xe8c4a0, 0xd9a877, 0xc68e63, 0xf0d2b4, 0xb98055];
 const PLAIN = [0x8c3b2f, 0x3b5f8c, 0x5f7a3b, 0x8c7a3b, 0x6b4a7a, 0x7a5a3b, 0x4a6b6b, 0xb08a4a, 0x7a3b4a];
@@ -20,7 +22,7 @@ const DRESS = [0x9a4a5a, 0x4a6a9a, 0x6a8a4a, 0xa88a4a, 0x7a5a8a, 0xb0706a];
 
 /** Appearance by workplace: [hat, tool, clothes]. */
 const LOOKS: Record<number, [number | undefined, number, number[]]> = {
-  1: [HAT.STRAW, TOOL.FORK, [0x8a7a4a, 0x6b7a3a, 0x9a8a5a]],
+  1: [HAT.STRAW, TOOL.HOE, [0x8a7a4a, 0x6b7a3a, 0x9a8a5a]],
   4: [HAT.CAP, TOOL.AXE, [0x5a6b3a, 0x7a4a2a, 0x6a5a3a]],
   5: [HAT.CAP, TOOL.HAMMER, [0x8a6b4a, 0x7a5a3a]],
   6: [HAT.KETTLE, TOOL.PICK, [0x7a7a7a, 0x8a8070]],
@@ -34,9 +36,12 @@ const LOOKS: Record<number, [number | undefined, number, number[]]> = {
   14: [HAT.CAP, TOOL.STAFF, [0x7a6a2a, 0x6a5a20]],
   18: [HAT.HOOD, TOOL.BOW, [0x3f5a30, 0x4a6a38]],
   20: [HAT.CAP, TOOL.HAMMER, [0x8a6b4a, 0x7a5a3a, 0x6a5a40]],
+  28: [HAT.CAP, 0, [0x756084, 0x6e553a, 0x643a3b]],
+  [PASTURE]: [HAT.HOOD, TOOL.STAFF, [0x747447, 0x806241, 0x845b49]],
 };
 
 interface Agent {
+  id: number; name: string;
   x: number; z: number; yaw: number;
   home: number; work: number;
   route: THREE.Vector2[]; at: number;
@@ -56,6 +61,7 @@ interface Agent {
 /** Villagers who live in houses, walk the village paths to their workplace and back. Hunters leave the lodge to stalk game. */
 export class People {
   private agents: Agent[] = [];
+  private nextId = NAMED_VILLAGERS.length;
   private sig = '';
   private parent: number[] = [];
   private link: Map<number, [number, number][]> = new Map();   // child building -> its walkable route to its parent (doorstep to doorstep, over drawbridges)
@@ -151,8 +157,9 @@ export class People {
     this.staffAt.clear();
     for (const b of works) this.staffAt.set(b, (this.staffAt.get(b) ?? 0) + 1);
     const total = Math.min(MAX, population, Math.max(homes.length, 0));
+    const workplaces = villagerWorkplaces(works, this.bld.map(b => b.kind), total);
     const roster: { home: number; work: number }[] = [];
-    for (let i = 0; i < total; i++) roster.push({ home: homes[(i * 7) % Math.max(1, homes.length)] ?? 0, work: i < works.length ? works[i] : 0 });
+    for (let i = 0; i < total; i++) roster.push({ home: homes[(i * 7) % Math.max(1, homes.length)] ?? 0, work: workplaces[i] });
     const sig = roster.map(r => r.home + ':' + r.work).join(',') + '|' + n + '|' + paths.length;
     if (!layoutChanged && sig === this.sig) return;
     this.sig = sig;
@@ -162,7 +169,8 @@ export class People {
       let a = this.agents[i];
       if (!a) {
         const h = this.bld[r.home];
-        a = { x: h?.x ?? 0, z: h?.z ?? 0, yaw: 0, home: r.home, work: r.work, route: [], at: 0, dwell: 0, goingToWork: false, seed: i * 1.7 + 3, tool: 0, body: 0, skin: 0, dress: false, scale: 1, hunter: false, stage: 0, shift: 0, target: null, carry: false, aim: false, base: 1.4, gait: 0, pace: 0, fight: false, fs: 0, fsT: 0, fireTo: null, crew: false, cs: 0, cT: 0, job: null, haul: 0, store: 0, cartYaw: 0 };
+        const id = i < NAMED_VILLAGERS.length ? i : this.nextId++;
+        a = { id, name: villagerName(id, buildings[2], buildings[3]), x: h?.x ?? 0, z: h?.z ?? 0, yaw: 0, home: r.home, work: r.work, route: [], at: 0, dwell: 0, goingToWork: false, seed: i * 1.7 + 3, tool: 0, body: 0, skin: 0, dress: false, scale: 1, hunter: false, stage: 0, shift: 0, target: null, carry: false, aim: false, base: 1.4, gait: 0, pace: 0, fight: false, fs: 0, fsT: 0, fireTo: null, crew: false, cs: 0, cT: 0, job: null, haul: 0, store: 0, cartYaw: 0 };
         a.dwell = this.rand(a, 1) * 12; a.gait = this.rand(a, 11) * 6.28; this.agents[i] = a;
       }
       const changed = a.home !== r.home || a.work !== r.work;
@@ -174,7 +182,7 @@ export class People {
 
   /** Pick the look of an agent from where they work. */
   private dress(a: Agent) {
-    const kind = this.bld[a.work]?.kind ?? 15, look = LOOKS[kind];
+    const kind = this.bld[a.work]?.kind ?? 15, look = LOOKS[villagerProfession(a.id, kind) ?? kind];
     const r = (k: number) => this.rand(a, k);
     a.skin = SKIN[Math.floor(r(6) * SKIN.length)];
     a.hunter = kind === 18;
@@ -224,9 +232,15 @@ export class People {
       if (!this.commuteBudget) return null;
       this.commuteBudget--;
     }
-    const net = this.viaNet(from, to, fromPos);
-    const fallback = net ?? this.routeRaw(from, to, fromPos);
-    const route = net || (!this.crossesDeposits(fallback) && !this.wades(fallback)) ? fallback : [fromPos.clone()];
+    const inside = this.bld[from]?.kind === PASTURE && fromPos.distanceTo(this.pasturePoint(from, 0)) < PEN_HALF_DEPTH;
+    const start = inside ? this.spot(from, 1) : fromPos;
+    const net = this.viaNet(from, to, start);
+    const way = net ?? this.routeRaw(from, to, start);
+    if (inside) way.unshift(fromPos.clone());
+    const entering = this.bld[to]?.kind === PASTURE && from !== to;
+    if (entering) way.push(this.pasturePoint(to, 2.8));
+    const valid = (net && !inside && !entering) || (!this.crossesDeposits(way) && !this.wades(way));
+    const route = valid ? way : [fromPos.clone()];
     if (this.routes.size >= 512) this.routes.delete(this.routes.keys().next().value!);
     this.routes.set(key, route);
     return route;
@@ -270,8 +284,14 @@ export class People {
 
   private spot(b: number, salt: number): THREE.Vector2 {
     const B = this.bld[b]; if (!B) return new THREE.Vector2();
+    if (B.kind === PASTURE) return this.pasturePoint(b, this.radii[B.kind] + 1.3);
     const door = this.doorAngle.get(b), jitter = (Math.sin(b * 91.7 + salt * 17.3) * 43758.5453 % 1), a = door !== undefined ? door + jitter * 1.2 : jitter * Math.PI * 2, r = this.radii[B.kind] + 1.3 + Math.abs(Math.sin(b * 3.1 + salt)) * 0.8;
     return new THREE.Vector2(B.x + Math.cos(a) * r, B.z + Math.sin(a) * r);
+  }
+
+  private pasturePoint(b: number, distance: number): THREE.Vector2 {
+    const { x, z } = this.bld[b], angle = this.doorAngle.get(b) ?? Math.PI / 2;
+    return new THREE.Vector2(x + Math.cos(angle) * distance, z + Math.sin(angle) * distance);
   }
 
   /** Hunters: walk out, shoot an animal, fetch it, come back. */
@@ -432,7 +452,7 @@ export class People {
     for (const a of this.agents) {
       if ((a.x - cx) ** 2 + (a.z - cz) ** 2 > r2) continue;
       const walking = a.route.length > 0 && a.at < a.route.length;
-      const pose: Draw['pose'] = walking ? 1 : a.fight && a.fs === 4 ? 3 : a.aim ? 3 : a.fight ? 0 : a.crew ? (a.cs === 2 ? 2 : 0) : a.goingToWork && a.tool && !a.hunter ? 2 : 0;
+      const pose: Draw['pose'] = walking ? 1 : a.fight && a.fs === 4 ? 3 : a.aim ? 3 : a.fight ? 0 : a.crew ? (a.cs === 2 ? 2 : 0) : a.work > 0 && a.goingToWork && a.tool && !a.hunter ? 2 : 0;
       const y = this.terrain.walkAt(a.x, a.z);
       crowd.addVillager({
         x: a.x, y, z: a.z, yaw: a.yaw + (walking ? 0 : Math.sin(this.t * 0.9 + a.seed) * 0.35), pose, phase: walking ? a.gait : this.t + a.seed, speed: walking ? a.pace : 0,
@@ -455,7 +475,8 @@ export class People {
       const B = this.bld[b]; if (!B || (B.x - cx) ** 2 + (B.z - cz) ** 2 > r2) continue;
       const need = Math.min(2, staff) - (present.get(b) ?? 0);
       for (let k = 0; k < need; k++) {
-        const p = this.spot(b, 7 + k * 5), look = LOOKS[B.kind], seed = b * 13 + k * 7, r = (j: number) => { const x = Math.sin(seed * 12.9898 + j * 78.233) * 43758.5453; return x - Math.floor(x); };
+        const p = B.kind === PASTURE ? this.pasturePoint(b, 2.8 - k * 1.7) : this.spot(b, 7 + k * 5);
+        const look = LOOKS[B.kind], seed = b * 13 + k * 7, r = (j: number) => { const x = Math.sin(seed * 12.9898 + j * 78.233) * 43758.5453; return x - Math.floor(x); };
         const woman = !look && r(1) < 0.5;
         const y = this.terrain.walkAt(p.x, p.y);
         crowd.addVillager({
@@ -469,4 +490,12 @@ export class People {
 
   get count() { return this.agents.length; }
   positions() { return this.agents.map(a => ({ x: a.x, z: a.z })); }
+  roster(): VillagerEntry[] {
+    return this.agents.map(a => {
+      const kind = this.bld[a.work]?.kind ?? 15;
+      return { id: a.id, name: a.name, workplace: a.work, kind, job: villagerJob(a.id, kind) };
+    });
+  }
+  villager(id: number) { return this.agents.find(a => a.id === id); }
+  resetRoster() { this.sig = ''; this.nextId = NAMED_VILLAGERS.length; this.agents.length = 0; }
 }

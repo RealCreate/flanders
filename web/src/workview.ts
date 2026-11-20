@@ -5,7 +5,7 @@ export interface WorkRow { idx: number; kind: number; tier: number; max: number;
 export interface WorkTotals { adults: number; workers: number; children: number; elders: number; sick: number; jobs: number; placed: number; idle: number; eff: number; promised: number }
 
 /** Building status codes of the core (`buildings_flat`, offset 6). */
-export const ST = { working: 0, wait: 1, exhausted: 2, full: 3, passive: 4, dormant: 7 } as const;
+export const ST = { working: 0, wait: 1, exhausted: 2, full: 3, passive: 4, dormant: 7, reserve: 8 } as const;
 
 /** Read `staffing_flat()` (five numbers per building: kind, max, wanted (-1 auto), assigned, scaled) together with `buildings_flat()` (stride 10) into rows. Buildings that employ nobody are left out. */
 export function parseRows(staffing: ArrayLike<number>, buildings: ArrayLike<number>, stride = 10): WorkRow[] {
@@ -21,13 +21,13 @@ export function parseTotals(t: ArrayLike<number>): WorkTotals {
   return { adults: t[0] ?? 0, workers: t[1] ?? 0, children: t[2] ?? 0, elders: t[3] ?? 0, sick: t[4] ?? 0, jobs: t[5] ?? 0, placed: t[6] ?? 0, idle: t[7] ?? 0, eff: t[8] ?? 0, promised: t[9] ?? 0 };
 }
 
-export type Verdict = 'paused' | 'unstaffed' | 'no input' | 'store full' | 'no deposit' | 'dormant' | 'working' | 'idle';
+export type Verdict = 'paused' | 'unstaffed' | 'no input' | 'store full' | 'no deposit' | 'dormant' | 'stock reserved' | 'working' | 'idle';
 /** What the building is doing, in a word. Paused and unstaffed win over whatever the production status says. */
 export function verdict(r: WorkRow, produces = true): Verdict {
   if (r.want === 0) return 'paused';
   if (r.staff === 0) return 'unstaffed';
   if (!produces) return 'working';
-  switch (r.status) { case ST.wait: return 'no input'; case ST.exhausted: return 'no deposit'; case ST.full: return 'store full'; case ST.dormant: return 'dormant'; case ST.passive: return 'idle'; default: return 'working'; }
+  switch (r.status) { case ST.wait: return 'no input'; case ST.exhausted: return 'no deposit'; case ST.full: return 'store full'; case ST.dormant: return 'dormant'; case ST.reserve: return 'stock reserved'; case ST.passive: return 'idle'; default: return 'working'; }
 }
 
 export type Filter = 'all' | 'problems' | 'understaffed' | 'paused' | 'manual';
@@ -41,7 +41,7 @@ export function keep(r: WorkRow, f: Filter, produces = true): boolean {
     case 'understaffed': return understaffed(r);
     case 'paused': return r.want === 0;
     case 'manual': return r.want >= 0;
-    case 'problems': { const v = verdict(r, produces); return understaffed(r) || v === 'no input' || v === 'store full' || v === 'no deposit' || v === 'unstaffed'; }
+    case 'problems': { const v = verdict(r, produces); return understaffed(r) || v === 'no input' || v === 'store full' || v === 'no deposit' || v === 'unstaffed' || v === 'stock reserved'; }
   }
 }
 
