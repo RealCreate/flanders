@@ -19,7 +19,6 @@ import { FieldView, BridgesView } from './render/field';
 import { People } from './render/people';
 import { ArmyView } from './render/army';
 import { pickFoe } from './render/fight';
-import { RiverFlow } from './render/rivers';
 import { Boats } from './render/boats';
 import { Ruins, type Effects2 } from './render/fx';
 import type { Wildlife } from './render/wildlife';
@@ -39,7 +38,7 @@ const NO_PATHS = new Float32Array(0);   // (nothing is linked automatically any 
 export class Village {
   private defaultBanner = 0;
   moats: MoatWater; nets: NetView;
-  view: VillageView; paths: Paths; nodes: RoadNodes; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; rivers: RiverFlow; boats: Boats;
+  view: VillageView; paths: Paths; nodes: RoadNodes; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; boats: Boats;
   clear: { x: number; z: number; r: number }[] = [];
   /** Groves kept standing inside a big cleared area. */
   keep: { x: number; z: number; r: number }[] = [];
@@ -56,7 +55,7 @@ export class Village {
     this.moats = new MoatWater(sh.terrain, STEP); sh.scene.add(this.moats.group);
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain); this.field.friend = color; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
-    this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.rivers = new RiverFlow(); this.boats = new Boats(sh.terrain);
+    this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.boats = new Boats(sh.terrain, (x, z) => this.moats.levelAt(x, z));
     this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k); this.army.onRage = (x, y, z) => sh.fx.rageSpark(x, y, z);
     this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
     this.people.depositClear = (a, b, c, d) => this.world.deposit_leg_clear(a, b, c, d);
@@ -68,7 +67,7 @@ export class Village {
       return path;
     };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
-    sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
+    sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.people.group, this.boats.group);
   }
 
   /** Which building (index) is under the pointer? Walls are separate meshes. */
@@ -84,14 +83,14 @@ export class Village {
   get radius() { return this.world.build_radius(); }
 
   dispose() {
-    this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.army.group, this.ruins.group, this.rivers.group, this.people.group, this.boats.group);
+    this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.army.group, this.ruins.group, this.people.group, this.boats.group);
     this.view.root.traverse(o => (o as THREE.Mesh).geometry?.dispose());
     this.sh.scene.remove(this.moats.group, this.nets.group); this.moats.dispose(); this.nets.dispose(); this.sh.terrain.setDecks(this, []);
     this.walls.dispose(); this.spans.dispose(); this.nodes.dispose(); this.paths.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());
   }
 
   /** Swap in a fresh world (after moving to another site, or a rebuilt replica). */
-  setWorld(w: World) { this.world = w; this.count = -1; this.version = -1; this.reportSeq = 0; }
+  setWorld(w: World) { if (w !== this.world) this.people.resetRoster(); this.world = w; this.count = -1; this.version = -1; this.reportSeq = 0; }
 
   /** The bridges the soldiers have built (or are building), as spans of the same kind the player's bridges are: bank to bank, at deck height, drawn by `spans` with the same deck and rails. */
   private soldierFlat: Float32Array = new Float32Array(0);
@@ -135,7 +134,7 @@ export class Village {
     this.props.update(f, roads, this.sh.radii);
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
     this.people.setRoads(roads); this.people.sync(f, NO_PATHS, this.sh.radii, w.population(), w.terrain_version());
-    this.rivers.sync(f, water); this.boats.sync(f, water);
+    this.boats.sync(f, w.terrain_version());
     this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     this.army.syncWalls(this.walls.walks);
     this.ruins.sync(w.ruins_flat(), w.terrain_version());
@@ -237,11 +236,11 @@ export class Village {
     this.bridges.update([], []);
   }
 
-  private clock = 0;
   frame(dt: number, speed: number, camera: THREE.Vector3, detailRange: number, crowds: boolean) {
-    this.clock += dt; this.rivers.update(this.clock); this.boats.update(dt);
-    if (crowds && !this.people.hidden) this.people.update(dt, speed);
-    this.army.update(dt); this.view.update(dt, camera, detailRange * 2.6); this.field.update(dt);
+    this.boats.update(dt);
+    if (dt > 0 && crowds && !this.people.hidden) this.people.update(dt, speed);
+    if (dt > 0) this.army.update(dt);
+    this.view.update(dt, camera, detailRange * 2.6); this.field.update(dt);
   }
   draw(crowd: Crowd, cx: number, cz: number, radius: number, camera: THREE.Vector3, detailRange: number) { this.field.draw(crowd, cx, cz, radius); this.boats.draw(crowd, cx, cz, radius); this.people.draw(crowd, cx, cz, radius, camera, detailRange); this.army.draw(crowd, { x: this.ox, z: this.oz }, cx, cz, radius); }
 }

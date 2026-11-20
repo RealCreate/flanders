@@ -71,6 +71,7 @@ export class Game {
     sites.sort((a, b) => Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z));
     this.origin = { x: Math.round(sites[0].x), z: Math.round(sites[0].z) };   // the village nearest the middle of the map, as in the browser
     this.world = new World(this.seed, this.origin.x, this.origin.z);
+    this.legacyStart = false;
     this.log = [];
     this.replaying = false;
     this.lastStop = new Map();   // event kind -> tick an advance last paused for it
@@ -115,6 +116,7 @@ export class Game {
       t, day: this.day, season: SEASONS[w.season()], hour: Math.round(((t / DAY + 0.3) % 1) * 24),
       pop: w.population(), cap: w.capacity(), happy: w.happiness(), sick: w.sick(), eff: w.efficiency(), radius: w.build_radius(), bld: w.building_count(),
       stock: Array.from(w.stocks()), per60: Array.from(w.flows()).map(v => Math.round(v * 60)), max: w.storage(),
+      reserves: Array.from(w.reserves()),
       army: Array.from(w.army()), queued: Array.from(w.queued()), hall: c.hall,
     };
     if (w.battle_active()) { s.attack = 1; { const p = w.bribe_price(); if (p >= 0) s.attack_price = p; } const b = w.battle_boss(); if (b.length) s.boss = { kind: b[0] === 1 ? 'warlord' : 'ogre', hp: Math.round(b[2]), max: Math.round(b[3]), enraged: b[4] > 0, alive: b[5] > 0, lair: w.battle_lair().length > 0 }; }   // (a boss leads the attack, or guards the lair your army is in)
@@ -131,6 +133,7 @@ export class Game {
     const d = this.defs[kind]; if (!d) return fail('no such kind');
     const r = { id: d.id, name: d.name, r: d.r, cost: cost(d.cost), housing: d.housing || undefined, jobs: d.jobs || undefined, needs: d.req === 1 ? 'deposit ' + ['stone', 'clay', 'iron', 'gold'][d.reqArg] : d.req === 2 ? 'forest' : d.req === 3 ? 'water' : undefined, in: d.inputs.length ? cost(d.inputs) : undefined, out: d.outputs.length ? cost(d.outputs) : undefined, cycle: d.cycle || undefined, maxTier: d.maxTier };
     if (withOptions && d.opts?.length) r.opts = d.opts.map((o, i) => `${i} ${o.n} (tier ${o.t}): ${o.d}`);
+    if (d.winterRecipe) r.winterIn = cost(d.winterRecipe.inputs);
     return r;
   }
 
@@ -235,6 +238,12 @@ export class Game {
       case 'draw': { const [, i, up] = a; if (!isInt(i)) return fail('bad arguments'); const c = w.drawbridge_set(i, up === true); return c === 0 ? logged({ ok: true }, ['draw', i, up === true]) : fail('not a drawbridge'); }
       case 'gate': { const [, i, closed] = a; if (!isInt(i)) return fail('bad arguments'); const c = w.gate_set(i, closed === true); return c === 0 ? logged({ ok: true }, ['gate', i, closed === true]) : fail('needs a stone gatehouse'); }
       case 'field': { const [, i, mode] = a; if (!isInt(i) || !isInt(mode)) return fail('bad arguments'); const c = w.set_field_mode(i, mode); return c === 0 ? logged({ ok: true }, ['field', i, mode]) : fail(c === -1 ? 'not a farm' : 'mode is 0, 1 or 2'); }
+      case 'reserve': {
+        const [, grain, wood] = a;
+        const max = World.reserve_max();
+        if (![grain, wood].every(n => isInt(n) && n >= 0 && n <= max) || !w.set_reserves(grain, wood)) return fail(`grain and firewood reserves must be whole numbers from 0 to ${max}`);
+        return logged({ ok: true }, ['reserve', grain, wood]);
+      }
       case 'hero': { const c = w.hero_hire(); return c === 0 ? logged({ ok: true }, ['hero']) : fail('cannot hire now (150 gold, needs barracks)'); }
       case 'form': { const u = a.slice(1); if (u.length === 5) u.push(0); if (u.length !== 6 || !u.every(v => isInt(v) && v >= 0 && v <= 300)) return fail('six counts: spear archer sword knight catapult ram (the ram may be left out)'); const id = w.det_form(Uint32Array.from(u)); return id ? logged({ ok: true, id }, ['form', ...u]) : fail('not enough soldiers in the barracks'); }
       case 'march': { const [, id, dx, dy] = a; if (![id, dx, dy].every(isInt) || Math.abs(dx) > 1100 || Math.abs(dy) > 1100) return fail('bad arguments'); const c = w.det_march(id, this.origin.x + dx, this.origin.z + dy, false, 0, 0); return c === 0 ? logged({ ok: true }, ['march', id, dx, dy]) : fail(c === -1 ? 'no such army' : c === -2 ? 'unreachable' : c === -3 ? 'catapults need soldiers to clear forest' : 'water too wide'); }
@@ -250,18 +259,23 @@ export class Game {
   save() {
     if (!this.savePath) return;
     const tmp = this.savePath + '.tmp';
-    writeFileSync(tmp, JSON.stringify({ v: 1, world: this.name, tick: this.tick, log: this.log }));
+    writeFileSync(tmp, JSON.stringify({ v: 2, world: this.name, tick: this.tick, log: this.log, legacyStart: this.legacyStart }));
     renameSync(tmp, this.savePath);   // never leave half a file
   }
 
   load() {
     const s = JSON.parse(readFileSync(this.savePath, 'utf8'));
-    if (s.v !== 1 || s.world !== this.name || !Array.isArray(s.log)) throw new Error(`The save ${this.savePath} is for another world (${s.world}), not ${this.name}`);
+    if ((s.v !== 1 && s.v !== 2) || s.world !== this.name || !Array.isArray(s.log)) throw new Error(`The save ${this.savePath} is for another world (${s.world}), not ${this.name}`);
+    this.legacyStart = s.v === 1 || s.legacyStart === true;
+    this.world.free();
+    this.world = this.legacyStart ? World.new_legacy(this.seed, this.origin.x, this.origin.z) : new World(this.seed, this.origin.x, this.origin.z);
+    this.log = [];
     this.replaying = true;
     try {
       for (const [tick, entry] of s.log) { while (this.tick < tick) this.world.step(); this.act(entry); this.log.push([tick, entry]); }
       while (this.tick < s.tick) this.world.step();
       this.world.take_events();
     } finally { this.replaying = false; }
+    if (!this.world.estate_active()) this.act(['reserve', 0, 0]);
   }
 }

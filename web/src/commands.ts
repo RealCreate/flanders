@@ -33,6 +33,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'hero': w.hero_hire(); break;
     case 'field': w.set_field_mode(c.idx!, c.kind ?? 0); break;
     case 'workers': w.set_workers(c.idx!, c.kind ?? -1); break;   // idx the building, kind the workers wanted (-1 auto, 0 paused)
+    case 'reserve': w.set_reserves(c.x!, c.y!); break;
     case 'style': w.set_style(c.kind ?? 0); break;
     case 'goods': break;   // a notice that a caravan arrived: the receiver acts on it (see onCmd), nothing to replay
     case 'accept': w.receive_goods(c.kind ?? 0, c.x ?? 0); break;
@@ -62,7 +63,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'retreat': if (c.tag) w.battle_retreat(c.tag); break;   // (the attacker's own call has no `tag`: it is only a request, which the defender's village carries out and records with the tag)
     case 'reinforce': if (c.tag) w.battle_reinforce_equipped(c.tag, Uint32Array.from(c.units ?? []), c.tech ?? 0); break;
     case 'link': w.link_village(c.x ?? 0, c.y ?? 0); break;   // an invisible path chained out to another village's city
-    case 'restart': w.restart(); break;   // the village starts again from nothing (the first command of a new epoch: see restart.ts)
+    case 'restart': w.restart(); if (c.kind === 1) w.set_reserves(0, 0); break;
     case 'return':
       if (c.kind === 1) w.return_refused_army(Uint32Array.from(c.units ?? []));
       else w.return_army(Uint32Array.from(c.units ?? []), Int32Array.from(c.loot ?? []));

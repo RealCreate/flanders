@@ -1150,7 +1150,8 @@ impl World {
     pub(crate) fn builders_step(&mut self) {
         let lodges: Vec<usize> = (0..self.buildings.len()).filter(|&i| self.buildings[i].kind == BUILDERS && self.buildings[i].staff > 0).collect();
         if lodges.is_empty() { return; }
-        let firewood = if self.season() == 3 { 2 * self.winter_need().max(0) } else { 0 };
+        let winter_wood = if self.season() == 3 { 2 * self.winter_need().max(0) } else { 0 };
+        let firewood = winter_wood.max(self.reserve_for(W));
         for li in lodges {
             let (lx, ly, tier) = (self.buildings[li].x, self.buildings[li].y, self.buildings[li].tier);
             let need = 700u32;

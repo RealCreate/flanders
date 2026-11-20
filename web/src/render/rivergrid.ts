@@ -1,6 +1,26 @@
 const CHANNEL = 2;
 const TIDE_MARGIN = 1;
 
+function riverVertex(stages: ArrayLike<number>, cells: Uint8Array, size: number, i: number, j: number) {
+  const stride = size - 1;
+  if (i === 0 || j === 0 || i === stride || j === stride) return 0;
+  const cell = (x: number, y: number) => cells[y * stride + x];
+  if (![cell(i, j), cell(i - 1, j), cell(i, j - 1), cell(i - 1, j - 1)].every(Boolean)) return 0;
+  const current = stages[j * size + i];
+  if (current > 0) return current;
+  // Extend the surface across the bank at nearby channel heights. The terrain clips the surface.
+  let sum = 0, weight = 0;
+  for (let y = Math.max(0, j - 2); y <= Math.min(size - 1, j + 2); y++) {
+    for (let x = Math.max(0, i - 2); x <= Math.min(size - 1, i + 2); x++) {
+      const level = stages[y * size + x], distance = (x - i) ** 2 + (y - j) ** 2;
+      if (level <= 0 || distance === 0 || distance > 5) continue;
+      const influence = 1 / distance ** 2;
+      sum += level * influence; weight += influence;
+    }
+  }
+  return weight ? sum / weight : 0;
+}
+
 /** Partition the grid into river and sea. One ring of cells lets the river meet the flat tide before the seam. */
 export function riverFootprint(stages: ArrayLike<number>, size: number) {
   const stride = size - 1, cells = new Uint8Array(stride * stride);
@@ -20,19 +40,15 @@ export function riverFootprint(stages: ArrayLike<number>, size: number) {
 
 /** Cover the river and its margin. The outer vertices sit exactly on the sea surface. */
 export function riverGrid(stages: ArrayLike<number>, cells: Uint8Array, size: number, step: number, i0: number, j0: number, i1: number, j1: number) {
-  const positions: number[] = [], indices: number[] = [], banks: number[] = [];
+  const positions: number[] = [], indices: number[] = [];
   const cols = i1 - i0 + 1, rows = j1 - j0 + 1, half = (size - 1) * step / 2;
   const stride = size - 1;
-  const channelAt = (i: number, j: number) => i >= 0 && i < stride && j >= 0 && j < stride && cells[j * stride + i] === CHANNEL;
   const vertices = new Int32Array(cols * rows).fill(-1);
   const vertex = (i: number, j: number) => {
     const at = (j - j0) * cols + i - i0;
     if (vertices[at] < 0) {
       vertices[at] = positions.length / 3;
-      const stage = (channelAt(i, j) || channelAt(i - 1, j) || channelAt(i, j - 1) || channelAt(i - 1, j - 1))
-        ? stages[j * size + i] : 0;
-      positions.push(i * step - half, Math.abs(stage), j * step - half);
-      banks.push(stage <= 0 ? 1 : 0);
+      positions.push(i * step - half, riverVertex(stages, cells, size, i, j), j * step - half);
     }
     return vertices[at];
   };
@@ -41,7 +57,25 @@ export function riverGrid(stages: ArrayLike<number>, cells: Uint8Array, size: nu
     const nw = vertex(i, j), sw = vertex(i, j + 1), ne = vertex(i + 1, j), se = vertex(i + 1, j + 1);
     indices.push(nw, sw, ne, sw, se, ne);
   }
-  return { positions, indices, banks };
+  return { positions, indices };
+}
+
+export function renderedRiverAt(stages: ArrayLike<number>, cells: Uint8Array, size: number, step: number, x: number, z: number, tide: number) {
+  const stride = size - 1, half = stride * step / 2;
+  const gx = (x + half) / step, gz = (z + half) / step, i = Math.floor(gx), j = Math.floor(gz);
+  if (i < 0 || j < 0 || i >= stride || j >= stride || !cells[j * stride + i]) return tide;
+  const at = (a: number, b: number) => {
+    const stage = riverVertex(stages, cells, size, a, b);
+    const f = Math.min(1, stage / 1.2);
+    return Math.max(tide, stage + tide * (1 - f * f * (3 - 2 * f)));
+  };
+  const dx = gx - i, dz = gz - j, b = at(i + 1, j), c = at(i, j + 1);
+  if (dx + dz <= 1) {
+    const a = at(i, j);
+    return a + (b - a) * dx + (c - a) * dz;
+  }
+  const d = at(i + 1, j + 1);
+  return d + (c - d) * (1 - dx) + (b - d) * (1 - dz);
 }
 
 /** Combine adjacent sea cells into rectangles, and close the four offshore strips beyond the terrain. */

@@ -2,13 +2,13 @@ import * as THREE from 'three';
 import { terrain_land_rows, type World } from '../wasm/game_core.js';
 import { patchWater, waterNormalTexture } from './water';
 import { groundDetailTexture, patchGround } from './groundtex';
-import { riverFootprint, riverGrid, riverStageAt, seaGrid } from './rivergrid';
+import { renderedRiverAt, riverFootprint, riverGrid, riverStageAt, seaGrid } from './rivergrid';
 
 export const HALF = 1200;
 export const STEP = 2.5;
 export const NV = Math.round((HALF * 2) / STEP) + 1; // vertices per side
 
-function waterGeometry({ positions, indices, banks }: { positions: number[]; indices: number[]; banks?: number[] }) {
+function waterGeometry({ positions, indices }: { positions: number[]; indices: number[] }) {
   const geometry = new THREE.BufferGeometry();
   const normals = new Float32Array(positions.length);
   const uv = new Float32Array(positions.length / 3 * 2);
@@ -20,7 +20,6 @@ function waterGeometry({ positions, indices, banks }: { positions: number[]; ind
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
   geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  if (banks) geometry.setAttribute('aWaterBank', new THREE.Uint8BufferAttribute(banks, 1));
   geometry.setIndex(indices);
   return geometry;
 }
@@ -56,6 +55,7 @@ export class Terrain {
   heights: Float32Array;       // current (with pads, with coast drop)
   base: Float32Array;          // base terrain
   private riverStages: Float32Array;
+  private riverCells: Uint8Array;
   /** The ground, cut into square chunks that share one set of vertices: each chunk is culled on its own when it is off screen. */
   mesh: THREE.Group;
   private chunks: { mesh: THREE.Mesh; i0: number; j0: number; i1: number; j1: number }[] = [];
@@ -112,7 +112,7 @@ export class Terrain {
     this.heightTex.minFilter = this.heightTex.magFilter = THREE.LinearFilter; this.heightTex.wrapS = this.heightTex.wrapT = THREE.ClampToEdgeWrapping; this.heightTex.generateMipmaps = false;
     this.uploadHeights();
     // The sea extends past the camera's far plane and leaves room for each river surface.
-    const footprint = riverFootprint(this.riverStages, NV);
+    const footprint = this.riverCells = riverFootprint(this.riverStages, NV);
     this.water = new THREE.Mesh(waterGeometry(seaGrid(footprint, NV, STEP, 6000)), this.makeWaterMaterial());
     this.riverMaterial = this.makeWaterMaterial(true, true);
     for (const { i0, j0, i1, j1 } of this.chunks) {
@@ -197,6 +197,9 @@ export class Terrain {
   }
 
   riverSurfaceAt(x: number, z: number) { return riverStageAt(this.riverStages, NV, STEP, x, z); }
+  renderedWaterAt(x: number, z: number, tide = this.tide.value) {
+    return renderedRiverAt(this.riverStages, this.riverCells, NV, STEP, x, z, tide);
+  }
 
   /** Is this spot under water with no bridge or lowered drawbridge deck over it? */
   wetAt(x: number, z: number): boolean {
@@ -205,9 +208,9 @@ export class Terrain {
     return ground < surface && this.deckHeight(x, z, ground) < surface;
   }
 
-  animate(t: number) {
+  animate(t: number, realTime = t) {
     this.waterTime.value = t;
-    if (this.dirtyHeightRows.size && t - this.heightAt0 > 0.4) this.uploadHeights(t);
+    if (this.dirtyHeightRows.size && realTime - this.heightAt0 > 0.4) this.uploadHeights(realTime);
   }
 
   /** Copy the current ground heights into the depth texture. */

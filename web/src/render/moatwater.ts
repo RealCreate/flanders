@@ -4,16 +4,12 @@ import type { Terrain } from './terrain';
 /** Cover every terrain cell that touches an excavated vertex. Adjacent moat pieces share the same water vertices. */
 export function moatSurface(flat: ArrayLike<number>, step: number) {
   const cells = new Set<string>(), vertices = new Map<string, number>();
-  const positions: number[] = [], indices: number[] = [];
-  const vertex = (i: number, j: number, level: number) => {
+  const positions: number[] = [], indices: number[] = [], weights: number[] = [];
+  const vertex = (i: number, j: number) => {
     const key = i + ':' + j, existing = vertices.get(key);
-    if (existing !== undefined) {
-      const y = existing * 3 + 1;
-      positions[y] = Math.min(positions[y], level);
-      return existing;
-    }
+    if (existing !== undefined) return existing;
     const index = positions.length / 3;
-    positions.push(i * step, level, j * step);
+    positions.push(i * step, 0, j * step); weights.push(0);
     vertices.set(key, index);
     return index;
   };
@@ -29,20 +25,33 @@ export function moatSurface(flat: ArrayLike<number>, step: number) {
         }
       }
     }
+    const touched = new Set<number>();
     for (const [key, [col, row]] of affected) {
-      const a = vertex(col, row, level), b = vertex(col + 1, row, level);
-      const c = vertex(col, row + 1, level), d = vertex(col + 1, row + 1, level);
+      const a = vertex(col, row), b = vertex(col + 1, row);
+      const c = vertex(col, row + 1), d = vertex(col + 1, row + 1);
+      touched.add(a); touched.add(b); touched.add(c); touched.add(d);
       if (!cells.has(key)) { cells.add(key); indices.push(a, c, b, b, c, d); }
     }
+    for (const index of touched) {
+      const at = index * 3, distance = Math.hypot(positions[at] - x, positions[at + 2] - z);
+      const weight = 1 / (1 + (distance / (reach * 0.42)) ** 4);
+      positions[at + 1] += level * weight; weights[index] += weight;
+    }
   }
-  const banks: number[] = [];
-  for (let i = 0; i < positions.length; i += 3) {
-    const col = Math.round(positions[i] / step), row = Math.round(positions[i + 2] / step);
-    const enclosed = cells.has(col + ':' + row) && cells.has((col - 1) + ':' + row)
-      && cells.has(col + ':' + (row - 1)) && cells.has((col - 1) + ':' + (row - 1));
-    banks.push(enclosed ? 0 : 1);
-  }
-  return { positions, indices, banks };
+  weights.forEach((weight, i) => { positions[3 * i + 1] /= weight; });
+  const levelAt = (x: number, z: number) => {
+    const gx = x / step, gz = z / step, i = Math.floor(gx), j = Math.floor(gz);
+    if (!cells.has(i + ':' + j)) return -Infinity;
+    const at = (a: number, b: number) => positions[vertices.get(a + ':' + b)! * 3 + 1];
+    const dx = gx - i, dz = gz - j, b = at(i + 1, j), c = at(i, j + 1);
+    if (dx + dz <= 1) {
+      const a = at(i, j);
+      return a + (b - a) * dx + (c - a) * dz;
+    }
+    const d = at(i + 1, j + 1);
+    return d + (c - d) * (1 - dx) + (b - d) * (1 - dz);
+  };
+  return { positions, indices, levelAt };
 }
 
 export class MoatWater {
@@ -50,6 +59,7 @@ export class MoatWater {
   private mesh: THREE.Mesh;
   private sig = '';
   private terrainStep: number;
+  levelAt: (x: number, z: number) => number = () => -Infinity;
 
   constructor(terrain: Terrain, terrainStep: number) {
     this.terrainStep = terrainStep;
@@ -64,10 +74,10 @@ export class MoatWater {
   update(flat: Float32Array) {
     const sig = flat.join(',');
     if (sig === this.sig) return; this.sig = sig;
-    const { positions, indices, banks } = moatSurface(flat, this.terrainStep);
+    const { positions, indices, levelAt } = moatSurface(flat, this.terrainStep);
+    this.levelAt = levelAt;
     const mesh = new THREE.BufferGeometry();
     mesh.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    mesh.setAttribute('aWaterBank', new THREE.Uint8BufferAttribute(banks, 1));
     const uv: number[] = [];
     for (let i = 0; i < positions.length; i += 3) uv.push(positions[i], positions[i + 2]);
     mesh.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));

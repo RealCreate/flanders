@@ -84,7 +84,7 @@ fn a_smokehouse_without_fish_waits() {
 
 #[test]
 fn every_kind_of_food_is_eaten_together_and_cooked_food_goes_further() {
-    let quarters = |w: &World| w.food_quarters();
+    let quarters = |w: &World| w.food_units() / 5;
     // 100 heads need 10 meals = 40 quarter meals a tick; smoked fish (6) and grain (4) run down side by side, the fuller store first
     let mut w = World::new(1337, 0, 0); w.stock = [0; N_RES]; w.population = 100; w.children = 0; w.elders = 0;
     w.stock[SF as usize] = 100; w.stock[GR as usize] = 100;
@@ -104,6 +104,22 @@ fn every_kind_of_food_is_eaten_together_and_cooked_food_goes_further() {
     let mut u = World::new(1337, 0, 0); u.stock = [0; N_RES]; u.population = 40; u.stock[SF as usize] = 200;
     for _ in 0..30 { u.step(); u.stock[SF as usize] = 200; }
     assert_eq!(u.died[DIED_HUNGER as usize], 0, "nobody starved"); assert!(u.food() >= 10);
+}
+
+#[test]
+fn the_food_reserve_uses_current_rations_and_meal_credit() {
+    let mut w = World::new(1337, 0, 0);
+    assert_eq!(w.food_reserve_days(), 0.5);
+    w.stock = [0; N_RES];
+    w.stock[BD as usize] = 320;
+    w.away[0] = 5;
+    assert_eq!(w.food_reserve_days(), 4.0 / 3.0);
+    assert!(w.eat_units(29));
+    assert_eq!(w.meal_credit, 1);
+    assert_eq!(w.food_reserve_days(), (9_600.0 - 29.0) / 7_200.0);
+    w.away[0] = 0;
+    w.population = 4;
+    assert!(w.food_reserve_days() > 4.0);
 }
 
 #[test]

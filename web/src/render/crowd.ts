@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { tint } from './geomutil';
+import { shadeVertices, tint } from './geomutil';
+import { eyes } from './animalmodels';
 
 /** One person (or soldier) to draw this frame. */
 export interface Draw {
@@ -25,13 +26,42 @@ const cone = (r: number, h: number, hex: number, x = 0, y = 0, z = 0, seg = 8) =
 const WOOD = 0x6b4a2e, IRON = 0xaab0b8, DARK = 0x3a3a40, LEATHER = 0x5a3b22;
 
 // ---- body parts (pivot at the joint) ----
-const geoTorso = () => { const g = new THREE.CylinderGeometry(0.2, 0.25, 0.62, 8); g.scale(1, 1, 0.68); g.translate(0, 0.31, 0); return tint(g, 0xffffff); };
-const geoHead = () => T(tint(new THREE.SphereGeometry(0.155, 10, 8), 0xffffff), 0, 0.12, 0);
+const linen = (x: number, y: number, z: number) => 0.88 + 0.08 * Math.cos(36 * x + 11 * z) + 0.04 * Math.cos(71 * y);
+function geoTorso() {
+  const tunic = new THREE.CylinderGeometry(0.205, 0.255, 0.62, 8, 6).scale(1, 1, 0.75).translate(0, 0.31, 0);
+  const belt = new THREE.CylinderGeometry(0.249, 0.254, 0.062, 8).scale(1, 1, 0.78).translate(0, 0.12, 0);
+  const collar = new THREE.CylinderGeometry(0.148, 0.165, 0.048, 8).scale(1, 1, 0.94).translate(0, 0.599, 0);
+  return merge([
+    shadeVertices(tint(tunic, 0xffffff), linen), tint(belt, 0x868078), tint(collar, 0xe4d9c7),
+    box(0.088, 0.074, 0.027, 0xba9b69, 0, 0.12, 0.194),
+    box(0.04, 0.12, 0.018, 0xada395, 0, 0.53, 0.145),
+  ]);
+}
+function geoHead() {
+  const face = new THREE.SphereGeometry(0.155, 10, 7).scale(0.94, 1.13, 0.97).translate(0, 0.135, 0);
+  return merge([
+    shadeVertices(tint(face, 0xffffff), (_x, y, z) => z < -0.068 && y > 0.145 ? 0.44 : 0.88 + 0.12 * Math.min(1, y * 3.5)),
+    box(0.038, 0.054, 0.042, 0xf8f1e6, 0, 0.13, 0.15),
+    box(0.064, 0.012, 0.018, 0x95736c, 0, 0.07, 0.139),
+    ...[-1, 1].flatMap(side => [
+      box(0.033, 0.014, 0.025, 0x4e4036, side * 0.059, 0.158, 0.135),
+      box(0.031, 0.065, 0.052, 0xe5cbb8, side * 0.143, 0.123, 0.003),
+    ]),
+  ]);
+}
 const geoThigh = () => T(tint(new THREE.BoxGeometry(0.17, 0.4, 0.19), 0xffffff), 0, -0.2, 0);
 const geoShin = () => merge([T(tint(new THREE.BoxGeometry(0.15, 0.38, 0.17), 0xffffff), 0, -0.19, 0), T(tint(new THREE.BoxGeometry(0.14, 0.09, 0.27), 0x2a2018), 0, -0.36, 0.05)]);
 const geoUpperArm = () => T(tint(new THREE.BoxGeometry(0.12, 0.29, 0.13), 0xffffff), 0, -0.145, 0);
 const geoFore = () => merge([T(tint(new THREE.BoxGeometry(0.105, 0.28, 0.115), 0xffffff), 0, -0.14, 0), T(tint(new THREE.SphereGeometry(0.06, 6, 5), 0xffffff), 0, -0.3, 0)]);
-const geoDress = () => T(tint(new THREE.CylinderGeometry(0.22, 0.4, 0.78, 10), 0xffffff), 0, 0.39, 0);
+function geoDress() {
+  const skirt = new THREE.CylinderGeometry(0.22, 0.37, 0.65, 10, 5).scale(1, 1, 0.8).translate(0, 0.453, 0);
+  const apron = new THREE.CylinderGeometry(0.229, 0.367, 0.56, 4, 4, true, -0.59, 1.18)
+    .scale(1, 1, 0.82).translate(0, 0.49, 0.016);
+  return merge([
+    shadeVertices(tint(skirt, 0xe2dbd0), (x, y, z) => y < 0.15 ? 0.54 : linen(x, y, z)),
+    shadeVertices(tint(apron, 0xffffff), linen),
+  ]);
+}
 
 // ---- hats (origin at the top of the neck) ----
 const HATS: (() => THREE.BufferGeometry)[] = [
@@ -59,8 +89,9 @@ const TOOLS: (() => THREE.BufferGeometry)[] = [
   () => merge([cyl(0.025, 0.025, 1.0, WOOD, 0, 0.3), T(tint(new THREE.SphereGeometry(0.09, 6, 5), 0xff9a2a), 0, 0.85, 0)]),                              // 9 torch (glowing head)
   () => merge([cyl(0.15, 0.11, 0.26, 0x6a4a2e, 0, -0.16, 0.12, 10), cyl(0.155, 0.155, 0.03, IRON, 0, -0.05, 0.12, 10), cyl(0.13, 0.13, 0.02, 0x4a8ac8, 0, -0.03, 0.12, 10), box(0.3, 0.025, 0.025, IRON, 0, 0.0, 0.12)]), // 10 water bucket
   () => merge([cyl(0.05, 0.05, 0.5, WOOD, 0, 0.1, 0, 7), cyl(0.2, 0.07, 0.62, 0x5a3b22, 0, 0.62, 0, 8), cone(0.04, 0.12, IRON, 0.18, 0.7, 0, 4), cone(0.04, 0.12, IRON, -0.18, 0.6, 0, 4), cone(0.04, 0.12, IRON, 0, 0.8, 0.17, 4)]),   // 11 ogre's club
+  () => merge([cyl(0.03, 0.025, 1.45, WOOD, 0, 0.5), box(0.26, 0.065, 0.24, IRON, 0, 1.2, 0.105), box(0.07, 0.12, 0.08, DARK, 0, 1.17, 0)]), // 12 hoe
 ];
-export const TOOL = { AXE: 1, PICK: 2, HAMMER: 3, FORK: 4, SPEAR: 5, BOW: 6, SWORD: 7, STAFF: 8, TORCH: 9, BUCKET: 10, CLUB: 11 };
+export const TOOL = { AXE: 1, PICK: 2, HAMMER: 3, FORK: 4, SPEAR: 5, BOW: 6, SWORD: 7, STAFF: 8, TORCH: 9, BUCKET: 10, CLUB: 11, HOE: 12 };
 const TOOL_ROT = [0, -0.2, -0.2, -0.3, -0.1, -0.15, 0.0, -0.9, -0.1, -0.2, 0, -0.3];
 
 // ---- shields ----
@@ -70,13 +101,27 @@ const SHIELDS: (() => THREE.BufferGeometry)[] = [
 ];
 
 // ---- horse ----
+const HORSE_COAT = 0x896044;
+const HORSE_HIP = 0.83;
 function horseGeo() {
   return merge([
-    box(0.5, 0.5, 1.25, 0xffffff, 0, 0.95, 0), box(0.28, 0.55, 0.3, 0xffffff, 0, 1.22, 0.66), box(0.2, 0.22, 0.45, 0xffffff, 0, 1.45, 0.92),
-    box(0.08, 0.5, 0.08, 0x2a2018, 0, 0.9, -0.72), box(0.06, 0.3, 0.1, 0x2a2018, 0, 1.45, 0.52),
+    shadeVertices(tint(new THREE.IcosahedronGeometry(0.5, 1).scale(0.59, 0.61, 1.48).translate(0, 0.94, 0), 0xffffff),
+      (_x, y, z) => 0.65 + 0.3 * Math.min(1, (y - 0.61) * 1.6) + 0.05 * Math.cos(z * 20)),
+    tint(new THREE.CylinderGeometry(0.13, 0.22, 0.65, 7).rotateX(0.47).translate(0, 1.19, 0.56), 0xf5e8d6),
+    tint(new THREE.IcosahedronGeometry(0.21, 1).scale(0.61, 0.69, 1.24).rotateX(0.25).translate(0, 1.44, 0.85), 0xffffff),
+    box(0.12, 0.55, 0.1, 0x5e5247, 0, 0.88, -0.69),
+    box(0.09, 0.38, 0.16, 0x766759, 0, 1.39, 0.48),
+    ...[-1, 1].flatMap(side => [
+      cone(0.055, 0.22, 0xdecbbb, side * 0.08, 1.65, 0.67, 5),
+      box(0.028, 0.035, 0.05, 0x372c24, side * 0.109, 1.49, 0.87),
+    ]),
+    box(0.15, 0.14, 0.11, 0xb0a094, 0, 1.38, 1.06),
   ]);
 }
-const horseLegGeo = () => merge([box(0.1, 0.5, 0.1, 0xffffff, 0, -0.25, 0), box(0.11, 0.06, 0.13, 0x2a2018, 0, -0.52, 0.01)]);
+const horseLegGeo = () => merge([
+  cyl(0.069, 0.038, HORSE_HIP, 0xe8d9c0, 0, -HORSE_HIP / 2, 0, 6),
+  box(0.116, 0.09, 0.16, 0x4a4037, 0, -HORSE_HIP + 0.045, 0.026),
+]);
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const pos = (v: number) => (v > 0 ? v : 0);
@@ -92,6 +137,7 @@ export class Crowd {
   private thighL: THREE.InstancedMesh; private thighR: THREE.InstancedMesh; private shinL: THREE.InstancedMesh; private shinR: THREE.InstancedMesh;
   private uArmL: THREE.InstancedMesh; private uArmR: THREE.InstancedMesh; private foreL: THREE.InstancedMesh; private foreR: THREE.InstancedMesh;
   private dress: THREE.InstancedMesh; private horse: THREE.InstancedMesh; private horseLeg: THREE.InstancedMesh;
+  private horseEyes: THREE.InstancedMesh | null = null;
   private hats: THREE.InstancedMesh[]; private tools: THREE.InstancedMesh[]; private shields: THREE.InstancedMesh[];
   private distantBody: THREE.InstancedMesh; private distantHead: THREE.InstancedMesh;
   private distant = 0;
@@ -123,6 +169,18 @@ export class Crowd {
     this.distantBody.castShadow = this.distantHead.castShadow = false;
   }
 
+  setGooglyEyes(on: boolean) {
+    if (on && !this.horseEyes) {
+      const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45 });
+      this.horseEyes = new THREE.InstancedMesh(merge(eyes(0.109, 1.49, 0.87, 0.036, true)), material, MAX);
+      this.horseEyes.instanceMatrix = this.horse.instanceMatrix;
+      this.horseEyes.count = this.horse.count;
+      this.horseEyes.frustumCulled = false;
+      this.group.add(this.horseEyes);
+    }
+    if (this.horseEyes) this.horseEyes.visible = on;
+  }
+
   begin() {
     this.n.torso = this.n.leg = this.n.arm = this.n.dress = this.n.horse = this.n.hleg = 0;
     this.distant = 0;
@@ -130,6 +188,7 @@ export class Crowd {
   }
 
   end() {
+    if (this.horseEyes) this.horseEyes.count = this.n.horse;
     const all = [this.torso, this.head, this.thighL, this.thighR, this.shinL, this.shinR, this.uArmL, this.uArmR, this.foreL, this.foreR, this.dress, this.horse, this.horseLeg, this.distantBody, this.distantHead, ...this.hats, ...this.tools, ...this.shields];
     const n = this.n, counts = [n.torso, n.torso, n.leg, n.leg, n.leg, n.leg, n.arm, n.arm, n.arm, n.arm, n.dress, n.horse, n.hleg, this.distant, this.distant, ...n.hats, ...n.tools, ...n.shields];
     all.forEach((mesh, i) => {
@@ -172,8 +231,8 @@ export class Crowd {
     const off = gallop ? [0, 0.25, 2.3, 2.55] : trot ? [0, Math.PI, Math.PI, 0] : [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
     const amp = walk ? (gallop ? 0.95 : trot ? 0.6 : 0.42) : 0;
     [[0.16, 0.45], [-0.16, 0.45], [0.16, -0.45], [-0.16, -0.45]].forEach(([lx, lz], k) => {
-      this.frame(this.l1, this.Hm, lx, 0.92, lz, -(amp * Math.sin(phase + off[k])));
-      this.put(this.horseLeg, this.n.hleg++, this.l1);
+      this.frame(this.l1, this.Hm, lx, HORSE_HIP, lz, -(amp * Math.sin(phase + off[k])));
+      this.put(this.horseLeg, this.n.hleg++, this.l1, hex);
     });
   }
 
@@ -200,13 +259,13 @@ export class Crowd {
       const gallop = sp > 5, trot = sp > 2.2, hbob = walk ? Math.abs(Math.sin(ph * (gallop ? 1 : 2))) * (gallop ? 0.14 : trot ? 0.06 : 0.03) : 0;
       this.frame(this.Hm, this.B, 0, -lift + hbob, 0, walk ? Math.sin(ph) * (gallop ? 0.07 : 0.03) : 0);
       this.Hm.scale(this.s.set(1.05, 1.05, 1.05));
-      this.put(this.horse, this.n.horse++, this.Hm, 0x6b4a32 + ((Math.floor(d.x * 7) & 3) * 0x101010));
+      this.put(this.horse, this.n.horse++, this.Hm, HORSE_COAT);
       const off = gallop ? [0, 0.25, 2.3, 2.55] : trot ? [0, Math.PI, Math.PI, 0] : [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
       const amp = walk ? (gallop ? 0.95 : trot ? 0.6 : 0.42) : 0;
       [[0.16, 0.45], [-0.16, 0.45], [0.16, -0.45], [-0.16, -0.45]].forEach(([lx, lz], k) => {
         const a = amp * Math.sin(ph * (gallop ? 1 : 1) + off[k]) + (k > 1 ? 0 : 0);
-        this.frame(this.l1, this.Hm, lx, 0.92, lz, -a + (a < 0 ? 0 : 0));
-        this.put(this.horseLeg, this.n.hleg++, this.l1);
+        this.frame(this.l1, this.Hm, lx, HORSE_HIP, lz, -a);
+        this.put(this.horseLeg, this.n.hleg++, this.l1, HORSE_COAT);
       });
       this.B.multiply(this.t4.makeTranslation(0, 0, 0));
     }
@@ -258,6 +317,7 @@ export class Crowd {
       const swing = d.pose === 3 ? d.swing ?? 0 : 0;
       const wrist = t === TOOL.SPEAR ? uR - eR + (d.pose === 3 ? 1.25 + 0.30 * Math.sin(swing * Math.PI) : 0.18)
         : t === TOOL.SWORD ? uR - eR + (swing > 0 ? 1.85 - 2.5 * swing : 0.32)
+        : t === TOOL.HOE ? uR - eR + (d.pose === 2 ? 2.3 + 0.26 * Math.sin(ph * 6) : 0.28)
         : TOOL_ROT[t] + (t === TOOL.AXE || t === TOOL.CLUB ? -0.6 : t === TOOL.FORK ? -0.9 : t === TOOL.BOW ? -1.2 : 0);
       this.frame(this.m, this.a2, 0, -0.3, 0.04, wrist);
       this.tools[t - 1].setMatrixAt(this.n.tools[t - 1]++, this.m);

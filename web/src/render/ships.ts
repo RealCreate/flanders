@@ -5,16 +5,63 @@ import { makeBoat } from './field';
 
 interface Ship { mesh: THREE.Group; sail: THREE.Mesh; pts: THREE.Vector2[]; len: number[]; total: number; s: number; speed: number; yaw: number; seed: number }
 
-/** A sailing ship: a big hull with a mast and a square sail. */
-export function makeShip(): THREE.Group {
-  const g = new THREE.Group(), wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }), cloth = new THREE.MeshStandardMaterial({ color: 0xeadfc2, roughness: 0.95, side: THREE.DoubleSide });
-  const hull = makeBoat(); hull.scale.set(1.7, 1.5, 1.9); g.add(hull);
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 7.2, 8), wood); mast.position.set(0.4, 4.0, 0); mast.castShadow = true; g.add(mast);
-  const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 4.6, 6), wood); yard.rotation.x = Math.PI / 2; yard.position.set(0.4, 6.3, 0); g.add(yard);
-  const sail = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 3.8, 6, 4), cloth); sail.rotation.y = Math.PI / 2; sail.position.set(0.55, 4.4, 0); sail.castShadow = true; g.add(sail);
-  const stripe = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 0.7), new THREE.MeshStandardMaterial({ color: 0xa8342a, side: THREE.DoubleSide })); stripe.rotation.y = Math.PI / 2; stripe.position.set(0.58, 4.8, 0); g.add(stripe);
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.0, 2.2), wood); cabin.position.set(-3.0, 1.1, 0); cabin.castShadow = true; g.add(cabin);
-  g.userData.sail = sail; return g;
+const shipWood = new THREE.MeshStandardMaterial({ color: 0x67422c, roughness: 0.86 });
+const rope = new THREE.MeshStandardMaterial({ color: 0xa99470, roughness: 1 });
+const canvas = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
+const furledCanvas = new THREE.MeshStandardMaterial({ color: 0xe4d5ad, roughness: 0.95 });
+const shipModels = new Map<boolean, THREE.Group>();
+
+/** A clinker-built cog with a raised stern, standing rigging and either a set or furled sail. */
+export function makeShip(moored = false): THREE.Group {
+  const cached = shipModels.get(moored);
+  if (cached) return cached.clone();
+  const g = new THREE.Group(), hull = makeBoat(true); hull.scale.set(1.65, 1.42, 1.78); g.add(hull);
+  const box = (w: number, h: number, d: number, x: number, y: number, z: number) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), shipWood);
+    mesh.position.set(x, y, z); mesh.castShadow = true; g.add(mesh);
+  };
+  const line = (a: THREE.Vector3, b: THREE.Vector3, radius: number, material: THREE.Material) => {
+    const direction = b.clone().sub(a);
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.08, direction.length(), 6), material);
+    mesh.position.copy(a).lerp(b, 0.5);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize()); g.add(mesh);
+  };
+  const mast = new THREE.Vector3(0.42, 6.65, 0), yardY = moored ? 5.34 : 6.1;
+  line(new THREE.Vector3(0.42, 0.42, 0), new THREE.Vector3(0.42, 7.15, 0), 0.108, shipWood);
+  line(new THREE.Vector3(0.42, yardY, -2.27), new THREE.Vector3(0.42, yardY, 2.27), 0.062, shipWood);
+  line(mast, new THREE.Vector3(4.6, 1.06, 0), 0.024, rope);
+  line(mast, new THREE.Vector3(-4.1, 1.28, 0), 0.024, rope);
+  for (const side of [-1, 1]) {
+    line(mast, new THREE.Vector3(-0.85, 0.64, side * 1.49), 0.023, rope);
+    box(2.15, 0.38, 0.13, -3.14, 1.14, side * 1.03);
+    if (!moored) line(new THREE.Vector3(0.79, 2.37, side * 1.98), new THREE.Vector3(1.65, 0.68, side * 1.14), 0.022, rope);
+  }
+  box(2.24, 0.36, 2.17, -3.14, 0.79, 0);
+  box(0.16, 0.68, 0.37, -4.96, 0.3, 0); // stern rudder
+  box(0.63, 0.57, 0.64, -1.28, 0.83, -0.42);
+  box(0.52, 0.44, 0.51, -1.91, 0.8, 0.43);
+  if (moored) {
+    line(new THREE.Vector3(0.54, yardY - 0.1, -2.06), new THREE.Vector3(0.54, yardY - 0.1, 2.06), 0.155, furledCanvas);
+    for (const z of [-1.55, -0.7, 0.7, 1.55]) {
+      const strap = new THREE.Mesh(new THREE.TorusGeometry(0.157, 0.035, 5, 8), rope);
+      strap.position.set(0.54, yardY - 0.1, z); g.add(strap);
+    }
+  } else {
+    const cloth = new THREE.PlaneGeometry(4.2, 3.75, 14, 14);
+    const p = cloth.attributes.position, colors: number[] = [];
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i) / 2.1, y = p.getY(i) / 1.875, fullness = 1 - x * x;
+      p.setXYZ(i, p.getX(i) * (0.94 + y * 0.06), p.getY(i) + Math.max(0, -y) * fullness * 0.28,
+        fullness * Math.sin((1 - y) * Math.PI * 0.42) * 0.92);
+      const ink = new THREE.Color(Math.abs(x) < 0.095 || (y >= 0 && y <= 0.3) ? 0x9c3d31 : 0xeee1bf);
+      ink.multiplyScalar(0.94 + Math.cos(i % 15 * 2.6) * 0.055); colors.push(ink.r, ink.g, ink.b);
+    }
+    cloth.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); cloth.computeVertexNormals();
+    const sail = new THREE.Mesh(cloth, canvas); sail.name = 'sail'; sail.rotation.y = Math.PI / 2;
+    sail.position.set(0.5, yardY - 1.875, 0); sail.castShadow = true; g.add(sail);
+  }
+  shipModels.set(moored, g);
+  return g.clone();
 }
 
 /** Big ships sailing on the open lakes of the map. They follow loops through deep water and ride the tide. */
@@ -91,7 +138,7 @@ export class WorldShips {
       const n = Math.min(3, 1 + Math.floor(body.cells.length / 120));
       for (let k = 0; k < n && made < 10; k++, made++) {
         const mesh = makeShip(); this.group.add(mesh);
-        this.ships.push({ mesh, sail: mesh.userData.sail as THREE.Mesh, pts, len, total: len[len.length - 1], s: (len[len.length - 1] * k) / n, speed: 2.0 + 0.4 * (made % 3), yaw: 0, seed: made * 3.1 });
+        this.ships.push({ mesh, sail: mesh.getObjectByName('sail') as THREE.Mesh, pts, len, total: len[len.length - 1], s: (len[len.length - 1] * k) / n, speed: 2.0 + 0.4 * (made % 3), yaw: 0, seed: made * 3.1 });
       }
     }
   }
@@ -107,7 +154,7 @@ export class WorldShips {
       const want = Math.atan2((b.x - a.x) / seg, (b.y - a.y) / seg);
       let d = want - sh.yaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; sh.yaw += d * Math.min(1, dt * 0.8);
       sh.mesh.position.set(a.x + (b.x - a.x) * f, level + 0.12 + Math.sin(this.t * 1.1 + sh.seed) * 0.08, a.y + (b.y - a.y) * f);
-      sh.mesh.rotation.set(Math.sin(this.t * 0.9 + sh.seed) * 0.025, sh.yaw + Math.PI / 2, Math.sin(this.t * 1.3 + sh.seed) * 0.035);
+      sh.mesh.rotation.set(Math.sin(this.t * 0.9 + sh.seed) * 0.025, sh.yaw - Math.PI / 2, Math.sin(this.t * 1.3 + sh.seed) * 0.035);
       sh.sail.rotation.y = Math.PI / 2 + Math.sin(this.t * 1.7 + sh.seed) * 0.08;
     }
   }
@@ -119,7 +166,7 @@ export class WorldShips {
       const p = sh.mesh.position; if ((p.x - cx) ** 2 + (p.z - cz) ** 2 > r2) continue;
       const fx = Math.sin(sh.yaw), fz = Math.cos(sh.yaw);
       [[2.2, 0xb8342a, HAT.CAP], [-0.6, 0x3b5f8c, HAT.STRAW], [-1.8, 0x8a7a4a, HAT.CAP]].forEach(([off, body, hat], i) => {
-        crowd.add({ x: p.x + fx * (off as number), y: p.y + 0.45, z: p.z + fz * (off as number), yaw: sh.yaw, pose: 0, phase: this.t + i, body: body as number, skin: 0xd9a877, hat: hat as number, tool: i === 0 ? TOOL.STAFF : undefined, scale: 0.95 });
+        crowd.add({ x: p.x + fx * (off as number), y: p.y + 0.58, z: p.z + fz * (off as number), yaw: sh.yaw, pose: 0, phase: this.t + i, body: body as number, skin: 0xd9a877, hat: hat as number, tool: i === 0 ? TOOL.STAFF : undefined, scale: 0.95 });
       });
     }
   }

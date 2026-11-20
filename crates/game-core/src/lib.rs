@@ -23,6 +23,7 @@ mod wallnet;
 mod roadcheck;
 #[cfg(test)]
 mod farmcheck;
+mod estate;
 #[cfg(test)]
 mod roadtests;
 #[cfg(test)]
@@ -199,7 +200,7 @@ pub const DAY: u64 = 240;
 const HUNGER_PER_MILLE_DAY: u64 = 20;
 /// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
 fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
-     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE) }
+     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE | PASTURE) }
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
@@ -325,7 +326,8 @@ pub struct World {
     events: Vec<i32>,
     sites: Vec<(f32, f32)>,
     flow: [i32; N_RES],
-    meal_credit: i32,             // quarter meals left over from the last item eaten (an item can fill more than was needed)
+    meal_credit: i32,             // ration units left over from the last item eaten
+    #[serde(skip)] estate: estate::Estate,
     ledger: ledger::Ledger,       // where each resource came from and went to over the last day (derived display data: never read by the rules, never hashed)
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
     flats: Vec<[f32; 4]>,         // [x, y, radius, height] patches the player levelled (see flatten.rs): applied after ditches and earthworks, so nothing dug there shows
@@ -376,7 +378,8 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD5";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD6";
+const OBJECTIVE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD5";
 const TACTICS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD4";
 const MARCH_SNAP_MAGIC: &[u8; 8] = b"FLWORLD3";
 const LEGACY_SNAP_MAGIC: &[u8; 8] = b"FLWORLD2";
@@ -387,15 +390,20 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     let (magic, payload) = bytes.split_at_checked(8)?;
     if magic == LEGACY_SNAP_MAGIC {
         let mut w: World = bincode::deserialize(payload).ok()?;
+        w.ledger.ensure_kinds(DEFS.len());
         w.moat_water = w.compute_moat_water();
         return Some(w);
     }
-    let (mut w, marches) = if magic == SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let (mut w, marches) = if magic == SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
-        let ((mut w, marches, tech, bridges, state), objective): (TacticalState, Option<raid_objective::RaidObjective>) =
+        type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
+        let (((mut w, marches, tech, bridges, state), objective), estate): (ObjectiveState, estate::Estate) =
             if magic == SNAP_MAGIC { bincode::deserialize(payload).ok()? }
-            else { (bincode::deserialize(payload).ok()?, None) };
+            else if magic == OBJECTIVE_SNAP_MAGIC { (bincode::deserialize(payload).ok()?, estate::Estate::default()) }
+            else { ((bincode::deserialize(payload).ok()?, None), estate::Estate::default()) };
         if w.battle.is_some() != state.is_some() || tech > tactics::TECH_MASK { return None; }
+        if !estate.valid() { return None; }
+        w.estate = estate;
         w.military_tech = tech;
         w.auto_bridge = bridges;
         if let Some((b, t)) = w.battle.as_mut().zip(state) {
@@ -411,6 +419,7 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     } else if magic == MARCH_SNAP_MAGIC { bincode::deserialize(payload).ok()? } else { return None; };
     if w.dets.len() != marches.len() { return None; }
     for (det, saved) in w.dets.iter_mut().zip(marches) { det.restore_march(saved)?; }
+    w.ledger.ensure_kinds(DEFS.len());
     Some(w)
 }
 
@@ -518,7 +527,8 @@ impl World {
         let marches: Vec<_> = self.dets.iter().map(march::Det::save_march).collect();
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
-        v.extend(bincode::serialize(&(tactical_state, battle.and_then(|b| b.objective))).expect("a world can be written"));
+        let objective_state = (tactical_state, battle.and_then(|b| b.objective));
+        v.extend(bincode::serialize(&(objective_state, self.estate)).expect("a world can be written"));
         v
     }
 
@@ -527,7 +537,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -550,8 +560,10 @@ impl World {
     /// village's flag (`style`, the player's identity on the map) are kept. Played from a command log it is the first command of a new epoch (see docs/RESTART.md).
     pub fn restart(&mut self) {
         let style = self.style;
+        let active = self.estate.active;
         *self = World::new(self.seed, self.ox, self.oy);
         self.style = style;
+        self.estate.active = active;
     }
 
     /// Lift the fog in a circle.
@@ -752,24 +764,31 @@ impl World {
         ground < shore || self.river_covers(x, y, ground)
     }
 
-    /// Food in the larder, in meals: smoked fish and grain.
-    /// Quarter meals in the stores (every kind of food, and what is left over from the last item eaten).
-    pub(crate) fn food_quarters(&self) -> i64 { FOODS.iter().map(|&(r, q)| self.stock[r as usize].max(0) as i64 * q as i64).sum::<i64>() + self.meal_credit as i64 }
+    // One twentieth of a meal represents both one tenth and one quarter exactly. Earlier histories use quarter meals.
+    fn ration_scale(&self) -> i32 { if self.estate.active { 5 } else { 1 } }
+    fn meal_units(&self) -> i32 { 4 * self.ration_scale() }
+    fn food_units(&self) -> i64 {
+        let stored: i64 = FOODS.iter().map(|&(r, q)| self.stock[r as usize].max(0) as i64 * q as i64).sum();
+        stored * self.ration_scale() as i64 + self.meal_credit as i64
+    }
     /// Whole meals in the stores.
-    pub(crate) fn food(&self) -> i32 { (self.food_quarters() / 4).min(i32::MAX as i64) as i32 }
+    pub(crate) fn food(&self) -> i32 { (self.food_units() / self.meal_units() as i64).min(i32::MAX as i64) as i32 }
     fn appetite(&self) -> (u32, i32) {
         let soldiers = self.army.iter().chain(&self.away).chain(self.dets.iter().flat_map(|d| &d.units)).copied().sum::<u32>();
-        (soldiers, ((self.population + soldiers) as i32 + 5) / 10)
+        let heads = (self.population + soldiers) as i32;
+        let units = if self.estate.active { heads * 2 } else { (heads + 5) / 10 * 4 };
+        (soldiers, units)
     }
-    /// Eat `need` quarter meals, taking each item from the store that holds the most food in all (ties: the first in `FOODS`). False if there is not enough: then everything is eaten.
-    fn eat_quarters(&mut self, need: i64) -> bool {
-        if self.food_quarters() < need { for &(r, _) in &FOODS { self.stock[r as usize] = 0; } self.meal_credit = 0; return false; }
+    /// Take items from the fullest food store. False if it takes the entire larder and still comes up short.
+    fn eat_units(&mut self, need: i64) -> bool {
+        if self.food_units() < need { for &(r, _) in &FOODS { self.stock[r as usize] = 0; } self.meal_credit = 0; return false; }
+        let scale = self.ration_scale() as i64;
         let mut owed = need - self.meal_credit as i64; self.meal_credit = 0;
         if owed < 0 { self.meal_credit = -owed as i32; return true; }
         while owed > 0 {
             let (mut best, mut most) = (0usize, -1i64);
             for (k, &(r, q)) in FOODS.iter().enumerate() { let v = self.stock[r as usize].max(0) as i64 * q as i64; if v > most { most = v; best = k; } }
-            let (r, q) = FOODS[best]; self.stock[r as usize] -= 1; owed -= q as i64;
+            let (r, q) = FOODS[best]; self.stock[r as usize] -= 1; owed -= q as i64 * scale;
         }
         self.meal_credit = (-owed) as i32; true
     }
@@ -1024,6 +1043,7 @@ impl World {
     /// `can_place` at a world position (road pieces snapped onto a node are not on the whole-number grid).
     pub(crate) fn can_place_xy(&self, kind: u8, x: f32, y: f32) -> i32 {
         let Some(d) = DEFS.get(kind as usize) else { return -1 };
+        if kind == PASTURE && !self.estate.active { return -1; }
         if kind == TOWN_HALL { return -9; }
         let allowed = if matches!(kind, ROAD | BRIDGE | DRAWBRIDGE | MOAT | PORT) {
             Self::infrastructure_in_bounds(x, y)
@@ -1576,8 +1596,13 @@ impl World {
                         }
                     }
                 }
-                let (inputs, outputs) = if kind == SMOKEHOUSE && self.buildings[i].mode == 1 { (SMOKE_MEAT_IN, SMOKE_MEAT_OUT) } else { (d.inputs, d.outputs) };   // a smokehouse set to meat smokes meat
+                let (inputs, outputs) = match kind {
+                    SMOKEHOUSE if self.buildings[i].mode == 1 => (SMOKE_MEAT_IN, SMOKE_MEAT_OUT),
+                    PASTURE if season == 3 => (estate::WINTER_PASTURE_FEED, d.outputs),
+                    _ => (d.inputs, d.outputs),
+                };
                 if inputs.iter().any(|&(r, n)| self.stock[r as usize] < scale(n)) { status = 1; p = need; break; }
+                if inputs.iter().any(|&(r, n)| !self.can_spend_surplus(r, scale(n))) { status = estate::STATUS_RESERVE; p = need; break; }
                 if outputs.iter().any(|&(r, n)| self.stock[r as usize] + yield_of(r, n) > cap) { status = 3; p = need; break; }
                 for &(r, n) in inputs { self.stock[r as usize] -= scale(n); self.ledger.note(kind as usize, r as usize, -scale(n)); }
                 for &(r, n) in outputs { self.stock[r as usize] += yield_of(r, n); self.ledger.note(kind as usize, r as usize, yield_of(r, n)); }
@@ -1598,7 +1623,7 @@ impl World {
         // food, growth, starvation
         let (soldiers, eat) = self.appetite();
         let eaten0: Vec<i32> = FOODS.iter().map(|&(r, _)| self.stock[r as usize]).collect();
-        if self.eat_quarters(eat as i64 * 4) {
+        if self.eat_units(eat as i64) {
             let cap_pop = self.capacity();
             let hap = self.happiness();
             if self.population < cap_pop && self.rng.range(if hap >= 70 { 4 } else if hap < 30 { 8 } else { 5 }) == 0 { self.arrive(1); }
@@ -1611,7 +1636,8 @@ impl World {
             }
         }
         {   // the ledger: what was eaten (grain and smoked fish), shared between villagers and soldiers by head
-            let share = if soldiers > 0 { eat as i64 * soldiers as i64 / (self.population as i64 + soldiers as i64).max(1) } else { 0 };
+            let share = eat as i64 * soldiers as i64 / (self.population as i64 + soldiers as i64).max(1);
+            let share = if self.estate.active { share } else { share / 4 * 4 };
             let (c1, c2) = (self.ledger.extra(ledger::EX_SOLDIERS), self.ledger.extra(ledger::EX_VILLAGERS));
             for (k, &(r, _)) in FOODS.iter().enumerate() {
                 let used = eaten0[k] - self.stock[r as usize];
@@ -1962,7 +1988,7 @@ impl World {
             }
             // otherwise sell what there is most of
             let mut best: Option<(usize, i32)> = None;
-            for r in 0..N_RES { if r == GD as usize { continue; } let excess = self.stock[r] - cap / 2; if excess > 0 && best.map_or(true, |(_, e)| excess > e) { best = Some((r, excess)); } }
+            for r in 0..N_RES { if r == GD as usize { continue; } let excess = self.stock[r] - (cap / 2).max(self.reserve_for(r as u8)); if excess > 0 && best.map_or(true, |(_, e)| excess > e) { best = Some((r, excess)); } }
             if let Some((r, excess)) = best {
                 let units = excess.min(30 * mult); let gold = (units * self.price(r) * 8 / 10).max(1);
                 self.stock[r] -= units; { let c = self.ledger.extra(ledger::EX_PORT); self.ledger.note(c, r, -units); } self.gain(ledger::EX_PORT, GD, gold, cap);
@@ -2606,6 +2632,11 @@ impl World {
     pub fn stocks(&self) -> Vec<i32> { self.stock.to_vec() }
     pub fn tick(&self) -> u64 { self.tick }
     pub fn population(&self) -> u32 { self.population }
+    /// Days of food at the current appetite, with no new production. Negative when nobody eats.
+    pub fn food_reserve_days(&self) -> f64 {
+        let (_, eat) = self.appetite();
+        if eat == 0 { -1.0 } else { self.food_units() as f64 / (eat as f64 * DAY as f64) }
+    }
     pub fn sick(&self) -> u32 { self.sick }
     pub fn efficiency(&self) -> u32 { self.eff }
 
@@ -2686,7 +2717,7 @@ impl World {
             self.raid_warning_ticks > 0,
             !self.wildfires.is_empty() || self.buildings.iter().any(|b| b.burning > 0.0),
             self.plague_active(),
-            eat > 0 && food < (eat * 15).min(self.storage_cap() / 4).max(eat),
+            eat > 0 && self.food_units() < (eat * 15).min(self.storage_cap() / 4 * self.meal_units()).max(eat) as i64,
             fuel > 0 && (!self.warm || wood < fuel * 2),
             self.choice.is_some(),
         ].into_iter().enumerate().fold(0, |bits, (i, risk)| bits | ((risk as i32) << i));
@@ -2713,7 +2744,12 @@ impl World {
             part(&|mix| {   // core: the clock, the random stream, the people and everything that is a plain number
                 mix(self.tick); mix(self.rng.0); mix(self.raid_warning_ticks as u64); mix(self.raid_warning_angle.to_bits() as u64); mix(self.raid_warning_rf.to_bits() as u64); mix(self.raid_warning_boss as u64); mix(self.raid_warning_name as u64); mix(self.population as u64); mix(self.sick as u64); mix(self.plague_start); mix(self.plague_end); mix(self.quarantine_until); mix(self.children as u64); mix(self.elders as u64); mix(self.warm as u64); mix(self.cold_days as u64); mix(self.born as u64); mix(self.arrived as u64); mix(self.enlisted as u64); mix(self.left as u64); for d in self.died { mix(d as u64); } mix(self.unburied as u64); mix(self.buried as u64); mix(self.graves_used as u64); mix(self.devotion as i64 as u64); mix(self.style as u64); mix(self.hero.map_or(999, |h| h.0 as u64 * 1000 + h.1 as u64)); mix(self.explored.iter().map(|&c| c as u64).sum::<u64>()); for &d in &self.neutral_done { mix(d as u64); } mix(self.mood as i64 as u64); mix(self.greed as u64); mix(self.mood_until); mix(self.quarantine_until); mix(self.choice.map_or(99, |c| c.0 as u64));
             }),
-            part(&|mix| { for s in &self.stock { mix(*s as i64 as u64); } mix(self.meal_credit as i64 as u64); for s in &self.market_sold { mix(*s as i64 as u64); } }),
+            part(&|mix| {
+                for s in &self.stock { mix(*s as i64 as u64); }
+                mix(self.meal_credit as i64 as u64);
+                for s in &self.market_sold { mix(*s as i64 as u64); }
+                if self.estate.active { mix(1); mix(self.estate.grain as u64); mix(self.estate.wood as u64); }
+            }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
                 for b in &self.buildings {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);

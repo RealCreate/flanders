@@ -53,7 +53,9 @@ export function validArchive(raw: unknown): Archive | null {
 /** The commands that bring an archived village back as the new epoch `epoch`: the restart command, then every command of the archive with its number counted again and its
  *  epoch changed. (Nothing else about a command changes: replayed from the restart, they build the village the archive held.) The result has to be signed again. */
 export function rebaseLog(old: readonly Cmd[], epoch: number): Cmd[] {
-  const out: Cmd[] = [restartCmd(epoch)];
+  const start = restartCmd(epoch);
+  if (old[0]?.op === 'restart' && old[0].kind === 1) start.kind = 1;
+  const out: Cmd[] = [start];
   let n = 1;
   for (const c of old) {
     if (c.op === 'restart') continue;   // (the archived epoch's own start is replaced by the new one)

@@ -44,6 +44,28 @@ class Replica {
 const BUILD = [['place', { kind: 0, x: 12, y: 4, rot: 0 }], ['place', { kind: 1, x: -14, y: 6, rot: 0 }], ['level', { x: 10, y: 22, kind: 8 }], ['place', { kind: 0, x: 18, y: 8, rot: 0 }], ['place', { kind: 28, x: 0, y: 14, rot: 0 }]];
 const play = async (o, rs) => { for (const [op, f] of BUILD) { const s = await o.do({ op, ...f }, 7); for (const r of rs) await r.receive(s); } };
 
+test('a reserve command switches an old history at the same tick for its owner and a late joiner', async () => {
+  const k = await keys();
+  const owner = new Owner(k);
+  owner.w = World.new_legacy(SEED, 0, 0);
+  const peer = new Replica(k.pub);
+  peer.w = World.new_legacy(SEED, 0, 0);
+  await play(owner, []);
+  assert.equal(owner.w.estate_active(), false);
+  await owner.do({ op: 'reserve', x: 90, y: 70 }, 65);
+  assert.equal(owner.w.estate_active(), true);
+  for (const entry of owner.log) await peer.receive(entry);
+  assert.deepEqual(peer.dropped, []);
+  assert.deepEqual([...peer.w.reserves()], [90, 70]);
+  stepTo(owner.w, 400);
+  stepTo(peer.w, 400);
+  assert.equal(peer.w.state_hash(), owner.w.state_hash());
+  const archive = rebaseLog([{ ...restartCmd(1), kind: 1 }], 2);
+  const reloaded = World.new_legacy(SEED, 0, 0);
+  applyCmd(reloaded, archive[0]);
+  assert.equal(reloaded.estate_active(), true);
+});
+
 test('an owner restarts: the replica becomes the new village, and both agree through the old life, the restart and the new one', async () => {
   const k = await keys(), owner = new Owner(k), rep = new Replica(k.pub);
   await play(owner, [rep]);

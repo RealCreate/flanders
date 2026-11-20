@@ -77,14 +77,15 @@ pub const FISHING_HUT: u8 = 41;
 pub const SMOKEHOUSE: u8 = 42;
 pub const BAKERY: u8 = 43;
 pub const PLAZA: u8 = 44;
+pub const PASTURE: u8 = 45;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
-pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD | PLAZA => 0, _ => 3 } }
+pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD | PLAZA => 0, PASTURE => 2, _ => 3 } }
 
 /// Pieces that reshape the ground instead of standing on it.
 pub fn is_edit(kind: u8) -> bool { matches!(kind, MOAT | RIVER | RAISE | LOWER) }
 
-pub static DEFS: [Def; 45] = [
+pub static DEFS: [Def; 46] = [
     Def { name: "House", cat: 0, r: 3.2, weight: 1, cost: &[(W, 12)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 5, max_slope: 0.35, pad: true, desc: "Homes for your villagers. Better tiers house more people." },
     Def { name: "Farm", cat: 1, r: 6.5, weight: 2, cost: &[(W, 25)], jobs: 2, inputs: &[], outputs: &[(GR, 10)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.22, pad: true, desc: "Grows grain to feed the village. Needs flat ground." },
     Def { name: "Wall", cat: 4, r: 2.4, weight: 1, cost: &[(ST, 5)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.4, pad: true, desc: "A wall segment. Rotate with R and chain them into a curtain wall." },
@@ -126,10 +127,11 @@ pub static DEFS: [Def; 45] = [
     Def { name: "Bridge", cat: 4, r: 2.0, weight: 2, cost: &[(PL, 10), (W, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Spans a moat, river or narrow water. Click near the water: it snaps to the banks, finds the shortest way over and puts supports in the middle where the span needs them. Costs more planks the longer it is. Starts as a wooden footbridge; upgrade it to timber, stone and a great stone bridge, which span wider." },
     Def { name: "Infirmary", cat: 5, r: 4.2, weight: 3, cost: &[(ST, 40), (PL, 25), (W, 20)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Monks and nurses tend the sick in a ward of beds with a herb garden. Every bed cures people during a plague and fewer die; it needs its staff. Upgrade it into a hospital, a great hospital and a royal hospital for more beds." },
     Def { name: "Graveyard", cat: 5, r: 3.6, weight: 2, cost: &[(ST, 20), (W, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.4, pad: true, desc: "Consecrated ground where the dead are laid to rest. A gravedigger buries them; when plots run out, or there is no one to bury, bodies lie unburied and sickness and misery follow. Upgrade it for more plots." },
-    Def { name: "Fishing Hut", cat: 1, r: 3.0, weight: 1, cost: &[(W, 20), (PL, 6)], jobs: 1, inputs: &[], outputs: &[(FI, 4)], cycle: 8, req: 3, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "A fisher's hut on the bank with a jetty, nets and drying racks. Stands at the edge of a river, lake, sea or moat and lands raw fish. Smoke it in a smokehouse to eat it." },
+    Def { name: "Fishing Hut", cat: 1, r: 3.0, weight: 1, cost: &[(W, 20), (PL, 6)], jobs: 1, inputs: &[], outputs: &[(FI, 4)], cycle: 8, req: 3, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "A fisher's hut on the bank with a jetty, nets and drying racks. Stands at the edge of a river, lake, sea or moat and lands fish. Villagers eat fish raw, or you can smoke it to make it more filling." },
     Def { name: "Smokehouse", cat: 3, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(FI, 3), (W, 1)], outputs: &[(SF, 3)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Uses a slow wood fire to smoke fish or meat. Smoked food feeds more villagers than raw food." },
     Def { name: "Bakery", cat: 1, r: 3.4, weight: 1, cost: &[(W, 25), (ST, 10)], jobs: 1, inputs: &[(GR, 3), (W, 1)], outputs: &[(BD, 4)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A brick oven and a trough for kneading: grain is milled and baked into bread. Bread fills a villager half as much again as raw grain, so the same harvest feeds more mouths." },
     Def { name: "Plaza", cat: 5, r: 5.0, weight: 1, cost: &[(ST, 25)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A paved square. It has four connection nodes, one on each side, where roads you lay snap on; people cross it on the way. Choose its design: benches, trees, a fountain, lanterns." },
+    Def { name: "Pasture", cat: 1, r: 7.0, weight: 2, cost: &[(W, 30), (PL, 6)], jobs: 2, inputs: &[], outputs: &[(ME, 7)], cycle: 12, req: 0, req_arg: 0, housing: 0, max_slope: 0.29, pad: true, desc: "Herders raise sheep and cattle for meat. Livestock graze during the warmer seasons and need grain in winter. The grain reserve protects your larder from winter feed use." },
 ];
 
 /// Resources needed to upgrade to `new_tier` (1..=3).
@@ -163,7 +165,7 @@ pub fn options(kind: u8) -> &'static [Opt] {
         HOSPITAL => &[("Herb garden", "A walled garden of healing herbs: patients recover a little faster.", 0), ("Quarantine ward", "A separate ward for the worst cases: fewer die.", 1), ("Chapel ward", "A chapel in the ward: the dying are comforted and spirits rise.", 1), ("Banner", "The hospital's pennant.", 0)],
         GRAVEYARD => &[("Chapel of rest", "A small chapel by the gate: funerals bring comfort.", 0), ("Memorial cross", "A tall stone cross for the village's dead.", 0), ("Yew trees", "Old yews, the churchyard's guardians.", 0), ("Charnel house", "A bone house, so old graves can be reused: 50% more plots.", 1)],
         PLAZA => &[("Benches", "Stone benches round the edge of the square. Purely for looks.", 0), ("Trees", "Lime trees in the corners, with shade for the benches. Purely for looks.", 0), ("Fountain", "A stone fountain in the middle. Purely for looks.", 0), ("Lanterns", "Lanterns on posts at the four nodes. Purely for looks.", 0)],
-        MOAT | RIVER | RAISE | LOWER | FENCE | ROAD => &[],
+        MOAT | RIVER | RAISE | LOWER | FENCE | ROAD | PASTURE => &[],
         _ => &[("Banner", "A pennant on a pole. Defenders fight 1% harder (up to +15% in all).", 0), ("Lanterns", "Lanterns at the door. +1 happiness (up to +10 from such pride).", 0), ("Awning", "A cloth awning. Shade for the workers: this building works 10% faster.", 0), ("Stone footing", "A stone plinth. A dry, solid floor: this building works 5% faster.", 1)],
     }
 }
@@ -178,9 +180,11 @@ fn options_json(kind: u8) -> String {
 pub fn catalog_json() -> String {
     let amt = |a: &[Amount]| a.iter().map(|(r, n)| format!("[{},{}]", r, n)).collect::<Vec<_>>().join(",");
     let items: Vec<String> = DEFS.iter().enumerate().map(|(i, d)| {
-        let alternate = if i == SMOKEHOUSE as usize {
-            format!(",\"alternateRecipe\":{{\"inputs\":[{}],\"outputs\":[{}]}}", amt(crate::SMOKE_MEAT_IN), amt(crate::SMOKE_MEAT_OUT))
-        } else { String::new() };
+        let alternate = match i as u8 {
+            SMOKEHOUSE => format!(",\"alternateRecipe\":{{\"inputs\":[{}],\"outputs\":[{}]}}", amt(crate::SMOKE_MEAT_IN), amt(crate::SMOKE_MEAT_OUT)),
+            PASTURE => format!(",\"winterRecipe\":{{\"inputs\":[{}],\"outputs\":[{}]}}", amt(crate::estate::WINTER_PASTURE_FEED), amt(d.outputs)),
+            _ => String::new(),
+        };
         format!(
             "{{\"id\":{},\"name\":\"{}\",\"cat\":{},\"r\":{},\"weight\":{},\"cost\":[{}],\"jobs\":{},\"inputs\":[{}],\"outputs\":[{}],\"cycle\":{},\"req\":{},\"reqArg\":{},\"housing\":{},\"maxTier\":{},\"opts\":[{}],\"desc\":\"{}\"{}}}",
             i, d.name, d.cat, d.r, d.weight, amt(d.cost), d.jobs, amt(d.inputs), amt(d.outputs), d.cycle, d.req, d.req_arg, d.housing, max_tier(i as u8), options_json(i as u8), d.desc, alternate

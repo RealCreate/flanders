@@ -187,8 +187,7 @@ export class FieldView {
   }
 
   private waterline(x: number, z: number) {
-    const level = Math.max(moatLevelAt(this.moats, x, z), this.terrain.riverSurfaceAt(x, z));
-    return level > 0 ? Math.max(level, this.terrain.water.position.y) : this.terrain.water.position.y;
+    return Math.max(moatLevelAt(this.moats, x, z), this.terrain.renderedWaterAt(x, z));
   }
 
   private updateBoat(owner: { boat?: THREE.Group }, x: number, z: number, yaw: number, water: boolean, scale: number) {
@@ -199,7 +198,7 @@ export class FieldView {
       owner.boat.visible = water;
       if (water) {
         owner.boat.position.set(x, this.waterline(x, z) + 0.04 + Math.sin(this.t * 2 + x) * 0.04, z);
-        owner.boat.rotation.y = yaw + Math.PI / 2;
+        owner.boat.rotation.y = yaw - Math.PI / 2;
       }
     }
   }
@@ -304,13 +303,59 @@ function lookOf(kind: number, col: number): Partial<Draw> {
   }
 }
 
-export function makeBoat(): THREE.Group {
-  const g = new THREE.Group(), wood = new THREE.MeshStandardMaterial({ color: 0x7a5a38, roughness: 0.9 }), dark = new THREE.MeshStandardMaterial({ color: 0x4a3420 });
-  const hull = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.55, 1.5), wood); hull.position.y = 0.2; hull.castShadow = true; g.add(hull);
-  for (const s of [-1, 1]) { const bow = new THREE.Mesh(new THREE.ConeGeometry(0.75, 1.1, 4), wood); bow.rotation.z = -s * Math.PI / 2; bow.rotation.y = Math.PI / 4; bow.position.set(s * 2.75, 0.2, 0); bow.scale.set(1, 1, 0.55); g.add(bow); }
-  for (const x of [-1.2, 0, 1.2]) { const t = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.1, 1.5), dark); t.position.set(x, 0.52, 0); g.add(t); }
-  const rim = new THREE.Mesh(new THREE.BoxGeometry(4.8, 0.12, 0.12), dark); rim.position.set(0, 0.5, 0.72); const rim2 = rim.clone(); rim2.position.z = -0.72; g.add(rim, rim2);
+const oaken = new THREE.MeshStandardMaterial({ color: 0x8a623a, roughness: 0.9 });
+const gunwale = new THREE.MeshStandardMaterial({ color: 0x413021, roughness: 0.94 });
+const strakes = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.88 });
+let hullGeometry: THREE.BufferGeometry | undefined;
+
+function buildHull() {
+  // x, half-beam, sheer (top rail). The stem at +x rises higher than the stern.
+  const stations = [[-3.15, 0, 0.72], [-2.45, 0.52, 0.58], [-1.55, 0.76, 0.49], [-0.45, 0.86, 0.45],
+    [0.65, 0.87, 0.45], [1.7, 0.73, 0.53], [2.55, 0.43, 0.68], [3.32, 0, 0.95]];
+  const bands = [[0, -0.32], [0.36, -0.14], [0.68, 0.05], [0.88, 0.23], [1, 0.45], [1.035, 0.51], [0.94, 0.48], [0.49, -0.12], [0, -0.18]];
+  const colors = [0x513621, 0x6d442a, 0x845333, 0x93623c, 0x533921, 0x412d22, 0x714b30, 0x62442f];
+  const positions: number[] = [], paint: number[] = [];
+  const vertex = (i: number, j: number, side: number, color: THREE.Color) => {
+    const [x, beam, rail] = stations[i], [w, low] = bands[j];
+    positions.push(x, low + (rail - 0.45) * (0.5 + 0.5 * w), side * w * beam);
+    paint.push(color.r, color.g, color.b);
+  };
+  for (const side of [-1, 1]) for (let j = 0; j < bands.length - 1; j++) {
+    for (let i = 0; i < stations.length - 1; i++) {
+      const color = new THREE.Color(colors[j]).multiplyScalar(0.94 + 0.05 * (i % 3));
+      vertex(i, j, side, color); vertex(i + 1, j, side, color); vertex(i, j + 1, side, color);
+      vertex(i + 1, j, side, color); vertex(i + 1, j + 1, side, color); vertex(i, j + 1, side, color);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(paint, 3)); g.computeVertexNormals();
   return g;
+}
+
+let rowingBoat: THREE.Group | undefined, deckBoat: THREE.Group | undefined;
+export function makeBoat(decked = false): THREE.Group {
+  const cached = decked ? deckBoat : rowingBoat;
+  if (cached) return cached.clone();
+  const g = new THREE.Group();
+  const hull = new THREE.Mesh(hullGeometry ??= buildHull(), strakes); hull.castShadow = true; g.add(hull);
+  const plank = (w: number, h: number, d: number, x: number, y: number, z = 0) => {
+    const part = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), oaken); part.position.set(x, y, z); g.add(part); return part;
+  };
+  if (decked) {
+    for (let i = -6; i <= 6; i++) plank(0.32, 0.09, 1.55 - 0.017 * i * i, i * 0.35, 0.36);
+  } else {
+    for (const x of [-1.22, -0.13, 1.04]) plank(0.26, 0.09, 1.39, x, 0.31);
+    for (const side of [-1, 1]) {
+      const oar = new THREE.Group(); oar.position.set(0.13, 0.3, side * 0.62); oar.rotation.y = side * -0.29;
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.038, 1.89, 6), gunwale);
+      shaft.rotation.x = Math.PI / 2; shaft.position.z = side * 0.45;
+      const paddle = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.055, 0.43), oaken); paddle.position.z = side * 1.45;
+      oar.add(shaft, paddle); g.add(oar);
+    }
+  }
+  if (decked) deckBoat = g; else rowingBoat = g;
+  return g.clone();
 }
 
 /** Bridges the soldiers have built. Plain planks on posts, merged into one mesh. */

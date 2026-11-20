@@ -1,29 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { moatSurface } from '../src/render/moatwater.ts';
-import { riverFootprint, riverGrid, riverStageAt, seaGrid } from '../src/render/rivergrid.ts';
+import { renderedRiverAt, riverFootprint, riverGrid, riverStageAt, seaGrid } from '../src/render/rivergrid.ts';
 
 const step = 2.5;
 
 test('river chunks meet at a flat bank stage and cover both sides of the terrain diagonal', () => {
-  const stages = new Float64Array(25).fill(-4.8); stages[12] = 4.8;
+  const stages = new Float64Array(25).fill(-1.8); stages[12] = 4.8;
   const cells = riverFootprint(stages, 5);
   const left = riverGrid(stages, cells, 5, step, 0, 0, 2, 4);
   const right = riverGrid(stages, cells, 5, step, 2, 0, 4, 4);
   assert.equal(left.indices.length, 48);
   assert.equal(right.indices.length, 48);
-  for (const { banks, positions } of [left, right]) {
-    for (let i = 0; i < banks.length; i++) {
+  for (const { positions } of [left, right]) {
+    for (let i = 0; i < positions.length / 3; i++) {
       const [x, y, z] = positions.slice(i * 3, i * 3 + 3);
       assert.equal(y, Math.max(Math.abs(x), Math.abs(z)) <= step ? 4.8 : 0);
-      assert.equal(banks[i], Number(x !== 0 || z !== 0));
     }
   }
   const footprint = ({ positions }, flip = 1) => positions
     .flatMap((x, i) => i % 3 === 0 ? [`${x * flip},${positions[i + 1]},${positions[i + 2]}`] : []).sort();
   assert.deepEqual(footprint(left), footprint(right, -1));
   assert.equal(riverStageAt(stages, 5, step, 0, 0), 4.8);
-  assert.equal(riverStageAt(stages, 5, step, step / 2, 0), 4.8);
+  assert.equal(riverStageAt(stages, 5, step, step / 2, 0), 3.3);
+  assert.equal(renderedRiverAt(stages, cells, 5, step, step / 2, 0, -0.25), 4.8);
   assert.equal(riverStageAt(stages, 5, step, step + 0.25, 0), 0);
 });
 const triangles = ({ positions, indices }) => {
@@ -76,7 +76,8 @@ test('water covers the whole terrain cell beside each cut vertex, including diag
   assert.equal(surface.indices.length, 4 * 6);
   const corners = new Set(triangles(surface).flat().map(([x, y, z]) => `${x},${y},${z}`));
   for (const x of [-step, step]) for (const z of [-step, step]) assert.ok(corners.has(`${x},4,${z}`));
-  assert.ok(surface.banks.every((flag, i) => flag === Number(surface.positions[i * 3] !== 0 || surface.positions[i * 3 + 2] !== 0)));
+  assert.equal(surface.levelAt(0.3, 0.4), 4);
+  assert.equal(surface.levelAt(4, 4), -Infinity);
 });
 
 test('overlapping pieces draw each cell once and share vertices at different water levels', () => {
@@ -94,9 +95,13 @@ test('overlapping pieces draw each cell once and share vertices at different wat
     if (vertexHeights.has(k)) assert.equal(p[1], vertexHeights.get(k));
     else vertexHeights.set(k, p[1]);
   }
-  assert.equal(vertexHeights.get('2.5,0'), 3);
+  assert.ok(vertexHeights.get('2.5,0') > 3 && vertexHeights.get('2.5,0') < 3.2);
+  assert.equal(both.levelAt(2.5, 0), vertexHeights.get('2.5,0'));
+  assert.equal(both.levelAt(3.3, 1.8), moatSurface([...high, ...low], step).levelAt(3.3, 1.8));
 });
 
 test('invalid pieces add no triangles', () => {
-  assert.deepEqual(moatSurface([0, 0, 0, 1, 0, 0, 4.6, NaN], step), { positions: [], indices: [], banks: [] });
+  const surface = moatSurface([0, 0, 0, 1, 0, 0, 4.6, NaN], step);
+  assert.deepEqual(surface.positions, []);
+  assert.deepEqual(surface.indices, []);
 });

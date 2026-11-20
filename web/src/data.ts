@@ -9,6 +9,7 @@ export interface BuildingDef {
   id: number; name: string; cat: number; r: number; weight: number;
   cost: [number, number][]; jobs: number; inputs: [number, number][]; outputs: [number, number][];
   alternateRecipe?: { inputs: [number, number][]; outputs: [number, number][] };
+  winterRecipe?: { inputs: [number, number][]; outputs: [number, number][] };
   cycle: number; req: number; reqArg: number; housing: number; maxTier: number; opts?: { n: string; d: string; t: number }[]; desc: string;
 }
 
@@ -25,10 +26,10 @@ export const RES = [
   { key: 'charcoal', name: 'Charcoal', icon: 'charcoal', hint: 'Fuel for every furnace and kiln.' },
   { key: 'grain', name: 'Grain', icon: 'grain', hint: 'Feeds your villagers.' },
   { key: 'tools', name: 'Tools', icon: 'tools', hint: 'Forged by the blacksmith. Needed for mines.' },
-  { key: 'fish', name: 'Fish', icon: 'fish', hint: 'Landed by fishing huts. Eaten raw it fills little: smoke it for more.' },
+  { key: 'fish', name: 'Fish', icon: 'fish', hint: 'Landed by fishing huts. Raw fish provides a meal per fish. Smoking makes it more filling.' },
   { key: 'smokedfish', name: 'Smoked fish', icon: 'smokedfish', hint: 'Smoked in a smokehouse. Cooked food fills half as much again as raw.' },
   { key: 'bread', name: 'Bread', icon: 'bread', hint: 'Baked from grain in a bakery. Cooked food fills half as much again as raw.' },
-  { key: 'meat', name: 'Meat', icon: 'meat', hint: 'Brought in by hunters. Feeds the village, or smoke it for more.' },
+  { key: 'meat', name: 'Meat', icon: 'meat', hint: 'Raised in pastures or brought in by hunters. Feeds the village, or smoke it for more.' },
   { key: 'smokedmeat', name: 'Smoked meat', icon: 'smokedmeat', hint: 'Meat smoked in a smokehouse set to meat. Cooked food fills half as much again as raw.' },
 ] as const;
 
@@ -59,11 +60,12 @@ export const TIER_NAMES: Record<number, string[]> = {
   35: ['Landing Stage', 'Harbour', 'Port', 'Great Port'], 36: ['Toll Post', 'Toll House', 'Toll Gate', 'Customs House'], 37: ['Dirt Road'], 44: ['Plaza'], 38: ['Footbridge', 'Timber Bridge', 'Stone Bridge', 'Great Bridge'],
   39: ['Infirmary', 'Hospice', 'Hospital', 'Great Hospital'], 40: ['Burial Ground', 'Graveyard', 'Cemetery', 'Great Necropolis'],
   41: ['Fishing Hut', "Fisher's Cottage", 'Fishing Wharf', 'Fishery'], 42: ['Smokehouse', 'Smokery', 'Great Smokery', 'Fish Hall'], 43: ['Bakery', 'Bakehouse', 'Great Bakehouse', 'Royal Bakery'],
+  45: ['Sheepfold', 'Grazing Yard', 'Cattle Pasture'],
   21: ['Spiked Logs'], 22: ['Wooden Gate', 'Timber Gate', 'Stone Gatehouse', 'Fortified Gatehouse'], 23: ['Drawbridge'], 24: ['Moat'],
 };
 export const tierName = (kind: number, tier: number) => (TIER_NAMES[kind] ?? GENERIC_TIERS)[tier];
 
-export const STATUS = ['Working', 'Waiting for materials', 'Resource exhausted', 'Storage full', 'Idle', 'Drawn up', 'Lowered for an army', 'Deposit dormant'];
+export const STATUS = ['Working', 'Waiting for materials', 'Resource exhausted', 'Storage full', 'Idle', 'Drawn up', 'Lowered for an army', 'Deposit dormant', 'Waiting for stock above reserve'];
 
 export const PLACE_ERRORS: Record<number, string> = {
   [-1]: 'Unknown building', [-2]: 'Outside your village border — build more to grow it', [-3]: 'Something is in the way',
