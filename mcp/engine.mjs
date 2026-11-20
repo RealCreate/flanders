@@ -186,8 +186,9 @@ export class Game {
   // ---------------------------------------------------------------- acting
   /** Where a mine, quarry or clay pit should stand to work the deposit nearest the given spot: against the deposit, door towards the hall. Null when there is none. */
   snap(kind, dx, dy) {
-    if (kind === 29 || kind === 41) {   // a waterwheel or a fishing hut stands on the bank with its wheel or jetty over the water: the core finds the spot (and checks it again in place)
-      const s = kind === 29 ? this.world.waterwheel_snap(dx, dy) : this.world.fishing_hut_snap(dx, dy);
+    if (kind === 29 || kind === 35 || kind === 41) {
+      const s = kind === 35 ? this.world.port_snap(dx, dy)
+        : kind === 29 ? this.world.waterwheel_snap(dx, dy) : this.world.fishing_hut_snap(dx, dy);
       return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null;
     }
     const d = this.defs[kind]; if (!d || d.req !== 1) return null;
@@ -220,6 +221,10 @@ export class Game {
         if (![kind, dx, dy, rot, search].every(isInt) || !this.defs[kind]) return fail('bad arguments');
         if (kind === 15) return fail('the town hall is fixed');
         const sn = this.replaying ? null : this.snap(kind, dx, dy); if (sn) ({ dx, dy, rot } = sn);   // (a replay uses the exact spot that was logged)
+        if (!this.replaying && kind === 35) {
+          if (!sn) return fail(why(-16));
+          search = 0;
+        }
         let code = 0;
         for (let r = 0; r <= Math.min(12, Math.max(0, search)); r += 2) for (let k = 0; k < (r ? 8 : 1); k++) {
           const ang = k * Math.PI / 4 + r, px = Math.round(dx + Math.cos(ang) * r), py = Math.round(dy + Math.sin(ang) * r);

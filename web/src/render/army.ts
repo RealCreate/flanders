@@ -5,7 +5,7 @@ import type { ArmyPicker } from './armypick';
 import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses';
 import { smoothPath } from './field';
 import { lunge, fallen, mix } from './fight';
-import { moatLevelAt, standHeight, onWater, chase } from './wading';
+import { standHeight, onWater, chase } from './wading';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 const S = 10;
@@ -308,7 +308,7 @@ export class ArmyView {
   }
 
   private height(f: Field) { return Number.isNaN(f.gy) ? this.terrain.walkAt(f.x, f.z) : f.gy; }
-  private raftSurface(x: number, z: number) { return Math.max(moatLevelAt(this.moats, x, z), this.terrain.riverSurfaceAt(x, z)); }
+  private raftSurface(x: number, z: number) { return Math.max(this.channelLevelAt(x, z), this.terrain.renderedWaterAt(x, z)); }
 
   pick(picker: ArmyPicker) {
     if (!this.group.visible || !this.battle) return;
@@ -321,14 +321,14 @@ export class ArmyView {
     }
   }
 
-  /** The moat water levels, World.moat_water_flat(): wading raiders stand on that surface. */
-  moats: Float32Array = new Float32Array(0);
+  channelLevelAt: (x: number, z: number) => number = () => -Infinity;
 
   /** Work out the height of the ground (or water) under a soldier and move the drawn height toward it at a limited speed. */
   private settle(f: Field, dt: number) {
-    const ground = this.terrain.walkAt(f.x, f.z), level = f.wade ? this.raftSurface(f.x, f.z) : 0, want = standHeight(ground, f.wade, level);
+    const ground = this.terrain.walkAt(f.x, f.z), surface = this.raftSurface(f.x, f.z);
+    const touchingWater = f.wade || ground < surface, want = standHeight(ground, touchingWater, touchingWater ? surface : 0);
     f.gy = Number.isNaN(f.gy) ? want : chase(f.gy, want, dt);
-    f.wet = onWater(ground, f.wade, level);
+    f.wet = onWater(ground, touchingWater, surface);
   }
 
   private look(side: number, kind: number, seed: number, mine: boolean): Partial<Draw> {

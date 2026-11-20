@@ -5,7 +5,6 @@ import type { ArmyPicker } from './armypick';
 
 import { dotsAlong } from './trail';
 import { arrivalSlot, marchPoint, marchSlot } from '../marchfile';
-import { moatLevelAt } from './wading';
 
 interface Member {
   kind: number; x: number; z: number; y: number; yaw: number; gait: number; spd: number; seed: number;
@@ -35,7 +34,7 @@ export class FieldView {
   private t = 0;
   private rings: THREE.Mesh[] = [this.ring];
   friend = 0x2f5fa8;
-  moats: Float32Array = new Float32Array(0);
+  channelLevelAt: (x: number, z: number) => number = () => -Infinity;
 
   constructor(private terrain: Terrain) { this.ring.renderOrder = 11; this.ring.visible = false; this.group.add(this.ring); }
 
@@ -187,7 +186,7 @@ export class FieldView {
   }
 
   private waterline(x: number, z: number) {
-    return Math.max(moatLevelAt(this.moats, x, z), this.terrain.renderedWaterAt(x, z));
+    return Math.max(this.channelLevelAt(x, z), this.terrain.renderedWaterAt(x, z));
   }
 
   private updateBoat(owner: { boat?: THREE.Group }, x: number, z: number, yaw: number, water: boolean, scale: number) {

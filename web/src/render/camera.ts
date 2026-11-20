@@ -24,7 +24,7 @@ export class CameraRig {
   /** A short rumble, e.g. when a heavy building lands. */
   shake(a: number) { this.shakeAmt = Math.min(1.2, this.shakeAmt + a); }
 
-  constructor(private dom: HTMLElement, private terrain: Terrain, touchDrawing = () => false) {
+  constructor(private dom: HTMLElement, private terrain: Terrain, touchDrawing: (e: { clientX: number; clientY: number }) => boolean = () => false) {
     this.cam = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.5, 4000);
     dom.addEventListener('contextmenu', e => e.preventDefault());
     /** The ray under the pointer. */
@@ -46,7 +46,7 @@ export class CameraRig {
         if (!touches.size) {
           touchStart = e;
           this.touchConsumed = false;
-          touchDrawingStroke = touchDrawing();
+          touchDrawingStroke = touchDrawing(e);
         }
         touches.set(e.pointerId, e);
         if (touches.size === 2) {
@@ -80,7 +80,7 @@ export class CameraRig {
         if (after.distance) {
           this.dist = this.goal.dist = THREE.MathUtils.clamp(this.dist * before.distance / after.distance, 12, 260);
           const twist = after.angle - before.angle;
-          this.yaw = this.goal.yaw = this.yaw - Math.atan2(Math.sin(twist), Math.cos(twist));
+          this.yaw = this.goal.yaw = this.yaw + Math.atan2(Math.sin(twist), Math.cos(twist));
           this.place();
         }
         if (touchGrab) {

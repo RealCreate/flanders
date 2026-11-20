@@ -1,8 +1,9 @@
 import * as THREE from 'three';
-import { deer, boar, rabbit, wolf, sheep, cow, chicken } from './animalmodels';
+import { deer, boar, rabbit, wolf, sheep, cow, chicken, pig } from './animalmodels';
 import type { Terrain } from './terrain';
 import type { Huntable, WildLike } from './people';
-import { GRAZING_RADIUS, PASTURE } from '../pasture';
+import { GRAZING_RADIUS, PASTURE, PIGSTY, isLivestockPen } from '../pasture';
+import { surfaceTexture, type Surface } from './surfaces';
 
 type Gait = 'quad' | 'biped' | 'hop';
 interface Spec {
@@ -10,19 +11,21 @@ interface Spec {
   walk: number; run: number;           // units/s while ambling and when fleeing (before individual variation)
   stride: number;                      // distance covered by one full gait cycle at a walk
   body: () => THREE.BufferGeometry; head: (googly?: boolean) => THREE.BufferGeometry; legGeo: () => THREE.BufferGeometry | null;
+  coat: Surface;
   legs: [number, number, number][];    // hip anchors: FL, FR, BL, BR
   neck: [number, number, number];      // where the head pivots
   size: number;
 }
 
 const SPECIES: Spec[] = [
-  { ...deer, name: 'deer', max: 40, huntable: true, gait: 'quad', walk: 1.2, run: 9, stride: 1.5, size: 1, neck: [0, 1.14, 0.45], legs: [[0.14, 0.91, 0.38], [-0.14, 0.91, 0.38], [0.14, 0.91, -0.4], [-0.14, 0.91, -0.4]] },
-  { ...boar, name: 'boar', max: 16, huntable: true, gait: 'quad', walk: 1.1, run: 6.5, stride: 0.95, size: 1, neck: [0, 0.64, 0.39], legs: [[0.16, 0.46, 0.3], [-0.16, 0.46, 0.3], [0.16, 0.46, -0.3], [-0.16, 0.46, -0.3]] },
-  { ...rabbit, name: 'rabbit', max: 40, huntable: true, gait: 'hop', walk: 0.9, run: 6, stride: 0.6, size: 1, neck: [0, 0.275, 0.14], legs: [] },
-  { ...wolf, name: 'wolf', max: 10, huntable: false, gait: 'quad', walk: 1.5, run: 10, stride: 1.4, size: 1, neck: [0, 0.98, 0.42], legs: [[0.12, 0.79, 0.34], [-0.12, 0.79, 0.34], [0.12, 0.79, -0.34], [-0.12, 0.79, -0.34]] },
-  { ...sheep, name: 'sheep', max: 70, huntable: false, gait: 'quad', walk: 0.6, run: 4, stride: 0.7, size: 1, neck: [0, 0.72, 0.37], legs: [[0.14, 0.42, 0.25], [-0.14, 0.42, 0.25], [0.14, 0.42, -0.25], [-0.14, 0.42, -0.25]] },
-  { ...cow, name: 'cow', max: 30, huntable: false, gait: 'quad', walk: 0.55, run: 3.5, stride: 1.2, size: 1, neck: [0, 1.13, 0.55], legs: [[0.18, 0.77, 0.42], [-0.18, 0.77, 0.42], [0.18, 0.77, -0.45], [-0.18, 0.77, -0.45]] },
-  { ...chicken, name: 'chicken', max: 60, huntable: false, gait: 'biped', walk: 0.5, run: 3, stride: 0.3, size: 1, neck: [0, 0.34, 0.1], legs: [[0.05, 0.2, 0], [-0.05, 0.2, 0]] },
+  { ...deer, name: 'deer', coat: 'fur', max: 40, huntable: true, gait: 'quad', walk: 1.2, run: 9, stride: 1.5, size: 1, neck: [0, 1.14, 0.45], legs: [[0.14, 0.91, 0.38], [-0.14, 0.91, 0.38], [0.14, 0.91, -0.4], [-0.14, 0.91, -0.4]] },
+  { ...boar, name: 'boar', coat: 'fur', max: 16, huntable: true, gait: 'quad', walk: 1.1, run: 6.5, stride: 0.95, size: 1, neck: [0, 0.64, 0.39], legs: [[0.16, 0.46, 0.3], [-0.16, 0.46, 0.3], [0.16, 0.46, -0.3], [-0.16, 0.46, -0.3]] },
+  { ...rabbit, name: 'rabbit', coat: 'fur', max: 40, huntable: true, gait: 'hop', walk: 0.9, run: 6, stride: 0.6, size: 1, neck: [0, 0.275, 0.14], legs: [] },
+  { ...wolf, name: 'wolf', coat: 'fur', max: 10, huntable: false, gait: 'quad', walk: 1.5, run: 10, stride: 1.4, size: 1, neck: [0, 0.98, 0.42], legs: [[0.12, 0.79, 0.34], [-0.12, 0.79, 0.34], [0.12, 0.79, -0.34], [-0.12, 0.79, -0.34]] },
+  { ...sheep, name: 'sheep', coat: 'fleece', max: 70, huntable: false, gait: 'quad', walk: 0.6, run: 4, stride: 0.7, size: 1, neck: [0, 0.72, 0.37], legs: [[0.14, 0.42, 0.25], [-0.14, 0.42, 0.25], [0.14, 0.42, -0.25], [-0.14, 0.42, -0.25]] },
+  { ...cow, name: 'cow', coat: 'fur', max: 30, huntable: false, gait: 'quad', walk: 0.55, run: 3.5, stride: 1.2, size: 1, neck: [0, 1.13, 0.55], legs: [[0.18, 0.77, 0.42], [-0.18, 0.77, 0.42], [0.18, 0.77, -0.45], [-0.18, 0.77, -0.45]] },
+  { ...chicken, name: 'chicken', coat: 'feathers', max: 60, huntable: false, gait: 'biped', walk: 0.5, run: 3, stride: 0.3, size: 1, neck: [0, 0.34, 0.1], legs: [[0.05, 0.2, 0], [-0.05, 0.2, 0]] },
+  { ...pig, name: 'pig', coat: 'hide', max: 70, huntable: false, gait: 'quad', walk: 0.68, run: 3.7, stride: 0.72, size: 1, neck: [0, 0.59, 0.31], legs: [[0.16, 0.41, 0.23], [-0.16, 0.41, 0.23], [0.16, 0.41, -0.39], [-0.16, 0.41, -0.39]] },
 ];
 
 interface Animal extends Huntable {
@@ -60,11 +63,12 @@ export class Wildlife implements WildLike {
 
   constructor(seed: bigint, private terrain: Terrain, trees: { x: number; z: number }[], sites: number[]) {
     const r = rng(Number(seed % 1000003n) + 17);
+    const skin = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
     SPECIES.forEach(spec => {
-      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
-      const mk = (g: THREE.BufferGeometry, max: number) => { const m = new THREE.InstancedMesh(g, mat, max); m.castShadow = true; m.frustumCulled = false; m.count = 0; this.group.add(m); return m; };
+      const coat = new THREE.MeshStandardMaterial({ map: surfaceTexture(spec.coat), vertexColors: true, roughness: 0.94 });
+      const mk = (g: THREE.BufferGeometry, max: number, mat = skin) => { const m = new THREE.InstancedMesh(g, mat, max); m.castShadow = true; m.frustumCulled = false; m.count = 0; this.group.add(m); return m; };
       this.normalHeads.push(spec.head());
-      this.bodies.push(mk(spec.body(), spec.max)); this.heads.push(mk(this.normalHeads.at(-1)!, spec.max));
+      this.bodies.push(mk(spec.body(), spec.max, coat)); this.heads.push(mk(this.normalHeads.at(-1)!, spec.max));
       const lg = spec.legGeo(); this.legMeshes.push(lg && spec.legs.length ? mk(lg, spec.max * spec.legs.length) : null);
     });
     const near = (x: number, z: number) => { for (let i = 0; i < sites.length; i += 2) if (Math.hypot(x - sites[i], z - sites[i + 1]) < 120) return true; return false; };
@@ -105,7 +109,7 @@ export class Wildlife implements WildLike {
   /** Farm animals follow the buildings of a village. `key` identifies the village. */
   syncDomestic(key: string, buildings: Float32Array) {
     const S = 10; const parts: string[] = [];
-    for (let i = 0; i < buildings.length; i += S) { const k = buildings[i]; if (k === PASTURE || k === 1 || (k === 0 && buildings[i + 1] <= 1)) parts.push(`${k}:${buildings[i + 2]}:${buildings[i + 3]}:${buildings[i + 1]}`); }
+    for (let i = 0; i < buildings.length; i += S) { const k = buildings[i]; if (isLivestockPen(k) || k === 1 || (k === 0 && buildings[i + 1] <= 1)) parts.push(`${k}:${buildings[i + 2]}:${buildings[i + 3]}:${buildings[i + 1]}`); }
     const sig = parts.join('|'); if (this.domSig.get(key) === sig) return; this.domSig.set(key, sig);
     this.animals = this.animals.filter(a => a.owner !== key);
     const r = rng(parts.length * 977 + 3);
@@ -124,6 +128,7 @@ export class Wildlife implements WildLike {
         add(4, 4 + tier, x, z, 4.5, GRAZING_RADIUS);
         if (tier > 0) add(5, tier, x, z, 4.5, GRAZING_RADIUS);
       }
+      else if (k === PIGSTY) add(7, 4 + buildings[i + 1], x, z, 4.5, GRAZING_RADIUS);
       else if (k === 1) add(4, 2, x, z + 4, 5);
       else if (k === 0 && buildings[i + 1] <= 1) add(6, 2, x, z + 3.5, 4);
     }

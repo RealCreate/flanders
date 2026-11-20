@@ -57,7 +57,7 @@ test('both siege axles roll by the distance travelled and rotate around their hu
   }
 });
 
-const terrain = { walkAt: () => 0, riverSurfaceAt: () => 0, water: { position: { y: 0 } } };
+const terrain = { walkAt: () => 0, renderedWaterAt: () => 0, water: { position: { y: 0 } } };
 const at = (x, z) => new ArmyPicker(new THREE.Ray(new THREE.Vector3(x, 9, z), new THREE.Vector3(0, -1, 0)));
 const det = (id, state, foot, catapult, ram) => [id, 40, 0, foot, 0, 0, 0, catapult, state, 0, 0, 0, 0, 0, 0, 0, ram];
 const crowd = { add() {} };

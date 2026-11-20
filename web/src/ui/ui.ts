@@ -272,7 +272,11 @@ export class UI {
       Farm <span class="arrow">→</span> ${icon('grain', 16)} Grain + ${icon('wood', 16)} <span class="arrow">→</span> Bakery <span class="arrow">→</span> ${icon('bread', 16)} Bread. Cooked food fills more than raw: the village eats from all its stores together.</div>
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
-  <section class="pane" id="pane-sel"></section>
+  <section class="pane" id="pane-sel">
+    <div id="selected-details"></div>
+    <p class="muted" id="selected-refund" hidden></p>
+    <div class="btnrow"><button class="pbtn danger" id="selected-demolish" data-act="demolish" hidden>Demolish</button><button class="pbtn" data-act="deselect">Close</button></div>
+  </section>
 </aside>
 <div id="minimap-card" hidden><div class="cap" id="mm-cap" title="Hide / show the minimap (M)"><span>REALM</span><span id="mm-hint">click to travel</span><i id="mm-full" title="Full-screen map (M)">${bi('fullscreen', 14)}</i><b id="mm-chev">▾</b></div><canvas id="minimap" width="190" height="190"></canvas></div>
 <div id="goals" hidden><div class="gh" id="goals-head" title="Collapse"><b>Goals</b><span id="goals-count"></span><b id="goals-chev">▾</b></div><ul id="goal-list"></ul></div>
@@ -283,6 +287,7 @@ export class UI {
 <div id="tool-dock">
   <div id="hint" hidden></div>
   <div id="touch-tools" class="tool-row" aria-label="Touch building controls" hidden>
+    <button type="button" class="tool-action" id="touch-build" hidden disabled>Build here</button>
     <button type="button" class="tool-action" id="touch-rotate">Rotate</button>
     <button type="button" class="tool-action" id="touch-undo">Undo point</button>
     <button type="button" class="tool-action" id="touch-finish">Finish path</button>
@@ -604,9 +609,13 @@ export class UI {
   toggleMap(show = $('worldmap').hidden) { $('worldmap').hidden = !show; }
 
   /** The in-game right-click menu. `items` with no `run` are headings; '-' is a divider. */
-  ctxMenu(x: number, y: number, title: string, items: ({ label: string; sub?: string; disabled?: boolean; run?: () => void } | '-')[]) {
+  ctxMenu(x: number, y: number, title: string, items: ({ label: string; sub?: string; tip?: string; disabled?: boolean; run?: () => void } | '-')[]) {
     const m = $('ctxmenu');
-    m.innerHTML = `<div class="ctx-title">${esc(title)}</div>` + items.map((it, i) => it === '-' ? '<hr>' : `<button data-i="${i}" ${it.disabled ? 'disabled' : ''}><span>${esc(it.label)}</span>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</button>`).join('');
+    m.innerHTML = `<div class="ctx-title">${esc(title)}</div>` + items.map((it, i) => {
+      if (it === '-') return '<hr>';
+      const tip = it.tip ? ` data-tip="${esc(it.tip)}" aria-description="${esc(it.tip)}"` : '';
+      return `<button data-i="${i}"${it.disabled ? ' disabled' : ''}${tip}><span>${esc(it.label)}</span>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</button>`;
+    }).join('');
     m.hidden = false;
     m.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-i]'); if (!b || b.disabled) return; const it = items[Number(b.dataset.i)]; this.closeCtx(); if (it !== '-') it.run?.(); };
     const w = m.offsetWidth, h = m.offsetHeight; m.style.left = Math.max(4, Math.min(x, innerWidth - w - 4)) + 'px'; m.style.top = Math.max(4, Math.min(y, innerHeight - h - 4)) + 'px';
@@ -752,9 +761,13 @@ export class UI {
       const t = (e.target as HTMLElement).closest?.('[title],[data-tip]') as HTMLElement | null;
       if (!t || t === cur || t.closest('#tooltip')) return;
       const title = t.getAttribute('title'); if (title) { t.dataset.tip = title; t.removeAttribute('title'); }   // take the title over so the browser does not draw its own
-      const text = t.dataset.tip; if (!text) return;
+      if (!t.dataset.tip) return;
       hide(); cur = t;
-      timer = window.setTimeout(() => { const r = t.getBoundingClientRect(); this.tip(`<small style="color:#f3ead2">${esc(text)}</small>`, Math.max(8, Math.min(innerWidth - 280, r.left)) - 16, r.bottom > innerHeight - 80 ? r.top - 56 : r.bottom - 6); $('tooltip').dataset.from = 'title'; }, 380);
+      timer = window.setTimeout(() => {
+        const text = t.dataset.tip;
+        if (!text || !t.matches(':hover')) return;
+        const r = t.getBoundingClientRect(); this.tip(`<small style="color:#f3ead2">${esc(text)}</small>`, Math.max(8, Math.min(innerWidth - 280, r.left)) - 16, r.bottom > innerHeight - 80 ? r.top - 56 : r.bottom - 6); $('tooltip').dataset.from = 'title';
+      }, 380);
     });
     document.addEventListener('mouseout', e => { if (cur && !cur.contains(e.relatedTarget as Node)) hide(); });
     document.addEventListener('pointerdown', hide, true); document.addEventListener('wheel', hide, { passive: true });
@@ -1220,11 +1233,20 @@ export class UI {
   private armyNow: number[] = [];
   maxAttack(army: number[]) { this.armyNow = army; units.slice(0, 6).forEach(u => { for (const p of ['atk', 'mus']) { const i = document.getElementById(`${p}-${u.id}`) as HTMLInputElement | null; if (i) { i.max = String(army[u.id]); if (Number(i.value) > army[u.id]) i.value = String(army[u.id]); } } const av = document.getElementById(`mav-${u.id}`); if (av) av.textContent = `${army[u.id]} in the barracks`; }); }
 
-  setSelectedPane(html: string | null) {
+  setSelectedPane(html: string | null, demolishTip = '') {
     const tab = $('tab-sel');
+    const demolish = $('selected-demolish');
+    if (demolish.dataset.tip !== demolishTip) {
+      if (demolish.matches(':hover') && $('tooltip').dataset.from === 'title') this.tip(null);
+      demolish.dataset.tip = demolishTip;
+      demolish.setAttribute('aria-description', demolishTip);
+      demolish.hidden = !demolishTip;
+      $('selected-refund').textContent = demolishTip;
+      $('selected-refund').hidden = !demolishTip;
+    }
     if (html === null) { tab.hidden = true; if (this.tab === 'sel') this.setTab('build'); if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); } return; }
     if (this.sliding) return;   // a slider is being dragged: do not pull it from under the pointer
-    $('pane-sel').innerHTML = html; tab.hidden = false;
+    $('selected-details').innerHTML = html; tab.hidden = false;
   }
   showSelectedTab() { if (this.pref.ledger && !this.tempOpen) { this.tempOpen = true; this.applyPanels(); } this.setTab('sel'); }
   get currentTab() { return this.tab; }
@@ -1260,12 +1282,13 @@ export class UI {
       const [r, left, cap, refill, p100, days] = [goods[i], goods[i + 1], goods[i + 2], goods[i + 3], goods[i + 4], goods[i + 5]];
       const unit = (n: number) => Math.ceil(p100 * n / 100), canNow = (n: number) => left >= n && stocks[8] >= unit(n) && stocks[r] + n <= room;
       const most = Math.max(0, Math.min(left, room - stocks[r], Math.floor(stocks[8] * 100 / Math.max(1, p100))));
+      const emergency = r === 11;
       const when = left >= cap ? 'full' : `full in ${days} day${days === 1 ? '' : 's'}`;
-      rows.push(`<div class="mkt-row"><span class="mkt-good">${resIcon(r)} <b>${RES[r].name}</b></span><span class="mkt-left" title="Refills ${refill} a day">${left} / ${cap} left<small> · ${when}</small></span>
+      rows.push(`<div class="mkt-row"><span class="mkt-good">${resIcon(r)} <b>${RES[r].name}</b></span><span class="mkt-left" title="${emergency ? 'One tool restocks every 3 days' : `Refills ${refill} a day`}">${left} / ${cap} left<small> · ${when}</small></span>
         <span class="mkt-price">${icon('gold', 14)} ${(p100 / 100).toFixed(p100 % 100 ? 2 : 0)} each</span>
-        <span class="btnrow"><button class="pbtn" data-act="buy:${r}:10" ${canNow(10) ? '' : 'disabled'}>+10</button><button class="pbtn" data-act="buy:${r}:50" ${canNow(50) ? '' : 'disabled'}>+50</button><button class="pbtn" data-act="buy:${r}:${most}" ${most < 1 ? 'disabled' : ''} title="As many as the stall has, you can pay for and the stores hold">All${most > 0 ? ` (${most}, ${unit(most)})` : ''}</button></span></div>`);
+        <span class="btnrow"><button class="pbtn" data-act="buy:${r}:${emergency ? 1 : 10}" ${canNow(emergency ? 1 : 10) ? '' : 'disabled'}>+${emergency ? 1 : 10}</button><button class="pbtn" data-act="buy:${r}:${emergency ? 2 : 50}" ${canNow(emergency ? 2 : 50) ? '' : 'disabled'}>+${emergency ? 2 : 50}</button><button class="pbtn" data-act="buy:${r}:${most}" ${most < 1 ? 'disabled' : ''} title="As many as the stall has, you can pay for and the stores hold">All${most > 0 ? ` (${most}, ${unit(most)})` : ''}</button></span></div>${emergency ? '<p class="muted">Emergency tools · 15 gold each · one restocks every 3 days · shared limit of 2 across all markets.</p>' : ''}`);
     }
-    return `<div><h3>Market</h3><div class="mkt">${rows.join('')}</div><p class="muted">Buy with gold at a markup. The stalls restock at the turn of every day (next in ${Math.ceil(toDawn / day * 24)} hours); a grander market, or a second one, stocks more.</p></div>`;
+    return `<div><h3>Market</h3><div class="mkt">${rows.join('')}</div><p class="muted">Buy with gold at a markup. Basic goods restock at the turn of every day (next in ${Math.ceil(toDawn / day * 24)} hours). Grander markets stock more basic goods.</p></div>`;
   }
   costHtml(c: [number, number][], stocks: number[]) { return c.map(([r, n]) => `<span class="${stocks[r] < n ? 'short' : ''}">${resIcon(r)} ${n}</span>`).join(' '); }
   fmt = fmtCost;

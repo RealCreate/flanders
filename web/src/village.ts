@@ -51,11 +51,16 @@ export class Village {
   fireData: Float32Array = new Float32Array(0);
 
   constructor(public world: World, public key: string, public name: string, public mine: boolean, private sh: Shared, color: number) {
-    this.defaultBanner = color; this.view = new VillageView(color, (x, z, rot) => this.world.shore_water_height(x, z, rot)); this.paths = new Paths(sh.terrain); this.nodes = new RoadNodes(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
+    this.defaultBanner = color;
+    this.view = new VillageView(color, (x, z, rot) => this.world.shore_water_height(x, z, rot), (x, z) => sh.terrain.heightAt(x, z, true));
+    this.paths = new Paths(sh.terrain); this.nodes = new RoadNodes(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
     this.moats = new MoatWater(sh.terrain, STEP); sh.scene.add(this.moats.group);
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain); this.field.friend = color; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
-    this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain); this.boats = new Boats(sh.terrain, (x, z) => this.moats.levelAt(x, z));
+    this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain);
+    const channel = (x: number, z: number) => this.moats.levelAt(x, z);
+    this.army.channelLevelAt = this.field.channelLevelAt = channel;
+    this.boats = new Boats(sh.terrain, channel);
     this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k); this.army.onRage = (x, y, z) => sh.fx.rageSpark(x, y, z);
     this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
     this.people.depositClear = (a, b, c, d) => this.world.deposit_leg_clear(a, b, c, d);
@@ -130,7 +135,7 @@ export class Village {
     this.nodes.update(w.road_nodes_flat());
     this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat());
     const water = w.moat_water_flat();
-    this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.moats.update(water);
+    this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.moats.update(water, f);
     this.props.update(f, roads, this.sh.radii);
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
     this.people.setRoads(roads); this.people.sync(f, NO_PATHS, this.sh.radii, w.population(), w.terrain_version());
@@ -190,7 +195,6 @@ export class Village {
     }
     this.syncField();
     if (fighting) this.army.foe = pickFoe(this.army.friend, this.foeColor(w.battle_tag()) ?? 0x4a3a2a);
-    this.army.moats = this.field.moats = w.moat_water_flat();
     if (!fighting) { const last = w.take_last_battle_frame(); if (this.army.battle && last.length) this.army.syncBattle(last); }
     this.army.syncBattle(fighting ? w.battle_units_flat() : new Float32Array(0), fighting ? w.battle_detachment_ids() : undefined);
     this.army.syncSiegeWorks(fighting ? w.battle_ladders_flat() : new Float32Array(0), fighting ? w.battle_bridges_flat() : new Float32Array(0));

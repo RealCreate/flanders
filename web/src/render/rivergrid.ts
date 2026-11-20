@@ -1,6 +1,11 @@
 const CHANNEL = 2;
 const TIDE_MARGIN = 1;
 
+/** Sample a grid cell split along its north-east to south-west diagonal. */
+export function triangleHeight(a: number, b: number, c: number, d: number, dx: number, dz: number) {
+  return dx + dz <= 1 ? a + (b - a) * dx + (c - a) * dz : d + (c - d) * (1 - dx) + (b - d) * (1 - dz);
+}
+
 function riverVertex(stages: ArrayLike<number>, cells: Uint8Array, size: number, i: number, j: number) {
   const stride = size - 1;
   if (i === 0 || j === 0 || i === stride || j === stride) return 0;
@@ -69,13 +74,7 @@ export function renderedRiverAt(stages: ArrayLike<number>, cells: Uint8Array, si
     const f = Math.min(1, stage / 1.2);
     return Math.max(tide, stage + tide * (1 - f * f * (3 - 2 * f)));
   };
-  const dx = gx - i, dz = gz - j, b = at(i + 1, j), c = at(i, j + 1);
-  if (dx + dz <= 1) {
-    const a = at(i, j);
-    return a + (b - a) * dx + (c - a) * dz;
-  }
-  const d = at(i + 1, j + 1);
-  return d + (c - d) * (1 - dx) + (b - d) * (1 - dz);
+  return triangleHeight(at(i, j), at(i + 1, j), at(i, j + 1), at(i + 1, j + 1), gx - i, gz - j);
 }
 
 /** Combine adjacent sea cells into rectangles, and close the four offshore strips beyond the terrain. */

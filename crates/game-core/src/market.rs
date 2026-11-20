@@ -18,6 +18,8 @@ pub const TIER_PCT: [i32; 4] = [100, 150, 200, 300];
 pub const EXTRA_PCT: i32 = 50;
 /// The stall's price over the village's usual price, percent.
 pub const MARKUP_PCT: i64 = 130;
+const TOOL_PRICE: i32 = 15;
+const TOOL_RESTOCK: u64 = 3 * DAY;
 
 impl World {
     /// Percent of the table's numbers the village's markets give together (0 with no market).
@@ -31,10 +33,21 @@ impl World {
     fn market_cap_refill(&self, slot: usize) -> (i32, i32) { let s = self.market_scale(); (MARKET_GOODS[slot].1 * s / 100, MARKET_GOODS[slot].2 * s / 100) }
     fn market_left(&self, slot: usize) -> i32 { (self.market_cap_refill(slot).0 - self.market_sold[slot]).max(0) }
     /// What `n` units of a good cost at the market now, in coins.
-    pub(crate) fn market_cost(&self, res: u8, n: i32) -> i32 { ((self.price_x100(res as usize) as i64 * n as i64 * MARKUP_PCT + 9_999) / 10_000).min(i32::MAX as i64) as i32 }
+    pub(crate) fn market_cost(&self, res: u8, n: i32) -> i32 {
+        if res == TL { return n.saturating_mul(TOOL_PRICE); }
+        ((self.price_x100(res as usize) as i64 * n as i64 * MARKUP_PCT + 9_999) / 10_000).min(i32::MAX as i64) as i32
+    }
+
+    pub(crate) fn refill_emergency_tools(&mut self) {
+        while self.emergency_tools[0] > 0 && self.tick >= self.emergency_tools[1] {
+            self.emergency_tools[0] -= 1;
+            self.emergency_tools[1] = if self.emergency_tools[0] == 0 { 0 } else { self.emergency_tools[1] + TOOL_RESTOCK };
+        }
+    }
 
     /// Once a day: the stalls are restocked.
     pub(crate) fn market_refill(&mut self) {
+        self.refill_emergency_tools();
         if self.market_scale() == 0 { self.market_sold = [0; MARKET_GOODS.len()]; return; }
         for s in 0..MARKET_GOODS.len() { let r = self.market_cap_refill(s).1; self.market_sold[s] = (self.market_sold[s] - r).max(0); }
     }
@@ -51,12 +64,30 @@ impl World {
             let days = if sold == 0 || refill <= 0 { 0 } else { (sold + refill - 1) / refill };
             v.extend([g.0 as i32, (cap - sold).max(0), cap, refill, (self.price_x100(g.0 as usize) as i64 * MARKUP_PCT / 100) as i32, days]);
         }
+        if self.estate.active {
+            let [sold, next] = self.emergency_tools;
+            let until_full = if sold == 0 { 0 } else { (next.saturating_sub(self.tick) + (sold - 1) * TOOL_RESTOCK).div_ceil(DAY) };
+            v.extend([TL as i32, 2 - sold as i32, 2, 0, TOOL_PRICE * 100, until_full as i32]);
+        }
         v
     }
     /// How much of one good the stores hold at most.
     pub fn storage_limit(&self) -> i32 { self.storage_cap() }
     /// Buy `n` units of a good from the markets with gold. Returns 0 ok, -1 not on sale (or nothing asked), -2 not that much left, -6 not enough gold, -7 the stores have no room.
     pub fn buy(&mut self, res: u8, n: i32) -> i32 {
+        if res == TL && self.estate.active {
+            if n < 1 || self.market_scale() == 0 { return -1; }
+            if n > 2 - self.emergency_tools[0] as i32 { return -2; }
+            let cost = self.market_cost(res, n);
+            if self.stock[GD as usize] < cost { return -6; }
+            if self.stock[TL as usize].saturating_add(n) > self.storage_cap() { return -7; }
+            if self.emergency_tools[0] == 0 { self.emergency_tools[1] = self.tick + TOOL_RESTOCK; }
+            self.emergency_tools[0] += n as u64;
+            self.stock[GD as usize] -= cost;
+            self.stock[TL as usize] += n;
+            self.push_event(EV_TRADE, -cost, TL as i32);
+            return 0;
+        }
         let Some(slot) = Self::market_slot(res) else { return -1 };
         if n < 1 || self.market_scale() == 0 { return -1; }
         if n > self.market_left(slot) { return -2; }

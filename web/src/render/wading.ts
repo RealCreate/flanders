@@ -10,13 +10,6 @@ export const MAX_RISE = 6;
 /** How far above the water surface a raider is drawn (it stands on a raft, whose deck is a little above the logs). */
 export const WADE_LIFT = 0.12;
 
-/** The surface of the moat water at a point: the highest level of the pieces whose ditch covers it, or 0 (the sea). `flat` is World.moat_water_flat(): [x, z, reach, level] per piece. */
-export function moatLevelAt(flat: ArrayLike<number>, x: number, z: number): number {
-  let level = 0;
-  for (let i = 0; i + 3 < flat.length; i += 4) if (Math.hypot(flat[i] - x, flat[i + 1] - z) < flat[i + 2] + 1 && flat[i + 3] > level) level = flat[i + 3];
-  return level;
-}
-
 /** Where a soldier's feet want to be: on the ground, or on the water's surface where the ground is under it. `level` is the moat water here (0 outside moats), and counts when the
  *  soldier is in a moat (level > 0) or the core says it is wading (a river). The core flips the wading flag a little before or after the water is really reached, so the water is
  *  decided by what is under the feet, not by the flag, or the height would jump when it flips. Taking the higher of the two keeps it continuous across the bank. */

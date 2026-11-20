@@ -6,6 +6,7 @@ import { Particles, type EffectView } from './fx';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { PEN_HALF_DEPTH, PEN_HALF_WIDTH } from '../pasture';
 import { makeBoat } from './field';
+import { tileableNoise } from './water';
 
 // ---------- procedural textures & materials ----------
 const TILE = 2; // one texture repeat covers 2 world units
@@ -18,6 +19,50 @@ function tex(paint: (g: CanvasRenderingContext2D, s: number) => void, s = 256) {
 }
 const speckle = (g: CanvasRenderingContext2D, s: number, n: number, a: number) => {
   for (let i = 0; i < n; i++) { const v = Math.random() > 0.5 ? 255 : 0; g.fillStyle = `rgba(${v},${v},${v},${Math.random() * a})`; g.fillRect(Math.random() * s, Math.random() * s, 1 + Math.random() * 2, 1 + Math.random() * 2); }
+};
+const fract = (n: number) => n - Math.floor(n);
+const wave = (n: number) => Math.cos(n * Math.PI * 2);
+type Grain = (u: number, v: number, wear: number, grit: number) => number;
+
+function grainTile(colour: [number, number, number], grain: Grain) {
+  return tex((g, size) => {
+    const weather = tileableNoise(size, [[4, 0.7, false], [12, 0.3, false]], 6151);
+    const grit = tileableNoise(size, [[45, 0.7, false], [90, 0.3, false]], 7901);
+    const image = g.getImageData(0, 0, size, size);
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const i = y * size + x;
+      const light = grain((x + 0.5) / size, (y + 0.5) / size, weather[i] - 0.5, grit[i] - 0.5);
+      for (let c = 0; c < 3; c++) image.data[i * 4 + c] = colour[c] * light;
+      image.data[i * 4 + 3] = 255;
+    }
+    g.putImageData(image, 0, 0);
+  });
+}
+
+const timberGrain: Grain = (u, v, wear, grit) => {
+  const plank = u * 6, along = fract(plank);
+  const seam = 1 - Math.min(1, Math.min(along, 1 - along) * 26);
+  const crown = Math.max(0, 1 - Math.abs(along - 0.07) * 15);
+  const drift = wear * 0.46 + 0.28 * wave(v * 2 + u * 4);
+  const fibres = wave(u * 54 + drift) * 0.06 + wave(u * 103 - drift * 1.4) * 0.028;
+  const board = [0.035, -0.055, 0.08, -0.03, -0.075, 0.035][Math.floor(plank)];
+  return 1 + board + fibres + wear * 0.20 + grit * 0.075 - seam * 0.27 + crown * 0.09;
+};
+
+const thatchGrain: Grain = (u, v, wear, grit) => {
+  const course = fract(v * 3 + 0.04 * wave(u * 5) + 0.12 * wear);
+  const overlap = 1 - Math.min(1, course * 8);
+  const straw = wave(u * 63 + 0.30 * wave(v * 2 + u * 3) + wear * 0.5);
+  return 1 + 0.2 * wear + 0.075 * straw + 0.07 * grit - 0.19 * overlap;
+};
+
+const tileGrain: Grain = (u, v, wear, grit) => {
+  const row = v * 6;
+  const across = fract(u * 6 + (Math.floor(row) % 2) * 0.5);
+  const edge = Math.min(across, 1 - across);
+  const lip = 1 - Math.min(1, fract(row - 0.11 * (1 - (2 * across - 1) ** 2)) * 7);
+  const joint = 1 - Math.min(1, edge * 27);
+  return 1 + wear * 0.24 + 0.09 * wave(across - 0.5) - 0.24 * lip - 0.19 * joint + grit * 0.13;
 };
 function rows(g: CanvasRenderingContext2D, s: number, base: string, lines: string, rowsN: number, stagger: boolean, cols: number, jitter = 18) {
   g.fillStyle = base; g.fillRect(0, 0, s, s);
@@ -40,7 +85,8 @@ function normalFrom(c: HTMLCanvasElement, strength: number) {
     let nx = (l - r) * strength, ny = (d - u) * strength, nz = 1; const len = Math.hypot(nx, ny, nz); nx /= len; ny /= len; nz /= len;
     out.set([(nx * 0.5 + 0.5) * 255, (ny * 0.5 + 0.5) * 255, (nz * 0.5 + 0.5) * 255, 255], (y * s + x) * 4);
   }
-  const t = new THREE.DataTexture(out, s, s, THREE.RGBAFormat); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; t.needsUpdate = true;
+  const t = new THREE.DataTexture(out, s, s, THREE.RGBAFormat); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.anisotropy = 8; t.needsUpdate = true;
   return t;
 }
 let _m: ReturnType<typeof makeMats> | null = null;
@@ -48,8 +94,8 @@ function makeMats() {
   const std = (map: THREE.Texture | null, extra: THREE.MeshStandardMaterialParameters = {}) => new THREE.MeshStandardMaterial({ map, normalMap: map ? normalFrom(map.userData.canvas, 3.2) : null, normalScale: new THREE.Vector2(1, 1), vertexColors: true, roughness: 0.92, metalness: 0, ...extra });
   const col = (c: number, extra: THREE.MeshStandardMaterialParameters = {}) => new THREE.MeshStandardMaterial({ color: c, vertexColors: true, roughness: 0.9, ...extra });
   return {
-    wood: std(tex((g, s) => { g.fillStyle = '#7a5a3a'; g.fillRect(0, 0, s, s); for (let i = 0; i < 8; i++) { g.fillStyle = `rgba(${Math.random() > 0.5 ? '40,25,10' : '200,160,110'},0.25)`; g.fillRect(i * s / 8, 0, s / 8 - 2, s); g.fillStyle = 'rgba(30,18,8,.55)'; g.fillRect(i * s / 8 - 1, 0, 2, s); } speckle(g, s, 600, 0.2); })),
-    darkwood: std(tex((g, s) => { g.fillStyle = '#4b3524'; g.fillRect(0, 0, s, s); for (let i = 0; i < 6; i++) { g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(i * s / 6, 0, 2, s); } speckle(g, s, 500, 0.2); })),
+    wood: std(grainTile([124, 91, 59], timberGrain), { normalScale: new THREE.Vector2(0.65, 0.65) }),
+    darkwood: std(grainTile([77, 56, 38], timberGrain), { normalScale: new THREE.Vector2(0.65, 0.65) }),
     plaster: std(tex((g, s) => { g.fillStyle = '#e4d6b4'; g.fillRect(0, 0, s, s); speckle(g, s, 1400, 0.16); for (let i = 0; i < 20; i++) { g.fillStyle = 'rgba(120,100,60,.05)'; g.beginPath(); g.arc(Math.random() * s, Math.random() * s, 8 + Math.random() * 14, 0, 7); g.fill(); } })),
     // half-timbered panel: oak frame, diagonal brace and plaster infill (one panel per texture tile)
     timber: std(tex((g, s) => {
@@ -72,9 +118,11 @@ function makeMats() {
     stone: std(tex((g, s) => rows(g, s, '#9a968d', 'rgba(50,48,44,.7)', 5, true, 4, 40))),
     darkstone: std(tex((g, s) => rows(g, s, '#6e6c68', 'rgba(25,25,25,.7)', 5, true, 4, 40))),
     brick: std(tex((g, s) => rows(g, s, '#a4553b', 'rgba(70,35,25,.8)', 8, true, 5, 50))),
-    thatch: std(tex((g, s) => { g.fillStyle = '#b99a55'; g.fillRect(0, 0, s, s); for (let i = 0; i < 420; i++) { g.strokeStyle = `rgba(${Math.random() > 0.5 ? '90,66,30' : '230,200,120'},${0.2 + Math.random() * 0.3})`; g.lineWidth = 1 + Math.random(); const x = Math.random() * s; g.beginPath(); g.moveTo(x, Math.random() * s); g.lineTo(x + (Math.random() - 0.5) * 6, Math.random() * s); g.stroke(); } })),
-    tile: std(tex((g, s) => rows(g, s, '#b4562f', 'rgba(70,25,10,.8)', 6, true, 6, 50))),
-    slate: std(tex((g, s) => rows(g, s, '#4f5560', 'rgba(15,18,24,.8)', 6, true, 5, 40))),
+    thatch: std(grainTile([184, 153, 82], thatchGrain), { normalScale: new THREE.Vector2(0.58, 0.58) }),
+    tile: std(grainTile([170, 85, 54], tileGrain)),
+    slate: std(grainTile([81, 92, 107], tileGrain)),
+    trampled: std(grainTile([96, 75, 56], (_u, _v, wear, grit) => 0.96 + 0.62 * wear + 0.25 * grit)),
+    wallow: std(grainTile([85, 68, 54], (u, v, wear, grit) => 0.97 + 0.43 * wear + 0.10 * grit + 0.05 * wave(u * 2 - v * 3)), { roughness: 0.67 }),
     field: std(tex((g, s) => { g.fillStyle = '#7b8c3e'; g.fillRect(0, 0, s, s); for (let i = 0; i < 10; i++) { g.fillStyle = i % 2 ? 'rgba(180,170,70,.55)' : 'rgba(80,60,30,.35)'; g.fillRect(0, i * s / 10, s, s / 10 - 3); } speckle(g, s, 500, 0.15); }), { roughness: 1 }),
     glass: col(0x203040, { roughness: 0.2, metalness: 0.3 }),
     door: col(0x3a2616),
@@ -143,7 +191,12 @@ class B {
     const sh = new THREE.Shape(); sh.moveTo(-e, -lip); sh.lineTo(e, -lip); sh.lineTo(e, 0); sh.lineTo(0, h); sh.lineTo(-e, 0); sh.closePath();
     const geo = new THREE.ExtrudeGeometry(sh, { depth: w + o * 2, bevelEnabled: false });
     geo.translate(0, 0, -(w + o * 2) / 2); geo.rotateY(Math.PI / 2);
-    const uv = geo.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / TILE, uv.getY(i) / TILE);
+    const { uv, position, normal } = geo.attributes;
+    const slopeLength = Math.hypot(e, h);
+    for (let i = 0; i < uv.count; i++) {
+      if (normal.getY(i) > 0.05) uv.setXY(i, position.getX(i) / TILE, position.getY(i) * slopeLength / (h * TILE));
+      else uv.setXY(i, uv.getX(i) / TILE, uv.getY(i) / TILE);
+    }
     const grp = new THREE.Group(), wood = M().darkwood;
     grp.add(new THREE.Mesh(geo, mat));
     if (o >= 0.3 && w >= 2) {
@@ -859,7 +912,7 @@ function portFooting(b: B, mat: THREE.Material, height = 0.45) {
   const { width, depth, x, z } = portWarehouse(b.t);
   b.box(width + 0.6, height, depth + 0.6, mat, x, 0.35 - height, z);
 }
-// Port: a quay with a warehouse, a crane and a merchant ship moored at the end of the pier. The pier runs out to the front (+Z): turn it with R so it reaches the water.
+// The port snaps onto a shore with its pier extending along local +Z.
 const port: Model = b => {
   const t = b.t, m = M(), { width: W, depth: D, x, z } = portWarehouse(t);
   const h = 2.6 + t * 0.4, wm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
@@ -870,8 +923,11 @@ const port: Model = b => {
   b.cyl(0.45, 0.45, 0.9, m.wood, 2.4, 0, 0.6, 10);
   // the pier: planks on posts, running out over the water
   const L = 11;
-  b.box(2.8, 0.22, L, m.wood, 2.2, 0.5, 2.0 + L / 2);
-  for (let z = 2.5; z < L + 2; z += 2.2) for (const x of [0.9, 3.5]) b.box(0.28, 2.6, 0.28, m.darkwood, x, -1.6, z);
+  for (let i = 0; i < 22; i++) b.box(2.8, 0.2, 0.49, i % 4 === 0 ? m.log : m.wood, 2.2, 0.5, 2.25 + i * 0.5);
+  for (let z = 2.5; z < L + 2; z += 2.2) for (const x of [0.9, 3.5]) {
+    b.slot(`port-pile-${x}-${z}`, { x, z }, () => b.box(0.28, 2.6, 0.28, m.darkwood, x, -2.1, z));
+  }
+  for (const x of [0.98, 3.42]) b.cyl(0.14, 0.17, 0.57, m.darkwood, x, 0.7, 12.65, 8);
   // a crane at the quayside
   b.box(0.3, 4.0 + t * 0.6, 0.3, m.darkwood, 3.2, 0.5, 2.6); b.box(3.0, 0.25, 0.25, m.darkwood, 1.9, 4.2 + t * 0.6, 2.6); b.box(0.05, 1.6, 0.05, m.iron, 0.6, 2.7 + t * 0.6, 2.6);
   if (t >= 2) { b.cyl(1.0, 1.2, 5.5, m.stone, -4.8, -0.2, 1.4, 12); b.cone(1.3, 1.8, m.slate, -4.8, 5.3, 1.4, 12); b.flag(-4.8, 7.0, 1.4, 2.2); }
@@ -909,10 +965,16 @@ const plaza: Model = b => {
   }
 };
 const pastureGrass = new THREE.MeshStandardMaterial({ color: 0x788d4b, roughness: 1, vertexColors: true });
-const pasture: Model = b => {
+const livestockPen = (pigs: boolean): Model => b => {
   const m = M(), x = PEN_HALF_WIDTH, z = PEN_HALF_DEPTH;
   const post = b.t === 2 ? m.stone : m.darkwood;
-  b.box(2 * x, 0.07, 2 * z, pastureGrass, 0, 0.025, 0);
+  b.box(2 * x, 0.07, 2 * z, pigs ? m.trampled : pastureGrass, 0, 0.025, 0);
+  if (pigs) {
+    const mud = b.cyl(1.51, 1.74, 0.05, m.wallow, 1.65, 0.095, 0.9, 13);
+    mud.scale.z = 0.72;
+    b.box(0.86, 0.36, 1.7, m.darkwood, -3.45, 0, 1.8);
+    b.box(0.68, 0.08, 1.53, m.hay, -3.45, 0.31, 1.8);
+  }
   for (const side of [-1, 1]) {
     for (const dz of [-z, 0, z]) b.box(0.22, 1.18, 0.22, post, side * x, 0, dz);
     b.box(0.22, 1.28, 0.22, post, side * 0.9, 0, z);
@@ -929,6 +991,21 @@ const pasture: Model = b => {
   b.gable(shed + 0.4, 2.03, 0.65, b.t === 2 ? m.tile : m.thatch, -2.5, 1.65, -3.1, 0.24);
   b.box(2.5, 0.44, 0.67, m.wood, 2.51, 0, -3.73);
   b.box(2.27, 0.08, 0.44, m.hay, 2.51, 0.38, -3.73);
+};
+const stable: Model = b => {
+  const m = M(), width = 7.2, depth = 5.3, top = 2.75;
+  b.box(width, 0.16, depth, m.stone, 0, 0, 0);
+  b.box(width, top, 0.22, m.timber, 0, 0, -depth / 2);
+  for (const x of [-3.5, 3.5]) b.box(0.22, top, depth, m.timber, x, 0, 0);
+  for (const x of [-3.5, -1.25, 1.25, 3.5]) b.box(0.24, top, 0.24, m.darkwood, x, 0, depth / 2);
+  b.box(width, 0.25, 0.26, m.darkwood, 0, top - 0.25, depth / 2);
+  b.gable(width, depth, 1.8, m.tile, 0, top, 0, 0.48);
+  for (const x of [-2.32, 2.32]) {
+    b.box(1.94, 1.06, 0.15, m.wood, x, 0.16, depth / 2);
+    b.box(1.55, 0.56, 0.63, m.darkwood, x, 0.16, -1.8);
+    b.box(1.31, 0.1, 0.48, m.hay, x, 0.65, -1.8);
+    b.box(0.96, 0.36, 1.35, m.hay, x, 0.15, -0.45);
+  }
 };
 const roadPiece: Model = b => { b.box(2.2, 0.12, 2.2, M().mud, 0, 0.02, 0); };
 
@@ -1067,7 +1144,7 @@ const bakery: Model = b => {
   if (t >= 2) b.box(W + 0.6, 0.2, 0.5, m.timber, 0, h + 0.1, D / 2 + 0.3);   // an awning over the counter
   if (t >= 3) b.flag(-W / 2 + 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza, pasture];
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza, livestockPen(false), livestockPen(true), stable];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,
@@ -1157,6 +1234,22 @@ export class BuildingModel {
     if (millrace) millrace.position.y = 0.7 - clearance;
     if (boat) boat.position.y = 0.55 - clearance;
     if (posts) posts.scale.y = Math.max(1, (clearance + 1.5) / 2);
+  }
+
+  /** Keep every pile against the terrain beneath it, with its head fixed to the deck. */
+  fitPortPier(x: number, z: number, turn: number, pad: number, groundAt: (x: number, z: number) => number) {
+    const angle = turn * Math.PI / 4, c = Math.cos(angle), s = Math.sin(angle);
+    let changed = false;
+    for (const [name, slot] of this.slots) {
+      if (!name.startsWith('port-pile-')) continue;
+      const { x: a, z: b } = slot.userData.info as { x: number; z: number };
+      const ground = groundAt(x + a * c + b * s, z - a * s + b * c);
+      const scale = Math.max(0.15, pad + 0.68 - ground) / 2.6;
+      if (Math.abs(slot.scale.y - scale) < 0.001) continue;
+      slot.scale.y = scale; slot.position.y = 0.5 * (1 - scale);
+      changed = true;
+    }
+    return changed;
   }
 
   /** Make the upgrades that are on be exactly `next` (a bit mask). Returns the groups that were added (to be built up with the scaffold) and the ones taken away. */
@@ -1415,7 +1508,8 @@ export class VillageView {
   animateNew = false;
   private items = new Map<number, Item>();
   get isBatched() { return this.dirtyCells.size === 0; }
-  constructor(private banner: number, private shoreWater?: (x: number, z: number, rot: number) => number) {}
+  constructor(private banner: number, private shoreWater?: (x: number, z: number, rot: number) => number,
+    private groundAt?: (x: number, z: number) => number) {}
   private flag: Flag | undefined;
   /** Change the flag every banner flies (or go back to the plain colour with null): the buildings are rebuilt with it. */
   setFlag(f: Flag | null, color: number) {
@@ -1462,6 +1556,7 @@ export class VillageView {
         // walls are drawn by the Walls renderer as one connected structure; keep an empty placeholder so indices line up
         const model = PLAIN.has(kind) ? undefined : new BuildingModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), this.flag);
         model?.setOptions(opt);
+        if (kind === 35 && this.groundAt) model?.fitPortPier(x, z, rot, pad, this.groundAt);
         if (shoreClearance !== undefined) model?.fitShore(shoreClearance);
         const g = model ? model.group : Object.assign(new THREE.Group(), { userData: { smoke: [], spin: [] } });
         g.userData.variant = Math.floor(Math.abs(x * 7.3 + z * 13.1)) % 4;
@@ -1477,6 +1572,9 @@ export class VillageView {
         this.endBuild(it);
         it.model?.fitShore(shoreClearance);
         it.shoreClearance = shoreClearance;
+      }
+      if (kind === 35 && this.groundAt && it.model?.fitPortPier(x, z, rot, pad, this.groundAt)) {
+        this.touch(it.cell); this.endBuild(it);
       }
       if (it.build || it.pop !== undefined) this.animating.add(it);
       this.status(it, status, pad, health, i);

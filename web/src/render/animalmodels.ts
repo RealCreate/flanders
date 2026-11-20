@@ -45,6 +45,25 @@ const leg = (w: number, length: number, c: number, hoof = BLACK) => merge(
   box([w * 1.02, length * 0.11, w * 1.35], hoof, [0, -length * 0.95, w * 0.13]),
 );
 
+export const pig = {
+  body: () => merge(
+    coat(ellipsoid([0.30, 0.30, 0.53], 0xe9a491, [0, 0.64, -0.08], 0, 2), 0xe9a491, 0x9c7867,
+      (x, y, z) => Math.max(0, Math.sin(z * 7 + x * 9) + Math.cos(y * 13) - 1.3) * 0.8),
+    tint(new THREE.TorusGeometry(0.078, 0.023, 5, 10, Math.PI * 1.65).rotateY(0.5).translate(0.035, 0.7, -0.61), 0xbb756d),
+  ),
+  head: (googly = false) => merge(
+    ellipsoid([0.225, 0.207, 0.26], 0xe3a18e, [0, 0.033, 0.16]),
+    ellipsoid([0.158, 0.11, 0.17], 0xc97973, [0, -0.042, 0.321]),
+    ellipsoid([0.143, 0.083, 0.044], 0xf2ada3, [0, -0.041, 0.466]),
+    ...eyes(0.169, 0.094, 0.26, 0.029, googly),
+    ...[-1, 1].flatMap(side => [
+      ellipsoid([0.027, 0.022, 0.012], 0x743d3c, [side * 0.049, -0.039, 0.505], 0, 0),
+      taper([side * 0.128, 0.145, 0.055], [side * 0.249, 0.32, 0.102], 0.083, 0.006, 0xd98683),
+    ]),
+  ),
+  legGeo: () => leg(0.11, 0.41, 0xcc8a7a, 0x583636),
+};
+
 export const deer = {
   body: () => merge(
     coat(ellipsoid([0.25, 0.28, 0.62], 0xb07b42, [0, 1.02, -0.03], 0, 2),

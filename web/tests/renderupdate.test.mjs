@@ -2,7 +2,9 @@
 // (a temporal dead zone) only shows when the code runs, and once crashed Village.syncFull in the live build. Bundles the class with vite (rolldown), then runs it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { stripTypeScriptTypes } from 'node:module';
 import { build } from 'vite';
 import { Matrix4, Vector3 } from 'three';
 
@@ -59,9 +61,15 @@ test('villagers and wildlife build and draw their coloured, instanced parts', as
   const bladeDirection = new Vector3(0, 1, 0).transformDirection(grip);
   assert.ok(bladeDirection.y < -0.2 && bladeDirection.z > 0.2, 'a working farmer hoes the ground in front of them');
   const wildlife = new Wildlife(31n, { heightAt: () => 5 }, [{ x: 20, z: 0 }], [0, 0]);
-  wildlife.syncDomestic('village', Float32Array.from([45, 1, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 10, 0, 0, 5, 0, 0, 0, 0]));
+  wildlife.syncDomestic('village', Float32Array.from([
+    45, 1, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 10, 0, 0, 5, 0, 0, 0, 0, 46, 0, -12, 0, 0, 5, 0, 0, 0, 0,
+  ]));
   wildlife.update(0.1, [], 0, 0, 80);
-  assert.equal(wildlife.group.children.filter(mesh => mesh.count > 0).length, 20);
+  assert.equal(wildlife.group.children.filter(mesh => mesh.count > 0).length, 23);
+  assert.equal(wildlife.animals.filter(animal => animal.domestic && animal.hx === -12).length, 4);
+  assert.equal(crowd.torso.material.map.name, 'linen');
+  assert.equal(crowd.dress.material.map, crowd.torso.material.map);
+  assert.deepEqual(wildlife.bodies.map(mesh => mesh.material.map.name), ['fur', 'fur', 'fur', 'fur', 'fleece', 'fur', 'feathers', 'hide']);
   for (const group of [crowd.group, wildlife.group]) {
     assert.ok(group.children.some(mesh => mesh.count > 0));
     for (const mesh of group.children) {
@@ -69,6 +77,12 @@ test('villagers and wildlife build and draw their coloured, instanced parts', as
       assert.equal(color.count, position.count);
       assert.equal(normal.count, position.count);
       for (const attribute of [position, normal, color]) assert.ok(attribute.array.every(Number.isFinite));
+      if (mesh.material.map) {
+        const uv = mesh.geometry.attributes.uv;
+        assert.equal(uv.count, position.count);
+        assert.ok(uv.array.every(Number.isFinite));
+        assert.ok(mesh.material.map.generateMipmaps);
+      }
       assert.ok(mesh.instanceMatrix.array.subarray(0, mesh.count * 16).every(Number.isFinite));
     }
   }
@@ -155,11 +169,57 @@ test('touch pans and pinches without delivering a tap, and preserves deliberate 
   const { dist, yaw } = rig;
   dom.send('pointerdown', 3, 530, 315); dom.send('pointermove', 3, 581, 343);
   assert.ok(rig.dist < dist);
-  assert.notEqual(rig.yaw, yaw);
+  assert.ok(rig.yaw > yaw, 'clockwise finger motion rotates in the matching direction');
+  dom.send('pointermove', 3, 530, 295);
+  assert.ok(rig.yaw < yaw, 'counterclockwise motion reverses the turn');
   dom.send('pointerup', 2, 426, 315); dom.send('pointerup', 3, 581, 343);
   assert.equal(rig.touchConsumed, true);
   pen = true;
   dom.send('pointerdown', 4, 400, 340); dom.send('pointermove', 4, 470, 350); dom.send('pointerup', 4, 470, 350);
   assert.equal(rig.touchConsumed, false);
+});
+
+test('touch building taps preview and relocate, confirmation builds, and a pan spends nothing', () => {
+  const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const input = source.slice(source.indexOf('function bindInput()'), source.indexOf('function depositHtml('));
+  class Canvas extends EventTarget {
+    setPointerCapture() {}
+    send(type, x, y) { this.dispatchEvent(Object.assign(new Event(type), { pointerType: 'touch', button: 0, pointerId: 1, clientX: x, clientY: y })); }
+  }
+  const canvas = new Canvas(), controls = new Map();
+  const previews = [], builds = [];
+  const context = {
+    ui: { canvas, selBox() {} },
+    document: { getElementById(id) { if (!controls.has(id)) controls.set(id, {}); return controls.get(id); } },
+    addEventListener() {}, performance: { now: () => 0 },
+    selectedKind: 0, selectedDet: null, LEVEL_TOOL: 255, TOUCH_DRAG_PIXELS: 10,
+    PEN_SPACING: {}, penShape: 'line', penStart: null, pendingBattleOrder: null,
+    penPreview: { clear() {} },
+    rig: { touchConsumed: false },
+    touchPreviewHit: () => false, showTouchTools() {}, cancelMarchPreview() {},
+    rotateTool() {}, finishStroke() {}, undoStroke() {}, selectKind() {},
+    previewTouchPlacement(e) { previews.push([e.clientX, e.clientY]); },
+    touchPlacementEvent: () => ({ clientX: previews.at(-1)[0], clientY: previews.at(-1)[1] }),
+    updateGhost() {}, buildAtPointer(e) { builds.push([e.clientX, e.clientY]); },
+  };
+  runInNewContext(stripTypeScriptTypes(input) + '\nbindInput();', context);
+  const tap = (x, y) => { canvas.send('pointerdown', x, y); canvas.send('pointerup', x, y); };
+  tap(100, 120); tap(180, 140);
+  assert.deepEqual(previews, [[100, 120], [180, 140]]);
+  assert.deepEqual(builds, []);
+  controls.get('touch-build').onclick();
+  assert.deepEqual(builds, [[180, 140]]);
+  canvas.send('pointerdown', 200, 200);
+  context.rig.touchConsumed = true;
+  canvas.send('pointerup', 260, 200);
+  assert.equal(builds.length, 1);
+  assert.equal(previews.length, 2);
+  context.rig.touchConsumed = false;
+  context.touchPreviewHit = () => true;
+  canvas.send('pointerdown', 180, 140);
+  canvas.send('pointermove', 240, 160);
+  canvas.send('pointerup', 240, 160);
+  assert.deepEqual(previews.at(-1), [240, 160]);
+  assert.equal(builds.length, 1);
 });
 test.after(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });

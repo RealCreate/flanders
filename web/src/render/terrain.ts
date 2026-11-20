@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { terrain_land_rows, type World } from '../wasm/game_core.js';
-import { patchWater, waterNormalTexture } from './water';
+import { patchWater, waterNormalTexture, type WaterSurface } from './water';
 import { groundDetailTexture, patchGround } from './groundtex';
-import { renderedRiverAt, riverFootprint, riverGrid, riverStageAt, seaGrid } from './rivergrid';
+import { renderedRiverAt, riverFootprint, riverGrid, riverStageAt, seaGrid, triangleHeight } from './rivergrid';
 
 export const HALF = 1200;
 export const STEP = 2.5;
@@ -109,12 +109,12 @@ export class Terrain {
 
     this.heightData = new Uint16Array(NV * NV);
     this.heightTex = new THREE.DataTexture(this.heightData, NV, NV, THREE.RedFormat, THREE.HalfFloatType);
-    this.heightTex.minFilter = this.heightTex.magFilter = THREE.LinearFilter; this.heightTex.wrapS = this.heightTex.wrapT = THREE.ClampToEdgeWrapping; this.heightTex.generateMipmaps = false;
+    this.heightTex.minFilter = this.heightTex.magFilter = THREE.NearestFilter; this.heightTex.generateMipmaps = false;
     this.uploadHeights();
     // The sea extends past the camera's far plane and leaves room for each river surface.
     const footprint = this.riverCells = riverFootprint(this.riverStages, NV);
-    this.water = new THREE.Mesh(waterGeometry(seaGrid(footprint, NV, STEP, 6000)), this.makeWaterMaterial());
-    this.riverMaterial = this.makeWaterMaterial(true, true);
+    this.water = new THREE.Mesh(waterGeometry(seaGrid(footprint, NV, STEP, 6000)), this.makeWaterMaterial('sea'));
+    this.riverMaterial = this.makeWaterMaterial('river');
     for (const { i0, j0, i1, j1 } of this.chunks) {
       const surface = riverGrid(this.riverStages, footprint, NV, STEP, i0, j0, i1, j1);
       if (surface.indices.length === 0) continue;
@@ -126,13 +126,14 @@ export class Terrain {
 
   /** A water surface material: shaded by how deep the water is over the ground (see water.ts). The sea and the water of the moats share it. Reflections are kept gentle: a
    *  full mirror coat turned every bridge and wall into a bright glare on the water. */
-  makeWaterMaterial(solid = false, tidal = false) {
+  makeWaterMaterial(surface: WaterSurface) {
+    const solid = surface === 'channel';
     const wm = new THREE.MeshPhysicalMaterial({
-      color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: !solid || tidal, opacity: 1, depthWrite: solid,
-      depthFunc: !solid || tidal ? THREE.LessDepth : THREE.LessEqualDepth,
+      color: 0x2c6f86, roughness: 0.12, metalness: 0, transparent: !solid, opacity: 1, depthWrite: surface !== 'sea',
+      depthFunc: solid ? THREE.LessEqualDepth : THREE.LessDepth,
       normalMap: this.waterTex, normalScale: new THREE.Vector2(0.7, 0.7), clearcoat: 0.35, clearcoatRoughness: 0.22, envMapIntensity: 0.8,
     });
-    patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, this.waterTime, false, solid, tidal ? this.tide : undefined);
+    patchWater(wm, { heightTex: this.heightTex, half: HALF, step: STEP, nv: NV }, surface, this.waterTime, this.tide);
     return wm;
   }
 
@@ -363,8 +364,7 @@ export class Terrain {
     const tx = Math.min(1, Math.max(0, fx - i)), tz = Math.min(1, Math.max(0, fz - j)), H = this.heights;
     const p = committed ? this.preview : null, k = j * NV + i;
     const a = p?.get(k) ?? H[k], b = p?.get(k + 1) ?? H[k + 1], c = p?.get(k + NV) ?? H[k + NV], d = p?.get(k + NV + 1) ?? H[k + NV + 1];
-    if (tx + tz <= 1) return a + (b - a) * tx + (c - a) * tz;
-    return d + (c - d) * (1 - tx) + (b - d) * (1 - tz);
+    return triangleHeight(a, b, c, d, tx, tz);
   }
 
   /** Pick committed terrain so a placement preview cannot move the ground under its own pointer. */
