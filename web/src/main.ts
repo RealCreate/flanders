@@ -81,7 +81,7 @@ import { saveKept, loadKept, deleteKept } from './checkpoint';
 import { Village, type Shared } from './village';
 import { PathLine, STATE_TEXT } from './render/field';
 import { ArmyPicker } from './render/armypick';
-import { PASTURE } from './pasture';
+import { PIGSTY, isLivestockPen } from './pasture';
 
 await init();
 
@@ -190,6 +190,9 @@ let selectedDet: number | null = null;
 let selectedRuin: number | null = null;
 const attackTargets = new Map<number, string>();   // field army id -> the rival it is marching on
 let ghostRing!: THREE.Mesh, builderRangeRing!: THREE.Mesh, previewKey = '', previewKey2 = '', anchorGhost: AnchorGhost | null = null, anchorKey = '', lastGhostE: { clientX: number; clientY: number } | null = null;
+let placedPointer: { dx: number; dy: number } | null = null;
+let touchPlacement: { x: number; z: number } | null = null;
+let touchInput = false;
 
 /** Bumped whenever the map generator changes: every world gets a fresh map and old saves are discarded. */
 const MAP_VERSION = 7;
@@ -1225,7 +1228,7 @@ async function startGame(name: string, username: string) {
   terrain = new Terrain(seedBig, land);
   scene.add(terrain.mesh, terrain.water, terrain.riverWater);
   tunnels = new Tunnels(terrain, tunnels_flat(seedBig)); scene.add(tunnels.group);
-  rig = new CameraRig(ui.canvas, terrain, () => selectedKind !== null && !!PEN_SPACING[selectedKind] && penShape !== 'path');
+  rig = new CameraRig(ui.canvas, terrain, e => touchPreviewHit(e) || (selectedKind !== null && !!PEN_SPACING[selectedKind] && penShape !== 'path'));
   ui.progress(38, 'Planting the forests…'); await nextFrame();
   const treeRows = trees_in_row_count(-HALF, HALF);
   const treeData = await collectInSlices(treeRows, (a, b) => trees_in_rows(seedBig, -HALF, -HALF, HALF, a, b), 4, { onProgress: f => ui.progress(38 + Math.round(f * 8), 'Planting the forests…') });
@@ -1828,6 +1831,7 @@ function stepLocal() {
   if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
   lv.afterTick();
   updateSelection(); updateHud(); battleBanner();
+  if (touchPlacement) { const e = touchPlacementEvent(); if (e) updateGhost(e); showTouchTools(); }
   if (ui.stewardOpen() || watch.review) renderWatch();
   if (forestDirtyFlag) rebuildForest(true);
 }
@@ -1906,6 +1910,9 @@ function startVillageWatch() {
 
 // ---------- selection & placement ----------
 function selectKind(k: number | null) {
+  touchPlacement = null;
+  blockRings.forEach(r => (r.visible = false));
+  placedPointer = null;
   if (k !== null) cancelMarchPreview();
   if (k !== null && pendingBattleOrder) setPendingBattleOrder(null);
   selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
@@ -1927,6 +1934,8 @@ function selectKind(k: number | null) {
 function scaled(a: [number, number][], tier: number): [number, number][] { return a.map(([r, n]) => [r, Math.max(n, Math.floor((n * (4 + 5 * tier) + 2) / 4))]); }
 
 function placeHint(k: number) {
+  if (touchInput && k !== LEVEL_TOOL && k !== 37 && (!PEN_SPACING[k] || penShape === 'line')) return `${defs[k].name} · Tap to position, drag the preview to move it, then choose Build here.${k === 35 ? ' The pier turns toward open water.' : ''}`;
+  if (k === 35) return 'Port · Choose a shoreline. The pier turns toward open water automatically.';
   if (k === LEVEL_TOOL) return `Level ground, ${levelR} wide, to ${levelH < 0 ? 'the land round it (Auto)' : 'height ' + levelH.toFixed(1)} — click to level the patch: pits are filled, bumps cut, ditches and earthworks inside taken away · set the Target height in the bar · R changes the size · Esc cancels`;
   if (k === 24) return `Moat ${(1 + 0.13 * moatWidth).toFixed(1)}× wide — press R to make it thinner or broader · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Alt = any angle · Esc cancels`;
   if (isEarthwork(k)) return `${defs[k].name} · ${earthworkH < 0 ? 'Auto (' + (k === 33 ? '+2.2' : '−2.2') + ')' : 'target height ' + levelHeightLabel(earthworkH)} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Esc cancels`;
@@ -2185,6 +2194,12 @@ function selectBuilding(i: number | null) { showUpgradeOutline(false); selectedI
 
 function selectRuin(i: number | null) { selectedRuin = i; if (i !== null) { selectedIdx = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
+function demolitionTip(world: World, idx: number) {
+  const refund = world.demolition_refund_flat(idx), materials: string[] = [];
+  for (let i = 0; i < refund.length; i += 2) materials.push(`${refund[i + 1]} ${RES[refund[i]].name.toLowerCase()}`);
+  return materials.length ? `Returns ${materials.join(', ')} to your stock.` : '0 materials recovered.';
+}
+
 function updateSelection() {
   const w = lv.world;
   if (selectedRuin !== null) {   // a ruined building: offer to rebuild it
@@ -2197,8 +2212,7 @@ function updateSelection() {
     ui.setSelectedPane(`<div><div class="eyebrow">Ruins</div><h2>${tierName(kind, tier)}</h2><p class="muted">${defs[kind].name} — burnt or smashed down</p></div><p>Rebuild it as it was, for less than a new one.</p>
       <div><h3>Rebuild cost</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div>
       <button class="pbtn primary" data-act="rebuild" ${ok ? '' : 'disabled'}>${ok ? 'Rebuild' : 'Not enough resources'}</button>
-      <p class="muted">A Builders' Yard will rebuild ruins and mend damaged buildings on its own while you have the materials.</p>
-      <div class="btnrow"><button class="pbtn" data-act="deselect">Close</button></div>`);
+      <p class="muted">A Builders' Yard will rebuild ruins and mend damaged buildings on its own while you have the materials.</p>`);
     return;
   }
   if (selectedIdx === null || selectedIdx >= w.building_count()) { selectedIdx = null; selRing.visible = false; ui.setSelectedPane(null); return; }
@@ -2255,9 +2269,9 @@ function updateSelection() {
   if (smokeMode >= 0) {
     const meat = smokeMode === 1;
     html += `<div><h3>${meat ? 'Smoking meat' : 'Smoking fish'}</h3><div class="btnrow" style="flex-wrap:wrap">${['Fish', 'Meat'].map((label, mode) => `<button class="pbtn ${smokeMode === mode ? 'on' : ''}" data-act="field:${mode}" aria-pressed="${smokeMode === mode}">${label}</button>`).join('')}</div>
-      <p class="muted">${meat ? 'Turns meat from pastures and hunting lodges into smoked meat using wood.' : 'Turns raw fish from the Fishing Hut into smoked fish using wood.'}</p></div>`;
+      <p class="muted">${meat ? 'Uses wood to smoke meat from pigsties, pastures and hunting lodges.' : 'Turns raw fish from the Fishing Hut into smoked fish using wood.'}</p></div>`;
   }
-  if (kind === PASTURE) html += `<div class="btnrow"><button class="pbtn" data-act="people:work">${icon('pop', 16)} Find herders</button></div>`;
+  if (isLivestockPen(kind)) html += `<div class="btnrow"><button class="pbtn" data-act="people:work">${icon('pop', 16)} ${kind === PIGSTY ? 'Find pig keepers' : 'Find herders'}</button></div>`;
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.jobs > 0) html += workersHtml(selectedIdx);
   if (d.cycle) {
@@ -2286,8 +2300,7 @@ function updateSelection() {
       return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
     }).join('') + `</div></div>`;
   }
-  html += `<div class="btnrow">${kind !== 15 ? '<button class="pbtn danger" data-act="demolish">Demolish (50% refund)</button>' : ''}<button class="pbtn" data-act="deselect">Close</button></div>`;
-  ui.setSelectedPane(html);
+  ui.setSelectedPane(html, kind !== 15 ? demolitionTip(w, selectedIdx) : '');
 }
 
 /** Give a building a number of workers (-1 auto, 0 paused). Returns true when the core took it. */
@@ -2421,7 +2434,7 @@ function openContext(e: PointerEvent) {
     if (kind === 22 && tier >= 2) items.push({ label: f[o + 6] === 5 ? 'Open the gate' : 'Close the gate', run: () => { selectBuilding(idx); onAct('gate'); } });
     if (kind === 23) items.push({ label: drawnUp(f[o + 6], lv.world.battle_active()) ? 'Lower the drawbridge' : 'Raise the drawbridge', run: () => { selectBuilding(idx); onAct('bridge'); } });
     if (kind === 3 || kind === 26) items.push({ label: 'Fill with archers', run: () => { selectBuilding(idx); onAct('garfill'); } }, { label: 'Empty the tower', run: () => { selectBuilding(idx); onAct('garempty'); } });
-    if (kind !== 15) items.push('-', { label: 'Demolish', run: () => { selectBuilding(idx); onAct('demolish'); } });
+    if (kind !== 15) items.push('-', { label: 'Demolish', tip: demolitionTip(lv.world, idx), run: () => { selectBuilding(idx); onAct('demolish'); } });
     if (items.length === 0) items.push({ label: 'Nothing to do here', disabled: true });
   } else if (ruin !== null) {
     selectRuin(ruin); const ru = lv.world.ruins_flat(); title = 'Ruins'; void ru;
@@ -2450,12 +2463,28 @@ function pickBuilding(r: THREE.Raycaster): number | null {
   for (let k = 0; k < f.length; k += 10) if (f[k] === 37) { const d = Math.hypot(f[k + 2] - hit.x, f[k + 3] - hit.z); if (d < bd) { bd = d; best = k / 10; } }
   return best >= 0 ? best : null;
 }
-function pointerRay(e: { clientX: number; clientY: number }) { ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, rig.cam); return ray; }
+function pointerRay(e: { clientX: number; clientY: number }) {
+  const rect = ui.canvas.getBoundingClientRect();
+  ndc.set(2 * (e.clientX - rect.left) / rect.width - 1, 1 - 2 * (e.clientY - rect.top) / rect.height);
+  ray.setFromCamera(ndc, rig.cam);
+  return ray;
+}
 
 /** Mines, quarries and clay pits stand against the deposit they work: the building snaps to the nearest matching deposit under the pointer, a few units in front of it on the side
  *  the pointer is on (anywhere round it), turned so its door faces away from the deposit. Returns where to build (relative to the hall) and the turn, or null when there is no such deposit near the pointer. */
-function depositSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
-  if (kind === 29 || kind === 41) { const s = kind === 29 ? lv.world.waterwheel_snap(dx, dy) : lv.world.fishing_hut_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a waterwheel stands on the bank with its wheel out over the water (the core checks it again)
+const SHORE_KINDS = new Set([29, 35, 41]);
+let lastPortSnap: { world: World; key: string; spot: Float32Array } | undefined;
+function buildingSnap(kind: number, dx: number, dy: number): { dx: number; dy: number; rot: number } | null {
+  if (SHORE_KINDS.has(kind)) {
+    const w = lv.world;
+    let s: Float32Array;
+    if (kind === 35) {
+      const key = `${dx}:${dy}:${w.terrain_version()}:${w.building_count()}:${w.tick()}`;
+      if (lastPortSnap?.world !== w || lastPortSnap.key !== key) lastPortSnap = { world: w, key, spot: w.port_snap(dx, dy) };
+      s = lastPortSnap.spot;
+    } else s = kind === 29 ? w.waterwheel_snap(dx, dy) : w.fishing_hut_snap(dx, dy);
+    return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null;
+  }
   if (kind === 23) { const s = lv.world.drawbridge_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a drawbridge snaps onto the moat and lies square across it
   if (kind === 36) { const s = lv.world.toll_snap(dx, dy); return s.length ? { dx: s[0], dy: s[1], rot: s[2] } : null; }   // a toll post snaps onto the nearest road, its gate along it, so the road runs through the gate
   const d = defs[kind]; if (d.req !== 1) return null;
@@ -2531,6 +2560,13 @@ function setLevelHeight(h: number) {
 function placementCheck(w: World, kind: number, dx: number, dy: number) {
   return isEarthwork(kind) && earthworkH >= 0 ? w.earthwork_check(kind, dx, dy, earthworkH) : w.can_place(kind, dx, dy);
 }
+
+function buildingTarget(kind: number, dx: number, dy: number) {
+  const snap = buildingSnap(kind, dx, dy);
+  if (!snap && SHORE_KINDS.has(kind)) return { dx, dy, rot, code: -16 };
+  const target = snap ?? { dx, dy, rot };
+  return { ...target, code: placementCheck(lv.world, kind, target.dx, target.dy) };
+}
 /** The level-ground tool's bar at the bottom: the patch sizes and the Target height (Auto or a number, with the ground height under the pointer). */
 function drawLevelBar() {
   let bar = document.getElementById('levelbar');
@@ -2568,6 +2604,7 @@ function drawLevelBar() {
 }
 
 function placementError(kind: number, code: number) {
+  if (kind === 35 && code === -16) return 'Choose a shore with enough open water for the pier.';
   if (code === -2 && [23, 24, 35, 37, 38].includes(kind)) return 'Outside the buildable map';
   return PLACE_ERRORS[code] ?? 'Cannot build here';
 }
@@ -2612,14 +2649,25 @@ function showAnchors(key: string, nodes: number[], door: { x: number; z: number 
   anchorGhost.show(shape, joins, ok);
 }
 
+function hidePlacementGhost() {
+  blockRings.forEach(r => (r.visible = false));
+  terrain.clearPreview(); previewKey = ''; previewKey2 = ''; ghostCode = 99;
+  if (ghost) ghost.visible = false;
+  ghostRing.visible = false; builderRangeRing.visible = false;
+  if (levelDisc) levelDisc.visible = false;
+  anchorGhost?.hide(); anchorKey = ''; covGhost(null);
+}
+
 function updateGhost(e: { clientX: number; clientY: number }) {
   lastGhostE = e;
   if (selectedKind === LEVEL_TOOL) { levelHover(e); return; }
   if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
   const hit = terrain.pick(pointerRay(e).ray);
-  if (!hit) { terrain.clearPreview(); previewKey = ''; ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; covGhost(null); builderRangeRing.visible = false; return; }
+  if (!hit) { placedPointer = null; hidePlacementGhost(); return; }
   const w = lv.world, dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz);
+  if (placedPointer?.dx === dx && placedPointer.dy === dy) return;
+  placedPointer = null;
   if (selectedKind === 38) {   // a bridge snaps to the water: the ghost shows the crossing it would make, stretched to its real length
     const bp = w.bridge_preview(dx, dy), code = bp[0];
     if (bp.length < 8) { ghost.visible = false; ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; builderRangeRing.visible = false; if (code !== ghostCode) { ghostCode = code; ui.hint(placementError(38, code), true); } return; }
@@ -2635,22 +2683,29 @@ function updateGhost(e: { clientX: number; clientY: number }) {
     return;
   }
   if (ghost.scale.x !== 1) ghost.scale.set(1, 1, 1);
-  let code = placementCheck(w, selectedKind, dx, dy), gx = dx, gy = dy, grot = rot;
-  const shore = selectedKind === 29 || selectedKind === 41;
-  { const sn = depositSnap(selectedKind, dx, dy); if (sn) { gx = sn.dx; gy = sn.dy; grot = sn.rot; code = w.can_place(selectedKind, gx, gy); } else if (shore) code = -16; }   // a shore building needs a bank to snap to
+  let { code, dx: gx, dy: gy, rot: grot } = buildingTarget(selectedKind, dx, dy);
+  const shore = SHORE_KINDS.has(selectedKind);
   if (selectedKind === 22) {   // a gate takes the place of a wall piece and lines up with the wall
     const t = gateTarget(hit.x, hit.z);
     if (t) { gx = Math.round(t.x - lv.ox); gy = Math.round(t.z - lv.oz); grot = t.rot; const st = Array.from(w.stocks()); code = defs[22].cost.every(([r, n]) => st[r] >= n) ? 0 : -6; } else code = -3;
   }
   const x = lv.ox + gx, z = lv.oz + gy, d = defs[selectedKind];
+  blockRings.forEach(r => (r.visible = false));
+  if (code === -3 || code === -17) {
+    const blockers = w.placement_obstructions(selectedKind, gx, gy);
+    for (let i = 0; i < blockers.length && i / 3 < blockRings.length; i += 3) {
+      const ring = blockRings[i / 3]; ring.set(blockers[i], blockers[i + 1], blockers[i + 2]); ring.visible = true;
+    }
+  }
   const pad = !NOPAD.has(selectedKind) && !shore;
-  const h = pad || OVER_WATER_KINDS.has(selectedKind)
+  const h = pad || shore || OVER_WATER_KINDS.has(selectedKind)
     ? w.placement_height(selectedKind, x, z, grot)
     : terrain.heightAt(x, z, true);
-  const key = `${selectedKind}:${x}:${z}:${h}`;
-  // Keep the bank and water stable while the shore building is only a preview.
-  if (key !== previewKey) { previewKey = key; if (pad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
-  if (shore) (ghost.userData.model as BuildingModel).fitShore(h - w.shore_water_height(x, z, grot));
+  const showPad = pad && (code === 0 || code === -6);
+  const key = `${selectedKind}:${x}:${z}:${h}:${showPad}`;
+  if (key !== previewKey) { previewKey = key; if (showPad) terrain.setPreview(x, z, d.r * 1.15 + 0.5, h); else terrain.clearPreview(); }
+  if (selectedKind === 35) (ghost.userData.model as BuildingModel).fitPortPier(x, z, grot, h, (x, z) => terrain.heightAt(x, z, true));
+  else if (shore) (ghost.userData.model as BuildingModel).fitShore(h - w.shore_water_height(x, z, grot));
   if (isEarthwork(selectedKind)) {
     const ground = document.getElementById('lh-ground');
     if (ground) ground.textContent = `Ground here: ${w.height_at(x, z).toFixed(1)}`;
@@ -2674,12 +2729,41 @@ function updateGhost(e: { clientX: number; clientY: number }) {
 
 function showTouchTools() {
   document.getElementById('touch-tools')!.hidden = selectedKind === null;
+  document.getElementById('touch-tools')!.classList.toggle('touch-active', touchInput);
   const path = selectedKind === 37 || (selectedKind !== null && !!PEN_SPACING[selectedKind] && penShape === 'path');
   document.getElementById('touch-finish')!.hidden = !path;
   document.getElementById('touch-undo')!.hidden = !path;
   const rotate = document.getElementById('touch-rotate')!;
+  const build = document.getElementById('touch-build') as HTMLButtonElement;
+  build.hidden = !touchInput || path || (selectedKind !== null && !!PEN_SPACING[selectedKind] && isFigure(penShape));
+  build.disabled = !touchPlacement || (selectedKind === LEVEL_TOOL ? levelCode !== 0 : ghostCode !== 0);
   rotate.hidden = path && selectedKind !== 24;
   rotate.textContent = selectedKind === LEVEL_TOOL ? 'Size' : selectedKind === 24 ? 'Width' : 'Rotate';
+}
+
+function touchPlacementEvent() {
+  if (!touchPlacement) return null;
+  const { x, z } = touchPlacement;
+  const p = new THREE.Vector3(x, terrain.heightAt(x, z, true), z).project(rig.cam);
+  const rect = ui.canvas.getBoundingClientRect();
+  return { clientX: rect.left + (p.x + 1) * rect.width / 2, clientY: rect.top + (1 - p.y) * rect.height / 2 };
+}
+
+function touchPreviewHit(e: { clientX: number; clientY: number }) {
+  let p = touchPlacementEvent();
+  if (p && ghost?.visible) {
+    const at = ghost.position.clone().project(rig.cam), rect = ui.canvas.getBoundingClientRect();
+    p = { clientX: rect.left + (at.x + 1) * rect.width / 2, clientY: rect.top + (1 - at.y) * rect.height / 2 };
+  }
+  return p !== null && Math.hypot(p.clientX - e.clientX, p.clientY - e.clientY) < 48;
+}
+
+function previewTouchPlacement(e: { clientX: number; clientY: number }) {
+  const hit = terrain.pick(pointerRay(e).ray);
+  if (!hit) return;
+  touchPlacement = { x: hit.x, z: hit.z };
+  placedPointer = null;
+  updateGhost(e); showTouchTools();
 }
 
 function finishStroke() {
@@ -2697,17 +2781,55 @@ function undoStroke() {
 }
 
 function rotateTool() {
-  if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); return; }
+  if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); const e = touchPlacementEvent(); if (e) updateGhost(e); showTouchTools(); return; }
   rot = (rot + 1) % 8;
   if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); }
   ghostCode = 99; previewKey = '';
-  if (lastGhostE && selectedKind !== null) updateGhost(lastGhostE);
+  const e = touchPlacementEvent() ?? lastGhostE;
+  if (e && selectedKind !== null) updateGhost(e);
+  showTouchTools();
+}
+
+function buildAtPointer(e: { clientX: number; clientY: number }) {
+  if (selectedKind === null) return;
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
+  const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), kind = selectedKind;
+  if (kind === 22) {   // gate: replaces the wall piece under the pointer
+    const t = gateTarget(hit.x, hit.z); if (!t) { ui.hint('Click a wall piece to put the gate in', true); sound.error(); return; }
+    const gx = Math.round(t.x - lv.ox), gy = Math.round(t.z - lv.oz), st = Array.from(lv.world.stocks());
+    if (!defs[22].cost.every(([r, n]) => st[r] >= n)) { ui.hint(PLACE_ERRORS[-6], true); sound.error(); return; }
+    lv.world.demolish(t.idx); commit({ op: 'demolish', idx: t.idx });
+    const gres = lv.world.place(22, gx, gy, t.rot);
+    if (gres >= 0) { commit({ op: 'place', kind: 22, x: gx, y: gy, rot: t.rot }); autoBridge(gx, gy); } else if (lv.world.place(2, gx, gy, t.rot) >= 0) commit({ op: 'place', kind: 2, x: gx, y: gy, rot: t.rot });
+    ghostCode = 99; previewKey = ''; afterLocalChange(); if (gres >= 0) { touchPlacement = null; hidePlacementGhost(); placedFx(22, lv.ox + gx, lv.oz + gy); } else ui.hint(PLACE_ERRORS[gres] ?? 'Cannot build a gate here', true);
+    return;
+  }
+  const { code, dx: px, dy: py, rot: prot } = buildingTarget(kind, dx, dy);
+  const manual = isEarthwork(kind) && earthworkH >= 0;
+  const res = code !== 0 ? code : manual ? lv.world.place_earthwork(kind, px, py, prot, earthworkH) : lv.world.place(kind, px, py, prot);
+  if (res >= 0) {
+    const cmd = { op: 'place' as const, kind, x: px, y: py, rot: prot };
+    commit(manual ? { ...cmd, h: earthworkH } : cmd);
+    touchPlacement = null; placedPointer = { dx, dy }; hidePlacementGhost(); ui.hint(placeHint(kind));
+    afterLocalChange(res); placedFx(kind, lv.ox + px, lv.oz + py); showTouchTools();
+  }
+  else { placedPointer = null; ghostCode = 99; updateGhost(e); ui.hint(placementError(kind, res), true); sound.error(); }
+
 }
 
 function bindInput() {
   const cv = ui.canvas;
+  let movingTouchPreview = false;
   let down: { x: number; y: number; id: number; at: number } | null = null, hoverT = 0, routeT = 0;
   document.getElementById('touch-rotate')!.onclick = rotateTool;
+  document.getElementById('touch-build')!.onclick = () => {
+    const e = touchPlacementEvent();
+    if (!e || selectedKind === null) return;
+    updateGhost(e);
+    if (selectedKind === LEVEL_TOOL) { levelClick(e); touchPlacement = null; hidePlacementGhost(); }
+    else buildAtPointer(e);
+    showTouchTools();
+  };
   document.getElementById('touch-finish')!.onclick = () => { if (!finishStroke()) ui.hint('Tap at least two points to finish the path.', true); };
   document.getElementById('touch-undo')!.onclick = undoStroke;
   document.getElementById('touch-cancel')!.onclick = () => selectKind(null);
@@ -2716,6 +2838,8 @@ function bindInput() {
   cv.addEventListener('pointercancel', cancelPointer); cv.addEventListener('lostpointercapture', cancelPointer);
   cv.addEventListener('pointerleave', cancelMarchPreview);
   cv.addEventListener('pointerdown', e => {
+    movingTouchPreview = e.pointerType === 'touch' && touchPreviewHit(e);
+    touchInput = e.pointerType === 'touch'; showTouchTools();
     cancelMarchPreview();
     if (e.pointerType === 'touch' && rig.touchConsumed) { dropStroke(); return; }
     if (e.button !== 0) { dropStroke(); return; }   // any other button (the right one turns the camera) abandons a selection or pen stroke: it must never carry on under a camera drag
@@ -2725,6 +2849,7 @@ function bindInput() {
   });
   cv.addEventListener('pointermove', e => {
     if (e.pointerType === 'touch' && rig.touchConsumed) { if (down) dropStroke(); return; }
+    if (movingTouchPreview && down && e.pointerType === 'touch') { previewTouchPlacement(e); return; }
     if (e.pointerType !== 'touch' && down && e.buttons === 1 && selectedKind === null && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) ui.selBox({ x0: down.x, y0: down.y, x1: e.clientX, y1: e.clientY });
     if (pendingBattleOrder) { cv.style.cursor = 'crosshair'; return; }
     updateGhost(e);
@@ -2759,13 +2884,14 @@ function bindInput() {
     if (touch && rig.touchConsumed) { dropStroke(); return; }
     const d0 = down, moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); down = null;
     const tap = moved <= (touch ? TOUCH_DRAG_PIXELS : 5);
-    if (touch && tap && (pendingBattleOrder || performance.now() - d0.at >= 500)) { dropStroke(); contextAction(e); return; }
+    if (touch && movingTouchPreview && !tap) { penStart = null; penPreview.clear(); showTouchTools(); return; }
+    if (touch && tap && (pendingBattleOrder || (selectedKind === null && performance.now() - d0.at >= 500))) { dropStroke(); contextAction(e); return; }
     if (penStart && selectedKind !== null) {
       const a = penStart; penStart = null; penPreview.clear();
       if (moved > 8) { const h = terrain.pick(pointerRay(e).ray), o = h ? penOutline(a, { x: h.x, z: h.z }, e.altKey) : null; if (o) penCommit(selectedKind, o); ghostCode = 99; previewKey = ''; ui.hint(placeHint(selectedKind)); return; }
       if (isFigure(penShape)) { ui.hint('Press and drag to draw the figure', true); return; }
     }
-    if (selectedKind === LEVEL_TOOL && tap) { levelClick(e); return; }
+    if (selectedKind === LEVEL_TOOL && tap) { if (touch) previewTouchPlacement(e); else levelClick(e); return; }
     if (selectedKind === 37 && tap) { const h = terrain.pick(pointerRay(e).ray); if (h) roadClick(h.x, h.z); return; }
     if (selectedKind !== null && PEN_SPACING[selectedKind] && penShape === 'path' && tap) {   // a click adds a corner; a quick second click, or a click on the first corner, builds
       const h = terrain.pick(pointerRay(e).ray); if (!h) return;
@@ -2777,27 +2903,8 @@ function bindInput() {
     }
     if (!tap) { ui.selBox(null); if (!touch && moved > 8 && selectedKind === null && !e.shiftKey) boxSelect(d0.x, d0.y, e.clientX, e.clientY, e.ctrlKey); return; }
     if (selectedKind !== null) {
-      const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
-      const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), kind = selectedKind;
-      if (kind === 22) {   // gate: replaces the wall piece under the pointer
-        const t = gateTarget(hit.x, hit.z); if (!t) { ui.hint('Click a wall piece to put the gate in', true); sound.error(); return; }
-        const gx = Math.round(t.x - lv.ox), gy = Math.round(t.z - lv.oz), st = Array.from(lv.world.stocks());
-        if (!defs[22].cost.every(([r, n]) => st[r] >= n)) { ui.hint(PLACE_ERRORS[-6], true); sound.error(); return; }
-        lv.world.demolish(t.idx); commit({ op: 'demolish', idx: t.idx });
-        const gres = lv.world.place(22, gx, gy, t.rot);
-        if (gres >= 0) { commit({ op: 'place', kind: 22, x: gx, y: gy, rot: t.rot }); autoBridge(gx, gy); } else if (lv.world.place(2, gx, gy, t.rot) >= 0) commit({ op: 'place', kind: 2, x: gx, y: gy, rot: t.rot });
-        ghostCode = 99; previewKey = ''; afterLocalChange(); if (gres >= 0) placedFx(22, lv.ox + gx, lv.oz + gy); else ui.hint(PLACE_ERRORS[gres] ?? 'Cannot build a gate here', true);
-        return;
-      }
-      const sn = depositSnap(kind, dx, dy), px = sn ? sn.dx : dx, py = sn ? sn.dy : dy, prot = sn ? sn.rot : rot;
-      const manual = isEarthwork(kind) && earthworkH >= 0;
-      const res = manual ? lv.world.place_earthwork(kind, px, py, prot, earthworkH) : lv.world.place(kind, px, py, prot);
-      if (res >= 0) {
-        const cmd = { op: 'place' as const, kind, x: px, y: py, rot: prot };
-        commit(manual ? { ...cmd, h: earthworkH } : cmd);
-        ghostCode = 99; previewKey = ''; afterLocalChange(res); placedFx(kind, lv.ox + px, lv.oz + py); updateGhost(e);
-      }
-      else { ui.hint(placementError(kind, res), true); sound.error(); }
+      if (touch) { previewTouchPlacement(e); return; }
+      buildAtPointer(e);
     } else {
       const det = pickArmy(e);
       if (det !== null) {

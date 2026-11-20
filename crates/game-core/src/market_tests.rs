@@ -14,6 +14,36 @@ fn without_a_market_nothing_is_for_sale() {
 }
 
 #[test]
+fn emergency_tools_are_limited_expensive_persistent_and_slow_to_restock() {
+    let mut w = village(); let a = with_market(&mut w, 0, 14);
+    let mut old_bytes = w.snapshot();
+    old_bytes[..8].copy_from_slice(ESTATE_SNAP_MAGIC);
+    old_bytes.truncate(old_bytes.len() - 16);
+    let restored = world_restore(&old_bytes).unwrap();
+    assert_eq!(restored.state_hash(), w.state_hash());
+    assert_eq!(left(&restored, TL), 2);
+    w.stock[TL as usize] = 0;
+    assert_eq!(left(&w, TL), 2);
+    assert_eq!(w.buy(TL, 3), -2);
+    let gold = w.stock[GD as usize];
+    assert_eq!(w.buy(TL, 2), 0);
+    assert_eq!(w.stock[GD as usize], gold - 30);
+    assert_eq!(w.stock[TL as usize], 2);
+    let hash = w.state_hash();
+    w = world_restore(&w.snapshot()).unwrap();
+    assert_eq!(w.state_hash(), hash);
+    assert_eq!(left(&w, TL), 0);
+    w.buildings[a].tier = 3;
+    with_market(&mut w, 18, 8);
+    assert_eq!(left(&w, TL), 0);
+    w.tick = DAY * 2; w.market_refill(); assert_eq!(left(&w, TL), 0);
+    w.tick = DAY * 3 - 1; w.step(); assert_eq!(left(&w, TL), 1);
+    w.tick = DAY * 6; w.market_refill(); assert_eq!(left(&w, TL), 2);
+    let old = World::new_legacy(1337, 0, 0);
+    assert_eq!(old.emergency_tools, [0; 2]);
+}
+
+#[test]
 fn the_stock_is_capped_the_player_may_buy_it_all_and_it_is_back_after_four_days() {
     let mut w = village(); with_market(&mut w, 0, 14);
     w.stock[W as usize] = 0;

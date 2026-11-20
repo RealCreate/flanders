@@ -1,9 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as THREE from 'three';
 import { moatSurface } from '../src/render/moatwater.ts';
 import { renderedRiverAt, riverFootprint, riverGrid, riverStageAt, seaGrid } from '../src/render/rivergrid.ts';
+import { patchWater } from '../src/render/water.ts';
 
 const step = 2.5;
+
+test('only the sea animates foam and ripples, and river mouths still meet the tide', () => {
+  const src = { heightTex: new THREE.Texture(), half: 10, step, nv: 9 };
+  const time = { value: 12 }, tide = { value: -0.25 };
+  for (const surface of ['sea', 'river', 'channel']) {
+    const mat = new THREE.MeshPhysicalMaterial();
+    patchWater(mat, src, surface, time, tide);
+    const shader = { ...THREE.ShaderLib.physical, uniforms: {} };
+    mat.onBeforeCompile(shader);
+    assert.equal(shader.uniforms.uTime, surface === 'sea' ? time : undefined);
+    assert.equal(shader.uniforms.uSeaLevel, surface === 'river' ? tide : undefined);
+    assert.equal(/uTime|float foam/.test(shader.fragmentShader), surface === 'sea');
+    assert.equal(shader.vertexShader.includes('transformed.y += level - vWP.y'), surface === 'river');
+  }
+});
 
 test('river chunks meet at a flat bank stage and cover both sides of the terrain diagonal', () => {
   const stages = new Float64Array(25).fill(-1.8); stages[12] = 4.8;
@@ -82,7 +99,7 @@ test('water covers the whole terrain cell beside each cut vertex, including diag
 
 test('overlapping pieces draw each cell once and share vertices at different water levels', () => {
   const low = [0, 0, 4.6, 3], high = [4, 1, 4.6, 3.2];
-  const both = moatSurface([...low, ...high], step);
+  const both = moatSurface([...low, ...high], step, [true, true]);
   const loc = ([x, , z]) => `${x},${z}`;
   const key = tri => tri.map(loc).sort().join('|');
   const union = new Set([...triangles(moatSurface(low, step)), ...triangles(moatSurface(high, step))].map(key));
@@ -97,7 +114,23 @@ test('overlapping pieces draw each cell once and share vertices at different wat
   }
   assert.ok(vertexHeights.get('2.5,0') > 3 && vertexHeights.get('2.5,0') < 3.2);
   assert.equal(both.levelAt(2.5, 0), vertexHeights.get('2.5,0'));
-  assert.equal(both.levelAt(3.3, 1.8), moatSurface([...high, ...low], step).levelAt(3.3, 1.8));
+  assert.equal(both.levelAt(3.3, 1.8), moatSurface([...high, ...low], step, [true, true]).levelAt(3.3, 1.8));
+});
+
+test('a moat is exactly flat even next to a sloped carved river', () => {
+  const pieces = [0, 0, 4.6, 3, 4, 1, 4.6, 3.2, 10, 1, 4.6, 3.6];
+  const standing = moatSurface(pieces, step);
+  assert.ok(standing.positions.every((v, i) => i % 3 !== 1 || v === 3));
+  const mixed = moatSurface(pieces, step, [false, true, true]);
+  assert.equal(mixed.levelAt(0.3, 0.4), 3);
+  assert.ok(mixed.levelAt(10, 1) > 3.2);
+});
+
+test('separate standing basins retain their levels even when their bank triangles share an edge', () => {
+  const surface = moatSurface([0, 0, 1.5, 4, 5, 0, 1.5, 2], step);
+  assert.equal(surface.levelAt(0, 0), 4);
+  assert.equal(surface.levelAt(5, 0), 2);
+  assert.deepEqual(new Set(surface.positions.filter((_, i) => i % 3 === 1)), new Set([4, 2]));
 });
 
 test('invalid pieces add no triangles', () => {

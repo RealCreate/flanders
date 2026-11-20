@@ -6,7 +6,7 @@ const { World, catalog, village_sites } = createRequire(import.meta.url)('../tes
 const defs = JSON.parse(catalog());
 const kind = name => defs.findIndex(def => def.name === name);
 const HOUSE = kind('House'), FARM = kind('Farm'), WOODCUTTER = kind('Woodcutter');
-const LODGE = kind("Hunter's Lodge"), FISH = kind('Fishing Hut'), BAKERY = kind('Bakery'), PASTURE = kind('Pasture');
+const LODGE = kind("Hunter's Lodge"), FISH = kind('Fishing Hut'), BAKERY = kind('Bakery'), PASTURE = kind('Pasture'), PIGSTY = kind('Pigsty');
 const WOOD = 0, HUNGER = 6, COLD = 7, HAYSTACKS = 1;
 const seeds = [1n, 7n, 42n, 73n, 101n, 337n, 1337n, 2026n, 31337n, 99999n, 424242n, 8675309n];
 const food = World.food_table();
@@ -18,6 +18,7 @@ const strategies = [
   ['Farm + bakery', [HOUSE, FARM, BAKERY, WOODCUTTER]],
   ['Farm + hunt', [HOUSE, FARM, LODGE]],
   ['Farm + pasture', [HOUSE, FARM, PASTURE]],
+  ['Farm + pigsty', [HOUSE, FARM, PIGSTY]],
   ['Farm + fish', [HOUSE, FARM, FISH]],
   ['Two farms + winter prep', [HOUSE, FARM, FARM, WOODCUTTER], true],
 ];
@@ -93,7 +94,7 @@ function run(seed, site, [name, plan, winterPrep], days, legacy) {
 
 const year = process.argv.includes('--year');
 const legacy = process.argv.includes('--legacy');
-const plans = legacy ? strategies.filter(([, plan]) => !plan.includes(PASTURE)) : strategies;
+const plans = legacy ? strategies.filter(([, plan]) => !plan.includes(PASTURE) && !plan.includes(PIGSTY)) : strategies;
 const results = seeds.flatMap(seed => {
   const site = nearestSite(seed);
   return plans.map(strategy => run(seed, site, strategy, year ? 40 : 2, legacy));

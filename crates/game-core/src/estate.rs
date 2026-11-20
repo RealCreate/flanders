@@ -143,4 +143,25 @@ mod tests {
         assert_eq!(w.buildings[pasture].status, 0);
         assert!(w.stock[GR as usize] < 100);
     }
+
+    #[test]
+    fn a_pigsty_feeds_its_pigs_from_surplus_and_the_stable_is_decorative() {
+        let mut w = World::new(1337, 0, 0);
+        w.stock = [500; N_RES];
+        w.flatten(40, 5.0);
+        let pigsty = w.place(PIGSTY, 15, 0, 0);
+        assert!(pigsty >= 0);
+        let claim = w.territory_flat();
+        let stable = w.place(STABLE, -15, 0, 0);
+        assert!(stable >= 0);
+        assert_eq!(w.territory_flat(), claim);
+        assert_eq!(w.buildings[stable as usize].staff, 0);
+        w.set_reserves(500, 0);
+        for _ in 0..12 { w.step(); }
+        assert_eq!(w.buildings[pigsty as usize].status, STATUS_RESERVE);
+        w.set_reserves(0, 0);
+        w.stock[ME as usize] = 0;
+        for _ in 0..12 { w.step(); }
+        assert!(w.stock[ME as usize] > 0, "a staffed pigsty produces meat");
+    }
 }

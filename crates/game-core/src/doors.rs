@@ -31,7 +31,8 @@ pub fn door_local(kind: u8, tier: u8) -> ((f32, f32), (f32, f32)) {
         SMOKEHOUSE => (([0.6, 0.8, 0.9, 1.0][t], 1.5), fwd),
         BAKERY => (([-0.8, -0.9, -1.1, -1.2][t], 1.4), fwd),
         GARDEN => ((0.0, 4.4), fwd),                                      // the gap in the fence
-        PASTURE => ((0.0, 4.4), fwd),
+        PASTURE | PIGSTY => ((0.0, 4.4), fwd),
+        STABLE => ((0.0, 2.65), fwd),
         PARK => ((0.0, 1.3), fwd),                                        // along the gravel cross
         MARKET => ((0.0, 5.0), fwd),
         _ => ((0.0, solid_radius(kind, tier) * 0.9), fwd),

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Terrain } from './terrain';
 import { HAT, TOOL, type Crowd, type Draw } from './crowd';
 import { door_info } from '../wasm/game_core.js';
-import { PASTURE, PEN_HALF_DEPTH } from '../pasture';
+import { PASTURE, PIGSTY, PEN_HALF_DEPTH, isLivestockPen } from '../pasture';
 import { NAMED_VILLAGERS, villagerJob, villagerName, villagerProfession, villagerWorkplaces, type VillagerEntry } from '../villagernames';
 
 const S = 10;
@@ -13,8 +13,8 @@ export interface WildLike { nearest(x: number, z: number, r: number): Huntable |
 export interface Hooks { wild: WildLike | null; arrow(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void; splash(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void }
 
 /** Workplaces whose workers haul goods to the storehouse, and the colour of what they carry. */
-const HAULS: Record<number, boolean> = { 1: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: true, 14: true, 29: true, 30: true, 41: true, 42: true, 43: true, [PASTURE]: true };
-const LOAD: Record<number, number> = { 1: 0xd9b95a, 4: 0x7a5230, 5: 0xc9a56a, 6: 0x9a9a9a, 7: 0xb5693a, 8: 0xa4553b, 9: 0x6a5a50, 10: 0xb0902a, 11: 0x2a2a2a, 12: 0x8a8a90, 13: 0x777777, 14: 0xe0b030, 29: 0xc9a56a, 30: 0x6a9a3a, 41: 0xaab8be, 42: 0x9a6a2e, 43: 0xd9a860, [PASTURE]: 0xa16457 };
+const HAULS: Record<number, boolean> = { 1: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true, 12: true, 13: true, 14: true, 29: true, 30: true, 41: true, 42: true, 43: true, [PASTURE]: true, [PIGSTY]: true };
+const LOAD: Record<number, number> = { 1: 0xd9b95a, 4: 0x7a5230, 5: 0xc9a56a, 6: 0x9a9a9a, 7: 0xb5693a, 8: 0xa4553b, 9: 0x6a5a50, 10: 0xb0902a, 11: 0x2a2a2a, 12: 0x8a8a90, 13: 0x777777, 14: 0xe0b030, 29: 0xc9a56a, 30: 0x6a9a3a, 41: 0xaab8be, 42: 0x9a6a2e, 43: 0xd9a860, [PASTURE]: 0xa16457, [PIGSTY]: 0xb37362 };
 
 const SKIN = [0xe8c4a0, 0xd9a877, 0xc68e63, 0xf0d2b4, 0xb98055];
 const PLAIN = [0x8c3b2f, 0x3b5f8c, 0x5f7a3b, 0x8c7a3b, 0x6b4a7a, 0x7a5a3b, 0x4a6b6b, 0xb08a4a, 0x7a3b4a];
@@ -38,6 +38,7 @@ const LOOKS: Record<number, [number | undefined, number, number[]]> = {
   20: [HAT.CAP, TOOL.HAMMER, [0x8a6b4a, 0x7a5a3a, 0x6a5a40]],
   28: [HAT.CAP, 0, [0x756084, 0x6e553a, 0x643a3b]],
   [PASTURE]: [HAT.HOOD, TOOL.STAFF, [0x747447, 0x806241, 0x845b49]],
+  [PIGSTY]: [HAT.CAP, TOOL.BUCKET, [0x795844, 0x86654a, 0x686044]],
 };
 
 interface Agent {
@@ -232,12 +233,12 @@ export class People {
       if (!this.commuteBudget) return null;
       this.commuteBudget--;
     }
-    const inside = this.bld[from]?.kind === PASTURE && fromPos.distanceTo(this.pasturePoint(from, 0)) < PEN_HALF_DEPTH;
+    const inside = isLivestockPen(this.bld[from]?.kind) && fromPos.distanceTo(this.pasturePoint(from, 0)) < PEN_HALF_DEPTH;
     const start = inside ? this.spot(from, 1) : fromPos;
     const net = this.viaNet(from, to, start);
     const way = net ?? this.routeRaw(from, to, start);
     if (inside) way.unshift(fromPos.clone());
-    const entering = this.bld[to]?.kind === PASTURE && from !== to;
+    const entering = isLivestockPen(this.bld[to]?.kind) && from !== to;
     if (entering) way.push(this.pasturePoint(to, 2.8));
     const valid = (net && !inside && !entering) || (!this.crossesDeposits(way) && !this.wades(way));
     const route = valid ? way : [fromPos.clone()];
@@ -284,7 +285,7 @@ export class People {
 
   private spot(b: number, salt: number): THREE.Vector2 {
     const B = this.bld[b]; if (!B) return new THREE.Vector2();
-    if (B.kind === PASTURE) return this.pasturePoint(b, this.radii[B.kind] + 1.3);
+    if (isLivestockPen(B.kind)) return this.pasturePoint(b, this.radii[B.kind] + 1.3);
     const door = this.doorAngle.get(b), jitter = (Math.sin(b * 91.7 + salt * 17.3) * 43758.5453 % 1), a = door !== undefined ? door + jitter * 1.2 : jitter * Math.PI * 2, r = this.radii[B.kind] + 1.3 + Math.abs(Math.sin(b * 3.1 + salt)) * 0.8;
     return new THREE.Vector2(B.x + Math.cos(a) * r, B.z + Math.sin(a) * r);
   }
@@ -475,7 +476,7 @@ export class People {
       const B = this.bld[b]; if (!B || (B.x - cx) ** 2 + (B.z - cz) ** 2 > r2) continue;
       const need = Math.min(2, staff) - (present.get(b) ?? 0);
       for (let k = 0; k < need; k++) {
-        const p = B.kind === PASTURE ? this.pasturePoint(b, 2.8 - k * 1.7) : this.spot(b, 7 + k * 5);
+        const p = isLivestockPen(B.kind) ? this.pasturePoint(b, 2.8 - k * 1.7) : this.spot(b, 7 + k * 5);
         const look = LOOKS[B.kind], seed = b * 13 + k * 7, r = (j: number) => { const x = Math.sin(seed * 12.9898 + j * 78.233) * 43758.5453; return x - Math.floor(x); };
         const woman = !look && r(1) < 0.5;
         const y = this.terrain.walkAt(p.x, p.y);

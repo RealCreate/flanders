@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { buildDemo, wallReport } from './demo.mjs';
+import { moatSurface } from '../src/render/moatwater.ts';
 const defs = JSON.parse(createRequire(import.meta.url)('./.wasm/game_core.js').catalog());
 const SEEDS = [1337n, 7n, 1n, 99999n, 424242n, 31337n];
 const BARRIERS = [2, 22], NOT_BUILDINGS = [24, 23, 21, 32, 33, 34];
@@ -14,6 +15,8 @@ for (const seed of SEEDS) test(`seed ${seed}: the curtain walls are closed rings
   for (let i = 0; i < f.length / 10; i++) if (f[i * 10] === 24) moat.push({ x: f[i * 10 + 2], y: f[i * 10 + 3] });
   moat.sort((p, q) => Math.atan2(p.y, p.x) - Math.atan2(q.y, q.x));
   assert.ok(moat.length >= 60 && moat.every((p, i) => Math.hypot(p.x - moat[(i + 1) % moat.length].x, p.y - moat[(i + 1) % moat.length].y) <= 8), 'the moat has no gap');
+  const surface = moatSurface(w.moat_water_flat(), 2.5);
+  assert.equal(new Set(surface.positions.filter((_, i) => i % 3 === 1)).size, 1, 'the entire demo moat uses one height');
 });
 
 for (const seed of SEEDS.slice(0, 3)) test(`seed ${seed}: buildings keep clear of the walls`, () => {

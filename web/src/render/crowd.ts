@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { shadeVertices, tint } from './geomutil';
 import { eyes } from './animalmodels';
+import { surfaceTexture, type Surface } from './surfaces';
 
 /** One person (or soldier) to draw this frame. */
 export interface Draw {
@@ -26,13 +27,16 @@ const cone = (r: number, h: number, hex: number, x = 0, y = 0, z = 0, seg = 8) =
 const WOOD = 0x6b4a2e, IRON = 0xaab0b8, DARK = 0x3a3a40, LEATHER = 0x5a3b22;
 
 // ---- body parts (pivot at the joint) ----
-const linen = (x: number, y: number, z: number) => 0.88 + 0.08 * Math.cos(36 * x + 11 * z) + 0.04 * Math.cos(71 * y);
+const clothFolds = (x: number, y: number, z: number) => {
+  const around = Math.atan2(x, z);
+  return 0.92 + 0.07 * Math.cos(around * 5 + y * 3) + 0.03 * Math.sin(y * 15 + around);
+};
 function geoTorso() {
   const tunic = new THREE.CylinderGeometry(0.205, 0.255, 0.62, 8, 6).scale(1, 1, 0.75).translate(0, 0.31, 0);
   const belt = new THREE.CylinderGeometry(0.249, 0.254, 0.062, 8).scale(1, 1, 0.78).translate(0, 0.12, 0);
   const collar = new THREE.CylinderGeometry(0.148, 0.165, 0.048, 8).scale(1, 1, 0.94).translate(0, 0.599, 0);
   return merge([
-    shadeVertices(tint(tunic, 0xffffff), linen), tint(belt, 0x868078), tint(collar, 0xe4d9c7),
+    shadeVertices(tint(tunic, 0xffffff), clothFolds), tint(belt, 0x868078), tint(collar, 0xe4d9c7),
     box(0.088, 0.074, 0.027, 0xba9b69, 0, 0.12, 0.194),
     box(0.04, 0.12, 0.018, 0xada395, 0, 0.53, 0.145),
   ]);
@@ -58,8 +62,8 @@ function geoDress() {
   const apron = new THREE.CylinderGeometry(0.229, 0.367, 0.56, 4, 4, true, -0.59, 1.18)
     .scale(1, 1, 0.82).translate(0, 0.49, 0.016);
   return merge([
-    shadeVertices(tint(skirt, 0xe2dbd0), (x, y, z) => y < 0.15 ? 0.54 : linen(x, y, z)),
-    shadeVertices(tint(apron, 0xffffff), linen),
+    shadeVertices(tint(skirt, 0xe2dbd0), (x, y, z) => y < 0.15 ? 0.54 : clothFolds(x, y, z)),
+    shadeVertices(tint(apron, 0xffffff), clothFolds),
   ]);
 }
 
@@ -147,14 +151,14 @@ export class Crowd {
   private m = new THREE.Matrix4(); private a1 = new THREE.Matrix4(); private a2 = new THREE.Matrix4(); private l1 = new THREE.Matrix4();
 
   constructor() {
-    const mk = (g: THREE.BufferGeometry, max = MAX) => {
-      const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.05 });
+    const mk = (g: THREE.BufferGeometry, max = MAX, surface?: Surface) => {
+      const mat = new THREE.MeshStandardMaterial({ map: surface ? surfaceTexture(surface) : null, vertexColors: true, roughness: 0.85, metalness: 0.05 });
       const m = new THREE.InstancedMesh(g, mat, max); m.castShadow = true; m.frustumCulled = false; m.count = 0; this.group.add(m); return m;
     };
-    this.torso = mk(geoTorso()); this.head = mk(geoHead());
+    this.torso = mk(geoTorso(), MAX, 'linen'); this.head = mk(geoHead());
     this.thighL = mk(geoThigh()); this.thighR = mk(geoThigh()); this.shinL = mk(geoShin()); this.shinR = mk(geoShin());
-    this.uArmL = mk(geoUpperArm()); this.uArmR = mk(geoUpperArm()); this.foreL = mk(geoFore()); this.foreR = mk(geoFore());
-    this.dress = mk(geoDress()); this.horse = mk(horseGeo()); this.horseLeg = mk(horseLegGeo(), MAX * 4);
+    this.uArmL = mk(geoUpperArm(), MAX, 'linen'); this.uArmR = mk(geoUpperArm(), MAX, 'linen'); this.foreL = mk(geoFore()); this.foreR = mk(geoFore());
+    this.dress = mk(geoDress(), MAX, 'linen'); this.horse = mk(horseGeo(), MAX, 'fur'); this.horseLeg = mk(horseLegGeo(), MAX * 4);
     for (const m of [this.head, this.shinL, this.shinR, this.foreL, this.foreR]) m.castShadow = false;   // too small to matter in the shadow pass
     this.hats = HATS.map(h => mk(h())); this.tools = TOOLS.map(t => mk(t())); this.shields = SHIELDS.map(s => mk(s()));
     this.n.hats = new Array(this.hats.length).fill(0);

@@ -200,7 +200,7 @@ pub const DAY: u64 = 240;
 const HUNGER_PER_MILLE_DAY: u64 = 20;
 /// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
 fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
-     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE | PASTURE) }
+     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE | PASTURE | PIGSTY) }
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
@@ -328,6 +328,7 @@ pub struct World {
     flow: [i32; N_RES],
     meal_credit: i32,             // ration units left over from the last item eaten
     #[serde(skip)] estate: estate::Estate,
+    #[serde(skip)] emergency_tools: [u64; 2], // sold, next restock tick
     ledger: ledger::Ledger,       // where each resource came from and went to over the last day (derived display data: never read by the rules, never hashed)
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
     flats: Vec<[f32; 4]>,         // [x, y, radius, height] patches the player levelled (see flatten.rs): applied after ditches and earthworks, so nothing dug there shows
@@ -378,7 +379,8 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD6";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD7";
+const ESTATE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD6";
 const OBJECTIVE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD5";
 const TACTICS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD4";
 const MARCH_SNAP_MAGIC: &[u8; 8] = b"FLWORLD3";
@@ -394,13 +396,17 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         w.moat_water = w.compute_moat_water();
         return Some(w);
     }
-    let (mut w, marches) = if magic == SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let (mut w, marches) = if magic == SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
         type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
-        let (((mut w, marches, tech, bridges, state), objective), estate): (ObjectiveState, estate::Estate) =
+        let ((state, estate), tools): ((ObjectiveState, estate::Estate), [u64; 2]) =
             if magic == SNAP_MAGIC { bincode::deserialize(payload).ok()? }
-            else if magic == OBJECTIVE_SNAP_MAGIC { (bincode::deserialize(payload).ok()?, estate::Estate::default()) }
-            else { ((bincode::deserialize(payload).ok()?, None), estate::Estate::default()) };
+            else if magic == ESTATE_SNAP_MAGIC { (bincode::deserialize(payload).ok()?, [0; 2]) }
+            else if magic == OBJECTIVE_SNAP_MAGIC { ((bincode::deserialize(payload).ok()?, estate::Estate::default()), [0; 2]) }
+            else { (((bincode::deserialize(payload).ok()?, None), estate::Estate::default()), [0; 2]) };
+        let ((mut w, marches, tech, bridges, state), objective) = state;
+        if tools[0] > 2 || (tools[0] == 0) != (tools[1] == 0) { return None; }
+        w.emergency_tools = tools;
         if w.battle.is_some() != state.is_some() || tech > tactics::TECH_MASK { return None; }
         if !estate.valid() { return None; }
         w.estate = estate;
@@ -519,6 +525,13 @@ pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
     }
 }
 
+fn demolition_refund(kind: u8) -> impl Iterator<Item = Amount> {
+    DEFS[kind as usize].cost.iter().filter_map(move |&(r, n)| {
+        let half = n / 2;
+        (kind != TOWN_HALL && half > 0).then_some((r, half))
+    })
+}
+
 #[wasm_bindgen]
 impl World {
     /// The whole state of the village as bytes (the caches are not in it: they are rebuilt on demand). `world_restore` turns it back into the same world, to the last bit.
@@ -528,7 +541,7 @@ impl World {
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
         let objective_state = (tactical_state, battle.and_then(|b| b.objective));
-        v.extend(bincode::serialize(&(objective_state, self.estate)).expect("a world can be written"));
+        v.extend(bincode::serialize(&((objective_state, self.estate), self.emergency_tools)).expect("a world can be written"));
         v
     }
 
@@ -537,7 +550,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -1009,6 +1022,7 @@ impl World {
     fn claim(&self, b: &Building) -> f32 {
         match b.kind {
             TOWN_HALL => self.build_radius() as f32,
+            STABLE => 0.0,
             k if is_edit(k) => 0.0,
             ROAD => if b.status == 4 { roadline::ROAD_CLAIM } else { 0.0 },   // only a piece that is joined to the village's land (see `sync_road_conn`) claims any
             BRIDGE => 7.0,
@@ -1041,9 +1055,38 @@ impl World {
     }
 
     /// `can_place` at a world position (road pieces snapped onto a node are not on the whole-number grid).
+    fn building_blocks_placement(kind: u8, x: f32, y: f32, b: &Building) -> bool {
+        if (matches!(kind, DRAWBRIDGE | BRIDGE) && matches!(b.kind, MOAT | RIVER)) || (matches!(kind, MOAT | RIVER) && matches!(b.kind, DRAWBRIDGE | BRIDGE)) { return false; }
+        if is_edit(kind) && is_edit(b.kind) && kind != b.kind { return false; }
+        (b.x - x).powi(2) + (b.y - y).powi(2) < (footprint(b.kind, b.tier) + DEFS[kind as usize].r - 0.4).powi(2)
+    }
+
+    /// World-space [x, y, radius] marks for the objects blocking a placement.
+    pub fn placement_obstructions(&self, kind: u8, dx: i32, dy: i32) -> Vec<f32> {
+        let Some(d) = DEFS.get(kind as usize) else { return vec![] };
+        let (x, y) = (self.ox as f32 + dx as f32, self.oy as f32 + dy as f32);
+        let mut marks = Vec::new();
+        for b in &self.buildings {
+            if Self::building_blocks_placement(kind, x, y, b) { marks.extend([b.x, b.y, footprint(b.kind, b.tier) + 0.6]); }
+        }
+        if d.req != 1 {
+            let clear = if is_edit(kind) { 2.6 } else if matches!(kind, WALL | FENCE | GATE) { 0.6 } else { d.r + 1.6 };
+            for dep in &self.deposits {
+                if dep.max > 0 && (dep.x - x).hypot(dep.y - y) < clear { marks.extend([dep.x, dep.y, 2.0]); }
+            }
+        }
+        if !matches!(kind, ROAD | BRIDGE | DRAWBRIDGE) {
+            let radius = if kind == MOAT { MOAT_FLOOR * 1.91 + CHANNEL_BANK } else if is_edit(kind) { 5.0 } else { d.r };
+            for army in &self.dets {
+                if army.occupied(|px, py| (px - x).hypot(py - y) < radius + members::FOOT_MARGIN) { marks.extend([army.x, army.y, 3.0]); }
+            }
+        }
+        marks
+    }
+
     pub(crate) fn can_place_xy(&self, kind: u8, x: f32, y: f32) -> i32 {
         let Some(d) = DEFS.get(kind as usize) else { return -1 };
-        if kind == PASTURE && !self.estate.active { return -1; }
+        if matches!(kind, PASTURE | PIGSTY | STABLE) && !self.estate.active { return -1; }
         if kind == TOWN_HALL { return -9; }
         let allowed = if matches!(kind, ROAD | BRIDGE | DRAWBRIDGE | MOAT | PORT) {
             Self::infrastructure_in_bounds(x, y)
@@ -1056,12 +1099,7 @@ impl World {
             if self.dets.iter().any(|army| army.occupied(|px, py| (px - x).hypot(py - y) < radius + members::FOOT_MARGIN)) { return -3; }
         }
         if kind == GATE && !self.buildings.iter().any(|b| b.kind == WALL && (b.x - x).hypot(b.y - y) <= 9.0) { return -20; }   // a gate only ever stands in a wall
-        for b in &self.buildings {
-            let _bd = &DEFS[b.kind as usize];
-            if (matches!(kind, DRAWBRIDGE | BRIDGE) && matches!(b.kind, MOAT | RIVER)) || (matches!(kind, MOAT | RIVER) && matches!(b.kind, DRAWBRIDGE | BRIDGE)) { continue; }   // a bridge spans the water   // a drawbridge spans the water
-            if is_edit(kind) && is_edit(b.kind) && kind != b.kind { continue; }                                                               // raise, lower, dig: different edits can share a spot
-            if (b.x - x).powi(2) + (b.y - y).powi(2) < (footprint(b.kind, b.tier) + d.r - 0.4).powi(2) { return -3; }
-        }
+        if self.buildings.iter().any(|b| Self::building_blocks_placement(kind, x, y, b)) { return -3; }
         let fr = d.r * 0.9;
         let pts = [(0.0, 0.0), (fr, 0.0), (-fr, 0.0), (0.0, fr), (0.0, -fr)];
         let (mut lo, mut hi) = (f32::MAX, f32::MIN);
@@ -1239,6 +1277,58 @@ impl World {
     pub fn waterwheel_snap(&self, dx: i32, dy: i32) -> Vec<f32> { self.shore_snap(WATERWHEEL, dx, dy) }
     /// Where a fishing hut clicked at (dx, dy) goes: the same bank snap as the waterwheel (its jetty plays the wheel's part), at a river, lake, sea or moat edge.
     pub fn fishing_hut_snap(&self, dx: i32, dy: i32) -> Vec<f32> { self.shore_snap(FISHING_HUT, dx, dy) }
+
+    /// Find a dry warehouse site and point its pier into open water. Return the final coordinates
+    /// and turn so signed placement commands can replay without doing another search.
+    pub fn port_snap(&self, dx: i32, dy: i32) -> Vec<f32> {
+        const SNAP: i32 = 14;
+        let x = self.ox as f32 + dx as f32;
+        let y = self.oy as f32 + dy as f32;
+        if x.abs().max(y.abs()) > INFRASTRUCTURE_LIMIT + SNAP as f32 { return vec![]; }
+
+        let mut offsets = Vec::new();
+        for sy in -SNAP..=SNAP { for sx in -SNAP..=SNAP {
+            let distance = sx * sx + sy * sy;
+            if distance <= SNAP * SNAP { offsets.push((distance, sx, sy)); }
+        } }
+        offsets.sort_unstable();
+        for (_, sx, sy) in offsets {
+            let (px, py) = (x + sx as f32, y + sy as f32);
+            if !matches!(self.can_place_xy(PORT, px, py), 0 | -6) { continue; }
+            let mut best: Option<(f32, u8)> = None;
+            for turn in 0..8 {
+                if let Some(score) = self.port_landing(px, py, turn) {
+                    if best.is_none_or(|(previous, _)| score > previous) { best = Some((score, turn)); }
+                }
+            }
+            if let Some((_, turn)) = best {
+                return vec![px - self.ox as f32, py - self.oy as f32, turn as f32];
+            }
+        }
+        vec![]
+    }
+
+    fn port_landing(&self, x: f32, y: f32, turn: u8) -> Option<f32> {
+        let ground = self.placement_height(PORT, x, y, turn);
+        let sample = |across, along| {
+            let (dx, dy) = doors::to_world(turn, (across, along));
+            let (px, py) = (x + dx, y + dy);
+            let stage = self.water_surface_at(px, py);
+            let f = (stage / 1.2).clamp(0.0, 1.0);
+            let low_water = stage - 0.51 * (1.0 - f * f * (3.0 - 2.0 * f));
+            (stage, low_water - self.height_at(px, py))
+        };
+        // The pier is 2.8 units wide, centred 2.2 to the right of the warehouse and ends 13 out.
+        let (level, end) = sample(2.2, 12.75);
+        if end < 0.42 || ground - level > 3.8 { return None; }
+        let left = sample(1.05, 12.75).1;
+        let right = sample(3.35, 12.75).1;
+        if left.min(right) < 0.20 || sample(2.2, 10.5).1 < 0.15 { return None; }
+        // Prefer water beside the pier for a moored boat.
+        let berth = sample(5.1, 11.0).1.max(sample(-0.85, 11.0).1);
+        Some(end.min(2.0) + berth.clamp(-2.0, 2.0))
+    }
+
     fn shore_snap(&self, kind: u8, dx: i32, dy: i32) -> Vec<f32> {
         let (x, y) = ((self.ox + dx) as f32, (self.oy + dy) as f32);
         let wet = |px: f32, py: f32| self.natural_water_covers(px, py, self.height_at(px, py), 0.1);
@@ -1531,12 +1621,17 @@ impl World {
     /// Flat [resource, amount, ...] cost of one optional upgrade of this kind of building.
     pub fn option_cost_flat(kind: u8) -> Vec<i32> { match DEFS.get(kind as usize) { Some(d) => option_cost(d.weight).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(), None => vec![] } }
 
+    /// Materials recovered by demolishing a building, as [resource, amount, ...].
+    pub fn demolition_refund_flat(&self, idx: u32) -> Vec<i32> {
+        let Some(b) = self.buildings.get(idx as usize) else { return vec![] };
+        demolition_refund(b.kind).flat_map(|(r, n)| [r as i32, n]).collect()
+    }
+
     /// Remove a building, refunding half of its base cost.
     pub fn demolish(&mut self, idx: u32) -> bool {
         match self.buildings.get(idx as usize) {
             Some(b) if b.kind != TOWN_HALL => {
-                let refund: Vec<Amount> = DEFS[b.kind as usize].cost.iter().map(|&(r, n)| (r, n / 2)).collect();
-                for (r, n) in refund { self.stock[r as usize] += n; }
+                for (r, n) in demolition_refund(b.kind) { self.stock[r as usize] += n; }
                 let back = b.garrison as u32;
                 let was_edit = is_edit(b.kind);
                 self.army[1] += back;
@@ -1552,6 +1647,7 @@ impl World {
     /// Advance one simulation tick (one in-game second).
     pub fn step(&mut self) {
         self.tick += 1;
+        self.refill_emergency_tools();
         let before = self.stock;
         self.ledger.begin(self.tick, &self.stock);
         let cap = self.storage_cap();
@@ -2749,6 +2845,7 @@ impl World {
                 mix(self.meal_credit as i64 as u64);
                 for s in &self.market_sold { mix(*s as i64 as u64); }
                 if self.estate.active { mix(1); mix(self.estate.grain as u64); mix(self.estate.wood as u64); }
+                if self.emergency_tools[0] > 0 { mix(2); mix(self.emergency_tools[0]); mix(self.emergency_tools[1]); }
             }),
             part(&|mix| {   // buildings: what stands, where, how built and how hurt
                 for b in &self.buildings {
@@ -2860,6 +2957,31 @@ mod tests {
 
     #[test]
     fn deterministic() { assert_eq!(run(42), run(42)); assert_ne!(run(42), run(43)); }
+
+    #[test]
+    fn demolition_preview_matches_returned_materials() {
+        let mut w = World::new(1337, 0, 0);
+        w.stock = [500; N_RES];
+        w.flatten(40, 5.0);
+        assert!(w.demolition_refund_flat(0).is_empty()); // the hall cannot be demolished
+        assert!(w.demolition_refund_flat(u32::MAX).is_empty());
+        assert_eq!(demolition_refund(ROAD).next(), None); // its one wood rounds down
+
+        for (kind, expected) in [(FARM, vec![W as i32, 12]), (MARKET, vec![W as i32, 15, PL as i32, 5])] {
+            let idx = w.place(kind, 16, 0, 0);
+            assert!(idx >= 0);
+            let idx = idx as u32;
+            assert_eq!(w.upgrade(idx), 0);
+            let before = w.stock;
+            let refund = w.demolition_refund_flat(idx);
+            assert_eq!(refund, expected);
+            assert_eq!(w.stock, before);
+            assert!(w.demolish(idx));
+            let mut expected_stock = before;
+            for pair in refund.chunks_exact(2) { expected_stock[pair[0] as usize] += pair[1]; }
+            assert_eq!(w.stock, expected_stock);
+        }
+    }
 
     #[test]
     fn terrain_is_sane() {

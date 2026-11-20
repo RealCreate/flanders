@@ -218,6 +218,25 @@ fn moats_bridges_and_ports_can_be_built_outside_the_city_claim() {
     assert!(w.place(PORT, coast.0, coast.1, 0) >= 0);
 }
 
+#[test]
+fn a_port_snaps_to_dry_land_with_its_pier_over_water() {
+    let mut w = rich();
+    let (dx, dy, spot) = (180..440).step_by(4)
+        .flat_map(|x| (-150..150).step_by(4).map(move |y| (x, y)))
+        .filter(|&(x, y)| w.can_place(PORT, x, y) == 0)
+        .find_map(|(dx, dy)| {
+            let spot = w.port_snap(dx, dy);
+            (!spot.is_empty()).then_some((dx, dy, spot))
+        }).expect("somewhere along the shore where a pier can reach the water");
+    let (x, y, turn) = (spot[0] as i32, spot[1] as i32, spot[2] as u8);
+    assert!((x - dx).abs() <= 14 && (y - dy).abs() <= 14);
+    let (tip_x, tip_y) = doors::to_world(turn, (2.2, 12.75));
+    let (tip_x, tip_y) = (w.ox as f32 + x as f32 + tip_x, w.oy as f32 + y as f32 + tip_y);
+    assert!(w.height_at(tip_x, tip_y) < w.water_surface_at(tip_x, tip_y) - 0.42);
+    assert!(w.place(PORT, x, y, turn) >= 0);
+    assert_ne!(w.port_snap(dx, dy), spot, "the built warehouse blocks another port at the same spot");
+}
+
 /// Taking away a piece in the middle of a road cuts the land beyond it off again.
 #[test]
 fn taking_a_piece_out_of_a_road_takes_back_the_land_beyond_it() {
