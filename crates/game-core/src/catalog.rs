@@ -80,6 +80,7 @@ pub const PLAZA: u8 = 44;
 pub const PASTURE: u8 = 45;
 pub const PIGSTY: u8 = 46;
 pub const STABLE: u8 = 47;
+pub const FORESTER: u8 = 48;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
 pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD | PLAZA | STABLE => 0, PASTURE | PIGSTY => 2, _ => 3 } }
@@ -87,7 +88,7 @@ pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER
 /// Pieces that reshape the ground instead of standing on it.
 pub fn is_edit(kind: u8) -> bool { matches!(kind, MOAT | RIVER | RAISE | LOWER) }
 
-pub static DEFS: [Def; 48] = [
+pub static DEFS: [Def; 49] = [
     Def { name: "House", cat: 0, r: 3.2, weight: 1, cost: &[(W, 12)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 5, max_slope: 0.35, pad: true, desc: "Homes for your villagers. Better tiers house more people." },
     Def { name: "Farm", cat: 1, r: 6.5, weight: 2, cost: &[(W, 25)], jobs: 2, inputs: &[], outputs: &[(GR, 10)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.22, pad: true, desc: "Grows grain to feed the village. Needs flat ground." },
     Def { name: "Wall", cat: 4, r: 2.4, weight: 1, cost: &[(ST, 5)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.4, pad: true, desc: "A wall segment. Rotate with R and chain them into a curtain wall." },
@@ -136,6 +137,7 @@ pub static DEFS: [Def; 48] = [
     Def { name: "Pasture", cat: 1, r: 7.0, weight: 2, cost: &[(W, 30), (PL, 6)], jobs: 2, inputs: &[], outputs: &[(ME, 7)], cycle: 12, req: 0, req_arg: 0, housing: 0, max_slope: 0.29, pad: true, desc: "Herders raise sheep and cattle for meat. Livestock graze during the warmer seasons and need grain in winter. The grain reserve protects your larder from winter feed use." },
     Def { name: "Pigsty", cat: 1, r: 7.0, weight: 2, cost: &[(W, 24), (PL, 6)], jobs: 2, inputs: &[(GR, 2)], outputs: &[(ME, 8)], cycle: 12, req: 0, req_arg: 0, housing: 0, max_slope: 0.29, pad: true, desc: "Pig keepers feed grain to pigs and produce meat year-round. Feeding leaves your grain reserve for the village." },
     Def { name: "Stable", cat: 5, r: 5.2, weight: 0, cost: &[(W, 20), (PL, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.35, pad: true, desc: "Houses packhorses for trade. Equip Caravan horses to make new caravans travel 50% faster. The bonus applies once across the village." },
+    Def { name: "Forester", cat: 2, r: 3.2, weight: 1, cost: &[(W, 20), (PL, 4)], jobs: 1, inputs: &[], outputs: &[], cycle: 10, req: 0, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "Plants young trees over time in an area you choose, so a forest grows back where woodcutters and hunters work. Trees take a day and a half to grow; a woodcutter fells grown planted trees before the wild forest. Select it and pick Plant zone to choose the area." },
 ];
 
 /// Resources needed to upgrade to `new_tier` (1..=3).

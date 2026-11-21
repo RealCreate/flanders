@@ -450,6 +450,16 @@ const woodcutter: Model = b => {
   if (t >= 2) b.chimney(0.8, 2.4, -0.8);
 };
 
+/** A forester's hut: a small timber cabin with a sapling bed, a wheelbarrow and a few young trees. */
+const forester: Model = b => {
+  const t = b.t, m = M(), leaf = new THREE.MeshStandardMaterial({ color: 0x4c8c42, roughness: 0.9 });
+  b.box(2.8, 1.8, 2.3, t >= 1 ? m.timber : m.wood, -0.3, 0, -0.4); b.gable(2.8, 2.3, 1.2 + t * 0.2, t >= 1 ? m.tile : m.thatch, -0.3, 1.8, -0.4, 0.35);
+  b.box(0.7, 1.3, 0.12, m.door, -0.3, 0, 0.78);
+  for (let i = 0; i < 4; i++) { b.cyl(0.05, 0.07, 0.7 + (i % 2) * 0.25, m.log, 1.9 + (i % 2) * 0.5, 0, -1 + i * 0.55, 5); b.sphere(0.3 + (i % 2) * 0.08, leaf, 1.9 + (i % 2) * 0.5, 0.95 + (i % 2) * 0.25, -1 + i * 0.55); }
+  b.box(0.9, 0.35, 0.6, m.wood, -2.3, 0.3, 1.5); b.cyl(0.22, 0.22, 0.08, m.iron, -2.3, 0.22, 1.9, 10).rotation.x = Math.PI / 2; b.box(0.08, 0.08, 0.9, m.darkwood, -2.3, 0.5, 2.2);
+  if (t >= 2) b.chimney(0.6, 2.2, -0.9);
+};
+
 const sawmill: Model = b => {
   const t = b.t, m = M();
   for (const [x, z] of [[-2.4, -1.6], [2.4, -1.6], [-2.4, 1.6], [2.4, 1.6]]) b.box(0.35, 2.6, 0.35, m.darkwood, x, 0, z);
@@ -1205,7 +1215,7 @@ const bakery: Model = b => {
   if (t >= 2) b.box(W + 0.6, 0.2, 0.5, m.timber, 0, h + 0.1, D / 2 + 0.3);   // an awning over the counter
   if (t >= 3) b.flag(-W / 2 + 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza, livestockPen(false), livestockPen(true), stable];
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza, livestockPen(false), livestockPen(true), stable, forester];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,

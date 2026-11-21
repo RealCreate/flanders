@@ -16,6 +16,7 @@ mod pathnet;
 pub mod doors;
 mod roadline;
 mod flatten;
+mod forestry;
 mod plague;
 pub mod radii;
 mod wallnet;
@@ -202,7 +203,7 @@ pub const DAY: u64 = 240;
 const HUNGER_PER_MILLE_DAY: u64 = 20;
 /// The workplaces that make food and wood get their hands before any other: when there are not enough workers for every job, these are staffed first.
 fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
-     matches!(kind, FARM | 4 | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE | PASTURE | PIGSTY) }
+     matches!(kind, FARM | 4 | FORESTER | FISHING_HUT | SMOKEHOUSE | BAKERY | LODGE | PASTURE | PIGSTY) }
 /// Bandit raids: after the first three days, about one a week on average (a roll every tick).
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
@@ -371,6 +372,7 @@ pub struct World {
     #[serde(skip)] height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
     #[serde(skip)] net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
+    #[serde(skip)] planted: Vec<forestry::Planted>,   // trees the player (or a forester) planted [x, y, tick]: carried beside the world in a snapshot (see `snapshot`), part of the state hash
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
     bridges: Vec<[f32; 4]>,      // bridges built over water [ax, ay, bx, by]
     db_want: Vec<u32>,           // drawbridges that own soldiers in the fight are waiting to cross this tick (transient: filled by the battle, used by drawbridge_step and cleared)
@@ -381,7 +383,8 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD7";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD8";
+const TOOLS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD7";
 const ESTATE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD6";
 const OBJECTIVE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD5";
 const TACTICS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD4";
@@ -398,17 +401,20 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         w.moat_water = w.compute_moat_water();
         return Some(w);
     }
-    let (mut w, marches) = if magic == SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let (mut w, marches) = if magic == SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
         type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
-        let ((state, estate), tools): ((ObjectiveState, estate::Estate), [u64; 2]) =
+        let (((state, estate), tools), planted): (((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>) =
             if magic == SNAP_MAGIC { bincode::deserialize(payload).ok()? }
-            else if magic == ESTATE_SNAP_MAGIC { (bincode::deserialize(payload).ok()?, [0; 2]) }
-            else if magic == OBJECTIVE_SNAP_MAGIC { ((bincode::deserialize(payload).ok()?, estate::Estate::default()), [0; 2]) }
-            else { (((bincode::deserialize(payload).ok()?, None), estate::Estate::default()), [0; 2]) };
+            else if magic == TOOLS_SNAP_MAGIC { (bincode::deserialize(payload).ok()?, vec![]) }
+            else if magic == ESTATE_SNAP_MAGIC { ((bincode::deserialize(payload).ok()?, [0; 2]), vec![]) }
+            else if magic == OBJECTIVE_SNAP_MAGIC { (((bincode::deserialize(payload).ok()?, estate::Estate::default()), [0; 2]), vec![]) }
+            else { ((((bincode::deserialize(payload).ok()?, None), estate::Estate::default()), [0; 2]), vec![]) };
         let ((mut w, marches, tech, bridges, state), objective) = state;
         if tools[0] > 2 || (tools[0] == 0) != (tools[1] == 0) { return None; }
         w.emergency_tools = tools;
+        if planted.len() > forestry::MAX_PLANTED || planted.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) { return None; }
+        w.planted = planted;
         if w.battle.is_some() != state.is_some() || tech > tactics::TECH_MASK { return None; }
         if !estate.valid() { return None; }
         w.estate = estate;
@@ -543,7 +549,7 @@ impl World {
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
         let objective_state = (tactical_state, battle.and_then(|b| b.objective));
-        v.extend(bincode::serialize(&((objective_state, self.estate), self.emergency_tools)).expect("a world can be written"));
+        v.extend(bincode::serialize(&(((objective_state, self.estate), self.emergency_tools), &self.planted)).expect("a world can be written"));
         v
     }
 
@@ -553,7 +559,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], planted: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -1145,13 +1151,15 @@ impl World {
     /// Forest density near a point, as the village sees it: the land's own forest, except inside a big cleared area (see `demo`) where only the kept groves still have trees.
     fn forest_here(&self, x: f32, y: f32, r: f32) -> f32 {
         let inside = |c: &[f32; 3]| (c[0] - x).hypot(c[1] - y) < c[2];
-        if self.felled.iter().any(|c| c[2] >= 30.0 && inside(c)) && !self.groves.iter().any(inside) { return 0.0; }
-        terrain::forest_near(self.seed, x, y, r)
+        let natural = if self.felled.iter().any(|c| c[2] >= 30.0 && inside(c)) && !self.groves.iter().any(inside) { 0.0 } else { terrain::forest_near(self.seed, x, y, r) };
+        natural.max(self.planted_density(x, y, r))   // grown planted trees count as forest too
     }
 
     /// Woodcutters slowly clear the forest round them, so the clearing (and the village) grows.
     fn clear_trees(&mut self, bx: f32, by: f32) {
-        if self.rng.range(4) != 0 || self.felled.len() >= 500 { return; }
+        if self.rng.range(4) != 0 { return; }
+        if self.fell_planted(bx, by) { return; }   // the planted trees go first
+        if self.felled.len() >= 500 { return; }
         let a = self.rng.range(628) as f32 * 0.01; let dist = 5.0 + self.rng.range(120) as f32 * 0.1;
         let (x, y) = (bx + a.cos() * dist, by + a.sin() * dist);
         if self.forest_here(x, y, 2.5) < 0.12 || self.height_at(x, y) < 0.6 { return; }
@@ -1721,6 +1729,7 @@ impl World {
                 p -= need;
                 if kind == FARM { let b = &mut self.buildings[i]; b.fert = b.fert.saturating_sub(FERT_WEAR); if b.mode == 2 && b.fert <= FERT_TIRED { b.mode = 3; } }
                 if kind == 4 { let (cx, cy) = (self.buildings[i].x, self.buildings[i].y); self.clear_trees(cx, cy); }
+                if kind == FORESTER && !self.forester_works(i) { status = 2; }
             }
             self.buildings[i].progress = p;
             self.buildings[i].status = status;
@@ -2904,7 +2913,7 @@ impl World {
                     mix(b.kind as u64); mix(b.tier as u64); mix(b.x.to_bits() as u64); mix(b.y.to_bits() as u64);
                     mix(b.rot as u64); mix(b.progress as u64); mix(b.pad_h.to_bits() as u64); mix(b.garrison as u64); mix(b.born as u64); mix(b.opts as u64); mix(b.fert as u64); mix(b.mode as u64); mix(b.target as i64 as u64);
                     if matches!(b.kind, DRAWBRIDGE | GATE) { mix(b.status as u64); }
-                    if matches!(b.kind, RAISE | LOWER) && b.aux >= 0 { mix(b.aux as u64); }
+                    if matches!(b.kind, RAISE | LOWER | FORESTER) && b.aux >= 0 { mix(b.aux as u64); }
                 }
                 for b in &self.buildings { mix(b.hp.to_bits() as u64); mix(b.burning.to_bits() as u64); }
                 for c in &self.road_conn { mix(c.x.to_bits() as u64); mix(c.y.to_bits() as u64); for t in &c.to { mix(t.x.to_bits() as u64); mix(t.y.to_bits() as u64); mix(t.k as u64); } }   // how the roads the player laid are joined
@@ -2919,6 +2928,7 @@ impl World {
             }),
             part(&|mix| {   // the land the soldiers and the builders changed
                 for f in &self.felled { for v in f { mix(v.to_bits() as u64); } } mix(self.groves.len() as u64);
+                for p in &self.planted { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); mix(p.2); }
                 for b in &self.bridges { for v in b { mix(v.to_bits() as u64); } }
                 for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for l in &self.flats { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);

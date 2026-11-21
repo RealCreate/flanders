@@ -24,6 +24,7 @@ import { Ruins, type Effects2 } from './render/fx';
 import type { Wildlife } from './render/wildlife';
 import type { Crowd } from './render/crowd';
 import { WalkRouter } from './walkrouter';
+import { PlantedTrees } from './render/plantedtrees';
 
 /** Things every village shares. */
 export interface Shared {
@@ -39,7 +40,7 @@ const NO_PATHS = new Float32Array(0);   // (nothing is linked automatically any 
 export class Village {
   private defaultBanner = 0;
   private walker: WalkRouter;
-  moats: MoatWater; nets: NetView;
+  moats: MoatWater; nets: NetView; planted: PlantedTrees;
   view: VillageView; paths: Paths; nodes: RoadNodes; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; boats: Boats;
   clear: { x: number; z: number; r: number }[] = [];
   /** Groves kept standing inside a big cleared area. */
@@ -57,6 +58,7 @@ export class Village {
     this.view = new VillageView(color, (x, z, rot) => this.world.shore_water_height(x, z, rot), (x, z) => sh.terrain.heightAt(x, z, true));
     this.paths = new Paths(sh.terrain); this.nodes = new RoadNodes(sh.terrain); this.walls = new Walls(sh.terrain); this.spans = new Spans(sh.terrain); this.props = new Props(sh.terrain);
     this.moats = new MoatWater(sh.terrain, STEP); sh.scene.add(this.moats.group);
+    this.planted = new PlantedTrees(sh.terrain); sh.scene.add(this.planted.group);
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain); this.field.friend = color; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain);
@@ -95,7 +97,7 @@ export class Village {
     this.walker.dispose();
     this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.army.group, this.ruins.group, this.people.group, this.boats.group);
     this.view.root.traverse(o => (o as THREE.Mesh).geometry?.dispose());
-    this.sh.scene.remove(this.moats.group, this.nets.group); this.moats.dispose(); this.nets.dispose(); this.sh.terrain.setDecks(this, []);
+    this.sh.scene.remove(this.moats.group, this.nets.group, this.planted.group); this.planted.dispose(); this.moats.dispose(); this.nets.dispose(); this.sh.terrain.setDecks(this, []);
     this.walls.dispose(); this.spans.dispose(); this.nodes.dispose(); this.paths.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());
   }
 
@@ -155,6 +157,7 @@ export class Village {
     this.mapVersion = w.map_version();
     const sc = w.scorch_flat(); for (let i = 0; i < sc.length; i += 3) this.clear.push({ x: sc[i], z: sc[i + 1], r: sc[i + 2] * 0.95 });
     this.count = w.building_count(); this.version = w.terrain_version();
+    this.planted.set(w.planted_flat(), Number(w.tick()));
     this.sh.forestDirty();
   }
 
@@ -164,6 +167,7 @@ export class Village {
     this.clear = this.clearBase.slice();
     const fl = w.felled_flat(); for (let i = 0; i < fl.length; i += 3) this.clear.push({ x: fl[i], z: fl[i + 1], r: fl[i + 2] });
     const sc = w.scorch_flat(); for (let i = 0; i < sc.length; i += 3) this.clear.push({ x: sc[i], z: sc[i + 1], r: sc[i + 2] * 0.95 });
+    this.planted.set(w.planted_flat(), Number(w.tick()));
     this.mapVersion = w.map_version(); this.sh.forestDirty();
   }
 
@@ -185,6 +189,7 @@ export class Village {
       this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     }
     { const t = Number(w.tick()); if (!settings().showPaths) this.nets.update(null); else if (t - this.lastNet >= 8 || t < this.lastNet) { this.lastNet = t; this.nets.update(w.net_flat()); } }
+    this.planted.refresh(Number(w.tick()));
     this.fireData = w.fires_flat(); this.people.setFires(this.fireData); this.paths.setTick(Number(w.tick()));
     { // work for builders: damaged buildings (not burning) and ruins
       const jobs: { x: number; z: number; r: number }[] = [];
