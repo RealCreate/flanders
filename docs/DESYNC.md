@@ -117,3 +117,10 @@ New state is only two more entries in `stock` (raw fish, smoked fish: `N_RES` is
 uses the waterwheel's bank snap (`shore_snap`, a pure function of the world that runs on the clicking client; the result travels in the `place` command) and `place` checks the jetty is over water (`wheel_in_water`, -16)
 and levels the pad to the moat's own visible level (`wheel_pad_cap`) exactly as for the wheel. Eating (`World::step`) takes smoked fish first (`SMOKED_MEAL_PER_FISH`) then grain, with integer arithmetic only; raw fish is never
 eaten. The constants are in `lib.rs` and `catalog.rs`, and so in the rules fingerprint. Test: `fishing_smoking_and_eating_fish_replay_identically` in `tests/replay_sync.rs`.
+
+## PVE (computer villages)
+
+A PVE game never joins a room, so no peer replays it, and the computer villages are not part of anybody's signed history (`docs/PVE.md`). The only things that touch your village are
+the commands a remote human would send (`raid`, `refuse`, `goods`/`accept`/`settle`, `treaty`), which are committed to your own log and replayed by the normal rules; the computer's
+decisions (`crates/game-core/src/ai.rs`) use only its own seeded stream and its own world's state and are tested to be reproducible (`ai_tests::it_is_deterministic_and_seeded`).
+`World`, `state_hash` and `rules_fingerprint` are unchanged by the AI (it is a separate class that calls the public world methods).

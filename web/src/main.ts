@@ -7,7 +7,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_land_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names, military_upgrades } from './wasm/game_core.js';
+import init, { World, Ai, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_land_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names, military_upgrades } from './wasm/game_core.js';
 import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
 import { parseRows, parseTotals, stepWant, parseProductionProblems, productionProblemText } from './workview';
@@ -78,6 +78,7 @@ import { bribeOffer, bribeToast, bribeRefusal, BRIBE_CONSEQUENCE } from './bribe
 import { roleOf, actionsFor, foeFocus, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent, drawnUp, isLent, DB_UP, DB_MANUAL_DOWN } from './defence';
 import { arrivalTime, crossingSummary, objectiveName, orderPins, parseRaidObjective, type BattlePin, type RaidObjective } from './battlefield';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
+import { aiKey, aiName, pickLayouts, pickSites, raidRequests } from './pve';
 import { cleanName, parseCmd, Sequence } from './net/validate';
 import { restartCmd, rebaseLog, restartBlocker, validArchive, type Archive, type Facts } from './restart';
 import { saveKept, loadKept, deleteKept } from './checkpoint';
@@ -103,7 +104,7 @@ const NAMES = ['Aldric', 'Beatrix', 'Cedric', 'Dunstan', 'Eleanor', 'Fulk', 'God
 
 const ui: UI = new UI({
   restartInfo: () => restartInfo(), restartRun: () => restartVillage(), restartRestore: () => restoreArchivedVillage(),
-  start: (w, n) => startGame(w, n),
+  start: (w, n, pve) => startGame(w, n, !!pve),
   select: k => selectKind(k === selectedKind ? null : k),
   act: a => onAct(a),
   upgradeHover: on => showUpgradeOutline(on),
@@ -143,6 +144,8 @@ document.addEventListener('mouseover', e => { const t = (e.target as HTMLElement
 
 // ---------- game state ----------
 let worldName = 'flanders', seedBig = 1n, started = false;
+/** A PVE game: two villages run by the computer instead of other players (see docs/PVE.md, web/src/pve.ts). It has its own save and never joins the shared room. */
+let pveMode = false;
 let renderer!: THREE.WebGLRenderer, scene!: THREE.Scene, terrain!: Terrain, forest!: Forest, atmo!: Atmosphere, rig!: CameraRig;
 let bigMap!: Minimap;
 let penPreview!: PenPreview;
@@ -157,6 +160,8 @@ let deposits!: Deposits, minimap!: Minimap, effects!: Effects, crowd!: Crowd, fx
 let lv!: Village;                           // your village
 interface Rival {
   key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number; broken?: boolean; log: Cmd[];
+  /** A village run by the computer (PVE): its world is stepped here every tick, together with the controller that plays it. */
+  ai?: Ai;
   /** The bookkeeping that tells whether this copy still matches the owner's village (net/sync.ts), and what the game is doing about it. */
   track: ReplicaTrack; policy: ResyncPolicy;
   versionOk: boolean;                          // false: they run other simulation rules, so their history cannot be judged here
@@ -223,7 +228,7 @@ const countShared = (log: { cmd: Cmd }[]) => { let n = 0; for (const e of log) i
 const myTag = () => tagOf(identity.pub);
 const slot = params.get('player') ?? ''; // lets several players share one browser profile (testing)
 let resetting = false;   // set while the full reset is wiping the saves, so nothing writes them back
-const saveKey = () => `flanders:save:v${MAP_VERSION}:${worldName}${slot ? ':' + slot : ''}`;
+const saveKey = () => `flanders:save:v${MAP_VERSION}:${worldName}${pveMode ? ':pve' : ''}${slot ? ':' + slot : ''}`;
 const checkpointKey = () => saveKey() + ':checkpoint';
 let commitsInFlight = 0;   // commands applied to the world that are not in the saved history yet (they wait for their signature): no checkpoint while there are any
 let lastCheckpointAt = 0;
@@ -766,7 +771,7 @@ function answerOffer(r: Rival, kind: number, days: number) {
 /** What the trade form in the peers pane asks for. Nothing happens at once: a caravan, an offer, an envoy, a wedding party or a herald sets out along the path to the other city and does its work on arrival. */
 function doTrade(key: string, action: string, res: number, amount: number, escort: number) {
   const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
-  if (action === 'caravan' && !r.online) { ui.toast('That village is not online right now: caravans need somebody to take the goods.', 'bad'); return; }
+  if (action === 'caravan' && !r.online && !r.ai) { ui.toast('That village is not online right now: caravans need somebody to take the goods.', 'bad'); return; }
   const w = lv.world, their = tagOf(key), dist = roadTo(r);
   if (action === 'caravan') {
     const code = w.caravan_send(res, amount, their, dist, escort);
@@ -785,7 +790,7 @@ function doTrade(key: string, action: string, res: number, amount: number, escor
 /** Caravans that arrived: tell the village they were sent to, so it can take them and pay. */
 function pollTrade() {
   const d = lv.world.take_delivered();
-  for (let i = 0; i + 2 < d.length; i += 3) { for (const [key] of rivals) if (tagOf(key) === d[i + 2]) { commit({ op: 'goods', kind: d[i], x: d[i + 1], to: key }); break; } }
+  for (let i = 0; i + 2 < d.length; i += 3) { for (const [key, rv] of rivals) if (tagOf(key) === d[i + 2]) { if (rv.ai) aiTakesGoods(rv, d[i], d[i + 1]); else commit({ op: 'goods', kind: d[i], x: d[i + 1], to: key }); break; } }
   // errands of ours that reached their village: the core did the deed on this very tick; now the village hears of it and answers
   const a = lv.world.take_arrivals(), now = Number(lv.world.tick());
   for (let i = 0; i + 3 < a.length; i += 4) {
@@ -793,7 +798,8 @@ function pollTrade() {
     if (now - a[i + 3] > 40) continue;   // (an old arrival from a history that was just replayed)
     const r = [...rivals.values()].find(x => tagOf(x.key) === tag); if (!r) continue;
     ui.toast(arrivedText(kind, 'you', r.name, true), kind === JK.WAR ? 'bad' : 'good'); updateHud();
-    if (r.online) commit({ op: 'arrive', kind, x: days, to: r.key });
+    if (r.ai) aiAnswers(r, kind, days);
+    else if (r.online) commit({ op: 'arrive', kind, x: days, to: r.key });
     else if (kind <= 2 && !r.village.world.treaty_acceptable(myTag(), kind)) { lv.world.treaty_end(tag, kind); commit({ op: 'treaty', idx: tag, kind, y: 0 }); ui.toast(`${r.name} turned the offer down.`, 'info'); }
   }
 }
@@ -1158,18 +1164,19 @@ function returnRefusedArmy(units: number[]) {
 function attackAway(r: Rival, u: number[]) {
   const angle = Math.atan2(lv.oz - r.village.oz, lv.ox - r.village.ox);
   const tech = lv.world.military_tech();
-  if (r.village.world.start_raid_equipped(angle, Uint32Array.from(u), myTag(), tech)) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
-  else if (r.village.world.battle_active() && r.village.world.battle_tag() === myTag() && r.village.world.battle_reinforce_equipped(myTag(), Uint32Array.from(u), tech)) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; r.village.afterTick(); ui.toast(`More of your soldiers join the fight at ${r.name}'s village.`, 'good'); }
+  if (r.village.world.start_raid_equipped(angle, Uint32Array.from(u), myTag(), tech)) { if (!r.ai) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; } r.village.afterTick(); ui.toast(r.ai ? `Your army attacks ${r.name}'s village and its defences!` : `${r.name} is away. Your army attacks their village and its defences!`, 'good'); }
+  else if (r.village.world.battle_active() && r.village.world.battle_tag() === myTag() && r.village.world.battle_reinforce_equipped(myTag(), Uint32Array.from(u), tech)) { if (!r.ai) { awayFights.add(r.key); r.forked = true; r.sync = 'under your attack'; } r.village.afterTick(); ui.toast(`More of your soldiers join the fight at ${r.name}'s village.`, 'good'); }
   else { returnRefusedArmy(u); ui.toast(`${r.name}'s village cannot be attacked just now. Your army comes home.`, 'info'); }
 }
 
 /** A rival sent soldiers against us: start the fight in our own (authoritative) village. */
-function defendAgainst(att: Rival, c: Cmd) {
+function defendAgainst(att: Rival, c: Cmd): 'raid' | 'reinforce' | 'refuse' {
   const u = c.units ?? [], angle = Math.atan2(att.village.oz - lv.oz, att.village.ox - lv.ox), tag = tagOf(att.key), tech = att.village.world.military_tech();
   watch.observe(performance.now(), document.hidden);
-  if (!watch.away && lv.world.start_raid_equipped(angle, Uint32Array.from(u), tag, tech)) { commit({ op: 'raid', from: att.key, units: u, angle, tag, tech }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); }
-  else if (lv.world.battle_active() && lv.world.battle_tag() === tag && lv.world.battle_reinforce_equipped(tag, Uint32Array.from(u), tech)) { commit({ op: 'reinforce', from: att.key, units: u, tag, tech }); ui.toast(`${att.name} sends more soldiers into the fight!`, 'bad'); lv.afterTick(); }
-  else commit({ op: 'refuse', to: att.key, units: u });
+  if (!watch.away && lv.world.start_raid_equipped(angle, Uint32Array.from(u), tag, tech)) { commit({ op: 'raid', from: att.key, units: u, angle, tag, tech }); ui.toast(`${att.name} attacks your village!`, 'bad'); lv.afterTick(); return 'raid'; }
+  else if (lv.world.battle_active() && lv.world.battle_tag() === tag && lv.world.battle_reinforce_equipped(tag, Uint32Array.from(u), tech)) { commit({ op: 'reinforce', from: att.key, units: u, tag, tech }); ui.toast(`${att.name} sends more soldiers into the fight!`, 'bad'); lv.afterTick(); return 'reinforce'; }
+  commit({ op: 'refuse', to: att.key, units: u });
+  return 'refuse';
 }
 
 /** A battle finished in a rival's village. If we were the attacker, our survivors come home with the loot. */
@@ -1188,6 +1195,7 @@ function onRivalReport(key: string, rep: number[]) {
 
 function onLocalReport(rep: number[]) {
   if (rep[2]) ledger.record(rep[2], rep.slice(6, 12), rep.slice(12, 12 + RES.length));
+  aiReport(rep);
   if (lv.world.last_report_bought()) return;   // paid off: the purchase was reported when it happened (see EV_BRIBED), nothing was won or lost
   const [, won, tag, , dead, lost] = rep;
   const br = reportBoss(rep);
@@ -1225,7 +1233,7 @@ function updatePeers() {
   const compass = (dx: number, dz: number) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'][((Math.round(Math.atan2(dz, dx) / (Math.PI / 4)) % 8) + 8) % 8];
   const rows = [...rivals.values()].map(r => {
     const dx = r.village.ox - lv.ox, dz = r.village.oz - lv.oz, dist = Math.hypot(dx, dz);
-    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
+    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : r.ai ? ' (computer)' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
   });
   rows.sort((a, b) => Number(b.row.online) - Number(a.row.online) || a.dist - b.dist);   // villages with somebody at home first, then by distance
   ui.setPeers(rows.map(x => x.row), worldName);
@@ -1247,6 +1255,7 @@ function startReplay(key: string) {
   if (replay) return;
   const own = key === '', r = own ? null : rivals.get(key);
   if (!own && !r) return;
+  if (r?.ai) { ui.toast(`${r.name}'s village is run by the computer: there is no history to replay.`, 'info'); return; }
   if (own && [...rivals.values()].some(x => x.online)) { ui.toast("To replay your own history you need to be alone in the world: your village is paused while you watch. You can watch another player's history at any time.", 'info'); return; }
   const cmds: Cmd[] = own ? validSavedLog(myLog).map(x => x.cmd) : r!.log.slice();
   if (!cmds.length) { ui.toast('There is no history to watch yet.', 'info'); return; }
@@ -1292,10 +1301,10 @@ function tickReplay(dt: number) {
 }
 
 // ---------- start ----------
-async function startGame(name: string, username: string) {
+async function startGame(name: string, username: string, pve = false) {
   const openedAt = Date.now();
   ui.setMilitaryUpgrades(JSON.parse(military_upgrades()));
-  if (started) return; started = true;
+  if (started) return; started = true; pveMode = pve;
   worldName = cleanWorld(name); seedBig = hashSeed(worldName); history.replaceState(null, '', withWorld(location.href, worldName)); myName = cleanName(username);
   try { localStorage.setItem('flanders:name', myName); } catch { /* ignore */ }
   ui.setOwner(myName);
@@ -1414,7 +1423,7 @@ async function startGame(name: string, username: string) {
   bindInput();
   watch.openSave(performance.now(), saved ? openedAt - saved.savedAt : 0);
   startVillageWatch();
-  connect();
+  if (pveMode) await setupPve(); else connect();
   setupPerf(); applySettings(settings()); onSettings(applySettings);
   const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
   if (Number.isInteger(agentPort) && agentPort >= 1024 && agentPort <= 65535 && /^[A-Za-z0-9_-]{8,128}$/.test(agentToken)) startAgentBridge({
@@ -1896,9 +1905,108 @@ const foeColorOf = (tag: number): number | null => { if (tag === 0) return null;
 
 function rivalName(tag: number): string { for (const r of rivals.values()) if (tagOf(r.key) === tag) return r.name; return 'Another village'; }
 
+// ---------- PVE: the computer's villages (docs/PVE.md) ----------
+/** Make the two computer villages of a PVE game: each on a site near yours, each with a layout picked at random from the demo layouts, each run by an `Ai` that plays by the player's rules. */
+async function setupPve() {
+  const layouts = pickLayouts(worldName, myName, Ai.layout_count()), picks = pickSites(sites, mySite);
+  picks.forEach((site, n) => {
+    const o = siteOrigin(site), key = aiKey(n), name = aiName(worldName, n);
+    const village = new Village(new World(seedBig, o.x, o.z), 'rival:' + key, name, false, shared, n ? 0xb08030 : 0xb03030); village.foeColor = foeColorOf;
+    village.onReport = rep => onRivalReport(key, rep);
+    const ai = new Ai(seedBig, n, layouts[n] ?? n, tagOf(key));
+    rivals.set(key, { key, peerId: '', name, site, village, online: false, sync: `computer (${Ai.layout_name(ai.layout())})`, tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0, ai });
+    village.setWorld(village.world); refreshTerrain(village.world); village.syncFull(); village.markCaughtUp();
+    chainTo(rivals.get(key)!);                 // the road between the two cities, for our armies...
+    village.world.link_village(lv.ox, lv.oz);  // ... and for theirs
+  });
+  // a saved game comes back at its own tick: the computer's villages grow up to it (they are not part of the player's history)
+  const goal = Number(lv.world.tick());
+  if (goal > 0) {
+    ui.progress(90, 'The neighbours are building…');
+    for (const r of rivals.values()) {
+      while (Number(r.village.world.tick()) < goal) {
+        for (let i = 0; i < 400 && Number(r.village.world.tick()) < goal; i++) tickAi(r, false);
+        ui.progress(90 + Math.round(8 * Number(r.village.world.tick()) / goal), 'The neighbours are building…'); await nextFrame();
+      }
+      r.village.syncFull(); r.village.markCaughtUp();
+    }
+    refreshAll();
+  }
+  ui.toast(`Two villages are run by the computer: ${[...rivals.values()].map(r => `${r.name} (${Ai.layout_name(r.ai!.layout())})`).join(' and ')}. They grow, trade and raid like real players.`, 'info');
+  updatePeers();
+}
+
+/** One tick of a computer village: its world steps, its controller thinks, and what the controller asks of the page (an army at the border) is carried out. */
+function tickAi(r: Rival, live = true) {
+  const ai = r.ai!, w = r.village.world, t = Number(w.tick());
+  if (t % 60 === 0) {   // tell it where its enemy is and what can be seen of it
+    const d = Math.min(2900, Math.hypot(lv.ox - r.village.ox, lv.oz - r.village.oz) * 1.15);
+    ai.set_target(lv.ox, lv.oz, lv.radius, myTag(), d);
+    ai.observe(lv.world.army().reduce((a, n) => a + n, 0) + lv.world.guards());
+  }
+  w.step(); w.take_events();
+  const req = ai.step(w);
+  if (!live) return;
+  if (req.length) for (const u of raidRequests(req)) aiRaid(r, u);
+}
+
+/** The computer's army stands at our border: it attacks the way a player's army does (the same path as another player's `sendatk`). */
+function aiRaid(r: Rival, units: number[]) {
+  if (replay?.target === lv) { r.ai!.refused(r.village.world, Uint32Array.from(units)); return; }
+  const outcome = defendAgainst(r, { op: 'sendatk', tick: Number(lv.world.tick()), n: 0, units, to: identity.pub });
+  if (outcome === 'refuse') r.ai!.refused(r.village.world, Uint32Array.from(units));
+}
+
+/** A battle at our village ended: if the attackers were a computer village's army, its survivors go home with the loot. */
+function aiReport(rep: number[]) {
+  if (!pveMode || !rep[2]) return;
+  for (const r of rivals.values()) if (r.ai && tagOf(r.key) === rep[2]) { r.ai.returned(r.village.world, Uint32Array.from(rep.slice(6, 12)), Int32Array.from(rep.slice(12, 12 + RES.length))); break; }
+}
+
+let aiFrame = 0;
+function stepAis() {
+  if (!pveMode || replay?.target === lv) return;
+  aiFrame++;
+  for (const r of rivals.values()) {
+    if (!r.ai) continue;
+    tickAi(r);
+    const w = r.village.world;
+    // what the computer's villages send us
+    const tag = myTag(), now = Number(lv.world.tick());
+    const arrived = w.take_arrivals();
+    for (let i = 0; i + 3 < arrived.length; i += 4) {
+      if (arrived[i + 1] !== tag || now - arrived[i + 3] > 40) continue;
+      const kind = arrived[i], days = arrived[i + 2];
+      if (kind <= 2) { answerOffer(r, kind, days); if (!lv.world.has_treaty(tagOf(r.key), kind)) w.treaty_end(tag, kind); }
+      else ui.toast(arrivedText(kind, r.name, 'you', false), kind === JK.WAR ? 'bad' : 'good');
+    }
+    const delivered = w.take_delivered();
+    for (let i = 0; i + 2 < delivered.length; i += 3) if (delivered[i + 2] === tag) { onTrade(r, { op: 'goods', kind: delivered[i], x: delivered[i + 1], tick: now, n: 0 }); w.settle(delivered[i], delivered[i + 1], tag); }
+    if (w.battle_active() || aiFrame % 3 === 0) r.village.afterTick();
+  }
+}
+
+/** Our caravan reached a computer village: it pays for the goods (or takes them as a gift when it cannot) and we collect what it paid. */
+function aiTakesGoods(r: Rival, res: number, amount: number) {
+  r.village.world.receive_goods(res, amount);
+  const got = lv.world.settle(res, amount, tagOf(r.key));
+  if (got > 0) { void commit({ op: 'settle', kind: res, x: amount, idx: tagOf(r.key) }); ui.toast(`${r.name} paid ${got} gold for the goods.`, 'good'); updateHud(); }
+}
+
+/** An errand of ours reached a computer village: it answers an offer, welcomes an envoy, takes our wedding party or our declaration of war. */
+function aiAnswers(r: Rival, kind: number, days: number) {
+  const w = r.village.world, mine = myTag(), tag = tagOf(r.key);
+  if (kind <= 2) {
+    if (w.treaty_acceptable(mine, kind) && w.treaty_set(mine, kind, days)) ui.toast(`${r.name} accepts.`, 'good');
+    else { lv.world.treaty_end(tag, kind); void commit({ op: 'treaty', idx: tag, kind, y: 0 }); ui.toast(`${r.name} turned the offer down.`, 'info'); }
+  } else if (kind === JK.ENVOY) w.rel_add(mine, 8);
+  else if (kind === JK.MARRIAGE) { w.rel_add(mine, 30); }
+  else if (kind === JK.WAR) w.declare_war(mine);
+}
+
 function stepAwayFights() {
   for (const key of [...awayFights]) {
-    const r = rivals.get(key); if (!r || r.online) { awayFights.delete(key); continue; }   // (an owner who comes back takes the village over again)
+    const r = rivals.get(key); if (!r || r.online || r.ai) { awayFights.delete(key); continue; }   // (an owner who comes back takes the village over again; a computer village steps by itself, see stepAis)
     const w = r.village.world;
     if (w.battle_active()) { w.step(); r.village.afterTick(); if (!w.battle_active()) { awayFights.delete(key); r.village.afterTick(); } } else { awayFights.delete(key); r.village.afterTick(); }
   }
@@ -1920,7 +2028,7 @@ function stepLocal() {
   const t = Number(w.tick());
   if (t % 4 === 0) updateGoals();
   { const l = newlyLent(w.buildings_flat(), lentBridges); lentBridges = l.now; if (l.fresh.length) ui.toast('Lowering the drawbridge for the army', 'info', 'drawbridge'); }
-  pollTrade(); checkArrivals(); stepAwayFights(); updateDets();
+  pollTrade(); checkArrivals(); stepAwayFights(); stepAis(); updateDets();
   if (previewShown?.request.reinforce !== undefined && !previewWanted) {
     if (selectedDet !== previewShown.id || !w.battle_active()) cancelMarchPreview();
     else queueMarchPreview(previewShown.id, ...previewShown.request.to);
@@ -3522,6 +3630,8 @@ if (DEBUG_HOOKS) (window as any).__game = {
   get worldShips() { return worldShips; }, startReplay, stopReplay, get replay() { return replay; }, debugPlace, runModelVillage, selectBuilding, toggleMulti, selectWallRun, selectRuin, KIND_ICON, setSpeed, selectKind, frame, updateGhost,
   get renderer() { return renderer; }, get forest() { return forest; }, get atmo() { return atmo; }, get scene() { return scene; }, get terrain() { return terrain; }, get rig() { return rig; },
   get perf() { return perf; }, get world() { return lv.world; }, get lv() { return lv; }, get rivals() { return rivals; }, get wildlife() { return wildlife; }, get fx() { return fx; }, get crowd() { return crowd; }, ui, afterLocalChange, refreshTerrain,
+  /** (testing) run n whole ticks of the live game at once: your village and, in a PVE game, the computer's. */
+  stepTicks(n: number) { for (let i = 0; i < n; i++) stepLocal(); lv.afterTick(); },
   raid(angle = 0.6, u = [8, 4, 2, 0, 0]) { const ok = lv.world.start_raid(angle, Uint32Array.from(u), 0); lv.afterTick(); return ok; },
   /** (benchmarks) Swap in a village from World.snapshot bytes, e.g. a late-game save grown by harness/latebuild.mjs. Not shared with other players. */
   loadSnapshot(bytes: Uint8Array) { const w = world_restore(bytes); if (!w) return false; w.take_shots(); w.take_events(); lv.setWorld(w); refreshTerrain(w); lv.syncFull(); lv.afterTick(); deposits.sync(w.deposits_flat(), w.deposits_asleep()); deposits.refit(); deposits.attach(w.buildings_flat()); forestDirtyFlag = true; rig.focus(w.origin_x(), w.origin_y(), 120); return true; },
