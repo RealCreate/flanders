@@ -167,6 +167,7 @@ interface Rival {
   loadSeq?: number; loading?: boolean;         // a history is being replayed into a fresh copy in slices (newest wins); the old copy waits meanwhile
   /** Their commands changed the village (and its ground) since its scene was last refreshed: see flushRivals. */
   dirty?: boolean; dirtyTerrain?: boolean; flushedAt?: number; groundAt?: number;
+  cacheDue?: boolean;                          // a rebuilt copy that is kept in this browser once a hash confirms it
 }
 const tutorial = new Tutorial();
 tutorial.setKeys(a => { const b = keys.binds[a as Action]; return b && b.length ? b.slice(0, 2).map(k => prettyKey(k)).join(' / ') : a; });
@@ -313,13 +314,14 @@ function restoreRivalCopy(cp: Checkpoint | null, r: Rival, cmds: Cmd[]): World |
   history[k - 1] = { cmd: cmdText(cmds[k - 1]), tick: cmds[k - 1].tick };   // (only the last command it applied is compared)
   return resumeFromCheckpoint(cp, rivalNow(r, cmds), history, b => world_restore(b));
 }
-/** Keep this copy for next time. Only a copy that follows their history faithfully: not one being rebuilt, broken, fought in, or corrected. */
+/** Keep this copy for next time. Only a copy their own hash has confirmed ("in sync"): not one being rebuilt, broken, fought in, corrected, or not yet compared. */
 function saveRivalCopy(r: Rival) {
-  if (r.loading || r.broken || r.forked || r.liar || r.state !== 'ok' || !r.versionOk || !r.log.length || replay?.target === r.village) return;
+  if (r.loading || r.broken || r.forked || r.liar || r.state !== 'ok' || r.sync !== 'in sync ✓' || !r.versionOk || !r.log.length || replay?.target === r.village) return;
   try {
     const w = r.village.world, last = r.log[r.log.length - 1];
     if (Number(w.tick()) < last.tick || r.track.count !== r.log.length) return;   // (a command in the log that the copy has not applied)
     const bytes = w.snapshot();
+    r.cacheDue = false;
     void saveCheckpoint(rivalCacheKey(r.key), { meta: { ...rivalNow(r, r.log), cmds: r.log.length, lastCmd: cmdText(last), tick: Number(w.tick()), savedAt: Date.now(), hash: String(w.state_hash()), sum: checksum(bytes) }, bytes });
   } catch { /* storage full or blocked: the history alone still works, only slower */ }
 }
@@ -349,8 +351,11 @@ async function loadReplica(r: Rival, cmds: Cmd[]) {
   try {
     const o = siteOrigin(r.site);
     // a copy kept from an earlier visit: show it at once (their village as it was then) while the commands since are replayed
+    // (not when re-syncing: the copy went wrong, and the kept one may be where it went wrong. Then it is thrown away and their history is replayed from the first day.)
     let start: Uint8Array | undefined, from = 0;
-    const cp = await loadCheckpoint(rivalCacheKey(r.key));
+    const resync = r.state !== 'ok' || r.confirming;
+    if (resync) await deleteCheckpoint(rivalCacheKey(r.key));
+    const cp = resync ? null : await loadCheckpoint(rivalCacheKey(r.key));
     if (cancelled()) return stop();
     const shown = restoreRivalCopy(cp, r, cmds);
     if (shown) {
@@ -375,7 +380,7 @@ async function loadReplica(r: Rival, cmds: Cmd[]) {
     r.village.setWorld(w); r.tick = Number(w.tick()); r.broken = false; r.forked = false; r.liar = false;
     r.track.reset(r.log.map(c => c.op), Sequence.epochOf(r.log)); if (r.versionOk && r.state === 'ok' && r.sync !== 'in sync ✓') r.sync = 'syncing…';
     refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
-    saveRivalCopy(r);
+    r.cacheDue = true;   // kept once their next hash confirms it (see judged)
   } catch (e) { if (r.loadSeq === seq) r.loading = false; quarantine(r, e); }
 }
 
@@ -405,6 +410,7 @@ function judged(r: Rival, v: Verdict | null) {
   switch (v.kind) {
     case 'match':
       r.tick = Number(r.village.world.tick()); r.confirming = false; r.sync = 'in sync ✓';
+      if (r.cacheDue) saveRivalCopy(r);
       if (r.state !== 'ok') { r.state = 'ok'; r.policy.reset(); ui.toast(`Back in sync with ${r.name}.`, 'good'); console.info(`Back in sync with ${r.name} at tick ${r.tick}.`); }
       break;
     case 'wait': if (r.sync !== 'in sync ✓') r.sync = 'syncing…'; break;
