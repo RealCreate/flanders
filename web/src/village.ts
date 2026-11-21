@@ -23,6 +23,7 @@ import { Boats } from './render/boats';
 import { Ruins, type Effects2 } from './render/fx';
 import type { Wildlife } from './render/wildlife';
 import type { Crowd } from './render/crowd';
+import { WalkRouter } from './walkrouter';
 
 /** Things every village shares. */
 export interface Shared {
@@ -37,6 +38,7 @@ export interface Shared {
 const NO_PATHS = new Float32Array(0);   // (nothing is linked automatically any more: villagers walk the path network of the core, see World.net_route)
 export class Village {
   private defaultBanner = 0;
+  private walker: WalkRouter;
   moats: MoatWater; nets: NetView;
   view: VillageView; paths: Paths; nodes: RoadNodes; walls: Walls; spans: Spans; props: Props; field: FieldView; bridges: BridgesView; people: People; army: ArmyView; ruins: Ruins; boats: Boats;
   clear: { x: number; z: number; r: number }[] = [];
@@ -62,7 +64,9 @@ export class Village {
     this.army.channelLevelAt = this.field.channelLevelAt = channel;
     this.boats = new Boats(sh.terrain, channel);
     this.army.friend = color; this.army.radii = sh.radii; this.army.onHit = (x, z, y, k) => sh.fx.hit(x, y, z, k); this.army.onRage = (x, y, z) => sh.fx.rageSpark(x, y, z);
-    this.people.router = (a, b, c, d) => this.world.walk_route(a, b, c, d);
+    // villagers' routes are planned off the main thread (walk-route.worker.ts): the page never waits for one
+    this.walker = new WalkRouter(() => this.world, mine);   // (your own village: the worker starts and maps the ground while the page loads)
+    this.people.router = (a, b, c, d) => this.walker.get(a, b, c, d);
     this.people.depositClear = (a, b, c, d) => this.world.deposit_leg_clear(a, b, c, d);
     this.army.plan = (ax, az, bx, bz) => {
       const route = this.world.walk_route(ax, az, bx, bz);
@@ -88,6 +92,7 @@ export class Village {
   get radius() { return this.world.build_radius(); }
 
   dispose() {
+    this.walker.dispose();
     this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.army.group, this.ruins.group, this.people.group, this.boats.group);
     this.view.root.traverse(o => (o as THREE.Mesh).geometry?.dispose());
     this.sh.scene.remove(this.moats.group, this.nets.group); this.moats.dispose(); this.nets.dispose(); this.sh.terrain.setDecks(this, []);
@@ -95,7 +100,7 @@ export class Village {
   }
 
   /** Swap in a fresh world (after moving to another site, or a rebuilt replica). */
-  setWorld(w: World) { if (w !== this.world) this.people.resetRoster(); this.world = w; this.count = -1; this.version = -1; this.reportSeq = 0; }
+  setWorld(w: World) { if (w !== this.world) { this.people.resetRoster(); this.walker.reset(); } this.world = w; this.count = -1; this.version = -1; this.reportSeq = 0; }
 
   /** The bridges the soldiers have built (or are building), as spans of the same kind the player's bridges are: bank to bank, at deck height, drawn by `spans` with the same deck and rails. */
   private soldierFlat: Float32Array = new Float32Array(0);

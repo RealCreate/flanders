@@ -32,6 +32,9 @@ export const DEFAULTS: Settings = { quality: 'high', antialias: true, resolution
 
 const KEY = 'flanders:display';
 let current: Settings = load();
+/** Did the player ever save display settings in this browser? (Automatic choices, such as low settings without a graphics card, never override theirs.) */
+let saved = (() => { try { return localStorage.getItem(KEY) !== null; } catch { return false; } })();
+export const playerChoseSettings = () => saved;
 const listeners: ((s: Settings, changed: (keyof Settings)[]) => void)[] = [];
 
 function load(): Settings {
@@ -40,14 +43,15 @@ function load(): Settings {
 export const settings = () => current;
 export function onSettings(fn: (s: Settings, changed: (keyof Settings)[]) => void) { listeners.push(fn); }
 
-/** Change one or more settings (a preset fills in the others). */
-export function setSettings(patch: Partial<Settings>) {
+/** Change one or more settings (a preset fills in the others). `persist: false` applies them for this visit only: automatic choices (low settings without a
+ *  graphics card) are not saved, so they are made afresh next time and never pass for the player's own. */
+export function setSettings(patch: Partial<Settings>, persist = true) {
   const next: Settings = { ...current, ...patch };
   if (patch.quality && patch.quality !== 'custom') Object.assign(next, PRESETS[patch.quality]);
   else if (!patch.quality && Object.keys(PRESETS.high).some(k => k in patch)) next.quality = matchPreset(next);
   const changed = (Object.keys(next) as (keyof Settings)[]).filter(k => next[k] !== current[k]);
   current = next;
-  try { localStorage.setItem(KEY, JSON.stringify(current)); } catch { /* storage blocked */ }
+  if (persist) { saved = true; try { localStorage.setItem(KEY, JSON.stringify(current)); } catch { /* storage blocked */ } }
   if (changed.length) listeners.forEach(f => f(current, changed));
 }
 export const resetSettings = () => setSettings({ ...DEFAULTS });

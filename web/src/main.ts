@@ -21,7 +21,8 @@ import { RadiusRings } from './render/coverage';
 import { parseRadii, describe as describeRadii, uncoveredByWells, wallsOutOfReach, FX_FIRE_FULL, FX_FIRE_HALF, FX_SHOOT, type Radius } from './coverage';
 import { OVER_WATER_KINDS } from './render/ringheight';
 import { buildShowroom } from './render/showroom';
-import { settings, onSettings, pixelRatio, type Settings } from './settings';
+import { settings, onSettings, pixelRatio, setSettings, playerChoseSettings, type Settings } from './settings';
+import { rendererName, isSoftwareRenderer, isIntegratedGpu } from './gpucheck';
 import { auditModel, setNightLight } from './render/buildings';
 import { subdivide, curve, type Pt } from './roadtool';
 import { LEVEL_SIZES, DEFAULT_LEVEL_SIZE, nextLevelSize, LEVEL_AUTO, LEVEL_HEIGHT_STEP, clampLevelHeight, levelHeightLabel, levelWork, isEarthwork } from './leveltool';
@@ -1215,7 +1216,14 @@ async function startGame(name: string, username: string) {
   for (let i = 0; i < flat.length; i += 2) sites.push({ x: flat[i], z: flat[i + 1] });
   sites.sort((a, b) => Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z));
 
+  // no real graphics card (the browser draws on the CPU): start on the low preset, without antialiasing, unless the player has chosen settings of their own
+  const gpuName = rendererName(), softwareGpu = isSoftwareRenderer(gpuName);
+  const autoLow = softwareGpu && !playerChoseSettings();
+  if (autoLow) setSettings({ quality: 'low', antialias: false }, false);   // for this visit only: not saved as the player's choice
+  // graphics built into the processor start on Medium (shorter tree distance, smaller shadows, no rich near trees), also for this visit only
+  else if (isIntegratedGpu(gpuName) && !playerChoseSettings()) setSettings({ quality: 'medium' }, false);
   renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: settings().antialias, powerPreference: 'high-performance' });
+  if (softwareGpu) ui.toast(!autoLow ?'No graphics card is drawing the game (the browser draws it on the processor): the Low display preset runs much faster.' : 'No graphics card is drawing the game, so it starts on Low display settings. Change them under Settings.', 'info');
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, 1)); renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // Atmosphere schedules shadow redraws
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.72;
@@ -1832,8 +1840,7 @@ function stepLocal() {
   if (t % 15 === 0) { if (covOn) covOverlay(); if (covB !== null || covG) covRefocus(); }
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
   if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
-  lv.afterTick();
-  updateSelection(); updateHud(); battleBanner();
+  tickShown = false;   // the scene and the HUD follow once all of this frame's ticks are done (see showTicks)
   if (touchPlacement) { const e = touchPlacementEvent(); if (e) updateGhost(e); showTouchTools(); }
   if (ui.stewardOpen() || watch.review) renderWatch();
   if (forestDirtyFlag) rebuildForest(true);
@@ -3183,7 +3190,15 @@ function lightLamps(all: Village[], now: number) {
 
 /** Animation and background timers use the same watch. A battle already committed by two players
  *  keeps running, even if one player switches tabs or tries to pause the clock. */
-let bgLast = 0, frameAt = 0, sceneTime = 0;
+let bgLast = 0, frameAt = 0, sceneTime = 0, tickShown = true;
+/** Bring the scene, the selection and the HUD up to the village after the ticks of one frame: once per frame, not once per tick. At high speed a frame runs several
+ *  ticks, and each of these reads the whole village (buildings, health, people, walls, soldiers, the ledger); only the last state is ever shown. */
+function showTicks() {
+  if (tickShown) return;
+  tickShown = true;
+  lv.afterTick();
+  updateSelection(); updateHud(); battleBanner();
+}
 const liveSpeed = () => lv.world.battle_active() || awayFights.size > 0 ? Math.min(speed, 1) : speed;
 function runClock(dt: number, now: number) {
   if (replay?.target === lv) { acc = 0; return; }
@@ -3210,6 +3225,7 @@ function runClock(dt: number, now: number) {
     }
     if (playerBattle && !livePlayerBattle()) { acc = 0; renderWatch(); break; }
   }
+  showTicks();
 }
 
 function startBackgroundClock() {
@@ -3320,6 +3336,8 @@ if (DEBUG_HOOKS) (window as any).__game = {
   get renderer() { return renderer; }, get forest() { return forest; }, get atmo() { return atmo; }, get scene() { return scene; }, get terrain() { return terrain; }, get rig() { return rig; },
   get perf() { return perf; }, get world() { return lv.world; }, get lv() { return lv; }, get rivals() { return rivals; }, get wildlife() { return wildlife; }, get fx() { return fx; }, get crowd() { return crowd; }, ui, afterLocalChange, refreshTerrain,
   raid(angle = 0.6, u = [8, 4, 2, 0, 0]) { const ok = lv.world.start_raid(angle, Uint32Array.from(u), 0); lv.afterTick(); return ok; },
+  /** (benchmarks) Swap in a village from World.snapshot bytes, e.g. a late-game save grown by harness/latebuild.mjs. Not shared with other players. */
+  loadSnapshot(bytes: Uint8Array) { const w = world_restore(bytes); if (!w) return false; w.take_shots(); w.take_events(); lv.setWorld(w); refreshTerrain(w); lv.syncFull(); lv.afterTick(); deposits.sync(w.deposits_flat(), w.deposits_asleep()); deposits.refit(); deposits.attach(w.buildings_flat()); forestDirtyFlag = true; rig.focus(w.origin_x(), w.origin_y(), 120); return true; },
 };
 
 // a tab that gave way to another tab of this browser (see giveWayToOtherTab) joins again by itself, under the same name

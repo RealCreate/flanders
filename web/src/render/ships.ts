@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { HALF, type Terrain } from './terrain';
 import { HAT, TOOL, type Crowd } from './crowd';
 import { makeBoat } from './field';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 interface Ship { mesh: THREE.Group; sail: THREE.Mesh; pts: THREE.Vector2[]; len: number[]; total: number; s: number; speed: number; yaw: number; seed: number }
 
@@ -10,6 +11,29 @@ const rope = new THREE.MeshStandardMaterial({ color: 0xa99470, roughness: 1 });
 const canvas = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide });
 const furledCanvas = new THREE.MeshStandardMaterial({ color: 0xe4d5ad, roughness: 0.95 });
 const shipModels = new Map<boolean, THREE.Group>();
+
+/** A ship's fixed parts (hull, planks, mast, yard, rigging, straps) merged into one mesh per material: a ship was some twenty meshes, and so twenty draws (and
+ *  twenty more in the shadow map), for a few hundred triangles. The sail keeps its own mesh (it is found by name and billows). Parts that cannot be merged stay. */
+function mergeStatic(model: THREE.Group): THREE.Group {
+  model.updateMatrixWorld(true);
+  const out = new THREE.Group();
+  const keep = (m: THREE.Mesh) => { const c = m.clone(); m.matrixWorld.decompose(c.position, c.quaternion, c.scale); out.add(c); };
+  const per = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; parts: THREE.Mesh[]; shadow: boolean }>();
+  model.traverse(o => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    if (m.name === 'sail' || Array.isArray(m.material)) { keep(m); return; }
+    let e = per.get(m.material as THREE.Material);
+    if (!e) per.set(m.material as THREE.Material, e = { geos: [], parts: [], shadow: false });
+    const g = m.geometry.clone().applyMatrix4(m.matrixWorld);
+    e.geos.push(g.index ? g.toNonIndexed() : g); e.parts.push(m); e.shadow ||= m.castShadow;
+  });
+  for (const [mat, e] of per) {
+    const geo = e.geos.length > 1 ? mergeGeometries(e.geos) : e.geos[0];
+    if (geo) { const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = e.shadow; out.add(mesh); } else e.parts.forEach(keep);
+  }
+  return out;
+}
 
 /** A clinker-built cog with a raised stern, standing rigging and either a set or furled sail. */
 export function makeShip(moored = false): THREE.Group {
@@ -60,8 +84,9 @@ export function makeShip(moored = false): THREE.Group {
     const sail = new THREE.Mesh(cloth, canvas); sail.name = 'sail'; sail.rotation.y = Math.PI / 2;
     sail.position.set(0.5, yardY - 1.875, 0); sail.castShadow = true; g.add(sail);
   }
-  shipModels.set(moored, g);
-  return g.clone();
+  const merged = mergeStatic(g);
+  shipModels.set(moored, merged);
+  return merged.clone();
 }
 
 /** Big ships sailing on the open lakes of the map. They follow loops through deep water and ride the tide. */
