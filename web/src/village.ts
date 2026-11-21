@@ -245,10 +245,15 @@ export class Village {
     this.bridges.update([], []);
   }
 
-  frame(dt: number, speed: number, camera: THREE.Vector3, detailRange: number, crowds: boolean) {
+  private farDt = 0;
+  /** `near`: the village is close enough to the camera for its people to be drawn. A far one moves them about four times a second, with the time saved up. */
+  frame(dt: number, speed: number, camera: THREE.Vector3, detailRange: number, crowds: boolean, near = true) {
     this.boats.update(dt);
-    if (dt > 0 && crowds && !this.people.hidden) this.people.update(dt, speed);
-    if (dt > 0) this.army.update(dt);
+    let cdt = dt;
+    if (!near) { this.farDt += dt; if (this.farDt < 0.25) cdt = 0; else { cdt = this.farDt; this.farDt = 0; } }
+    else if (this.farDt > 0) { cdt += this.farDt; this.farDt = 0; }
+    if (cdt > 0 && crowds && !this.people.hidden) this.people.update(cdt, speed);
+    if (cdt > 0) this.army.update(cdt);
     this.view.update(dt, camera, detailRange * 2.6); this.field.update(dt);
   }
   draw(crowd: Crowd, cx: number, cz: number, radius: number, camera: THREE.Vector3, detailRange: number) { this.field.draw(crowd, cx, cz, radius); this.boats.draw(crowd, cx, cz, radius); this.people.draw(crowd, cx, cz, radius, camera, detailRange); this.army.draw(crowd, { x: this.ox, z: this.oz }, cx, cz, radius); }

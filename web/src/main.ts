@@ -58,7 +58,8 @@ import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
 import { applyCmd, stepTo, validSavedLog } from './commands';
 import { replayInSlices, warmNavigationInSlices, collectInSlices } from './loader';
-import { resumeFromCheckpoint, checksum, loadCheckpoint, saveCheckpoint, deleteCheckpoint } from './checkpoint';
+import { resumeFromCheckpoint, checksum, loadCheckpoint, saveCheckpoint, deleteCheckpoint, type Checkpoint } from './checkpoint';
+import type { ReplicaReplayReply, ReplicaReplayRequest } from './replica-replay.worker';
 import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
@@ -164,6 +165,9 @@ interface Rival {
   liar: boolean;                               // we corrected the loot they claimed, so this copy differs from theirs on purpose
   desyncs: number; resyncs: number; lastDiag: string; bigJumpAt: number; failedAt: number;
   loadSeq?: number; loading?: boolean;         // a history is being replayed into a fresh copy in slices (newest wins); the old copy waits meanwhile
+  /** Their commands changed the village (and its ground) since its scene was last refreshed: see flushRivals. */
+  dirty?: boolean; dirtyTerrain?: boolean; flushedAt?: number; groundAt?: number;
+  cacheDue?: boolean;                          // a rebuilt copy that is kept in this browser once a hash confirms it
 }
 const tutorial = new Tutorial();
 tutorial.setKeys(a => { const b = keys.binds[a as Action]; return b && b.length ? b.slice(0, 2).map(k => prettyKey(k)).join(' / ') : a; });
@@ -295,22 +299,88 @@ function quarantine(r: Rival, e: unknown) {
 // ---------- keeping the copies of other villages in step (the rules are in net/sync.ts) ----------
 let PART_NAMES: string[] = [];
 
+// ---------- copies of other villages kept in this browser between visits ----------
+// Replaying another player's whole history from the first day takes a long while for a big village. The last copy we built is kept in IndexedDB as a checkpoint,
+// with the same safety checks as your own (same rules, site and epoch, the same command at the same place in their history, the bytes and the state hash intact),
+// so next time their village shows up at once and only the commands since are replayed. Their history stays the truth: a copy that does not fit is thrown away.
+const rivalCacheKey = (pub: string) => 'flanders:rival:' + worldName + ':' + pub;
+const cmdText = (c: Cmd) => JSON.stringify(c);
+const rivalNow = (r: Rival, cmds: Cmd[]) => ({ rules: myRules, v: SYNC_PROTOCOL, site: r.site, epoch: Sequence.epochOf(cmds) });
+/** The cached copy as a world, when it belongs to (a start of) this history; null otherwise. */
+function restoreRivalCopy(cp: Checkpoint | null, r: Rival, cmds: Cmd[]): World | null {
+  const k = cp?.meta.cmds ?? 0;
+  if (!cp || !Number.isInteger(k) || k < 1 || k > cmds.length) return null;
+  const history: { cmd: string; tick: number }[] = new Array(k);
+  history[k - 1] = { cmd: cmdText(cmds[k - 1]), tick: cmds[k - 1].tick };   // (only the last command it applied is compared)
+  return resumeFromCheckpoint(cp, rivalNow(r, cmds), history, b => world_restore(b));
+}
+/** Keep this copy for next time. Only a copy their own hash has confirmed ("in sync"): not one being rebuilt, broken, fought in, corrected, or not yet compared. */
+function saveRivalCopy(r: Rival) {
+  if (r.loading || r.broken || r.forked || r.liar || r.state !== 'ok' || r.sync !== 'in sync ✓' || !r.versionOk || !r.log.length || replay?.target === r.village) return;
+  try {
+    const w = r.village.world, last = r.log[r.log.length - 1];
+    if (Number(w.tick()) < last.tick || r.track.count !== r.log.length) return;   // (a command in the log that the copy has not applied)
+    const bytes = w.snapshot();
+    r.cacheDue = false;
+    void saveCheckpoint(rivalCacheKey(r.key), { meta: { ...rivalNow(r, r.log), cmds: r.log.length, lastCmd: cmdText(last), tick: Number(w.tick()), savedAt: Date.now(), hash: String(w.state_hash()), sum: checksum(bytes) }, bytes });
+  } catch { /* storage full or blocked: the history alone still works, only slower */ }
+}
+
+/** Replay `cmds` onto a world (a snapshot, or a fresh village) in a worker: the snapshot bytes of the result. Null when the worker could not run; throws when the replay failed. */
+function replayInWorker(o: { x: number; z: number }, snapshot: Uint8Array | undefined, cmds: Cmd[], cancelled: () => boolean): Promise<Uint8Array | null> {
+  let worker: Worker;
+  try { worker = new Worker(new URL('./replica-replay.worker.ts', import.meta.url), { type: 'module' }); } catch { return Promise.resolve(null); }
+  return new Promise((resolve, reject) => {
+    const done = () => { clearInterval(poll); worker.terminate(); };
+    const poll = setInterval(() => { if (cancelled()) { done(); resolve(null); } }, 250);   // (a newer history arrived: stop this one; the caller sees it is cancelled)
+    worker.onmessage = ({ data }: MessageEvent<ReplicaReplayReply>) => { done(); if (data.ok) resolve(data.bytes); else reject(new Error(data.error)); };
+    worker.onerror = e => { e.preventDefault(); done(); resolve(null); };   // (the worker could not start: replay here instead)
+    const msg: ReplicaReplayRequest = { seed: seedBig, ox: o.x, oz: o.z, snapshot: snapshot?.slice(), cmds };
+    worker.postMessage(msg);
+  });
+}
+
 /** Rebuild a copy from a history (theirs, as they sent it or as we kept it). */
 async function loadReplica(r: Rival, cmds: Cmd[]) {
   r.log = cmds.slice();
   if (replay?.target === r.village) return;   // being watched: the replay shows their history; it is rebuilt from r.log when you leave
   const seq = r.loadSeq = (r.loadSeq ?? 0) + 1, n = cmds.length;
+  const cancelled = () => r.loadSeq !== seq || replay?.target === r.village;
+  const stop = () => { if (r.loadSeq === seq) r.loading = false; };
   r.loading = true;
   try {
-    const o = siteOrigin(r.site), w = World.new_legacy(seedBig, o.x, o.z);
-    // a long history is replayed a few milliseconds at a time: the game keeps running (and painting) while a copy is rebuilt
-    const res = await replayInSlices(w, cmds, applyCmd, 0, { cancelled: () => r.loadSeq !== seq || replay?.target === r.village });
-    if (!res.ok) { if (r.loadSeq === seq) r.loading = false; return; }
+    const o = siteOrigin(r.site);
+    // a copy kept from an earlier visit: show it at once (their village as it was then) while the commands since are replayed
+    // (not when re-syncing: the copy went wrong, and the kept one may be where it went wrong. Then it is thrown away and their history is replayed from the first day.)
+    let start: Uint8Array | undefined, from = 0;
+    const resync = r.state !== 'ok' || r.confirming;
+    if (resync) await deleteCheckpoint(rivalCacheKey(r.key));
+    const cp = resync ? null : await loadCheckpoint(rivalCacheKey(r.key));
+    if (cancelled()) return stop();
+    const shown = restoreRivalCopy(cp, r, cmds);
+    if (shown) {
+      start = cp!.bytes; from = cp!.meta.cmds;
+      shown.take_shots(); shown.take_events();
+      r.village.setWorld(shown); refreshTerrain(shown); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp();
+      console.info(`${r.name}'s village was restored from this browser (${from} of ${n} commands); replaying the rest.`);
+    }
+    // the replay runs in a worker, at full speed and without slowing the game down; if no worker can run, here, a few milliseconds at a time
+    const bytes = await replayInWorker(o, start, cmds.slice(from), cancelled);
+    if (cancelled()) return stop();
+    let w = bytes ? world_restore(bytes) : undefined;
+    if (!w) {
+      w = (start && world_restore(start)) || undefined;
+      if (!w) { w = World.new_legacy(seedBig, o.x, o.z); from = 0; }
+      const res = await replayInSlices(w, cmds.slice(from), applyCmd, 0, { cancelled });
+      if (!res.ok) return stop();
+    }
+    w.take_shots(); w.take_events();
     for (const c of r.log.slice(n)) { stepTo(w, c.tick); applyCmd(w, c); }   // (commands that arrived while it was replaying)
     r.loading = false;
     r.village.setWorld(w); r.tick = Number(w.tick()); r.broken = false; r.forked = false; r.liar = false;
     r.track.reset(r.log.map(c => c.op), Sequence.epochOf(r.log)); if (r.versionOk && r.state === 'ok' && r.sync !== 'in sync ✓') r.sync = 'syncing…';
     refreshTerrain(w); r.village.syncFull(); r.village.markCaughtUp(); r.village.afterTick(); r.village.markCaughtUp(); updatePeers();
+    r.cacheDue = true;   // kept once their next hash confirms it (see judged)
   } catch (e) { if (r.loadSeq === seq) r.loading = false; quarantine(r, e); }
 }
 
@@ -320,12 +390,27 @@ function advanceReplica(r: Rival, tick: number): boolean {
   return r.village.advanceTo(tick);
 }
 
+/** Bring the scenes of other villages up to date after their commands: at most every 400 ms per village, and their ground at most once a second. */
+function flushRivals(now: number) {
+  for (const r of rivals.values()) {
+    if (!r.dirty || r.loading || r.broken || replay?.target === r.village || now - (r.flushedAt ?? -1e9) < 400) continue;
+    const ground = !!r.dirtyTerrain;
+    if (ground && now - (r.groundAt ?? -1e9) < 1000) continue;
+    r.dirty = false; r.flushedAt = now;
+    try {
+      if (ground) { r.dirtyTerrain = false; r.groundAt = now; refreshTerrain(r.village.world); }
+      r.village.syncFull(); r.village.afterTick();
+    } catch (e) { quarantine(r, e); }
+  }
+}
+
 function judged(r: Rival, v: Verdict | null) {
   if (!v) return;
   const before = r.sync;
   switch (v.kind) {
     case 'match':
       r.tick = Number(r.village.world.tick()); r.confirming = false; r.sync = 'in sync ✓';
+      if (r.cacheDue) saveRivalCopy(r);
       if (r.state !== 'ok') { r.state = 'ok'; r.policy.reset(); ui.toast(`Back in sync with ${r.name}.`, 'good'); console.info(`Back in sync with ${r.name} at tick ${r.tick}.`); }
       break;
     case 'wait': if (r.sync !== 'in sync ✓') r.sync = 'syncing…'; break;
@@ -436,9 +521,11 @@ function connect() {
         }
         if (!r.village.advanceTo(c.tick)) { startResync(r, 'a command far ahead of the copy'); return; }   // (never apply a command at the wrong tick)
         applyCmd(r.village.world, c); r.track.applied(c.op);
-        if (c.op === 'style') r.village.syncFull();
-        if (c.op === 'place' || c.op === 'level' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') refreshTerrain(r.village.world);
-        r.village.syncFull(); r.village.afterTick(); r.tick = c.tick;
+        // the scene of their village is brought up to date at most a few times a second (flushRivals), not after every command: an autopilot sends many, and each
+        // full refresh re-levels the whole village's ground and rebuilds its buildings and the forest. Every player paid that for every other village.
+        r.dirty = true;
+        if (c.op === 'place' || c.op === 'level' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') r.dirtyTerrain = true;
+        r.tick = c.tick;
         if (c.op === 'battleorder') battleBanner();
       } catch (e) { quarantine(r, e); return; }
       judged(r, r.track.recheck(r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));   // a hash that was waiting for this command can be judged now
@@ -1909,7 +1996,7 @@ function startVillageWatch() {
   for (const type of ['pointerdown', 'pointermove', 'keydown', 'wheel']) {
     addEventListener(type, playerPresent, { passive: true, capture: true });
   }
-  const persist = () => { clearTimeout(saveTimer); writeSave(); checkpoint(true); };
+  const persist = () => { clearTimeout(saveTimer); writeSave(); checkpoint(true); for (const r of rivals.values()) saveRivalCopy(r); };
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { watch.observe(performance.now(), true); persist(); }
     else playerPresent();
@@ -3250,6 +3337,7 @@ function frame(now: number) {
   perf.start('simulation');
   if (replay) tickReplay(dt);
   runClock(dt, frameAt);
+  flushRivals(frameAt);
   const replayDt = replay?.playing ? dt : 0;
   const liveDt = watch.pace(liveSpeed(), livePlayerBattle()) > 0 ? dt : 0;
   const worldDt = replay?.target === lv ? replayDt : liveDt;
@@ -3272,7 +3360,9 @@ function frame(now: number) {
   perf.start('forest'); forest.tick(sceneTime, rig.cam.position, rig.target, treeShadowRange, rig.cam); perf.stop('forest');
   if (forestShadowVersion !== forest.shadowVersion) { forestShadowVersion = forest.shadowVersion; if (forest.group.visible) atmo.invalidateShadows(); }
   const detailRange = innerHeight * 1.65 / (2 * Math.tan(THREE.MathUtils.degToRad(rig.cam.fov / 2)) * 36);
-  perf.start('villages (people, army)'); all.forEach(v => v.frame(v === replay?.target ? replayDt : worldDt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd)); perf.stop('villages (people, army)');
+  // villagers and soldiers are only drawn near the camera target (`view` below): a village whose edge is well beyond that moves its people a few times a second, not every frame
+  const crowdView = Math.max(90, rig.dist * 1.7 + 50) + 60;
+  perf.start('villages (people, army)'); all.forEach(v => v.frame(v === replay?.target ? replayDt : worldDt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd, Math.hypot(v.ox - rig.target.x, v.oz - rig.target.z) - v.radius < crowdView)); perf.stop('villages (people, army)');
   perf.start('animals');
   deposits.cull(rig.target.x, rig.target.z, Math.max(160, rig.dist * 1.7 + 120));   // deposits far from the camera are not drawn or traversed
   if (now - scareT > 250) { scareT = now; scares = all.flatMap(v => [...v.people.positions(), ...v.army.positions()]); }
