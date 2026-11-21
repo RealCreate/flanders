@@ -2,6 +2,9 @@
 use wasm_bindgen::prelude::*;
 
 mod battle;
+pub mod ai;
+#[cfg(test)]
+mod ai_tests;
 mod bribe;
 mod catalog;
 mod lend;
