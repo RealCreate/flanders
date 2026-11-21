@@ -132,6 +132,7 @@ pub struct Ai {
     next_up: u64,
     next_research: u64,
     next_envoy: u64,
+    next_offer: u64,
     next_caravan: u64,
     next_raid: u64,
     scan_cool: Vec<(u8, u64)>,
@@ -160,7 +161,7 @@ impl Ai {
         for _ in 0..4 { rng.next(); }
         let aggr = rng.range(3);
         let used = vec![0; plots(layout).len()];
-        Ai { rng, layout: layout % LAYOUTS, tag, aggr, used, next_build: 40, next_train: 0, next_up: 0, next_research: 0, next_envoy: 2 * DAY, next_caravan: 6 * DAY, next_raid: 0, scan_cool: vec![], no_up: vec![], army: Army::Idle, target: None, their_force: 0, raids: 0 }
+        Ai { rng, layout: layout % LAYOUTS, tag, aggr, used, next_build: 40, next_train: 0, next_up: 0, next_research: 0, next_envoy: 2 * DAY, next_offer: 6 * DAY, next_caravan: 6 * DAY, next_raid: 0, scan_cool: vec![], no_up: vec![], army: Army::Idle, target: None, their_force: 0, raids: 0 }
     }
 
     pub fn layout_count() -> u32 { LAYOUTS }
@@ -370,7 +371,8 @@ impl Ai {
         // man the towers with archers (one a look)
         if let Some(i) = w.buildings.iter().position(|b| matches!(b.kind, TOWER | KEEP) && b.hp > 0.0 && (b.garrison as u32) < World::garrison_cap_of(b)) {
             let cap = World::garrison_cap_of(&w.buildings[i]);
-            if w.army[1] >= 1 { let n = (w.buildings[i].garrison as u32 + 1).min(cap); w.garrison_set(i as u32, n); }
+            let garrisoned: u32 = w.buildings.iter().map(|b| b.garrison as u32).sum();
+            if w.army[1] >= 1 && garrisoned * 5 < Self::force(w) * 2 { let n = (w.buildings[i].garrison as u32 + 1).min(cap); w.garrison_set(i as u32, n); }
         }
         if w.tick < self.next_train { return; }
         self.next_train = w.tick + 12;
@@ -396,9 +398,9 @@ impl Ai {
             self.next_envoy = w.tick + (3 + self.rng.range(4) as u64) * DAY;
             let hostile = rel < -20 || (self.aggr == 2 && rel < 10);
             if !hostile && w.stock[GD as usize] >= 40 { w.journey_start(JK_ENVOY, tag, 0, dist); }
-            else if rel >= 20 && !w.has_treaty(tag, TREATY_TRADE) { w.journey_start(TREATY_TRADE, tag, 30, dist); }
         }
-        if rel >= 20 && !w.has_treaty(tag, TREATY_TRADE) && w.tick >= self.next_envoy.saturating_sub(DAY) && day >= 6 { w.journey_start(TREATY_TRADE, tag, 30, dist); }
+        // an offer of a trade pact once its friendship allows it, and not again for ten days whatever the answer
+        if rel >= 20 && !w.has_treaty(tag, TREATY_TRADE) && w.tick >= self.next_offer { self.next_offer = w.tick + 10 * DAY; w.journey_start(TREATY_TRADE, tag, 30, dist); }
         // surplus goods to a trading partner
         if w.tick >= self.next_caravan && w.has_treaty(tag, TREATY_TRADE) && rel >= 10 {
             self.next_caravan = w.tick + (5 + self.rng.range(5) as u64) * DAY;
@@ -433,11 +435,14 @@ impl Ai {
         let id = w.det_form_inner(units);
         if id == 0 { self.next_raid = w.tick + DAY / 2; return; }
         if w.det_march_inner(id, px, py, Some((tx, ty)), false) != 0 {
-            w.det_march_inner(id, hx, hy + 9.0, None, true);
-            self.next_raid = w.tick + DAY; return;   // no way through: it comes home
+            self.disband(w, id);
+            self.next_raid = w.tick + DAY; return;   // no way through: the men go back to the barracks and it tries again another day
         }
         self.army = Army::Marching(id); self.raids += 1; let _ = &mut self.rng;
     }
+
+    /// A field army that cannot get anywhere is dissolved: its men go back to the barracks.
+    fn disband(&mut self, w: &mut World, id: u32) { if let Some(u) = w.det_send_inner(id) { w.return_refused_army(&u); } }
 
     fn army_step(&mut self, w: &mut World, out: &mut Vec<i32>) {
         match self.army {
@@ -449,7 +454,7 @@ impl Ai {
                         self.army = Army::Waiting(w.tick, u);
                     }
                 } else if d.state == S_BLOCKED && w.tick % (DAY / 2) == 0 {
-                    w.det_march_inner(id, w.buildings[0].x, w.buildings[0].y + 9.0, None, true); self.army = Army::Idle; self.next_raid = w.tick + DAY;
+                    self.disband(w, id); self.army = Army::Idle; self.next_raid = w.tick + DAY;
                 }
             }
             Army::Waiting(since, units) => {

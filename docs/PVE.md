@@ -38,11 +38,36 @@ no barracks) the AI simply waits.
   So `docs/DESYNC.md`'s replica checks do not see them, and replaying the player's log in another client reproduces the player's village exactly.
 * PVE games run alone (no `Room` peers are expected); `AI villages` are rebuilt from `(seed, tick)` is **not** claimed: the AI's reaction depends on the player. Persistence is by
   `World::snapshot` + `Ai::snapshot`, kept next to the player's save.
-* Tests (`cargo test -p game-core ai::`): 10 layouts are distinct and each builds up; the same seed gives the same hash after N days; AI never has negative stock and never
-  exceeds housing/food rules (population limited by housing, food reserve checked); a starved start does not "cheat" (no stock appears other than by production);
-  the AI trains soldiers and forms an army; two different seeds diverge; snapshot/restore continues identically.
+* Tests (`cargo test -p game-core ai_tests`): all 10 layouts build up and differ from one another; the AI never has negative stock, never houses more people than its
+  housing plus a small margin and never builds outside its land; the same seed gives the same state hash after N days and a different seed another; a snapshot of the world
+  and of the `Ai` restored mid-game continues identically; most seeds raise a barracks, an army and towers within 25 days even though bandits raid them like anyone's; and an
+  AI given a target sends an army to its border (`REQ_RAID`). `web/tests/pve.test.mjs` covers the page's choices (layouts, sites, keys, request decoding).
+
+## How it plays (what the numbers are)
+
+* Growth is paced by the calendar, not by a handicap: the AI only builds houses while `housing < 20 + 5·day + day²/10` and the stores can feed its people, one building every
+  45–105 ticks (about 2–5 a day). Everything else (farms, woodcutters, sawmills, a barracks from day 2, towers from day 3, a market that lets it buy stone and tools, upgrades) is
+  chosen from its real stocks, population and jobs. A village that is sacked by bandits (or by you) rebuilds from what is left.
+* It raids on its own timetable: first after day 10 / 16 / 26 for a warlike / balanced / peaceful ruler (seeded), only against a target its army can beat (what it can see of
+  your soldiers and towers), sooner when you attacked it (`relation < -30`). A quarter of its soldiers stay home.
+* Marching and fighting use the real machinery. The AI forms a field army in its own world and marches it along the invisible road (`link_village`, laid at setup in both
+  directions) to just outside your border; when it arrives the page starts the raid in *your* world exactly as for a human attacker (`defendAgainst`: a `raid` command in your
+  own signed log), and when the battle report comes the survivors and loot go home (`Ai::returned`). If you are away or the village cannot be attacked the army is turned back
+  (`Ai::refused`).
+* Diplomacy: it sends envoys every few days (unless it is hostile) and offers a trade pact once its own relation allows it, at most one offer in ten days. As in multiplayer, the
+  receiver decides: you accept when `treaty_acceptable`, which depends on *your* relations (send envoys to the computer to warm them; the computer answers your offers by the same
+  rule from its side). With a pact it sends surplus grain or stone as caravans, which you pay for like any partner's goods.
+
+## Saving
+
+A PVE game has its own save slot (`...:pve`) with your village's signed history as usual. The computer villages are not part of that history: on loading they are made again
+from the world name (same layouts, same sites) and **grown up to your tick** before the game starts (a few seconds for a month of game time). Their exact state therefore may differ
+from the session before the reload (they did not see your attacks); that is deliberate for this first version (see below).
 
 ## Not in this first version
+
+* Computer villages are not saved themselves (`World::snapshot` + `Ai::snapshot` exist and round-trip in tests; storing them next to your save is the obvious next step).
+* The AI keeps no memory of who raided whom beyond the world's `relations`, does not scout, and raids only you (not the other computer village).
 
 * The AI does not use sieges beyond what its barracks tier allows, and has no naval or tunnel tactics.
 * AI villages do not move sites and are not shown in the multiplayer peer list as people.
