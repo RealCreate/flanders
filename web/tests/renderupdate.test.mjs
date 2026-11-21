@@ -212,7 +212,7 @@ test('touch building taps preview and relocate, confirmation builds, and a pan s
     ui: { canvas, selBox() {} },
     document: { getElementById(id) { if (!controls.has(id)) controls.set(id, {}); return controls.get(id); } },
     addEventListener() {}, performance: { now: () => 0 },
-    selectedKind: 0, selectedDet: null, LEVEL_TOOL: 255, TOUCH_DRAG_PIXELS: 10,
+    selectedKind: 0, selectedDet: null, LEVEL_TOOL: 255, PLANT_TOOL: 254, zoneIdx: null, plantClick() {}, zoneClick() {}, toggleMulti() {}, TOUCH_DRAG_PIXELS: 10,
     PEN_SPACING: {}, penShape: 'line', penStart: null, pendingBattleOrder: null,
     penPreview: { clear() {} },
     rig: { touchConsumed: false },
