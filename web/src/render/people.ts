@@ -75,7 +75,9 @@ export class People {
   private doorAngle = new Map<number, number>();
   hidden = false;           // villagers shelter indoors during a battle
   /** The invisible lines of the world (the grid plus the village paths, see march.rs): a dry route from one point to another as [1, x, z, x, z, ...], or empty when there is none. */
-  router: ((sx: number, sz: number, gx: number, gz: number) => ArrayLike<number>) | null = null;
+  /** The route over the path network: [1, x, z, ...], empty when there is none, null while it is still being planned (off the main thread: ask again later), or
+   *  'late' when it has been planned for too long (walk the quick way this time; the planned route is kept for the next walk). */
+  router: ((sx: number, sz: number, gx: number, gz: number) => ArrayLike<number> | null | 'late') | null = null;
   depositClear?: (ax: number, az: number, bx: number, bz: number) => boolean;
   private roadGrid = new Map<string, number[]>();
   private layout: Float32Array = new Float32Array(0);
@@ -214,10 +216,12 @@ export class People {
     return false;
   }
 
-  /** A route over the path network (roads first, round the buildings along their rings), or null when the network cannot take them there. */
-  private viaNet(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] | null {
+  /** A route over the path network (roads first, round the buildings along their rings), null when the network cannot take them there, or 'pending' while it is being planned. */
+  private viaNet(from: number, to: number, fromPos: THREE.Vector2): THREE.Vector2[] | null | 'pending' | 'late' {
     if (!this.router || from === to || !this.bld[from] || !this.bld[to]) return null;
     const goal = this.spot(to, 1), r = this.router(fromPos.x, fromPos.y, goal.x, goal.y);
+    if (r === null) return 'pending';
+    if (r === 'late') return 'late';
     if (r.length < 3 || r[0] !== 1) return null;
     const out = [fromPos.clone()]; for (let k = 1; k + 1 < r.length; k += 2) out.push(new THREE.Vector2(r[k], r[k + 1]));
     return this.wades(out) ? null : out;
@@ -235,13 +239,18 @@ export class People {
     }
     const inside = isLivestockPen(this.bld[from]?.kind) && fromPos.distanceTo(this.pasturePoint(from, 0)) < PEN_HALF_DEPTH;
     const start = inside ? this.spot(from, 1) : fromPos;
-    const net = this.viaNet(from, to, start);
+    const planned = this.viaNet(from, to, start);
+    // still being planned: a walk that can wait waits (the caller asks again next frame); one that cannot, or that has waited long enough ('late': nobody stands
+    // still for long), takes the quick way along the buildings' links, which is not kept, so the next walk gets the planned route
+    if (planned === 'pending' && defer) { this.commuteBudget++; return null; }
+    const pending = planned === 'pending' || planned === 'late', net = pending ? null : planned;
     const way = net ?? this.routeRaw(from, to, start);
     if (inside) way.unshift(fromPos.clone());
     const entering = isLivestockPen(this.bld[to]?.kind) && from !== to;
     if (entering) way.push(this.pasturePoint(to, 2.8));
     const valid = (net && !inside && !entering) || (!this.crossesDeposits(way) && !this.wades(way));
     const route = valid ? way : [fromPos.clone()];
+    if (pending) return route;
     if (this.routes.size >= 512) this.routes.delete(this.routes.keys().next().value!);
     this.routes.set(key, route);
     return route;

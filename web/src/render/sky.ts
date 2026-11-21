@@ -19,10 +19,12 @@ export class ShadowRefresh {
     const pan = target.distanceToSquared(this.target);
     const sunMoved = direction.distanceToSquared(this.direction) >= 0.025 ** 2;
     const actorInterval = zoom < 105 ? 140 : zoom < 175 ? 200 : 275;
-    const framingChanged = pan >= 6 ** 2 || Math.abs(extent - this.extent) >= 4;
+    // while the camera pans the shadow map is redrawn every 12 units (at most every 150 ms), not every 6 (at most every 100 ms): the shadowed square is 100-160 units
+    // across, so it still covers the view, and a pan no longer pays for a full shadow redraw on most of its frames (a late-game village has hundreds of casters)
+    const framingChanged = pan >= 12 ** 2 || Math.abs(extent - this.extent) >= 4;
     const stopped = this.actors && !actors;
     this.actors = actors;
-    if (!this.dirty && !stopped && pan < 40 ** 2 && !(framingChanged && elapsed >= 100) && !(sunMoved && elapsed >= 150) && !(actors && elapsed >= actorInterval)) return false;
+    if (!this.dirty && !stopped && pan < 40 ** 2 && !(framingChanged && elapsed >= 150) && !(sunMoved && elapsed >= 150) && !(actors && elapsed >= actorInterval)) return false;
     this.dirty = false; this.time = now; this.target.copy(target); this.direction.copy(direction); this.extent = extent;
     return true;
   }

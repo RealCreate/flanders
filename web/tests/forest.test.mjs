@@ -119,7 +119,10 @@ test('distant tiles share a draw call and clearings update the combined instance
   assert.equal(merged.count, 16);
   camera.lookAt(600, 6, 440); camera.updateMatrixWorld();
   view.tick(1, cam, cam, 0, camera);
-  assert.equal(batches(view, 0, true).length, 16, 'keep tile culling when the sector crosses the edge of the view');
+  assert.equal(batches(view, 0, true).length, 1, 'a sector across the edge of the view with most of its tiles on screen stays one draw');
+  camera.lookAt(600, 6, 600); camera.updateMatrixWorld();
+  view.tick(1.2, cam, cam, 0, camera);
+  assert.equal(batches(view, 0, true).length, 16, 'keep tile culling when most of the sector is off screen');
   camera.lookAt(-600, 6, 0); camera.updateMatrixWorld();
   view.tick(1.5, cam, cam, 0, camera);
   assert.equal(batches(view, 0, true).length, 0, 'entire sectors behind the camera are skipped');
@@ -137,13 +140,15 @@ test('static shadow maps stay cached and a wide view refreshes moving shadows le
   assert.equal(schedule.update(900, focus, sun, 250, false), true);
   assert.equal(schedule.update(1000, focus, sun, 250, false), false);
   focus.x = 8;
-  assert.equal(schedule.update(1016, focus, sun, 250, false), true);
+  assert.equal(schedule.update(1016, focus, sun, 250, false), false, 'a short pan stays inside the shadowed square');
+  focus.x = 13;
+  assert.equal(schedule.update(1060, focus, sun, 250, false), true, 'a longer pan redraws once the cooldown is over');
   schedule.invalidate();
-  assert.equal(schedule.update(1032, focus, sun, 250, false), true);
+  assert.equal(schedule.update(1076, focus, sun, 250, false), true);
   sun.set(0.05, 1, 0).normalize();
-  assert.equal(schedule.update(1200, focus, sun, 250, false), true);
-  assert.equal(schedule.update(1216, focus, sun, 40, false, 62), false);
-  assert.equal(schedule.update(1300, focus, sun, 40, false, 62), true, 'zoom refreshes the footprint after the cooldown');
+  assert.equal(schedule.update(1240, focus, sun, 250, false), true);
+  assert.equal(schedule.update(1256, focus, sun, 40, false, 62), false);
+  assert.equal(schedule.update(1400, focus, sun, 40, false, 62), true, 'zoom refreshes the footprint after the cooldown');
 });
 
 test('particle buffers draw and upload only live entries, including after an expiry in the middle', () => {

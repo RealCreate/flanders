@@ -306,6 +306,67 @@ function variantOf(mat: THREE.Material, v: number): THREE.Material {
 export function applyVariant(g: THREE.Object3D, v: number) {
   g.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh && !m.userData.fixed && !glows(m)) { if (!m.userData.base) m.userData.base = m.material; m.material = variantOf(m.userData.base, v); } });
 }
+// ---------- batching by surface ----------
+// A merged cell used one mesh (one draw call) per material object, and every building's colour variant is its own material. The variants differ only in their base
+// colour, which the standard shader multiplies with the vertex colour, so the base colour is baked into the vertex colours and every part with the same surface (texture,
+// roughness, metalness, glow, sides...) shares one material. The picture is the same; the CPU prepares far fewer draws each frame.
+const foldIds = new WeakMap<object, number>(); let foldNext = 1;
+const idOf = (o: object | null | undefined) => { if (!o) return 0; let n = foldIds.get(o); if (!n) { n = foldNext++; foldIds.set(o, n); } return n; };
+const foldedMats = new Map<string, THREE.MeshStandardMaterial>();
+/** The surface a material draws, without its base colour; null when its parts must keep their own material (anything that changes while the game runs: glass glows at night). */
+function foldKey(mat: THREE.Material): string | null {
+  const m = mat as THREE.MeshStandardMaterial;
+  if (m.type !== 'MeshStandardMaterial' || m.transparent || m.alphaTest > 0 || glassVariants.includes(m) || m === M().glass || (m.emissiveIntensity ?? 0) >= 1.5) return null;
+  return ['std', idOf(m.map), idOf(m.normalMap), idOf(m.roughnessMap), idOf(m.emissiveMap), idOf(m.aoMap), idOf(m.metalnessMap), idOf(m.bumpMap), idOf(m.alphaMap), idOf(m.lightMap),
+    idOf(m.envMap), idOf(m.displacementMap), m.envMapIntensity, m.normalScale.x, m.normalScale.y, m.bumpScale, m.aoMapIntensity, m.wireframe ? 1 : 0, m.toneMapped ? 1 : 0, m.shadowSide ?? '',
+    m.roughness, m.metalness, m.emissive.getHexString(), m.emissiveIntensity, m.side, m.flatShading ? 1 : 0,
+    m.fog ? 1 : 0, m.depthWrite ? 1 : 0, m.depthTest ? 1 : 0, m.colorWrite ? 1 : 0, m.polygonOffset ? `${m.polygonOffsetFactor}/${m.polygonOffsetUnits}` : '', idOf(m.onBeforeCompile), m.customProgramCacheKey ? m.customProgramCacheKey() : ''].join('|');
+}
+/** One shared material per surface: the first material's settings with a white base colour, drawing the vertex colours. */
+function foldedMaterial(key: string, like: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
+  let m = foldedMats.get(key);
+  if (!m) { m = like.clone(); m.color.setRGB(1, 1, 1); m.vertexColors = true; m.onBeforeCompile = like.onBeforeCompile; m.needsUpdate = true; foldedMats.set(key, m); }
+  return m;
+}
+/** The part's vertex colours times the material's base colour (white vertex colours when the material drew none), as floats; null if the part cannot be baked. */
+function bakeColour(geo: THREE.BufferGeometry, mat: THREE.MeshStandardMaterial): THREE.BufferGeometry | null {
+  const pos = geo.attributes.position; if (!pos) return null;
+  const src = mat.vertexColors ? geo.attributes.color as THREE.BufferAttribute | undefined : undefined;
+  const out = new Float32Array(pos.count * 3), c = mat.color;
+  for (let i = 0; i < pos.count; i++) {
+    const r = src ? src.getX(i) : 1, g = src ? src.getY(i) : 1, b = src ? src.getZ(i) : 1;
+    out[i * 3] = r * c.r; out[i * 3 + 1] = g * c.g; out[i * 3 + 2] = b * c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(out, 3));
+  return geo;
+}
+/** Give every geometry of a batch the same layout, which merging needs: all indexed or none, and the same attributes. A missing colour is filled with white (the
+ *  material's own colour shows, as when the part had none), missing normals are computed, anything else missing is zeros. Folded batches always carry colours. */
+function sameLayout(geos: THREE.BufferGeometry[], folded: boolean): THREE.BufferGeometry[] {
+  if (geos.length < 2) return geos;
+  const indexed = geos.every(g => g.index);
+  const out = indexed ? geos : geos.map(g => { if (!g.index) return g; const n = g.toNonIndexed(); g.dispose(); return n; });
+  const names = new Map<string, { size: number; normalized: boolean }>();
+  for (const g of out) for (const [k, a] of Object.entries(g.attributes)) if (!names.has(k)) names.set(k, { size: a.itemSize, normalized: (a as THREE.BufferAttribute).normalized });
+  if (folded) names.set('color', { size: 3, normalized: false });
+  for (const g of out) {
+    for (const [k, { size, normalized }] of names) {
+      const a = g.attributes[k] as THREE.BufferAttribute | undefined;
+      if (a && a.itemSize === size && a.normalized === normalized && a.array instanceof Float32Array && !(a as unknown as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute) continue;
+      if (!a && k === 'normal') { g.computeVertexNormals(); continue; }
+      const n = g.attributes.position.count, f = new Float32Array(n * size);
+      if (a) {
+        const read = [a.getX, a.getY, a.getZ, a.getW];   // (these denormalise, and also read interleaved attributes)
+        for (let i = 0; i < n; i++) for (let j = 0; j < size; j++) f[i * size + j] = j < a.itemSize ? read[j].call(a, i) : 0;
+      } else if (k === 'color') f.fill(1);
+      g.setAttribute(k, new THREE.BufferAttribute(f, size, false));
+    }
+    g.morphAttributes = {};
+    g.clearGroups();
+  }
+  return out;
+}
+
 /** Scorch a building (burning or burnt) or restore it. */
 export function setCharred(g: THREE.Object3D, on: boolean, v = 0) {
   g.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh && !m.userData.fixed && !glows(m)) { if (!m.userData.base) m.userData.base = m.material; m.material = on ? variantOf(m.userData.base, -1) : variantOf(m.userData.base, v); } });
@@ -1178,6 +1239,36 @@ function bake(g: THREE.Group, animated: Set<THREE.Object3D>) {
   }
 }
 
+/** A spinning part (a water wheel, windmill sails) is kept out of the village's merged meshes because it turns, but its pieces (rim, spokes, paddles, sails) never
+ *  move against each other: merge them into one mesh per material inside the rotor, which still turns as one. A wheel was some twenty meshes, so twenty draws. */
+function mergeRotor(rotor: THREE.Object3D) {
+  if ((rotor as THREE.Mesh).isMesh) return;
+  rotor.updateMatrixWorld(true);
+  const inv = rotor.matrixWorld.clone().invert(), local = new THREE.Matrix4();
+  const per = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; shadow: boolean; receive: boolean }>();
+  const parts: THREE.Mesh[] = [];
+  rotor.traverse(o => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || Array.isArray(m.material) || !m.visible) return;
+    parts.push(m);
+  });
+  if (parts.length < 3) return;
+  for (const m of parts) {
+    let e = per.get(m.material as THREE.Material);
+    if (!e) per.set(m.material as THREE.Material, e = { geos: [], shadow: false, receive: false });
+    const g = m.geometry.clone().applyMatrix4(local.multiplyMatrices(inv, m.matrixWorld));
+    e.geos.push(g.index ? g.toNonIndexed() : g); e.shadow ||= m.castShadow; e.receive ||= m.receiveShadow;
+  }
+  const merged: THREE.Mesh[] = [];
+  for (const [mat, e] of per) {
+    const geo = mergeGeometries(e.geos); e.geos.forEach(g => g.dispose());
+    if (!geo) return;   // pieces that cannot be merged: leave the rotor as it was
+    const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = e.shadow; mesh.receiveShadow = e.receive; merged.push(mesh);
+  }
+  for (const m of parts) { m.parent?.remove(m); m.geometry.dispose(); }
+  rotor.add(...merged);
+}
+
 /** A building's model in parts: the bare building (`base`), and one group for each optional upgrade that is switched on. Switching an upgrade on builds only its group; switching it off
  *  removes only its group. An upgrade that changes the bare building (a spire takes the place of a tower's roof) swaps just the part it changes: the base keeps that part as a named slot
  *  and gets it back when the upgrade goes. The groups are merged per material (see `bake`) separately, so the base's meshes are the same objects before and after. */
@@ -1216,7 +1307,7 @@ export class BuildingModel {
   private seal(g: THREE.Group, b: B) {
     if (this.variant >= 0) applyVariant(g, this.variant);
     g.traverse(o => { const m = o as THREE.Mesh; if (m.isMesh && m.geometry.attributes.position && !m.geometry.attributes.color) { const n = m.geometry.attributes.position.count; m.geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3).fill(1), 3)); } });
-    if (this.baked) { const animated = new Set<THREE.Object3D>(); b.spin.forEach(o => o.traverse(c => animated.add(c))); b.deck.forEach(o => o.traverse(c => animated.add(c))); bake(g, animated); }
+    if (this.baked) { b.spin.forEach(mergeRotor); const animated = new Set<THREE.Object3D>(); b.spin.forEach(o => o.traverse(c => animated.add(c))); b.deck.forEach(o => o.traverse(c => animated.add(c))); bake(g, animated); }
     g.userData.smoke = b.smoke; g.userData.spin = b.spin.concat(b.deck);
   }
 
@@ -1509,7 +1600,7 @@ export class VillageView {
   /** Drawbridges are drawn up while a battle is on. */
   raised = false;
   private cells = new Map<string, BuildingBatch>();
-  private dirtyCells = new Map<string, number>();
+  private dirtyCells = new Map<string, { clock: number; real: number }>();
   private clock = 0;
   private animating = new Set<Item>();
   readonly effects = new Set<THREE.Group>();
@@ -1681,7 +1772,9 @@ export class VillageView {
   }
 
   /** Something changed in this square: its merged meshes give way to the individual parts again, and it is merged afresh once things have been quiet for a moment. */
-  private touch(cell: string) { this.unbatch(cell); this.dirtyCells.set(cell, this.clock + 0.15); }
+  // a cell is merged a moment after it changed: 0.15 s on the village's clock, or 150 ms of real time, whichever comes first (on the village's clock alone, a paused
+  // village, or one shown while away, was never merged and drew every building part on its own)
+  private touch(cell: string) { this.unbatch(cell); this.dirtyCells.set(cell, { clock: this.clock + 0.15, real: performance.now() + 150 }); }
 
   /** Call every frame. */
   update(dt: number, camera?: THREE.Vector3, detailRange = Infinity) {
@@ -1696,8 +1789,9 @@ export class VillageView {
       if (it.build) this.stepBuild(it, dt);
       if (!it.build && it.pop === undefined) this.animating.delete(it);
     }
+    const now = performance.now();
     for (const [cell, ready] of this.dirtyCells) {
-      if (this.clock < ready) continue;
+      if (this.clock < ready.clock && now < ready.real) continue;
       this.dirtyCells.delete(cell);
       this.batchCell(cell);
       break;
@@ -1712,7 +1806,9 @@ export class VillageView {
   }
 
   private batchCell(cell: string) {
-    const per = new Map<THREE.Material, { structure: THREE.BufferGeometry[]; details: THREE.BufferGeometry[] }>();
+    // parts are merged per surface (see foldKey), not per material object: the per-building colour variants differ only in their base colour, which is baked into the
+    // vertex colours, so a cell is drawn with a handful of meshes instead of one per variant (469 draws became about 120 in a 287-building village)
+    const per = new Map<string, { mat: THREE.Material; folded: boolean; structure: THREE.BufferGeometry[]; details: THREE.BufferGeometry[]; meshes: BuildingBatch['original'] }>();
     const original: BuildingBatch['original'] = [];
     for (const it of this.items.values()) {
       if (it.cell !== cell) continue;
@@ -1720,29 +1816,37 @@ export class VillageView {
       g.updateMatrix(); g.matrixAutoUpdate = false; g.updateMatrixWorld(true);
       g.traverse(o => {
         const m = o as THREE.Mesh;
-        if (!m.isMesh || !m.userData.baked || !m.visible) return;
+        if (!m.isMesh || !m.userData.baked || !m.visible || Array.isArray(m.material)) return;   // (a part with several materials keeps its own mesh)
         const geo = m.geometry.clone(); geo.applyMatrix4(m.matrixWorld);
         const mat = m.material as THREE.Material;
-        let parts = per.get(mat);
-        if (!parts) per.set(mat, parts = { structure: [], details: [] });
+        const fold = foldKey(mat);
+        const key = fold && bakeColour(geo, mat as THREE.MeshStandardMaterial) ? fold : mat.uuid;
+        let parts = per.get(key);
+        if (!parts) per.set(key, parts = { mat: key === mat.uuid ? mat : foldedMaterial(key, mat as THREE.MeshStandardMaterial), folded: key !== mat.uuid, structure: [], details: [], meshes: [] });
         (m.userData.detail ? parts.details : parts.structure).push(geo);
-        original.push({ mesh: m, parent: m.parent!, group: g });
+        const entry = { mesh: m, parent: m.parent!, group: g };
+        parts.meshes.push(entry); original.push(entry);   // (`original` keeps the scene order: unbatching puts the parts back in it)
       });
     }
     if (!original.length) return;
-    const merged: THREE.Mesh[] = [], bounds = new THREE.Box3();
-    for (const [mat, parts] of per) {
-      const geos = [...parts.structure, ...parts.details];
-      const structure = parts.structure.reduce((count, g) => count + g.attributes.position.count, 0);
-      const geo = mergeGeometries(geos); geos.forEach(x => x.dispose()); if (!geo) continue;
+    const unmerged = new Set<THREE.Mesh>(), merged: THREE.Mesh[] = [], bounds = new THREE.Box3();
+    for (const parts of per.values()) {
+      const mat = parts.mat;
+      const geos = sameLayout([...parts.structure, ...parts.details], parts.folded);
+      // the draw range that leaves the details out from afar: indices when the merged geometry is indexed, vertices when not
+      const structure = geos.slice(0, parts.structure.length).reduce((count, g) => count + (g.index ? g.index.count : g.attributes.position.count), 0);
+      // a batch that cannot be merged leaves its parts where they are (they used to be taken out with the rest and vanished)
+      const geo = mergeGeometries(geos); geos.forEach(x => x.dispose());
+      if (!geo) { for (const p of parts.meshes) unmerged.add(p.mesh); continue; }
       geo.computeBoundingSphere(); geo.computeBoundingBox(); bounds.union(geo.boundingBox!);
       const mesh = new THREE.Mesh(geo, mat); mesh.receiveShadow = true; mesh.castShadow = structure > 0;
       mesh.userData.structure = structure; mesh.matrixAutoUpdate = false;
       this.batchRoot.add(mesh); merged.push(mesh);
     }
     if (!merged.length) return;
-    for (const { mesh, parent } of original) parent.remove(mesh);
-    this.cells.set(cell, { original, merged, bounds, detail: true });
+    const taken = unmerged.size ? original.filter(o => !unmerged.has(o.mesh)) : original;
+    for (const { mesh, parent } of taken) parent.remove(mesh);
+    this.cells.set(cell, { original: taken, merged, bounds, detail: true });
   }
 
   private unbatch(cell: string) {

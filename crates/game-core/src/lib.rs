@@ -35,6 +35,8 @@ mod terrain_layers_tests;
 #[cfg(test)]
 mod moat_water_tests;
 #[cfg(test)]
+mod route_height_tests;
+#[cfg(test)]
 mod snapshot_tests;
 mod terrain;
 use catalog::*;
@@ -894,7 +896,15 @@ impl World {
     fn height_inner(&self, x: f32, y: f32, moats: bool, built: bool) -> f32 { self.height_from(x, y, moats, built, self.base(x, y)) }
 
     /// `height_inner` with the natural land height `base` already known (the path network keeps it for its grid).
-    fn height_from(&self, x: f32, y: f32, moats: bool, built: bool, base: f32) -> f32 {
+    fn height_from(&self, x: f32, y: f32, moats: bool, built: bool, base: f32) -> f32 { self.height_from_in(x, y, moats, built, base, &self.buildings) }
+
+    /// Ground height for the march router: the same as `height_ground`, but with the ditches, earthworks and drawbridges taken from `edits`, a list the router keeps
+    /// (the pieces in the order they stand in `buildings`, refreshed whenever `ground_stamp` changes). Every height it gives is the same to the bit; it only spares a walk
+    /// over every building of the village for each sample, which was most of the cost of a march in a big village.
+    pub(crate) fn height_ground_in(&self, x: f32, y: f32, edits: &[Building]) -> f32 { self.height_from_in(x, y, true, false, self.base(x, y), edits) }
+
+    /// `height_from` over `bs`, which must hold every ditch, earthwork and drawbridge of the village in their order in `buildings` (other buildings are skipped anyway).
+    fn height_from_in(&self, x: f32, y: f32, moats: bool, built: bool, base: f32, bs: &[Building]) -> f32 {
         let mut h = base;
         for l in &self.levels {   // ground levelled flat on purpose
             let (dx, dy) = (x - l[0], y - l[1]); let reach = l[2] + LEVEL_BLEND;
@@ -908,7 +918,7 @@ impl World {
             // pieces' reach is summed instead and the ground is dug by the total (at most all the way): between two neighbours both contribute, which fills in the scallop. A single
             // piece still digs exactly the round pit it always did.
             let (mut fm, mut fr) = (0.0f32, 0.0f32);
-            for b in self.buildings.iter().filter(|b| if moats { is_edit(b.kind) } else { matches!(b.kind, RAISE | LOWER) && b.aux >= 0 }) {
+            for b in bs.iter().filter(|b| if moats { is_edit(b.kind) } else { matches!(b.kind, RAISE | LOWER) && b.aux >= 0 }) {
                 let (dx, dy) = (x - b.x, y - b.y);
                 let (floor, bank) = match b.kind { MOAT => (MOAT_FLOOR * moat_scale(b), MOAT_FLOOR * moat_scale(b) + CHANNEL_BANK), RIVER => (RIVER_FLOOR, RIVER_FLOOR + CHANNEL_BANK), _ => (1.2, 5.0) };
                 if dx.abs() > bank || dy.abs() > bank { continue; }
@@ -943,7 +953,7 @@ impl World {
         }
         // the earth at each end of a drawbridge is levelled to the deck, in a strip that runs on from the deck's ends (after the ditch is dug, so the water stays between them):
         // the deck meets the ground flush, with no step and no slope to climb
-        for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) {
+        for b in bs.iter().filter(|b| b.kind == DRAWBRIDGE) {
             if (x - b.x).abs() > 24.0 || (y - b.y).abs() > 24.0 { continue; }
             let a = (b.rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
             let (dx, dy) = (x - b.x, y - b.y); let s = (dx * sx + dy * sy).abs(); let c = (dx * sy - dy * sx).abs();

@@ -366,7 +366,14 @@ export class Forest {
     const dx = Math.abs(sector.x - this.camera.x), dz = Math.abs(sector.z - this.camera.z), span = (SECTOR - TILE) / 2;
     const min = Math.max(0, dx - span) ** 2 + Math.max(0, dz - span) ** 2;
     const max = (dx + span) ** 2 + (dz + span) ** 2, limit = this.drawDistance ** 2;
-    const distant = min >= (sector.distant.visible ? FAR_EXIT : FAR_ENTER) ** 2 && max < limit && this.sectorInView(sector.bounds, true);
+    let distant = min >= (sector.distant.visible ? FAR_EXIT : FAR_ENTER) ** 2 && max < limit;
+    // a far sector across the edge of the view: drawn merged when most of its tiles are on screen (one draw; the off-screen trees are the cheapest kind, a few dozen
+    // triangles), tile by tile when most are off it (only the visible tiles are drawn). At a wide view hundreds of edge tiles used to be a draw each.
+    if (distant && this.useFrustum && !this.sectorInView(sector.bounds, true)) {
+      let shown = 0, total = 0;
+      for (const { mesh } of sector.batches) if (mesh.count) { total++; if (this.viewFrustum.intersectsSphere(mesh.boundingSphere!)) shown++; }
+      distant = shown * 2 >= total;
+    }
     sector.distant.visible = distant;
     sector.local.visible = !distant && min < limit;
     if (distant && sector.dirty) this.mergeSector(sector);

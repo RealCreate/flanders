@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Terrain } from './terrain';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 /** A generous view check for emitters, leaving room for their particles to drift in. */
 export class EffectView {
@@ -241,31 +242,46 @@ export class Ruins {
   private ray = new THREE.Raycaster();
   constructor(private terrain: Terrain) {}
 
-  /** ruins = World.ruins_flat(): [x, y, r, kind, tier, rot] per ruin. Each ruin is a clickable pile of charred rubble. */
+  /** The invisible cylinder over each ruin that clicks find (never drawn: their material is invisible). */
+  private hits = new THREE.Group();
+  private hitMat = new THREE.MeshBasicMaterial({ visible: false });
+  private hitGeo = new THREE.CylinderGeometry(1, 1, 2.4, 10);
+  private box = new THREE.BoxGeometry(1, 1, 1);
+
+  /** ruins = World.ruins_flat(): [x, y, r, kind, tier, rot] per ruin. Each ruin is a clickable pile of charred rubble.
+   *  All the rubble is merged into one mesh per material (three draws for every ruin of the village: each block used to be a mesh, and so a draw, of its own, in the
+   *  shadow map too; a late-game village with a few hundred ruins drew thousands of them). The piles are rebuilt only when the ruins or the ground change. */
   sync(ruins: Float32Array, terrainVersion = 0) {
-    const sig = Array.from(ruins).join(',') + '#' + terrainVersion;   // refitted whenever the ground changes if (sig === this.sig) return; this.sig = sig;
-    this.group.children.slice().forEach(c => { this.group.remove(c); c.traverse(o => (o as THREE.Mesh).geometry?.dispose()); });
-    const n = ruins.length / 6;
+    const sig = Array.from(ruins).join(',') + '#' + terrainVersion;   // refitted whenever the ground changes
+    if (sig === this.sig) return;
+    this.sig = sig;
+    this.group.children.slice().forEach(c => { if (c === this.hits) return; this.group.remove(c); (c as THREE.Mesh).geometry?.dispose(); });
+    this.hits.clear();
+    if (!this.hits.parent) this.group.add(this.hits);
+    const n = ruins.length / 6, parts: THREE.BufferGeometry[][] = [[], [], []], o = new THREE.Object3D();
     for (let i = 0; i < n; i++) {
-      const x = ruins[i * 6], z = ruins[i * 6 + 1], r = ruins[i * 6 + 2], pile = new THREE.Group(); pile.userData.ruinIdx = i;
+      const x = ruins[i * 6], z = ruins[i * 6 + 1], r = ruins[i * 6 + 2], ground = this.terrain.heightAt(x, z);
       for (let k = 0; k < 14; k++) {
         const a = Math.sin(i * 12.9 + k * 7.1) * 43758.5453, rnd = (m: number) => { const q = Math.sin(a * m + k) * 43758.5453; return q - Math.floor(q); };
         const isBeam = k % 3 === 0, w = isBeam ? 0.18 : 0.5 + rnd(1) * 0.7, h = isBeam ? 0.15 : 0.3 + rnd(2) * 0.5, d = isBeam ? 1.4 + rnd(3) * 1.4 : 0.5 + rnd(4) * 0.7;
-        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), this.mats[isBeam ? 2 : k % 2]);
         const ang = rnd(5) * 6.28, rr = rnd(6) * r * 0.9;
-        m.position.set(x + Math.cos(ang) * rr, this.terrain.heightAt(x, z) + h * 0.35, z + Math.sin(ang) * rr); m.rotation.set((rnd(7) - 0.5) * 0.6, rnd(8) * 6.28, (rnd(9) - 0.5) * 0.6);
-        m.castShadow = m.receiveShadow = true; pile.add(m);
+        o.position.set(x + Math.cos(ang) * rr, ground + h * 0.35, z + Math.sin(ang) * rr); o.rotation.set((rnd(7) - 0.5) * 0.6, rnd(8) * 6.28, (rnd(9) - 0.5) * 0.6); o.scale.set(w, h, d);
+        o.updateMatrix(); parts[isBeam ? 2 : k % 2].push(this.box.clone().applyMatrix4(o.matrix));
       }
-      const hit = new THREE.Mesh(new THREE.CylinderGeometry(r + 0.8, r + 0.8, 2.4, 10), new THREE.MeshBasicMaterial({ visible: false })); hit.position.set(x, this.terrain.heightAt(x, z) + 1.2, z); pile.add(hit);
-      this.group.add(pile);
+      const hit = new THREE.Mesh(this.hitGeo, this.hitMat); hit.position.set(x, ground + 1.2, z); hit.scale.set(r + 0.8, 1, r + 0.8); hit.userData.ruinIdx = i;
+      hit.updateMatrix(); hit.matrixAutoUpdate = false; this.hits.add(hit);
     }
+    parts.forEach((geos, m) => {
+      if (!geos.length) return;
+      const geo = mergeGeometries(geos); geos.forEach(g => g.dispose()); if (!geo) return;
+      const mesh = new THREE.Mesh(geo, this.mats[m]); mesh.castShadow = mesh.receiveShadow = true; mesh.matrixAutoUpdate = false; this.group.add(mesh);
+    });
   }
 
   /** Index of the ruin under the pointer, or null. */
   pick(ray: THREE.Raycaster): number | null {
     void this.ray;
-    const hit = ray.intersectObjects(this.group.children, true)[0]; if (!hit) return null;
-    let o: THREE.Object3D | null = hit.object; while (o && o.userData.ruinIdx === undefined) o = o.parent;
-    return o ? o.userData.ruinIdx : null;
+    const hit = ray.intersectObjects(this.hits.children, false)[0];
+    return hit ? hit.object.userData.ruinIdx as number : null;
   }
 }

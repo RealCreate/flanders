@@ -232,6 +232,9 @@ pub struct Det {
     #[serde(skip)] pub(crate) file: MarchFile,
     #[serde(skip)] destination: Option<(f32, f32)>,
     #[serde(skip)] blocked_stamp: u64,
+    /// A blocked army that found no way tries again only from this tick (backing off: 60, 120, 240, then every 480 ticks), not on every change to the roads.
+    #[serde(skip)] retry_at: u64,
+    #[serde(skip)] retry_n: u8,
 }
 
 /// The march fields appended to a world snapshot, separate from the original detachment layout.
@@ -241,6 +244,8 @@ pub(crate) struct SavedMarch {
     destination: Option<(f32, f32)>,
     blocked_stamp: u64,
     groups: Vec<(MarchFile, u8)>,
+    #[serde(default)] retry_at: u64,
+    #[serde(default)] retry_n: u8,
 }
 
 impl Det {
@@ -254,7 +259,7 @@ impl Det {
     }
 
     pub(crate) fn save_march(&self) -> SavedMarch {
-        SavedMarch { file: self.file.clone(), destination: self.destination, blocked_stamp: self.blocked_stamp, groups: self.grp.iter().map(|g| (g.file.clone(), g.delay)).collect() }
+        SavedMarch { file: self.file.clone(), destination: self.destination, blocked_stamp: self.blocked_stamp, groups: self.grp.iter().map(|g| (g.file.clone(), g.delay)).collect(), retry_at: self.retry_at, retry_n: self.retry_n }
     }
 
     pub(crate) fn restore_march(&mut self, saved: SavedMarch) -> Option<()> {
@@ -262,6 +267,7 @@ impl Det {
         self.file = saved.file;
         self.destination = saved.destination;
         self.blocked_stamp = saved.blocked_stamp;
+        self.retry_at = saved.retry_at; self.retry_n = saved.retry_n;
         for (g, (file, delay)) in self.grp.iter_mut().zip(saved.groups) { g.file = file; g.delay = delay; }
         Some(())
     }
@@ -376,7 +382,7 @@ pub(crate) struct Ov { blocked: Vec<bool>, soft: Vec<bool>, cleared: Vec<bool>, 
 const GROUND_SAMPLE_COUNT: usize = 1 << 15;
 
 /// Recent exact samples, shared by overlapping paths and cleared when the terrain changes.
-pub(crate) struct GroundSamples(Vec<Cell<(u64, f32)>>);
+pub(crate) struct GroundSamples(Vec<Cell<(u64, f32)>>, Vec<Building>);
 
 impl GroundSamples {
     fn height(&self, world: &World, x: f32, y: f32) -> f32 {
@@ -387,7 +393,7 @@ impl GroundSamples {
         let entry = &self.0[(hash ^ (hash >> 16)) as usize & (GROUND_SAMPLE_COUNT - 1)];
         let (cached, h) = entry.get();
         if cached == key { return h; }
-        let h = world.height_ground(x, y);
+        let h = world.height_ground_in(x, y, &self.1);
         entry.set((key, h));
         h
     }
@@ -421,7 +427,9 @@ impl World {
     fn ground_samples(&self) -> Rc<GroundSamples> {
         let stamp = self.ground_stamp();
         if let Some((last, samples)) = &*self.march_heights.borrow() { if *last == stamp { return samples.clone(); } }
-        let samples = Rc::new(GroundSamples(vec![Cell::new((u64::MAX, 0.0)); GROUND_SAMPLE_COUNT]));
+        // the ditches, earthworks and drawbridges (all `ground_stamp` looks at), kept with the samples so a missed sample need not walk every building
+        let edits = self.buildings.iter().filter(|b| is_edit(b.kind) || b.kind == DRAWBRIDGE).cloned().collect();
+        let samples = Rc::new(GroundSamples(vec![Cell::new((u64::MAX, 0.0)); GROUND_SAMPLE_COUNT], edits));
         *self.march_heights.borrow_mut() = Some((stamp, samples.clone()));
         samples
     }
@@ -1050,7 +1058,7 @@ impl World {
         if !self.battle_release_army(units) { return 0; }
         for k in 0..NK { self.army[k] -= units[k]; }
         self.next_det += 1;
-        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![], file, destination: None, blocked_stamp: 0 });
+        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![], file, destination: None, blocked_stamp: 0, retry_at: 0, retry_n: 0 });
         self.next_det
     }
 
@@ -1068,6 +1076,7 @@ impl World {
         if let Err(e) = self.set_march_route(&mut d, tx, ty, cached_only) { return e; }
         d.state = if home { S_HOME } else { S_MARCH };
         d.atk = attack; d.home = home; d.defend = false;
+        d.retry_at = 0; d.retry_n = 0;   // a new order: no waiting left over from being stuck
         self.dets[i] = d;
         0
     }
@@ -1188,7 +1197,7 @@ impl World {
                 if d.file.formation_step(&d.units) { d.state = if d.atk.is_some() { S_ARRIVED } else { S_IDLE }; }
                 return true;
             }
-            if d.state == S_BLOCKED && d.blocked_stamp != stamp {
+            if d.state == S_BLOCKED && d.blocked_stamp != stamp && self.tick >= d.retry_at {
                 d.state = if d.home { S_HOME } else { S_MARCH };
             }
             let travelling = matches!(d.state, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
@@ -1319,6 +1328,9 @@ impl World {
 
     fn recover_march(&self, d: &mut Det, destination: Option<(f32, f32)>, stamp: u64) {
         let rerouted = d.blocked_stamp != stamp && destination.is_some_and(|(x, y)| self.set_march_route(d, x, y, false).is_ok());
+        // A full route search can take a large share of a tick in a big village, and the roads change every few ticks while it grows: an army that
+        // still finds no way waits longer each time before it searches again. A new order (march, recall) clears the wait.
+        if rerouted { d.retry_n = 0; d.retry_at = 0; } else { d.retry_n = d.retry_n.saturating_add(1).min(8); d.retry_at = self.tick + (30u64 << d.retry_n.min(4)); }
         d.blocked_stamp = stamp;
         d.speed = 0.0;
         d.state = if !rerouted { S_BLOCKED } else if d.home { S_HOME } else { S_MARCH };
