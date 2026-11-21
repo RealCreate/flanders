@@ -69,7 +69,7 @@ export const tierName = (kind: number, tier: number) => (TIER_NAMES[kind] ?? GEN
 export const STATUS = ['Working', 'Waiting for materials', 'Resource exhausted', 'Storage full', 'Idle', 'Drawn up', 'Lowered for an army', 'Deposit dormant', 'Waiting for stock above reserve'];
 
 export const PLACE_ERRORS: Record<number, string> = {
-  [-1]: 'Unknown building', [-2]: 'Outside your village border — build more to grow it', [-3]: 'Something is in the way',
+  [-1]: 'Unknown building', [-2]: 'Outside your village border — build more to grow it', [-3]: 'Something is in the way', [-27]: 'Too far out — lay a road to here and build beside it',
   [-4]: 'Too close to water', [-5]: 'Ground is too steep', [-6]: 'Not enough resources', [-7]: 'Needs a nearby ore or stone deposit',
   [-8]: 'Needs a forest nearby', [-9]: 'Cannot build that', [-18]: 'No water to bridge here — click closer to a moat, river or lake', [-19]: 'Too wide for a footbridge: bridges of better tiers span more',
   [-16]: 'Needs water beside it: a river, lake or moat', [-20]: 'A gate must stand in a wall: click a wall piece', [-24]: 'A patch to level is 3 to 14 wide', [-25]: 'No dry ground round it to level to: the patch is in water', [-26]: 'A building stands in it: its footing would be left in the air', [-28]: 'Choose a ground height from 1 to 24', [-29]: 'Choose a target height in the direction of the tool', [-21]: 'That stretch of road is too long: put a point in between',

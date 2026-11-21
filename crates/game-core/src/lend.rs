@@ -13,7 +13,7 @@ use crate::march::*;
 /// How far ahead (units of walking) an army's route is looked at for a drawn-up deck to lower.
 const LOOKAHEAD: f32 = 20.0;
 /// An army this near the end of a deck it is still travelling past keeps it lowered.
-const NEAR_END: f32 = 5.0;
+const NEAR_END: f32 = 8.0;
 const DECK_HALF: f32 = 7.4;
 
 /// A way over water for soldiers in a fight: where it starts, where it ends, whether it is down now, and the drawbridge it is (building index) if it can be lowered.

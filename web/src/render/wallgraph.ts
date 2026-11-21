@@ -1,7 +1,7 @@
 // Which wall pieces join up: a pure function (no three.js) so the model village test can check that every wall is really connected.
 export const REACH = 8.6;                 // wall pieces closer than this join up
 export const FENCE_REACH = 5.6;           // spiked-log pieces join up at a shorter distance
-export const GATE_HALF = 3.0;             // a gate's two pillars stand this far from its centre: a doorway about 4.5 wide between the pillars, room for soldiers marching two abreast
+export const GATE_HALF = 3.6;             // a gate's two pillars stand this far from its centre: a doorway about 4.5 wide between the pillars, room for soldiers marching two abreast
 const FENCE = 21;
 export interface LinkNode { x: number; z: number; kind: number }
 

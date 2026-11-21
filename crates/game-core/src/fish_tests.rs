@@ -1,4 +1,4 @@
-//! Fishing huts, smokehouses and the smoked fish the village eats.
+﻿//! Fishing huts, smokehouses and the smoked fish the village eats.
 use super::*;
 
 fn put(w: &mut World, kind: u8, x: f32, y: f32) -> usize {
@@ -59,8 +59,12 @@ fn a_fishing_hut_at_a_moat_keeps_its_floor_on_dry_ground() {
 
 #[test]
 fn fishing_huts_land_raw_fish_and_smokehouses_smoke_it() {
-    let mut w = World::new(1337, 0, 0); w.stock = [0; N_RES]; w.stock[GR as usize] = 10_000; w.population = 20; w.children = 0; w.elders = 0;
-    let h = put(&mut w, FISHING_HUT, 20.0, 20.0); let s = put(&mut w, SMOKEHOUSE, -20.0, 20.0);
+    let mut w = moat_world();
+    w.stock = [0; N_RES]; w.stock[GR as usize] = 10_000; w.population = 20; w.children = 0; w.elders = 0;
+    // the hut must stand on a bank with its jetty over water: it stops working when there is none
+    let sn = [(0, 33), (0, 30), (33, 0), (-33, 0), (0, -33)].iter().map(|&(cx, cy)| w.fishing_hut_snap(cx, cy)).find(|v| !v.is_empty()).expect("a bank to build on");
+    let (hx, hy) = ((w.ox + sn[0] as i32) as f32, (w.oy + sn[1] as i32) as f32); let h = put(&mut w, FISHING_HUT, hx, hy); w.buildings[h].rot = sn[2] as u8;
+    let s = put(&mut w, SMOKEHOUSE, -20.0, 20.0);
     w.stock[W as usize] = 10;
     let (mut raw, mut smoked) = (0, 0);
     for _ in 0..120 { w.step(); w.stock[GR as usize] = 10_000; w.stock[W as usize] = w.stock[W as usize].max(10); w.population = 20; raw = raw.max(w.stock[FI as usize]); smoked = smoked.max(w.stock[SF as usize]); }

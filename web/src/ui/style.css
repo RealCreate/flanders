@@ -506,3 +506,9 @@ table.flowbld .pbtn { padding: 2px 8px; font-size: 12px; }
   body:has(#ledger:not([hidden])) #tool-dock { bottom: calc(min(46dvh, 100dvh - var(--top-h, 62px) - 60px) + 14px); }
   #tool-dock #hint { max-width: min(90vw, 480px); }
 }
+
+/* the army tab: six unit kinds in an even 3x2 grid, each cell the count above the icon above the name, so nothing shifts when a name is long */
+#army-stats.stats.five { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#army-stats .stat { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 3px; padding: 8px 2px; }
+#army-stats .stat span { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; }
+#army-stats .stat span svg, #army-stats .stat span img { flex: none; }

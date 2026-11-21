@@ -112,6 +112,16 @@ impl World {
             if o.movement_clear((x, y), (px, py), m) && !self.member_wet(&o, px, py)
                 && !self.member_wet(&o, x + c * s * 0.5, y + sn * s * 0.5) { return [px, py, if k == 0 { 0.0 } else { 1.0 }]; }
         }
+        // Stuck inside something (a building raised or a wall closed round it): walk out by the nearest way that ends in the open instead of standing there for ever.
+        if self.blocked_with(&o, x, y, m) {
+            for k in 0..16 {
+                let a = base + k as f32 * std::f32::consts::TAU / 16.0;
+                for f in [1.0f32, 2.0, 3.0] {
+                    let (px, py) = (x + a.cos() * s * f, y + a.sin() * s * f);
+                    if !self.blocked_with(&o, px, py, m) { return [px, py, 1.0]; }
+                }
+            }
+        }
         [x, y, 2.0]
     }
 

@@ -1,4 +1,4 @@
-//! Deterministic medieval village simulation core. Same seed + same commands => same state on every peer.
+﻿//! Deterministic medieval village simulation core. Same seed + same commands => same state on every peer.
 use wasm_bindgen::prelude::*;
 
 mod battle;
@@ -92,7 +92,7 @@ pub(crate) const DB_MANUAL_DOWN: u8 = 8;
 pub(crate) const VETO_SECS: u32 = 120;
 /// Seconds a lent drawbridge stays down after the last soldier needing it has gone (in a battle: one second, so raiders get no time to use it).
 pub(crate) const LEND_HOLD: u32 = 4;
-pub(crate) const LEND_HOLD_FIGHT: u32 = 1;
+pub(crate) const LEND_HOLD_FIGHT: u32 = 3;   // long enough that a bridge does not flap open and shut while an army and raiders both stand near it
 
 /// Soil fertility is counted in hundredths of a percent: FERT_MAX is rich soil. A farm cycle is 8 seconds, so 1 200 cycles make a game year: sown every cycle a field
 /// loses FERT_WEAR hundredths a harvest (about 70% of its richness in a year, and it yields only half at the very worst); a resting field regains FERT_REST a cycle.
@@ -135,7 +135,7 @@ pub(crate) const ROAD_MAX_SLOPE: f32 = 0.4;
 const ROAD_SMOOTH: f32 = 4.5;
 
 const RADIUS_CAP: f32 = 110.0;
-/// The farthest from the town hall anything can be built, however far the territory has crept outwards.
+/// Past this far from the town hall buildings stop claiming land: only roads joined to the village do, and a building needs a road beside it.
 const TERRITORY_MAX: f32 = 170.0;
 const INFRASTRUCTURE_LIMIT: f32 = 1192.0; // leave room for the terrain and navigation grid at the map edge
 /// The longest stretch of water a bridge of each tier can span: wood, timber, stone, great stone.
@@ -1012,7 +1012,7 @@ impl World {
         h
     }
 
-    /// Heights of an nx*ny grid (with pads) – used to refresh the mesh after building.
+    /// Heights of an nx*ny grid (with pads) â€“ used to refresh the mesh after building.
     pub fn terrain_region(&self, x0: f32, y0: f32, nx: u32, ny: u32, step: f32) -> Vec<f32> {
         let mut out = Vec::with_capacity((nx * ny) as usize);
         for j in 0..ny { for i in 0..nx { out.push(self.height_at(x0 + i as f32 * step, y0 + j as f32 * step)); } }
@@ -1040,21 +1040,21 @@ impl World {
             k => 10.0 + 2.5 * ((DEFS[k as usize].weight * (b.tier as u32 + 1)) as f32).sqrt(),
         }
     }
-    /// Is this spot inside the village's land: near the town hall, or near something built on its edge (never farther than TERRITORY_MAX from the hall)?
+    /// Is this spot inside the village's land: near the town hall, or near something built on its edge (farther than TERRITORY_MAX from the hall only a joined road claims land: roads are how the village spreads on)?
     pub fn in_territory(&self, x: f32, y: f32) -> bool { self.in_territory_by(x, y, true) }
     /// `in_territory`, with the claims of road pieces counted or not (a road piece is joined to the land when it stands in land that is not its own doing, or runs to a building).
     pub(crate) fn in_territory_by(&self, x: f32, y: f32, roads: bool) -> bool {
         let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
         let dh = ((x - hx).powi(2) + (y - hy).powi(2)).sqrt();
-        if dh > TERRITORY_MAX { return false; }
-        self.buildings.iter().any(|b| { if !roads && b.kind == ROAD { return false; } let c = self.claim(b); c > 0.0 && (x - b.x).abs() <= c && (y - b.y).abs() <= c && ((x - b.x).powi(2) + (y - b.y).powi(2)) <= c * c })
+        let beyond = dh > TERRITORY_MAX;   // out here only a road joined to the village claims land: buildings must stand beside one
+        self.buildings.iter().any(|b| { if !roads && b.kind == ROAD { return false; } if beyond && b.kind != ROAD { return false; } let c = self.claim(b); c > 0.0 && (x - b.x).abs() <= c && (y - b.y).abs() <= c && ((x - b.x).powi(2) + (y - b.y).powi(2)) <= c * c })
     }
     /// The land the village holds, as discs [x, y, radius]: the hall's circle and a patch round every building. The border is the outline of their union.
     pub fn territory_flat(&self) -> Vec<f32> {
         self.buildings.iter().filter_map(|b| { let c = self.claim(b); if c > 0.0 { Some([b.x, b.y, c]) } else { None } }).flatten().collect()
     }
 
-    /// -17 a deposit is in the way, -16 needs water, -18 no water to bridge near here, -19 too wide for this bridge.
+    /// -27 beyond the farthest the village can ever reach from its hall. -17 a deposit is in the way, -16 needs water, -18 no water to bridge near here, -19 too wide for this bridge.
     /// 0 = ok, otherwise: -1 bad kind, -2 outside radius, -3 overlaps, -4 water, -5 too steep,
     /// -6 cannot afford, -7 needs deposit, -8 needs forest, -9 not buildable (town hall)
     pub fn can_place(&self, kind: u8, dx: i32, dy: i32) -> i32 {
@@ -1103,7 +1103,12 @@ impl World {
         } else {
             self.in_territory(x, y)
         };
-        if !allowed { return -2; }
+        if !allowed {
+            // past the hard limit no amount of building widens the border: say so (-27) instead of the "build more to grow it" of -2
+            let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
+            let infra = matches!(kind, ROAD | BRIDGE | DRAWBRIDGE | MOAT | PORT);
+            return if !infra && (x - hx).hypot(y - hy) > TERRITORY_MAX { -27 } else { -2 };
+        }
         if !matches!(kind, ROAD | BRIDGE | DRAWBRIDGE) {
             let radius = if kind == MOAT { MOAT_FLOOR * 1.91 + CHANNEL_BANK } else if is_edit(kind) { 5.0 } else { d.r };
             if self.dets.iter().any(|army| army.occupied(|px, py| (px - x).hypot(py - y) < radius + members::FOOT_MARGIN)) { return -3; }
@@ -1147,6 +1152,25 @@ impl World {
         let inside = |c: &[f32; 3]| (c[0] - x).hypot(c[1] - y) < c[2];
         if self.felled.iter().any(|c| c[2] >= 30.0 && inside(c)) && !self.groves.iter().any(inside) { return 0.0; }
         terrain::forest_near(self.seed, x, y, r)
+    }
+
+    /// Is there still a tree standing within the woodcutter's or hunter's reach of (x, y)? Trees felled by woodcutters and soldiers do not count.
+    fn forest_left(&self, x: f32, y: f32) -> bool {
+        let r = 12.0f32;
+        (0..25).any(|k| {
+            let (px, py) = if k == 0 { (x, y) } else { let a = k as f32 * 2.399; let d = r * ((k as f32) / 25.0).sqrt(); (x + a.cos() * d, y + a.sin() * d) };
+            self.forest_here(px, py, 2.5) >= 0.12 && !self.felled.iter().any(|c| (c[0] - px).hypot(c[1] - py) < c[2])
+        })
+    }
+
+    /// Does building `i` still have what it was built for: trees for a woodcutter or hunter, open water for a fishing hut or waterwheel, any water for the rest that need it? (A deposit is checked apart.)
+    fn site_requirement_met(&self, i: usize) -> bool {
+        let b = &self.buildings[i]; let d = &DEFS[b.kind as usize];
+        match d.req {
+            2 => self.forest_left(b.x, b.y),
+            3 => if matches!(b.kind, WATERWHEEL | FISHING_HUT) { self.wheel_in_water(b.x, b.y, b.rot & 7) } else { self.water_near(b.x, b.y, d.r + 5.0) },
+            _ => true,
+        }
     }
 
     /// Woodcutters slowly clear the forest round them, so the clearing (and the village) grows.
@@ -1702,6 +1726,7 @@ impl World {
                         }
                     }
                 }
+                if !self.site_requirement_met(i) { status = 2; p = need; break; }   // the forest was felled, or the water filled in: nothing to work with
                 let (inputs, outputs) = match kind {
                     SMOKEHOUSE if self.buildings[i].mode == 1 => (SMOKE_MEAT_IN, SMOKE_MEAT_OUT),
                     PASTURE if season == 3 => (estate::WINTER_PASTURE_FEED, d.outputs),
@@ -2779,6 +2804,7 @@ impl World {
             let dormant = b.aux >= 0 && self.deposits.get(b.aux as usize).is_some_and(|dep| dep.max > 0);
             return vec![if dormant { 8 } else { 7 }, -1, 0, 0];
         }
+        if !self.site_requirement_met(idx as usize) { return vec![7, -1, 0, 0]; }
         let season = self.season();
         let (inputs, outputs) = match b.kind {
             SMOKEHOUSE if b.mode == 1 => (SMOKE_MEAT_IN, SMOKE_MEAT_OUT),
@@ -3104,7 +3130,7 @@ mod tests {
         let mut w = World::new(1337, 0, 0);
         assert_eq!(w.place(HOUSE, 20, 0, 0) >= 0, true);
         assert_eq!(w.place(HOUSE, 20, 1, 0), -3, "overlap");
-        assert_eq!(w.place(HOUSE, 1000, 0, 0), -2, "outside radius");
+        assert_eq!(w.place(HOUSE, 1000, 0, 0), -27, "far outside, away from any road");
         assert_eq!(w.place(99, 10, 10, 0), -1, "bad kind");
         assert_eq!(w.place(TOWN_HALL, 10, 10, 0), -9);
     }
@@ -4626,12 +4652,26 @@ mod territory_tests {
     }
 
     #[test]
-    fn ordinary_building_claims_stop_at_the_territory_limit_even_when_roads_continue() {
-        let mut w = rich();
-        let mut x = w.build_radius() as i32 - 6; let mut last = x;
-        for _ in 0..60 { if w.place(ROAD, x, 0, 0) >= 0 { last = x; } x += 5; }
-        assert!(last as f32 > TERRITORY_MAX, "the road extends past the territory limit: {last}");
-        assert_eq!(w.can_place(HOUSE, TERRITORY_MAX as i32 + 30, 0), -2);
+    fn past_the_territory_limit_only_roads_claim_land_and_buildings_stand_beside_them() {
+        // a road from the hall outwards (the first direction that is dry all the way), then houses beside its far end
+        let (mut w, mut found) = (rich(), None);
+        'seeds: for seed in [1337u64, 7, 21, 42, 99, 123, 2024, 31337] { for dir in 0..16 {
+            let (ux, uy) = (((dir as f32 * 0.3927).cos() * 1000.0).round() / 1000.0, ((dir as f32 * 0.3927).sin() * 1000.0).round() / 1000.0);
+            let mut v = World::new(seed, 0, 0); v.stock = [30000; N_RES]; v.cheat(3, 0, 0);
+            let hall = roadline::nodes_of(&v.buildings[0])[0]; let (hx, hy) = (hall.0 as i32 - v.ox, hall.1 as i32 - v.oy);
+            let mut chain = vec![hx, hy]; let mut k = 0; while k < TERRITORY_MAX as i32 + 60 { k += 8; chain.extend([hx + (ux * k as f32).round() as i32, hy + (uy * k as f32).round() as i32]); }
+            let mut start = 0;
+            while start + 2 < chain.len() { let end = (start + 10).min(chain.len()); if v.lay_road(&chain[start..end]) != 0 { break; } start = end - 2; }
+            let reach = v.buildings.iter().filter(|b| b.kind == ROAD && b.status == 4).map(|b| ((b.x - v.buildings[0].x) * ux + (b.y - v.buildings[0].y) * uy) as i32).max().unwrap_or(0);
+            if reach as f32 > TERRITORY_MAX + 20.0 { w = v; found = Some((hx, hy, ux, uy)); break 'seeds; }
+        } }
+        let (hx, hy, ux, uy) = found.expect("some direction from the hall is dry for 230 units");
+        let spot = |along: i32, across: i32| (hx + (ux * along as f32 - uy * across as f32).round() as i32, hy + (uy * along as f32 + ux * across as f32).round() as i32);
+        let near = spot(TERRITORY_MAX as i32 + 12, 5); let away = spot(TERRITORY_MAX as i32 + 12, 45);
+        assert_eq!(w.can_place(HOUSE, away.0, away.1), -27, "away from the road nothing can be built out here");
+        assert_eq!(w.can_place(HOUSE, near.0, near.1), 0, "beside the road it can");
+        let i = w.place(HOUSE, near.0, near.1, 0); assert!(i >= 0);
+        assert_eq!(w.can_place(HOUSE, away.0, away.1), -27, "a house out here claims no land of its own");
     }
 }
 

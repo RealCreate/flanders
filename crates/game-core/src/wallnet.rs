@@ -2,7 +2,7 @@
 //! what you see is what blocks the way: pieces stand several units apart and the wall is the run between them, which circles round the pieces alone would leave open.
 use super::*;
 
-pub const GATE_HALF: f32 = 3.0;
+pub const GATE_HALF: f32 = 3.6;   // a doorway 5.2 wide between the pillars: a siege engine (1.6 clear each side) rolls through with room to spare
 const REACH: f32 = 8.6;
 const FENCE_REACH: f32 = 5.6;
 const GATE_TRIM: f32 = GATE_HALF + 0.7;

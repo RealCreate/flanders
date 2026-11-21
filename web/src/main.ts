@@ -17,6 +17,7 @@ import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnounce
 import { PenPreview } from './render/pen';
 import { AnchorGhost, anchorShape, doorInWorld } from './render/anchorghost';
 import { SelectionMark } from './render/selection';
+import { connectedWalls, planUpgrade } from './multiselect';
 import { RadiusRings } from './render/coverage';
 import { parseRadii, describe as describeRadii, uncoveredByWells, wallsOutOfReach, FX_FIRE_FULL, FX_FIRE_HALF, FX_SHOOT, type Radius } from './coverage';
 import { OVER_WATER_KINDS } from './render/ringheight';
@@ -2287,7 +2288,59 @@ function stockGo(res: number[], sign: number, kind?: number): boolean {
   return true;
 }
 
-function selectBuilding(i: number | null) { showUpgradeOutline(false); selectedIdx = i; covRefocus(); if (hlOn()) applyHighlight(); if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
+/** Buildings picked together (Shift+click, or "Select connected walls"): two or more switch the side pane to the group view. */
+let multiSel: number[] = []; const multiRings: SelectionMark[] = [];
+function setMulti(ids: number[]) {
+  multiSel = ids;
+  while (multiRings.length < ids.length - 1) { const m = new SelectionMark(terrain, 0xffd34d); m.visible = false; scene.add(m); multiRings.push(m); }
+  multiRings.forEach(m => { m.visible = false; });
+}
+function toggleMulti(i: number) {
+  const base = multiSel.length ? multiSel : selectedIdx !== null ? [selectedIdx] : [];
+  const next = base.includes(i) ? base.filter(k => k !== i) : [...base, i];
+  if (next.length <= 1) { selectBuilding(next[0] ?? null); return; }
+  showUpgradeOutline(false); setMulti(next); selectedIdx = next[0]; selectedRuin = null; selectKind(null); ui.showSelectedTab(); updateSelection();
+}
+function selectWallRun(i: number) {
+  const run = connectedWalls(lv.world.buildings_flat(), i);
+  if (run.length < 2) { selectBuilding(i); return; }
+  showUpgradeOutline(false); setMulti(run); selectedIdx = run[0]; selectedRuin = null; selectKind(null); ui.showSelectedTab(); updateSelection();
+  ui.toast(`${run.length} connected wall pieces selected.`, 'info');
+}
+/** The side pane for a group: how many, what they are, what upgrading them all costs, and who cannot be upgraded. */
+function multiPane() {
+  const w = lv.world, f = w.buildings_flat(), stocks = Array.from(w.stocks());
+  multiSel = multiSel.filter(i => i * STRIDE < f.length);
+  if (multiSel.length < 2) { setMulti([]); return false; }
+  const plan = planUpgrade(multiSel, f, k => defs[k].maxTier, upgrade_cost_flat, stocks);
+  multiSel.forEach((i, n) => { const o = i * STRIDE, x = f[o + 2], z = f[o + 3], r = footprint(f[o], f[o + 1]) + 1.1; if (n === 0) selRing.set(x, z, r, f[o], f[o + 5]); else { const m = multiRings[n - 1]; m.visible = true; m.set(x, z, r, f[o], f[o + 5]); } });
+  selRing.visible = true;
+  const counts = new Map<number, number>(); for (const i of multiSel) counts.set(f[i * STRIDE], (counts.get(f[i * STRIDE]) ?? 0) + 1);
+  const names = [...counts].map(([k, n]) => `${n} ${defs[k].name.toLowerCase()}`).join(', ');
+  const notes = [plan.full.length ? `${plan.full.length} already fully upgraded.` : '', plan.poor.length ? `${plan.poor.length} cannot be paid for with the current stock.` : ''].filter(Boolean).join(' ');
+  ui.setSelectedPane(`<div><div class="eyebrow">Selection</div><h2>${multiSel.length} buildings</h2><p class="muted">${names}</p></div>
+    ${plan.go.length ? `<div><h3>Upgrade ${plan.go.length} of ${multiSel.length}</h3><div class="cost">${ui.costHtml(plan.total, stocks)}</div></div><button class="pbtn primary" data-act="multi:upgrade">Upgrade ${plan.go.length}</button>` : `<p><b>Nothing here can be upgraded right now.</b></p>`}
+    ${notes ? `<p class="muted">${notes}</p>` : ''}
+    <p class="muted">Shift+click adds or removes a building.</p>
+    <div class="btnrow"><button class="pbtn" data-act="deselect">Clear selection</button></div>`, '');
+  return true;
+}
+/** Upgrade every selected building that can be: one ordinary upgrade command each (the same ones a single click records), in index order, so replays agree. */
+function multiUpgrade() {
+  const w = lv.world, plan = planUpgrade(multiSel, w.buildings_flat(), k => defs[k].maxTier, upgrade_cost_flat, Array.from(w.stocks()));
+  let done = 0, room = 0, poor = plan.poor.length; const fxAt: number[] = [];
+  for (const i of plan.go) {
+    const code = w.upgrade(i);
+    if (code === 0) { done++; commit({ op: 'upgrade', idx: i }); fxAt.push(i); } else if (code === -3) room++; else poor++;
+  }
+  const f = w.buildings_flat(); for (const i of fxAt.slice(0, 6)) placedFx(f[i * STRIDE], f[i * STRIDE + 2], f[i * STRIDE + 3], true);
+  const skipped = [plan.full.length ? `${plan.full.length} already at the top` : '', room ? `${room} without room to grow` : '', poor ? `${poor} unaffordable` : ''].filter(Boolean);
+  if (done) { sound.upgrade(); ui.toast(skipped.length ? `${done} of ${multiSel.length} upgraded; skipped: ${skipped.join(', ')}.` : `${done} buildings upgraded.`, skipped.length ? 'info' : 'good'); }
+  else { sound.error(); ui.toast(`Nothing was upgraded (${skipped.join(', ') || 'nothing selected'}).`, 'bad'); }
+  afterLocalChange(); updateSelection();
+}
+
+function selectBuilding(i: number | null) { setMulti([]); showUpgradeOutline(false); selectedIdx = i; covRefocus(); if (hlOn()) applyHighlight(); if (i !== null) { selectedRuin = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
 function selectRuin(i: number | null) { selectedRuin = i; if (i !== null) { selectedIdx = null; selectKind(null); ui.showSelectedTab(); } updateSelection(); }
 
@@ -2337,6 +2390,7 @@ function updateSelection() {
       <p class="muted">A Builders' Yard will rebuild ruins and mend damaged buildings on its own while you have the materials.</p>`);
     return;
   }
+  if (multiSel.length >= 2 && multiPane()) return;
   if (selectedIdx === null || selectedIdx >= w.building_count()) { selectedIdx = null; selRing.visible = false; ui.setSelectedPane(null); return; }
   const f = w.buildings_flat(), o = selectedIdx * 10, hp = w.building_health();
   const kind = f[o], tier = f[o + 1], x = f[o + 2], z = f[o + 3], status = f[o + 6], pct = f[o + 7];
@@ -2413,6 +2467,7 @@ function updateSelection() {
       : `<div><h3>A lord to lead you</h3><p class="muted">A lord or lady in command makes every defender hit harder and keeps them from breaking. 150 coins.</p></div><button class="pbtn primary" data-act="hero" ${stocks[8] >= 150 ? '' : 'disabled'}>Take a lord into service</button>`;
   }
   if (kind === 19) html += `<p class="muted">Tier ${tier + 1}: ${['spearmen and archers', '+ swordsmen', '+ knights', '+ catapults'][tier]}. Open the Army tab to recruit.</p>`;
+  if (kind === 2 || kind === 21 || kind === 22) html += `<div class="btnrow"><button class="pbtn" data-act="selwalls">Select connected walls</button></div>`;
   if (tier < defs[kind].maxTier) {
     const uc = upgrade_cost_flat(kind, tier + 1), cost: [number, number][] = []; for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1]]);
     const ok = cost.every(([r, n]) => stocks[r] >= n);
@@ -2488,7 +2543,9 @@ function onAct(a: string) {
     }
     return;
   }
+  if (a === 'multi:upgrade') { multiUpgrade(); return; }
   if (selectedIdx === null) return;
+  if (a === 'selwalls') { selectWallRun(selectedIdx); return; }
   if (a.startsWith('wk:')) {
     const sf = lv.world.staffing_flat(), o = selectedIdx * 5, row = { max: sf[o + 1], want: sf[o + 2], staff: sf[o + 3] };
     let n = row.want;
@@ -3055,7 +3112,7 @@ function bindInput() {
       }
       const idx = pickBuilding(pointerRay(e));
       if (idx === null) { const ri = lv.ruins.pick(pointerRay(e)); if (ri !== null) { selectRuin(ri); return; } }
-      if (idx !== null) selectBuilding(idx);
+      if (idx !== null) { if (e.shiftKey || e.ctrlKey) toggleMulti(idx); else selectBuilding(idx); }
       else for (const r of rivals.values()) if (r.village.pick(ray) !== null) { ui.setTab('army'); ui.toast(`${r.name}'s village — choose an army in the Army tab to march on it.`, 'info'); return; }
       if (idx === null) { selectBuilding(null); selectRuin(null); if (selectedDet !== null) selectDet(null); }
     }
@@ -3422,7 +3479,7 @@ function debugPlace(kind: number, dx: number, dy: number, r = 0) {
   return res;
 }
 if (DEBUG_HOOKS) (window as any).__game = {
-  get worldShips() { return worldShips; }, startReplay, stopReplay, get replay() { return replay; }, debugPlace, runModelVillage, selectBuilding, selectRuin, KIND_ICON, setSpeed, selectKind, frame, updateGhost,
+  get worldShips() { return worldShips; }, startReplay, stopReplay, get replay() { return replay; }, debugPlace, runModelVillage, selectBuilding, toggleMulti, selectWallRun, selectRuin, KIND_ICON, setSpeed, selectKind, frame, updateGhost,
   get renderer() { return renderer; }, get forest() { return forest; }, get atmo() { return atmo; }, get scene() { return scene; }, get terrain() { return terrain; }, get rig() { return rig; },
   get perf() { return perf; }, get world() { return lv.world; }, get lv() { return lv; }, get rivals() { return rivals; }, get wildlife() { return wildlife; }, get fx() { return fx; }, get crowd() { return crowd; }, ui, afterLocalChange, refreshTerrain,
   raid(angle = 0.6, u = [8, 4, 2, 0, 0]) { const ok = lv.world.start_raid(angle, Uint32Array.from(u), 0); lv.afterTick(); return ok; },

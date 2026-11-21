@@ -187,15 +187,15 @@ fn a_joined_road_extends_the_build_range_and_the_extension_is_bounded() {
     assert!(reach_x > r, "the road runs out beyond the range: {reach_x} vs {r}");
     assert!(spots(&w, reach_x - 4).iter().any(|&c| c != -2), "a house may stand beside the joined road: {:?}", spots(&w, reach_x - 4));
     assert!(spots(&w, reach_x + 30).iter().all(|&c| c == -2), "but not far beyond its end");
-    // the land can never run farther than the territory's limit from the hall
-    assert_eq!(w.can_place(HOUSE, TERRITORY_MAX as i32 + 20, 0), -2);
+    // past the territory's limit from the hall only roads widen the land: away from any road nothing can be built
+    assert_eq!(w.can_place(HOUSE, 0, TERRITORY_MAX as i32 + 20), -27);
     assert_eq!(w.can_place(ROAD, INFRASTRUCTURE_LIMIT as i32 + 1, 0), -2, "roads stop at the map edge");
     // An isolated road can be laid beyond the town's claim.
     let mut v = rich(); let r2 = v.build_radius() as i32;
     let (x, y) = (180..240).step_by(3).flat_map(|x| (-30..30).step_by(3).map(move |y| (x, y)))
         .find(|&(x, y)| v.road_can(x, y) == 0 && v.road_can(x + 6, y) == 0).expect("dry land outside city range");
     assert_eq!(v.lay_road(&[x, y, x + 6, y]), 0);
-    assert_eq!(v.can_place(HOUSE, x + 3, y + 5), -2, "an isolated road does not claim land");
+    assert!(matches!(v.can_place(HOUSE, x + 3, y + 5), -2 | -27), "an isolated road does not claim land");
     // A loose piece claims no land of its own.
     let p = v.place(ROAD, r2 + 3, 40, 0);
     if p >= 0 && v.buildings[p as usize].status != 4 { assert_eq!(v.can_place(HOUSE, r2 + 14, 40), -2, "a loose piece claims nothing"); }
