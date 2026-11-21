@@ -12,7 +12,7 @@ import { icon, type IconName } from './ui/icons';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
 import { parseRows, parseTotals, stepWant, parseProductionProblems, productionProblemText } from './workview';
 import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL, ST_RESERVE } from './stockhighlight';
-import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL } from './data';
+import { CATS, DEPOSIT, EVENT_TEXT, PLACE_ERRORS, RES, resIcon, STATUS, defs, tierName, KIND_ICON, units, NOPAD, PEN_SPACING, bosses, LEVEL_TOOL, PLANT_TOOL } from './data';
 import { BATTLE_STRIDE, parseBoss, bossLine, bossTitle, hpFraction, raidAnnouncement, lairAnnouncement, reportBoss, reportLine } from './bosses';
 import { PenPreview } from './render/pen';
 import { AnchorGhost, anchorShape, doorInWorld } from './render/anchorghost';
@@ -179,6 +179,8 @@ const byPeer = new Map<string, string>();   // peerId -> pub
 let sites: { x: number; z: number }[] = [];
 let mySite = 0, myName = 'Traveller';
 let perf!: Perf;
+/** The planting brush: its radius (the R key cycles it); and the forester whose planting zone is being picked on the map. */
+let plantR = 4, zoneIdx: number | null = null;
 let levelR = DEFAULT_LEVEL_SIZE, levelCode = 99, levelH = LEVEL_AUTO, earthworkH = LEVEL_AUTO, levelHintKey = '', levelDisc!: THREE.Mesh;
 let selectedKind: number | null = null, rot = 0, ghost: THREE.Group | null = null, ghostCode = 99;
 let selectedIdx: number | null = null;
@@ -2013,11 +2015,12 @@ function selectKind(k: number | null) {
   placedPointer = null;
   if (k !== null) cancelMarchPreview();
   if (k !== null && pendingBattleOrder) setPendingBattleOrder(null);
-  selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
+  zoneIdx = null; selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
   showTouchTools();
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
   terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false;
-  if (k === LEVEL_TOOL) { selectedIdx = null; updateSelection(); ui.setLevelCost(Array.from(World.level_cost_flat(levelR))); ui.hint(placeHint(k)); }
+  if (k === PLANT_TOOL) { selectedIdx = null; updateSelection(); ui.hint(placeHint(k)); }
+  else if (k === LEVEL_TOOL) { selectedIdx = null; updateSelection(); ui.setLevelCost(Array.from(World.level_cost_flat(levelR))); ui.hint(placeHint(k)); }
   else if (k !== null) {
     selectedIdx = null; updateSelection();
     // the ghost is the real building (same textures and shape), tinted green or red, so what you see is what you get
@@ -2032,6 +2035,7 @@ function selectKind(k: number | null) {
 function scaled(a: [number, number][], tier: number): [number, number][] { return a.map(([r, n]) => [r, Math.max(n, Math.floor((n * (4 + 5 * tier) + 2) / 4))]); }
 
 function placeHint(k: number) {
+  if (k === PLANT_TOOL) return `Plant trees, ${plantR} wide — click to plant (1 wood a tree, young trees take a day and a half to grow) · R changes the size · Esc stops`;
   if (touchInput && k !== LEVEL_TOOL && k !== 37 && (!PEN_SPACING[k] || penShape === 'line')) return `${defs[k].name} · Tap to position, drag the preview to move it, then choose Build here.${k === 35 ? ' The pier turns toward open water.' : ''}`;
   if (k === 35) return 'Port · Choose a shoreline. The pier turns toward open water automatically.';
   if (k === LEVEL_TOOL) return `Level ground, ${levelR} wide, to ${levelH < 0 ? 'the land round it (Auto)' : 'height ' + levelH.toFixed(1)} — click to level the patch: pits are filled, bumps cut, ditches and earthworks inside taken away · set the Target height in the bar · R changes the size · Esc cancels`;
@@ -2449,6 +2453,7 @@ function updateSelection() {
       <p class="muted">${meat ? 'Uses wood to smoke meat from pigsties, pastures and hunting lodges.' : 'Turns raw fish from the Fishing Hut into smoked fish using wood.'}</p></div>`;
   }
   if (isLivestockPen(kind)) html += `<div class="btnrow"><button class="pbtn" data-act="people:work">${icon('pop', 16)} ${kind === PIGSTY ? 'Find pig keepers' : 'Find herders'}</button></div>`;
+  if (kind === 48) html += `<div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="zone">Plant zone…</button><button class="pbtn" data-act="zone:reset">Plant round the hut</button></div><p class="muted">Plants two young trees every cycle within 10 of the chosen spot (by default round the hut). Trees take a day and a half to grow, then count as forest for woodcutters and hunters. A woodcutter fells grown planted trees before wild ones.</p>`;
   if (kind === 20) html += `<p class="muted">Sends builders to damaged buildings and ruins within 70 units, using your stores. Higher tiers work faster.</p>`;
   if (d.jobs > 0) html += workersHtml(selectedIdx);
   if (d.cycle) {
@@ -2572,6 +2577,11 @@ function onAct(a: string) {
     const [, rs, ns] = a.split(':'), res = Number(rs), n = Number(ns), code = lv.world.buy(res, n);
     if (code === 0) { commit({ op: 'buy', kind: res, idx: n }); sound.click(); ui.toast(`Bought ${n} ${RES[res].name.toLowerCase()}.`, 'good'); afterLocalChange(); updateHud(); }
     else ui.toast(code === -2 ? 'The stalls have not that much left.' : code === -6 ? 'You cannot pay for that.' : code === -7 ? 'The stores have no room for that.' : 'That is not for sale.', 'bad');
+    return;
+  }
+  if (a === 'zone' || a === 'zone:reset') {
+    if (a === 'zone') { zoneIdx = selectedIdx; ui.hint('Click the ground where the forester should plant (within 60 of it).'); return; }
+    if (lv.world.set_plant_zone(selectedIdx, -2147483648, 0) === 0) { commit({ op: 'zone', idx: selectedIdx, x: 0, y: 0 }); sound.click(); }
     return;
   }
   if (a.startsWith('field:')) {
@@ -2828,6 +2838,31 @@ function levelHover(e: { clientX: number; clientY: number }) {
     : code === -6 ? `${PLACE_ERRORS[code]}${costText}` : PLACE_ERRORS[code] ?? 'Cannot level here';
   const key = `${code}|${text}`; if (key !== levelHintKey) { levelHintKey = key; levelCode = code; ui.hint(text, code !== 0); }
 }
+/** Hover with the planting brush: a ring the size of the brush. */
+function plantHover(e: { clientX: number; clientY: number }) {
+  lastGhostE = e;
+  if (ghost) ghost.visible = false; covGhost(null);
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) { ghostRing.visible = false; return; }
+  ghostRing.visible = true; ghostRing.position.set(hit.x, hit.y + 0.14, hit.z); ghostRing.scale.setScalar(plantR); ghostRing.rotation.y = 0;
+  (ghostRing.material as THREE.MeshBasicMaterial).color.setHex(0x66ff88);
+}
+/** Click with the planting brush: the core plants what fits (trees keep their distance, stay off buildings and water and inside your land) for a wood each. */
+function plantClick(e: { clientX: number; clientY: number }) {
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
+  const dx = Math.round(hit.x - lv.ox), dy = Math.round(hit.z - lv.oz), n = lv.world.plant_trees(dx, dy, plantR);
+  if (n > 0) { commit({ op: 'plant', x: dx, y: dy, kind: plantR }); afterLocalChange(); sound.place(3); updateHud(); ui.hint(`Planted ${n} tree${n === 1 ? '' : 's'}. ${placeHint(PLANT_TOOL)}`); }
+  else { const msg = lv.world.stocks()[0] < 1 ? 'No wood to plant with.' : 'No room to plant here: trees need free ground inside your land.'; ui.hint(msg, true); ui.toast(msg, 'bad'); sound.error(); }
+}
+/** A click on the ground while a forester's zone is being chosen: it plants round that spot from now on. */
+function zoneClick(e: { clientX: number; clientY: number }) {
+  const idx = zoneIdx; zoneIdx = null; if (idx === null) return;
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
+  const f = lv.world.buildings_flat(), o = idx * 10, dx = Math.round(hit.x - f[o + 2]), dy = Math.round(hit.z - f[o + 3]);
+  if (lv.world.set_plant_zone(idx, dx, dy) === 0) { commit({ op: 'zone', idx, x: dx, y: dy }); sound.click(); ui.toast('The forester will plant there.', 'good'); }
+  else ui.toast('Too far from the forester: the planting zone must be within 60 of it.', 'bad');
+  ui.hint('');
+}
+
 /** Click with the level-ground tool. */
 function levelClick(e: { clientX: number; clientY: number }) {
   const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
@@ -2856,6 +2891,7 @@ function hidePlacementGhost() {
 
 function updateGhost(e: { clientX: number; clientY: number }) {
   lastGhostE = e;
+  if (selectedKind === PLANT_TOOL) { plantHover(e); return; }
   if (selectedKind === LEVEL_TOOL) { levelHover(e); return; }
   if (selectedKind === 37) { roadHover(e); return; }
   if (selectedKind === null || !ghost) return;
@@ -2932,9 +2968,9 @@ function showTouchTools() {
   const rotate = document.getElementById('touch-rotate')!;
   const build = document.getElementById('touch-build') as HTMLButtonElement;
   build.hidden = !touchInput || path || (selectedKind !== null && !!PEN_SPACING[selectedKind] && isFigure(penShape));
-  build.disabled = !touchPlacement || (selectedKind === LEVEL_TOOL ? levelCode !== 0 : ghostCode !== 0);
+  build.disabled = !touchPlacement || (selectedKind === PLANT_TOOL ? false : selectedKind === LEVEL_TOOL ? levelCode !== 0 : ghostCode !== 0);
   rotate.hidden = path && selectedKind !== 24;
-  rotate.textContent = selectedKind === LEVEL_TOOL ? 'Size' : selectedKind === 24 ? 'Width' : 'Rotate';
+  rotate.textContent = selectedKind === LEVEL_TOOL || selectedKind === PLANT_TOOL ? 'Size' : selectedKind === 24 ? 'Width' : 'Rotate';
 }
 
 function touchPlacementEvent() {
@@ -2977,6 +3013,7 @@ function undoStroke() {
 }
 
 function rotateTool() {
+  if (selectedKind === PLANT_TOOL) { plantR = plantR >= 8 ? 2 : plantR + 2; ui.hint(placeHint(PLANT_TOOL)); const e = touchPlacementEvent(); if (e) updateGhost(e); return; }
   if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); const e = touchPlacementEvent(); if (e) updateGhost(e); showTouchTools(); return; }
   rot = (rot + 1) % 8;
   if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); }
@@ -3022,7 +3059,8 @@ function bindInput() {
     const e = touchPlacementEvent();
     if (!e || selectedKind === null) return;
     updateGhost(e);
-    if (selectedKind === LEVEL_TOOL) { levelClick(e); touchPlacement = null; hidePlacementGhost(); }
+    if (selectedKind === PLANT_TOOL) { plantClick(e); touchPlacement = null; hidePlacementGhost(); }
+    else if (selectedKind === LEVEL_TOOL) { levelClick(e); touchPlacement = null; hidePlacementGhost(); }
     else buildAtPointer(e);
     showTouchTools();
   };
@@ -3087,6 +3125,8 @@ function bindInput() {
       if (moved > 8) { const h = terrain.pick(pointerRay(e).ray), o = h ? penOutline(a, { x: h.x, z: h.z }, e.altKey) : null; if (o) penCommit(selectedKind, o); ghostCode = 99; previewKey = ''; ui.hint(placeHint(selectedKind)); return; }
       if (isFigure(penShape)) { ui.hint('Press and drag to draw the figure', true); return; }
     }
+    if (zoneIdx !== null && tap) { zoneClick(e); return; }
+    if (selectedKind === PLANT_TOOL && tap) { if (touch) previewTouchPlacement(e); else plantClick(e); return; }
     if (selectedKind === LEVEL_TOOL && tap) { if (touch) previewTouchPlacement(e); else levelClick(e); return; }
     if (selectedKind === 37 && tap) { const h = terrain.pick(pointerRay(e).ray); if (h) roadClick(h.x, h.z); return; }
     if (selectedKind !== null && PEN_SPACING[selectedKind] && penShape === 'path' && tap) {   // a click adds a corner; a quick second click, or a click on the first corner, builds

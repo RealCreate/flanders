@@ -91,6 +91,7 @@ export const ICONS: Record<string, S> = {
   market: Array.from({ length: 5 }, (_, i) => P(`M${4 + i * 3.2} 4 L${2 + i * 4} 9 H${6 + i * 4} L${7.2 + i * 3.2} 4Z`, i % 2 ? PA : RD)).join('') + L('M3 9 V21 M21 9 V21', WD2, 1.4) + R(3, 16, 18, 3, WD) + C(8, 14, 1.6, RD) + C(12, 14, 1.6, GN2) + C(16, 14, 1.6, GD),
   waterwheel: C(12, 12, 8, 'none', `stroke="${WD2}" stroke-width="2"`) + L('M12 4 V20 M4 12 H20 M6.3 6.3 L17.7 17.7 M17.7 6.3 L6.3 17.7', WD, 1.2) + [0, 45, 90, 135, 180, 225, 270, 315].map(a => G(`rotate(${a} 12 12)`, R(10.6, 2.4, 2.8, 3, WD3))).join('') + C(12, 12, 1.8, WD2) + L('M1 21 q3 -2 6 0 t6 0 t6 0 t4 0', BL, 1.4),
   garden: P('M2 21 L5 16 H19 L22 21Z', '#8a5a30') + L('M8 16 V11 M12 16 V8 M16 16 V11', GN, 1.2) + C(8, 10, 2, RD) + C(12, 7, 2, GD) + C(16, 10, 2, '#7a4f9a') + P('M8 14 Q5 13 5 11 Q8 11 8 14Z', GN) + P('M16 14 Q19 13 19 11 Q16 11 16 14Z', GN),
+  forester: R(11, 14, 2, 7, WD2) + C(12, 9, 4.5, GN) + L('M4 21 H20', GN2, 1.6) + L('M6 21 V17 M18 21 V17', GN, 1.4) + C(6, 15.5, 2, '#4f8a34') + C(18, 15.5, 2, '#4f8a34'),
   park: R(11, 14, 2, 7, WD2) + C(12, 8.5, 5.5, GN) + C(8.5, 11, 3.5, GN) + C(15.5, 11, 3.5, '#4f8a34') + L('M3 21 H21', GN2, 1.6),
   river: P('M9 2 H17 Q21 12 17 22 H9 Q13 12 9 2Z', BL) + P('M1 2 H9 Q13 12 9 22 H1Z', GN2) + P('M23 2 H17 Q21 12 17 22 H23Z', GN2) + L('M12 7 q1.5 1.5 0 3 t0 3', PA, 1),
   raiseground: P('M2 21 Q6 10 12 10 Q18 10 22 21Z', '#8a6a3a') + L('M12 1.5 V8 M9 4.5 L12 1.5 L15 4.5', K, 1.6),
@@ -214,7 +215,7 @@ export type IconName = keyof typeof ICONS | string;
 export const ICON_NAMES = Object.keys(ICONS);
 
 /** Building kind id (catalog.rs order) to icon name. */
-export const KIND_ICON_NAMES = ['house', 'farm', 'wall', 'watchtower', 'woodcutter', 'sawmill', 'quarry', 'claypit', 'brickworks', 'ironmine', 'goldmine', 'charcoalburner', 'smelter', 'blacksmith', 'mint', 'townhall', 'well', 'chapel', 'hunterslodge', 'barracks', 'buildersyard', 'spikedlogs', 'gate', 'drawbridge', 'moat', 'storehouse', 'keep', 'courthouse', 'market', 'waterwheel', 'garden', 'park', 'river', 'raiseground', 'lowerground', 'port', 'tollpost', 'road', 'bridge', 'infirmary', 'graveyard', 'fishinghut', 'smokehouse', 'bakery', 'plaza', 'pasture', 'pigsty', 'stable'];
+export const KIND_ICON_NAMES = ['house', 'farm', 'wall', 'watchtower', 'woodcutter', 'sawmill', 'quarry', 'claypit', 'brickworks', 'ironmine', 'goldmine', 'charcoalburner', 'smelter', 'blacksmith', 'mint', 'townhall', 'well', 'chapel', 'hunterslodge', 'barracks', 'buildersyard', 'spikedlogs', 'gate', 'drawbridge', 'moat', 'storehouse', 'keep', 'courthouse', 'market', 'waterwheel', 'garden', 'park', 'river', 'raiseground', 'lowerground', 'port', 'tollpost', 'road', 'bridge', 'infirmary', 'graveyard', 'fishinghut', 'smokehouse', 'bakery', 'plaza', 'pasture', 'pigsty', 'stable', 'forester'];
 /** Unit id (military.rs order) to icon name. */
 export const UNIT_ICON_NAMES = ['spearman', 'archer', 'swordsman', 'knight', 'catapult', 'ram', 'militia'];
 /** Building category (CATS order) to icon name. */

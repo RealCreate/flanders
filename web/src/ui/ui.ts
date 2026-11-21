@@ -1,7 +1,7 @@
 import { cleanWorld, withWorld } from '../worldname';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
-import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, TIER_NAMES, tierName, type BuildingDef } from '../data';
+import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, PLANT_TOOL, TIER_NAMES, tierName, type BuildingDef } from '../data';
 import { buildSearch } from '../buildsearch';
 import { ORDER_NAMES, TROOP_GROUPS } from '../battlefield';
 import type { BribeOffer } from '../bribe';
@@ -116,6 +116,7 @@ const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >=
 import { parseWinter, winterTip, winterWarning, winterLines } from '../winter';
 const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
 const BUILDABLE = defs.filter(d => d.id !== 15).sort((a, b) => a.cat - b.cat || a.id - b.id);
+const PLANT_DESC = 'Plants young trees with a brush for one wood each, so forests can grow back for woodcutters and hunters. R changes the brush size. A Forester does it for you.';
 const LEVEL_DESC = 'Levels a round patch of ground to a Target height you choose in the bar (or Auto: the land just outside it): fills pits and cuts bumps, and takes away any ditch or earthworks inside. R changes the size. Buildings in the patch must already stand at that height.';
 const findBuildCards = buildSearch([
   ...BUILDABLE.map(d => {
@@ -125,6 +126,7 @@ const findBuildCards = buildSearch([
       keywords: [...(TIER_NAMES[d.id] ?? []), ...(d.id === 35 ? ['harbor', 'dock'] : []), ...(d.id === 47 ? ['stables', 'horse', 'horses', 'packhorse', 'caravan', 'transport'] : [])],
       description: `${CATS[category].name} ${d.desc}` };
   }),
+  { id: PLANT_TOOL, category: defs[33].cat, name: 'Plant Trees', keywords: ['forest', 'wood', 'tree', 'forester', 'grow'], description: PLANT_DESC },
   { id: LEVEL_TOOL, category: defs[33].cat, name: 'Level Ground', keywords: ['flatten', 'terrain'], description: `Land ${LEVEL_DESC}` },
 ]);
 
@@ -807,6 +809,11 @@ export class UI {
       <span class="ds">${LEVEL_DESC}</span><span class="cost level-cost"></span></span>`;
     lc.onclick = () => this.h.select(LEVEL_TOOL);
     el.appendChild(lc); this.cards.set(LEVEL_TOOL, lc);
+    const pc = document.createElement('button');
+    pc.type = 'button'; pc.className = 'card'; pc.dataset.id = String(PLANT_TOOL); pc.setAttribute('aria-label', 'Plant Trees'); pc.setAttribute('aria-pressed', 'false');
+    pc.innerHTML = `<span class="ico">${icon('park', 30)}</span><span><span class="nm">Plant Trees</span><span class="ds">${PLANT_DESC}</span><span class="cost"><span data-r="0" data-n="1">${resIcon(0)} 1 a tree</span></span></span>`;
+    pc.onclick = () => this.h.select(PLANT_TOOL);
+    el.appendChild(pc); this.cards.set(PLANT_TOOL, pc);
     this.updateBuildResults();
   }
 
