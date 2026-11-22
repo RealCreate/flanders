@@ -1956,17 +1956,20 @@ export class VillageView {
   private foreign: Flag[] = []; private foreignKey = '';
   private quiet = false;
   /** The flags of the other cities, which the embassy flies on its forecourt. When the set changes, the embassies are drawn again (without their building animation). */
-  setForeignFlags(list: Flag[]) {
+  /** Returns true when an embassy was taken down: the caller must then run `sync` again (the next building change may be a long way off, and until then the embassy would be missing). */
+  setForeignFlags(list: Flag[]): boolean {
     const key = list.map(packFlag).join(',');
-    if (key === this.foreignKey) return;
+    if (key === this.foreignKey) return false;
     this.foreignKey = key; this.foreign = list.slice();
     for (const [i, it] of [...this.items]) {
       if (it.group.userData.kind !== 49) continue;
-      this.unbatch(it.cell); this.endBuild(it); this.dispose(it.group); this.animating.delete(it); this.items.delete(i); this.quiet = true;
+      this.unbatch(it.cell); this.endBuild(it); this.dispose(it.group); this.animating.delete(it); this.items.delete(i); this.quiet = true; removed = true;
+    let removed = false;
     }
   }
   /** Change the flag every banner flies (or go back to the plain colour with null): the buildings are rebuilt with it. */
   setFlag(f: Flag | null, color: number) {
+    return removed;
     const key = f ? packFlag(f) : 0, old = this.flag ? packFlag(this.flag) : 0;
     if (key === old && color === this.banner) return;
     this.flag = f ?? undefined; this.banner = color; this.roof = f?.roof ?? 0;

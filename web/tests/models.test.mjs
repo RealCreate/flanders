@@ -128,3 +128,17 @@ test('the watermill\'s stone-footing option lies under the house only, clear of 
     g.traverse(o => { if (o.isMesh && o !== foot && !(() => { let q = o; while (q && q !== wheel) q = q.parent; return !!q; })() && o.material?.color?.getHex?.() === foot.material.color.getHex() && o.geometry.type === 'BoxGeometry') { const bb = new THREE.Box3().setFromObject(o); if (bb.max.y - bb.min.y < 0.5 && bb.max.y <= 0.45) assert.ok(bb.max.x <= 3.2 + 1e-3 || bb.min.x > wb.max.x, `tier ${tier}: a stone slab runs to ${bb.max.x}`); } });
   }
 });
+
+test('the embassy is taken down for new foreign flags and is drawn again by the next sync (it must not stay missing)', async () => {
+  const view = new B.VillageView(0xaa3333);
+  const flat = Float32Array.of(15, 0, 0, 0, 0, 1, 4, 0, 0, 0,   49, 0, 60, 0, 0, 1, 4, 0, 0, 0);
+  const embassies = () => view.root.children.filter(g => g.userData.kind === 49).length;
+  view.sync(flat, defs.map(d => d.r));
+  assert.equal(embassies(), 1);
+  const flag = { pattern: 1, c1: 2, c2: 3, c3: 4, emblem: 1 };
+  assert.equal(view.setForeignFlags([flag]), true, 'a new set of flags takes the embassy down, so the caller has to draw it again');
+  assert.equal(embassies(), 0);
+  view.sync(flat, defs.map(d => d.r));
+  assert.equal(embassies(), 1, 'drawn again with the new flags');
+  assert.equal(view.setForeignFlags([flag]), false, 'the same flags change nothing');
+});

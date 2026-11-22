@@ -1263,7 +1263,7 @@ function updatePeers() {
   });
   rows.sort((a, b) => Number(b.row.online) - Number(a.row.online) || a.dist - b.dist);   // villages with somebody at home first, then by distance
   ui.setPeers(rows.map(x => x.row), worldName);
-  lv.view.setForeignFlags(foreignFlags().map(x => x.flag));
+  if (lv.view.setForeignFlags(foreignFlags().map(x => x.flag))) lv.syncFull();   // (the embassies were taken down to be drawn with the new flags: draw them now)
 }
 /** A computer city has no flag of its own design: it flies one made from its name, the same on every screen and in every session. */
 const computerFlags = new Map<string, Flag>();
