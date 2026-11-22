@@ -36,7 +36,11 @@ pub const HOLD: u8 = 1;
 pub const FOCUS: u8 = 2;
 pub const FALL_BACK: u8 = 3;
 pub const FLANK: u8 = 4;
+/// Stances need no point: the group keeps fighting where it stands, harder and more exposed (AGGRESSIVE) or tighter and steadier (DEFENSIVE).
+pub const AGGRESSIVE: u8 = 5;
+pub const DEFENSIVE: u8 = 6;
 pub const GROUPS: usize = 4;
+pub const ROSTER_STRIDE: usize = 7;
 
 #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Order { pub mode: u8, pub x: f32, pub y: f32 }
@@ -77,6 +81,51 @@ impl Tactics {
     }
 }
 
+/// Damage dealt, damage taken and extra nerve for a group on a stance.
+pub(crate) fn stance_dealt(mode: u8) -> f32 { match mode { AGGRESSIVE => 1.15, DEFENSIVE => 0.9, _ => 1.0 } }
+pub(crate) fn stance_taken(mode: u8) -> f32 { match mode { AGGRESSIVE => 1.10, DEFENSIVE => 0.85, _ => 1.0 } }
+pub(crate) fn stance_nerve(mode: u8) -> f32 { match mode { AGGRESSIVE => -0.05, DEFENSIVE => 0.10, _ => 0.0 } }
+/// How far the group looks for a fight: an aggressive one farther, a defensive one not far from where it stands.
+pub(crate) fn stance_reach(mode: u8) -> f32 { match mode { AGGRESSIVE => 1.5, DEFENSIVE => 0.7, _ => 1.0 } }
+
+/// Weapon against armour: arrows glance off plate and bite the unarmoured; swords cut through armour. Bosses keep their own plate rules.
+pub(crate) fn counter(attacker: &Unit, target: &Unit) -> f32 {
+    if attacker.boss != 0 || target.boss != 0 { return 1.0; }
+    let armor = UNITS[target.kind as usize].armor;
+    match attacker.kind {
+        1 if armor >= 3.0 => 0.8,
+        1 if armor <= 0.0 => 1.15,
+        2 if armor >= 2.0 => 1.12,
+        _ => 1.0,
+    }
+}
+
+/// Veterans (soldiers who came through a battle, see World::promote_veterans) have more hit points than their kind starts with, and hit a little harder.
+pub const VET_HP: f32 = 1.15;
+pub const VET_DMG: f32 = 1.10;
+pub(crate) fn is_veteran(u: &Unit) -> bool { u.boss == 0 && (u.kind as usize) < NK && u.maxhp > UNITS[u.kind as usize].hp + 0.01 }
+pub(crate) fn rank(u: &Unit) -> f32 { if is_veteran(u) { VET_DMG } else { 1.0 } }
+
+/// How shaken a soldier is: 0 calm, above `BREAK_AT` it may run. Hurt men, a side that is losing, being outnumbered or hit from behind shake it; a leader near (the lord for the defenders, the boss for the raiders) and a banner steady it.
+pub(crate) const BREAK_AT: f32 = 0.45;
+pub(crate) fn stress(b: &Battle, i: usize, hpf: f32, side_ratio: f32, steadied: f32) -> f32 {
+    let u = &b.units[i];
+    let (mut friends, mut foes, mut behind) = (0u32, 0u32, false);
+    for (j, o) in b.units.iter().enumerate() {
+        if j == i || !o.alive { continue; }
+        let (dx, dy) = (o.x - u.x, o.y - u.y);
+        let d2 = dx * dx + dy * dy;
+        if d2 > 81.0 { continue; }
+        if o.side == u.side { friends += 1; } else {
+            foes += 1;
+            if d2 > 0.01 && dx * u.face.cos() + dy * u.face.sin() < -0.3 * d2.sqrt() { behind = true; }
+        }
+    }
+    let crowd = (foes as f32 / (friends as f32 + 1.0) - 1.0).clamp(0.0, 2.0) * 0.1;
+    (1.0 - hpf).clamp(0.0, 1.0) * 0.5 + (0.7 - side_ratio).max(0.0) * 1.2 + crowd + if behind { 0.12 } else { 0.0 } - steadied
+}
+pub(crate) fn break_chance(stress: f32) -> f32 { if stress > BREAK_AT { (0.01 + (stress - BREAK_AT) * 0.12).min(0.06) } else { 0.0 } }
+
 /// Reward attacks from behind the defender's facing. Cavalry get the larger bonus.
 pub(crate) fn rear_attack(u: &Unit, target: &Unit) -> f32 {
     let (x, y) = (u.x - target.x, u.y - target.y);
@@ -98,6 +147,34 @@ pub(crate) fn braced_against(b: &Battle, spear: &Unit, attacker: &Unit) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrows_glance_off_plate_and_swords_cut_armour() {
+        let archer = Unit::new(1, 1, 0.0, 0.0, 0.0);
+        let sword = Unit::new(1, 2, 0.0, 0.0, 0.0);
+        let (light, heavy) = (Unit::new(0, 1, 1.0, 0.0, 0.0), Unit::new(0, 2, 1.0, 0.0, 0.0));
+        assert!(counter(&archer, &light) > 1.0 && counter(&archer, &heavy) < 1.0);
+        assert!(counter(&sword, &heavy) > 1.0 && counter(&sword, &light) == 1.0);
+    }
+
+    #[test]
+    fn a_hurt_side_in_trouble_shakes_a_soldier_and_a_leader_steadies_him() {
+        let w = World::new(1, 0, 0);
+        let mut b = Battle { units: vec![Unit::new(1, 0, 0.0, 0.0, 0.0), Unit::new(0, 0, 3.0, 0.0, 0.0), Unit::new(0, 0, 0.0, 3.0, 0.0)], ..w.battle.clone().unwrap_or_else(|| { let mut w = World::new(1337, 0, 0); assert!(w.begin_battle([1, 0, 0, 0, 0, 0], 0.0, 42)); w.battle.take().unwrap() }) };
+        b.units.truncate(3);
+        let calm = stress(&b, 0, 1.0, 1.0, 0.0);
+        let shaken = stress(&b, 0, 0.3, 0.3, 0.0);
+        assert!(shaken > calm && break_chance(shaken) > 0.0 && break_chance(calm) == 0.0);
+        assert!(stress(&b, 0, 0.3, 0.3, 0.3) < shaken);
+    }
+
+    #[test]
+    fn veterans_are_told_apart_by_their_extra_hit_points() {
+        let mut u = Unit::new(0, 0, 0.0, 0.0, 0.0);
+        assert!(!is_veteran(&u) && rank(&u) == 1.0);
+        u.maxhp *= VET_HP; u.hp = u.maxhp;
+        assert!(is_veteran(&u) && rank(&u) == VET_DMG);
+    }
 
     #[test]
     fn attacks_from_behind_and_armor_change_damage_when_a_blow_lands() {
@@ -200,11 +277,11 @@ impl World {
 
     /// Give a regiment of the local army an order. A nonzero tag controls the matching player attack.
     pub fn battle_order(&mut self, tag: i32, group: u8, mode: u8, x: f32, y: f32) -> bool {
-        if mode > FLANK || (group as usize) > GROUPS || (mode != 0 && !Self::infrastructure_in_bounds(x, y)) { return false; }
+        if mode > DEFENSIVE || (group as usize) > GROUPS || ((1..=FLANK).contains(&mode) && !Self::infrastructure_in_bounds(x, y)) { return false; }
         let Some(b) = self.battle.as_mut() else { return false };
         if b.bought || (tag != 0 && (tag != b.tag || b.lair >= 0)) { return false; }
         let side = usize::from(tag != 0);
-        let order = if mode == 0 { Order::default() } else { Order { mode, x: (x * 8.0).round() / 8.0, y: (y * 8.0).round() / 8.0 } };
+        let order = if mode == 0 { Order::default() } else if mode >= AGGRESSIVE { Order { mode, x: 0.0, y: 0.0 } } else { Order { mode, x: (x * 8.0).round() / 8.0, y: (y * 8.0).round() / 8.0 } };
         if group as usize == GROUPS { b.tactics.orders[side].fill(order); }
         else { b.tactics.orders[side][group as usize] = order; }
         true
@@ -217,11 +294,32 @@ impl World {
         b.tactics.orders[usize::from(tag != 0)].iter().map(|o| o.mode).collect()
     }
 
+    /// The army roster for the command screen: for each side (0 defenders, 1 attackers) and each soldier kind (0..N_UNITS), `ROSTER_STRIDE` numbers laid out as
+    /// [alive, hit points, most hit points, running away, steady after rallying, veterans, morale 0..1]. Index (side * N_UNITS + kind) * ROSTER_STRIDE.
+    pub fn battle_roster(&self) -> Vec<f32> {
+        let mut out = vec![0.0f32; 2 * N_UNITS * ROSTER_STRIDE];
+        let Some(b) = &self.battle else { return vec![]; };
+        let mut left = [0u32; 2]; for u in b.units.iter().filter(|u| u.alive) { left[u.side as usize] += 1; }
+        for (i, u) in b.units.iter().enumerate().filter(|(_, u)| u.alive && (u.kind as usize) < N_UNITS) {
+            let ratio = left[u.side as usize] as f32 / b.start_side[u.side as usize].max(1) as f32;
+            let r = b.rout.get(i).copied().unwrap_or(0.0);
+            let st = unit_stat(u);
+            let morale = if r > 0.0 { 0.0 } else { (1.0 - tactics::stress(b, i, (u.hp / st.hp).min(1.0), ratio, 0.0)).clamp(0.0, 1.0) };
+            let o = (u.side as usize * N_UNITS + u.kind as usize) * ROSTER_STRIDE;
+            out[o] += 1.0; out[o + 1] += u.hp.max(0.0); out[o + 2] += u.maxhp;
+            if r > 0.0 { out[o + 3] += 1.0; } else if r < 0.0 { out[o + 4] += 1.0; }
+            if tactics::is_veteran(u) { out[o + 5] += 1.0; }
+            out[o + 6] += morale;
+        }
+        for chunk in out.chunks_mut(ROSTER_STRIDE) { if chunk[0] > 0.0 { chunk[6] /= chunk[0]; } }
+        out
+    }
+
     /// Active orders on the requesting player's side: [group, mode, x, z] per order.
     pub fn battle_order_points(&self, tag: i32) -> Vec<f32> {
         let Some(b) = &self.battle else { return vec![]; };
         if b.bought || (tag != 0 && (tag != b.tag || b.lair >= 0)) { return vec![]; }
-        b.tactics.orders[usize::from(tag != 0)].iter().enumerate().filter(|(_, o)| o.mode != 0)
+        b.tactics.orders[usize::from(tag != 0)].iter().enumerate().filter(|(_, o)| (1..=FLANK).contains(&o.mode))
             .flat_map(|(group, o)| [group as f32, o.mode as f32, o.x, o.y]).collect()
     }
 }
@@ -251,5 +349,46 @@ impl World {
             false
         });
         b.tactics.strikes = strikes;
+    }
+}
+
+#[cfg(test)]
+mod stance_tests {
+    use super::*;
+
+    #[test]
+    fn stances_need_no_point_and_change_what_a_group_deals_and_takes() {
+        let mut w = World::new(1337, 0, 0);
+        assert!(w.begin_battle([2, 0, 0, 0, 0, 0], 0.0, 0));
+        assert!(w.battle_order(0, 4, AGGRESSIVE, 0.0, 0.0));
+        assert!(w.battle_order(0, 0, DEFENSIVE, 1e9, 1e9), "a stance has no point to check");
+        assert!(!w.battle_order(0, 0, DEFENSIVE + 1, 0.0, 0.0));
+        assert!(!w.battle_order(0, 0, HOLD, 1e9, 1e9), "a position order still must be on the map");
+        assert_eq!(w.battle_orders(0)[0], DEFENSIVE);
+        assert!(w.battle_order_points(0).is_empty() || w.battle_order_points(0).chunks(4).all(|p| (1.0..=4.0).contains(&p[1])), "stances leave no pin on the field");
+        assert!(stance_dealt(AGGRESSIVE) > 1.0 && stance_taken(AGGRESSIVE) > 1.0);
+        assert!(stance_dealt(DEFENSIVE) < 1.0 && stance_taken(DEFENSIVE) < 1.0 && stance_nerve(DEFENSIVE) > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+
+    #[test]
+    fn the_roster_counts_each_side_and_kind_with_hit_points_and_morale() {
+        let mut w = World::new(1337, 0, 0);
+        w.army = [3, 0, 0, 0, 0, 0];
+        assert!(w.battle_roster().is_empty());
+        assert!(w.begin_battle([2, 1, 0, 0, 0, 0], 0.0, 0));
+        let r = w.battle_roster();
+        assert_eq!(r.len(), 2 * N_UNITS * ROSTER_STRIDE);
+        let at = |side: usize, kind: usize| &r[(side * N_UNITS + kind) * ROSTER_STRIDE..][..ROSTER_STRIDE];
+        assert_eq!(at(1, 0)[0], 2.0);
+        assert_eq!(at(1, 1)[0], 1.0);
+        assert!(at(0, 0)[0] >= 3.0, "the army and the hall guard stand");
+        assert!(at(1, 0)[1] > 0.0 && at(1, 0)[1] <= at(1, 0)[2]);
+        assert!(at(0, 0)[6] > 0.9, "fresh troops are steady: {}", at(0, 0)[6]);
+        assert_eq!(at(1, 3)[0], 0.0);
     }
 }

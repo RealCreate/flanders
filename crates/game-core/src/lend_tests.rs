@@ -51,7 +51,7 @@ fn an_army_sent_to_a_raid_across_a_moat_gets_the_drawbridge_lowered_crosses_on_t
     assert_eq!(st(&w, di), DB_UP);
     w.army = [10, 4, 0, 0, 0, 0];
     let id = w.det_form(&[10, 4, 0, 0, 0, 0]); assert!(id > 0);
-    assert!(w.start_raid(std::f32::consts::FRAC_PI_2, &[8, 3, 0, 0, 0, 0], 0));
+    assert!(w.start_raid(std::f32::consts::FRAC_PI_2, &[10, 4, 0, 0, 0, 0], 0));
     assert_eq!(w.det_defend(id), 0);
     let (mut down_at, mut up_again, mut crossed, mut joined) = (None, None, false, false);
     let mut series = vec![];

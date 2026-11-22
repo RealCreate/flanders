@@ -106,7 +106,7 @@ fn a_road_snaps_onto_the_nodes_at_both_ends() {
 #[test]
 fn a_road_ending_at_another_road_joins_it() {
     let mut w = rich();
-    assert_eq!(w.lay_road(&[8, 0, 14, 4, 20, 4, 26, 0]), 0);
+    assert_eq!(w.lay_road(&[12, 0, 16, 4, 20, 4, 26, 0]), 0);
     let n = w.buildings.len();
     assert_eq!(w.lay_road(&[20, 14, 20, 9, 21, 6]), 0, "the second road");
     assert!(w.buildings.len() > n);
@@ -316,7 +316,7 @@ fn the_ground_across_a_road_is_as_high_as_its_middle() {
     for w in graded_villages() { for (s, l) in w.roads.iter().zip(&w.road_links) {
         if l.0 == l.1 { continue; }
         let (mx, my) = ((s[0] + s[3]) / 2.0, (s[1] + s[4]) / 2.0);
-        if w.buildings.iter().any(|b| b.kind != ROAD && (b.x - mx).hypot(b.y - my) < 13.0 + if b.kind == TOWN_HALL { 6.0 } else { 0.0 }) { continue; }   // (near a building the pad takes over)
+        if w.buildings.iter().any(|b| b.kind != ROAD && (b.x - mx).hypot(b.y - my) < 13.0 + if b.kind == TOWN_HALL { 8.0 } else { 0.0 }) { continue; }   // (near a building the pad takes over)
         let len = (s[3] - s[0]).hypot(s[4] - s[1]); if len < 0.2 { continue; }
         let (nx, ny) = (-(s[4] - s[1]) / len, (s[3] - s[0]) / len);
         let mid = (s[2] + s[5]) / 2.0;

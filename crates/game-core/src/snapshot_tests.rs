@@ -50,6 +50,6 @@ fn bad_bytes_are_refused() {
     let mut bytes = a.snapshot();
     assert!(world_restore(&[]).is_none());
     assert!(world_restore(b"nonsense, not a world").is_none());
-    let mut other = bytes.clone(); other[7] = b'9'; assert!(world_restore(&other).is_none(), "another layout version");
+    let mut other = bytes.clone(); other[7] = b'Z'; assert!(world_restore(&other).is_none(), "another layout version");
     bytes.truncate(bytes.len() / 2); assert!(world_restore(&bytes).is_none(), "cut short");
 }

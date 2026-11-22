@@ -60,6 +60,7 @@ export interface Handlers {
   toggleCoverage(): void;
   minimapClick(x: number, z: number): void;
   train(kind: number, n: number): void;
+  untrain(kind: number, n: number): void;
   research(id: number): void;
   bridgeShortcuts(on: boolean): void;
   attack(peerKey: string, units: number[]): void;
@@ -95,7 +96,7 @@ export interface Hud {
   /** Everybody's work, only filled while the work overview is open. */
   work?: { rows: WorkRow[]; totals: WorkTotals; problems?: Record<number, string> };
   winter?: number[];   // the core's winter_numbers()
-  army: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
+  army: number[]; vets?: number[]; queued: number[]; away: number[]; guards: number; barracks: number; wildlife: number;
   militaryTech: number; bridgeShortcuts: boolean;
 }
 
@@ -305,6 +306,8 @@ export class UI {
       <button type="button" class="tool-action" data-order="2" aria-pressed="false" title="Advance and focus on enemies near the point">Attack here</button>
       <button type="button" class="tool-action" data-order="3" aria-pressed="false" title="Break contact and regroup at a point">Fall back</button>
       <button type="button" class="tool-action" data-order="4" aria-pressed="false" title="Move around the enemy to the selected flank before engaging">Flank</button>
+      <button type="button" class="tool-action" data-order="5" aria-pressed="false" title="Stance: fight harder (+15% damage) but take 10% more, and look further for a fight">Aggressive</button>
+      <button type="button" class="tool-action" data-order="6" aria-pressed="false" title="Stance: fight tighter (-10% damage) and take 15% less; steadier nerve, less eager to chase">Defensive</button>
       <button type="button" class="tool-action" data-order="0" title="Clear the selected troop group's order">Clear order</button>
     </div>
     <div id="battle-acts" class="tool-row"></div>
@@ -868,8 +871,8 @@ export class UI {
       c.innerHTML = `<div class="ico">${unitIcon(u.id, 30)}</div><div><div class="nm"><span>${u.name}</span><span class="key">tier ${u.tier + 1}</span></div>
         <div class="ds">${u.desc}</div><div class="io">${bi('heart', 14)} ${u.hp} · ${bi('attack', 14)} ${u.dmg} · ${bi('archer', 14)} range ${u.range} · ${bi('shield', 14)} ${u.armor}</div>
         <div class="cost">${u.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${resIcon(r)} ${n}</span>`).join('')}</div>
-        <div class="btnrow" style="margin-top:6px"><button class="pbtn" data-train="1">Train 1</button><button class="pbtn" data-train="5">Train 5</button></div></div>`;
-      c.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-train]'); if (b) this.h.train(u.id, Number(b.dataset.train)); };
+        <div class="btnrow" style="margin-top:6px"><button class="pbtn" data-train="1">Train 1</button><button class="pbtn" data-train="5">Train 5</button><button class="pbtn" data-untrain="1" title="Take one out of the queue and get its cost back">Cancel 1</button></div></div>`;
+      c.onclick = e => { const t = e.target as HTMLElement, b = t.closest<HTMLElement>('[data-train]'); if (b) this.h.train(u.id, Number(b.dataset.train)); const x = t.closest<HTMLElement>('[data-untrain]'); if (x) this.h.untrain(u.id, Number(x.dataset.untrain)); };
       el.appendChild(c);
     });
   }
@@ -1140,7 +1143,7 @@ export class UI {
     }
     this.updateAffordability(h.stocks);
     // army tab
-    $('army-stats').innerHTML = h.army.map((n, i) => `<div class="stat"><b>${n}</b><span>${unitIcon(i, 16)} ${units[i].name}${h.queued[i] ? ` (+${h.queued[i]})` : ''}${h.away[i] ? ` · ${h.away[i]} away` : ''}</span></div>`).join('');
+    $('army-stats').innerHTML = h.army.map((n, i) => `<div class="stat"><b>${n}</b><span>${unitIcon(i, 16)} ${units[i].name}${h.vets?.[i] ? ` · ★${h.vets[i]}` : ''}${h.queued[i] ? ` (+${h.queued[i]})` : ''}${h.away[i] ? ` · ${h.away[i]} away` : ''}</span></div>`).join('');
     $('army-info').innerHTML = `${h.guards} guards defend your towers and hall for free. ` + (h.barracks < 0 ? '<b>Build a Barracks to train soldiers.</b>' : `Your barracks is tier ${h.barracks + 1}.`) + ` Soldiers eat grain.`;
     ($('army-bridging') as HTMLInputElement).checked = h.bridgeShortcuts;
     $('military-upgrades').querySelectorAll<HTMLButtonElement>('[data-research]').forEach(btn => {
@@ -1182,7 +1185,7 @@ export class UI {
     const sel = document.getElementById('atk-target') as HTMLSelectElement | null, rel = document.getElementById('dip-rel');
     if (sel && rel) {
       const show = () => { const r = rows.find(x => x.key === sel.value); rel.textContent = r ? `${r.name}: ${relWord(r.rel ?? 0)} (${r.rel ?? 0})${r.married ? ' · married into our house' : ''}${(r.treaties ?? 0) & 4 ? ' · allies' : ''}${(r.treaties ?? 0) & 2 ? ' · at peace' : ''}${(r.treaties ?? 0) & 1 ? ' · trade pact' : ''}` : ''; };
-      sel.onchange = show; show();
+      sel.onchange = () => { show(); this.showAttackMode(); }; show();
     }
   }
 
@@ -1192,9 +1195,10 @@ export class UI {
   private showAttackMode() {
     const go = document.getElementById('atk-sel') as HTMLButtonElement | null, hint = document.getElementById('atk-hint');
     if (!go || !hint) return;
-    const n = this.selectedArmies;
-    go.hidden = n === 0; go.innerHTML = `${bi('attack')} ${n > 1 ? `March the ${n} selected armies` : 'March the selected army'}`;
-    hint.textContent = n ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.';
+    const n = this.selectedArmies, sel = document.getElementById('atk-target') as HTMLSelectElement | null, row = this.peers.find(x => x.key === sel?.value);
+    const war = (row?.rel ?? 0) <= -60;   // armies march only on a village we have declared war on
+    go.hidden = n === 0 || !war; go.innerHTML = `${bi('attack')} ${n > 1 ? `March the ${n} selected armies` : 'March the selected army'}`;
+    hint.textContent = !n ? 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.' : war ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : `You are not at war with ${row?.name ?? 'them'}: declare war first, then your army can march on them.`;
   }
 
   /** Battle status, the click-to-focus shortcut, and the local bandits' payment details. */

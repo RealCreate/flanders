@@ -8,7 +8,8 @@ import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
 import init, { World, Ai, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_land_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names, military_upgrades } from './wasm/game_core.js';
-import { icon, type IconName } from './ui/icons';
+import { icon, unitIcon, type IconName } from './ui/icons';
+import { CommandScreen } from './ui/commandscreen';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
 import { parseRows, parseTotals, stepWant, parseProductionProblems, productionProblemText } from './workview';
 import { HighlightState, addCatalogKinds, stockSources, mergeSources, summarize, kindLine, tierText, STRIDE, ST_WAIT, ST_EXHAUSTED, ST_FULL, ST_RESERVE } from './stockhighlight';
@@ -76,7 +77,7 @@ import { compassWord } from './ui/compass';
 const GOLD = 8;   // the gold store (catalog GD)
 import { bribeOffer, bribeToast, bribeRefusal, BRIBE_CONSEQUENCE } from './bribe';
 import { roleOf, actionsFor, foeFocus, foeTarget, foeCentroid, edgeArrow, shouldAutoJump, foeNear, sallyUnits, newlyLent, drawnUp, isLent, DB_UP, DB_MANUAL_DOWN } from './defence';
-import { arrivalTime, crossingSummary, objectiveName, orderPins, parseRaidObjective, type BattlePin, type RaidObjective } from './battlefield';
+import { arrivalTime, crossingSummary, FIRST_STANCE, objectiveName, orderPins, parseRaidObjective, type BattlePin, type RaidObjective } from './battlefield';
 import { Identity, Room, tagOf, type Cmd, type Signed, type Hello } from './net/p2p';
 import { aiKey, aiName, pickLayouts, pickSites, raidRequests } from './pve';
 import { cleanName, parseCmd, Sequence } from './net/validate';
@@ -126,6 +127,7 @@ const ui: UI = new UI({
   toggleMute: () => { sound.setMuted(!sound.muted); ui.setMuteIcon(sound.muted); },
   minimapClick: (x, z) => rig?.focus(x, z),
   train: (k, n) => doTrain(k, n),
+  untrain: (k, n) => doUntrain(k, n),
   research: id => doResearch(id),
   bridgeShortcuts: on => { if (replay?.target === lv) { updateHud(); return; } lv.world.army_set_bridge_shortcuts(on); void commit({ op: 'armybridge', kind: Number(on) }); },
   attack: (key, u) => doAttack(key, u),
@@ -826,6 +828,13 @@ function doTrain(kind: number, n: number) {
   commit({ op: 'train', kind, x: n }); sound.train(); ui.toast(`${n} × ${units[kind].name} queued at the barracks.`, 'good'); lv.afterTick(); updateHud();
 }
 
+function doUntrain(kind: number, n: number) {
+  if (replay?.target === lv) return;
+  const n2 = Math.min(n, lv.world.queued()[kind] ?? 0);
+  if (n2 <= 0 || lv.world.train_cancel(kind, n2) !== 0) { ui.toast('Nothing of that kind is queued.', 'bad'); return; }
+  commit({ op: 'untrain', kind, x: n2 }); ui.toast(`${n2} × ${units[kind].name} taken out of the queue and refunded.`, 'info'); lv.afterTick(); updateHud();
+}
+
 function doResearch(id: number) {
   if (replay?.target === lv) return;
   const code = lv.world.military_research(id);
@@ -848,6 +857,7 @@ async function marchOn(id: number, key: string, r: Rival): Promise<boolean> {
 
 async function doAttack(key: string, u: number[]) {
   const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (!atWarWith(key)) { ui.toast(NOT_AT_WAR(r.name), 'bad'); return; }
   if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
   const id = lv.world.det_form(Uint32Array.from(u));
   if (!id) { ui.toast('You do not have that many soldiers in the barracks. To send an army you already have in the field, select it on the map first.', 'bad'); return; }
@@ -858,6 +868,7 @@ async function doAttack(key: string, u: number[]) {
 /** The armies you have selected march on the village. */
 async function doAttackSelected(key: string) {
   const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (!atWarWith(key)) { ui.toast(NOT_AT_WAR(r.name), 'bad'); return; }
   if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
   const ids = multiDets.length ? multiDets : selectedDet !== null ? [selectedDet] : [];
   if (!ids.length) { ui.toast('Select an army first.', 'info'); return; }
@@ -1561,6 +1572,10 @@ function afterLocalChange(focus?: number) {
   refreshTerrain(lv.world, box); if (box) settleTerrain(); lv.syncFull(); deposits?.attach(lv.world.buildings_flat()); lv.afterTick(); if (forestDirtyFlag) rebuildForest(true); updateSelection(); updateHud(); }
 
 /** How we stand with another village: feeling, marriage and treaties (1 trade pact, 2 peace, 4 alliance). */
+/** Armies may march only on a village we are at war with: declaring war drops the feeling to -80 or lower and ends every treaty. */
+const WAR_BELOW = -60;
+function atWarWith(key: string) { return relOf(key).rel <= WAR_BELOW; }
+const NOT_AT_WAR = (name: string) => `You are not at war with ${name}. Declare war on them in the Embassy first.`;
 function relOf(key: string) {
   const tag = tagOf(key), f = lv.world.relations_flat();
   for (let i = 0; i + 3 < f.length; i += 4) if (f[i] === tag) return { rel: f[i + 1], married: f[i + 2] === 1, treaties: f[i + 3] };
@@ -1591,7 +1606,7 @@ function updateHud() {
     tick: Number(w.tick()), stocks: Array.from(w.stocks()), rates, flow, kinds, food: Array.from(World.food_table()), foodReserveDays: w.food_reserve_days(), pop: w.population(), cap: w.capacity(), sick: w.sick(),
     reserves: Array.from(w.reserves()), canSetReserves: replay?.target !== lv,
     joy: w.happiness(), eff: w.efficiency(), jobs: w.jobs(), radius: w.build_radius(), buildings: w.building_count(), storage: w.storage(),
-    army: Array.from(w.army()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
+    army: Array.from(w.army()), vets: Array.from(w.army_veterans()), queued: Array.from(w.queued()), away: Array.from(w.away()), guards: w.guards(), barracks, wildlife: wildlife.count,
     militaryTech: w.military_tech(), bridgeShortcuts: w.army_bridge_shortcuts(),
     vitals: Array.from(w.vitals()), beds: w.hospital_beds(), devotion: w.devotion(), winter: Array.from(w.winter_numbers()),
     work: workRows ? { rows: workRows, totals: parseTotals(w.staffing_totals()), problems: Object.fromEntries(workProblems ?? []) } : undefined,
@@ -1680,7 +1695,7 @@ function setPendingBattleOrder(order: BattleOrder | null) {
 function chooseBattleOrder(village: Village, peer: string | null, group: number, mode: number) {
   if (replay?.target === village) return;
   const order = { village, peer, group, mode };
-  if (mode === 0) { setPendingBattleOrder(null); sendBattleOrder(order, 0, 0); return; }
+  if (mode === 0 || mode >= FIRST_STANCE) { setPendingBattleOrder(null); sendBattleOrder(order, 0, 0); return; }
   if (selectedKind !== null) selectKind(null);
   cancelMarchPreview();
   showRoute();
@@ -1701,13 +1716,17 @@ function sendBattleOrder(order: BattleOrder, x: number, y: number) {
     if (peer === null) void commit(command);
     battleBanner();
   }
-  if (mode !== 0) fx.burst(x, y, false);
+  if (mode !== 0 && mode < FIRST_STANCE) fx.burst(x, y, false);
   ui.toast(mode === 0 ? 'Order cleared.' : 'Battle order issued.', 'info');
   return true;
 }
 
 /** The red banner while a fight is on, for the first village with one: who attacks from where, which side you are on, a click to look at the attackers, and what you can do about it. The same
  *  options exist for both sides (see defence.ts). A raid on your own village also takes the camera there at once when "Jump to raiders" is on. */
+/** The army view over a battle (key K, or the Command screen button): made when first wanted. */
+let cmdScreen: CommandScreen | null = null;
+const commandScreen = () => cmdScreen ??= new CommandScreen(k => unitIcon(k, 16));
+
 function battleBanner() {
   const list: { v: Village; who: string; mine: boolean; key: string }[] = [{ v: lv, who: 'your village', mine: true, key: 'me' }, ...[...rivals.values()].map(r => ({ v: r.village, who: r.name + "'s village", mine: false, key: r.key }))];
   for (const { v, mine, key } of list) {   // every village is watched, including during the warning period
@@ -1791,12 +1810,15 @@ function battleBanner() {
       + (speed > 1 && role !== 'watch' ? ' · Normal speed during battle' : '');
     ui.battle(`${icon('attack', 18, { mono: true })} ${lair ? 'Battle at the lair' : `Battle at ${who}`}<small>${text}</small>${strip}${objectiveLine}${bribeLine}<small>${lair ? 'Your army' : 'Defenders'} ${d} · ${lair ? 'The lair' : 'Attackers'} ${a} · ${elapsed} · click to look at the ${lair ? 'fight' : 'attackers'}${role === 'defend' && !lair ? ' · right-click the raiders with an army selected to send it' : ''}</small>`,
       () => lookAtAttackers(v), greed === undefined ? undefined : { greed, offer, pay: doBribe });
+    if (role !== 'watch' && !lair) acts.push({ icon: 'army', label: cmdScreen?.active ? 'Village view' : 'Command screen', title: 'Swap the interface for an army view: both sides, health, morale and orders (K)', run: () => { commandScreen().toggle(); battleBanner(); } });
+    if (cmdScreen?.active) cmdScreen.update(w.battle_roster(), role === 'attack' ? 1 : 0, { mine: role === 'attack' ? 'Your army' : lair ? 'Your army' : 'Defenders', theirs: esc(lair ? 'The lair' : attacker) });
     const order = canOrder ? (group: number, mode: number) => chooseBattleOrder(v, mine ? null : key, group, mode) : undefined;
     ui.battleControls(acts, order, order ? w.battle_orders(mine ? 0 : myTag()) : undefined);
     return;
   }
   ui.battle(null);
   ui.battleControls();
+  cmdScreen?.set(false);
   setBattlefield([], null);
 }
 
@@ -2750,6 +2772,7 @@ function onAct(a: string) {
     return;
   }
   if (a === 'multi:upgrade') { multiUpgrade(); return; }
+  if (a === 'embassy:open') { openEmbassy(); return; }   // from the Army tab, where no building is selected
   if (selectedIdx === null) return;
   if (a === 'selwalls') { selectWallRun(selectedIdx); return; }
   if (a.startsWith('wk:')) {
@@ -3406,6 +3429,7 @@ function bindInput() {
       case 'nextArmy': { e.preventDefault(); const ids = lv.field.ids(); if (ids.length) { const i = ids.indexOf(selectedDet ?? -1); const id = ids[(i + 1) % ids.length], p = lv.field.position(id); selectDet(id); if (p) rig.focus(p.x, p.z); } break; }
       case 'haltArmy': multiDets.slice().forEach(id => detAction('halt', id)); break;
       case 'recallArmy': void orderArmies(multiDets.slice(), orderRecall); break;
+      case 'commandScreen': if (lv.world.battle_active()) { commandScreen().toggle(); battleBanner(); } break;
       case 'fullMap': ui.toggleMap(); break;
       case 'fullscreen': e.preventDefault(); toggleFullscreen(); break;
       case 'photo': e.preventDefault(); togglePhotoMode(renderer.domElement, () => perf.render(renderer, scene, rig.cam), t => ui.toast(t, 'info')); break;

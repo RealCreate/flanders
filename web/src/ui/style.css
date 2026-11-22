@@ -517,3 +517,33 @@ table.flowbld .pbtn { padding: 2px 8px; font-size: 12px; }
 .unitbar[hidden] { display: none; }
 .unitbar b { display: block; height: 100%; background: #62c04a; }
 .unitbar.foe b { background: #d4422a; }
+
+/* ---------- command screen (army view) ---------- */
+#cmd-screen { position: fixed; inset: 0; z-index: 6; pointer-events: none; font: 13px system-ui, sans-serif; color: #f1e4c3; }
+#cmd-screen[hidden] { display: none; }
+#cmd-screen h3 { margin: 0 0 6px; font-family: var(--f-display); letter-spacing: .08em; font-size: 14px; color: #e9c46a; }
+#cs-top { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 16px; padding: 8px 18px; background: #1d150de6; border: 1px solid #c9a24a; border-radius: 8px; pointer-events: auto; }
+#cs-left, #cs-right { position: absolute; top: 70px; width: 270px; max-height: calc(100vh - 220px); overflow: auto; padding: 10px 12px; background: #1d150de6; border: 1px solid #6b5536; border-radius: 8px; pointer-events: auto; }
+#cs-left { left: 12px; } #cs-right { right: 12px; border-color: #d9604e; }
+.cs-side { display: grid; grid-template-columns: auto auto; gap: 2px 10px; align-items: center; min-width: 150px; }
+.cs-side b { grid-column: 1 / -1; } .cs-side small { grid-column: 1 / -1; color: #ffb4a6; }
+.cs-side.theirs b { color: #ffb4a6; }
+.cs-vs { opacity: .6; font-family: var(--f-display); }
+.cs-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 5px 0; border-bottom: 1px solid #ffffff14; align-items: center; }
+.cs-name { display: flex; align-items: center; gap: 5px; } .cs-n { text-align: right; font-size: 15px; }
+.cs-meters { grid-column: 1 / -1; display: flex; gap: 6px; } .cs-flags { grid-column: 1 / -1; color: #ffb4a6; } .cs-flags:empty { display: none; }
+.cs-bar { flex: 1; height: 6px; background: #000a; border-radius: 3px; overflow: hidden; display: inline-block; min-width: 50px; }
+.cs-bar i { display: block; height: 100%; background: #6bbf59; } .cs-bar.warn i { background: #e0b84a; } .cs-bar.bad i { background: #d9604e; }
+.cs-empty { color: #b9a98a; margin: 0; }
+/* the army view replaces the village interface: the side panel, goals and top bar make way; the minimap and the battle controls stay */
+body.cmd-mode #ledger, body.cmd-mode #ledger-open, body.cmd-mode #topbar, body.cmd-mode #goals { display: none !important; }
+body.cmd-mode #tool-dock { left: 50%; bottom: 12px !important; width: calc(100vw - 24px); }
+body.cmd-mode #battle-controls { max-width: 100%; }
+body.cmd-mode #battle-orders { min-width: 0; justify-content: center; }
+@media (max-width: 900px) { #cs-left, #cs-right { width: 190px; } #cs-right { top: auto; bottom: 90px; } }
+/* keep the strength line and the panels clear of the battle banner, and let the order buttons wrap on a narrow window */
+body.cmd-mode #battle { top: 8px; }
+body.cmd-mode #cs-top { top: auto; bottom: 96px; }
+body.cmd-mode #cs-left, body.cmd-mode #cs-right { top: 150px; max-height: calc(100vh - 300px); }
+body.cmd-mode #battle-controls { flex-wrap: wrap; justify-content: center; }
+#battle-orders { flex-wrap: wrap; }

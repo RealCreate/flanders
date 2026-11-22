@@ -77,7 +77,7 @@ pub fn field_rects(kind: u8, tier: u8) -> Vec<(f32, f32, f32, f32)> {
 /// How far from a building's middle the ring of path round it runs.
 pub fn ring_radius(kind: u8, tier: u8) -> f32 {
     let rects = field_rects(kind, tier);
-    if rects.is_empty() { return net_radius_kt(kind, tier) + 1.2; }
+    if rects.is_empty() { return (net_radius_kt(kind, tier) + 1.2).max(match crate::compound::extent(kind, tier) { e if e > 0.0 => e + 2.0, _ => 0.0 }); }   // (a walled compound: out past its corner towers)
     // (and always out past the building's plot, the circle of its footprint: the road from the door leaves the plot where it meets the ring)
     (rects.iter().flat_map(|r| [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sx, sz)| (r.0 + sx * r.2).hypot(r.1 + sz * r.3))).fold(0.0f32, f32::max) + 1.6).max(crate::footprint(kind, tier) + 1.0)
 }
@@ -227,7 +227,7 @@ impl World {
         let obstacles = self.obst();
         if self.buildings.is_empty() { return Net::empty(obstacles); }
         let (mut bx0, mut by0, mut bx1, mut by1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for b in &self.buildings { bx0 = bx0.min(b.x); by0 = by0.min(b.y); bx1 = bx1.max(b.x); by1 = by1.max(b.y); }
+        for b in &self.buildings { let e = crate::compound::extent(b.kind, b.tier).max(0.0); bx0 = bx0.min(b.x - e); by0 = by0.min(b.y - e); bx1 = bx1.max(b.x + e); by1 = by1.max(b.y + e); }   // (a walled compound reaches out past its middle)
         let m = 16.0;
         // (the box is snapped to a 16-unit lattice, so that it stays the same while the village grows inside it and the ground heights below can be reused)
         let snap = |v: f32, up: bool| if up { (v / 16.0).ceil() * 16.0 } else { (v / 16.0).floor() * 16.0 };
@@ -268,7 +268,13 @@ impl World {
             let (j0, j1) = ((((y - r - y0) / RC).floor() as i32).max(0), (((y + r - y0) / RC).ceil() as i32).min(ny - 1));
             for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cxy(i, j); if (cx - x).powi(2) + (cy - y).powi(2) <= r * r { g[(j * nx + i) as usize] = true; } } }
         };
-        for q in &self.buildings {
+        let carve = |g: &mut [bool], x: f32, y: f32, r: f32| {
+            let (i0, i1) = ((((x - r - x0) / RC).floor() as i32).max(0), (((x + r - x0) / RC).ceil() as i32).min(nx - 1));
+            let (j0, j1) = ((((y - r - y0) / RC).floor() as i32).max(0), (((y + r - y0) / RC).ceil() as i32).min(ny - 1));
+            for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cxy(i, j); if (cx - x).powi(2) + (cy - y).powi(2) <= r * r { g[(j * nx + i) as usize] = false; } } }
+        };
+        let mut compounds: Vec<(usize, crate::compound::Compound)> = vec![];
+        for (qi, q) in self.buildings.iter().enumerate() {
             match q.kind {
                 GATE | WALL | FENCE => {}   // (pillars, shut doors and the runs of wall and fence are lines: see below)
                 MOAT | RIVER | RAISE | LOWER | ROAD => {}
@@ -288,7 +294,29 @@ impl World {
                     for (lx, lz, r) in [(2.4f32, -0.2f32, 1.6f32), (-1.25, 0.6, 0.55), (1.25, 0.6, 0.55)] { let (dx, dy) = crate::doors::to_world(q.rot, (lx, lz)); mark(&mut blocked, q.x + dx, q.y + dy, r); }
                 }
                 PLAZA => mark(&mut blocked, q.x, q.y, if q.opts & 4 != 0 { 1.3 } else { 0.4 }),   // a square is open ground (only its fountain is in the way)
-                _ => mark(&mut blocked, q.x, q.y, net_radius(q)),
+                _ => match crate::compound::compound(q.kind, q.tier) {
+                    Some(c) => {   // a walled compound: its walls, towers and buildings as they are drawn (and, shut, the doors of its gates); the paths inside it are cut free below
+                        let shut = self.compound_shut(q);
+                        for p in c.pieces.iter().chain(c.doors.iter().filter(|_| shut)) {
+                            let (a, e) = (crate::compound::at(q, (p.ax, p.az)), crate::compound::at(q, (p.bx, p.bz)));
+                            let st = ((e.0 - a.0).hypot(e.1 - a.1) / 0.5).ceil().max(1.0) as i32;
+                            for k in 0..=st { let t = k as f32 / st as f32; mark(&mut blocked, a.0 + (e.0 - a.0) * t, a.1 + (e.1 - a.1) * t, p.r + 0.5); }
+                        }
+                        compounds.push((qi, c));
+                    }
+                    None => mark(&mut blocked, q.x, q.y, net_radius(q)),
+                },
+            }
+        }
+        // the paths inside the compounds are walkable by design (the gates, the narrow ways between the halls): the cells along them are cut free of the marks of the walls beside them
+        // (an edge across a shut door is left as it is: the door stands there)
+        for (qi, c) in &compounds {
+            let q = &self.buildings[*qi]; let shut = self.compound_shut(q);
+            for &(ea, eb) in &c.edges {
+                let (pa, pb) = (crate::compound::at(q, c.nodes[ea]), crate::compound::at(q, c.nodes[eb]));
+                if shut && c.doors.iter().any(|d| { let (da, db) = (crate::compound::at(q, (d.ax, d.az)), crate::compound::at(q, (d.bx, d.bz))); crate::compound::crosses(pa, pb, da, db) }) { continue; }
+                let st = ((pb.0 - pa.0).hypot(pb.1 - pa.1) / 0.4).ceil().max(1.0) as i32;
+                for k in 0..=st { let t = k as f32 / st as f32; carve(&mut blocked, pa.0 + (pb.0 - pa.0) * t, pa.1 + (pb.1 - pa.1) * t, 0.72); }
             }
         }
         let (segs, doors) = self.wall_lines();
@@ -386,6 +414,16 @@ impl World {
             for q in 0..k {
                 let (a, c) = (ring[i][q], ring[i][(q + 1) % k]);
                 if a != u32::MAX && c != u32::MAX && net.clear(net.nodes[a as usize], net.nodes[c as usize], 0.0) { net.link(a, c, false); }
+            }
+            if let Some(cp) = compounds.iter().find(|(qi, _)| *qi == i).map(|(_, c)| c) {   // the paths inside a walled compound, from the ring at its exit to the doors of its halls
+                let ids: Vec<u32> = cp.nodes.iter().enumerate().map(|(k, &p)| {
+                    let w = crate::compound::at(b, p);
+                    if k == 0 && ring[i].first().is_some_and(|&id| id != u32::MAX) { ring[i][0] } else if net.ok_at(w.0, w.1) { net.add(w.0, w.1) } else { u32::MAX }
+                }).collect();
+                for &(ea, eb) in &cp.edges {
+                    let (a, c2) = (ids[ea], ids[eb]);
+                    if a != u32::MAX && c2 != u32::MAX && net.clear(net.nodes[a as usize], net.nodes[c2 as usize], 0.0) { net.link(a, c2, false); }
+                }
             }
         }
         // the roads the player laid: a node at every point of the curve (the pieces and the samples between them), joined as road edges, so people and soldiers prefer them; the end of a road

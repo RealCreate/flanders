@@ -90,3 +90,21 @@ fn it_raids_a_target_when_strong() {
     }
     assert!(raided >= 1, "the computer never marched on its enemy");
 }
+
+#[test]
+fn the_computer_trains_what_its_army_lacks_and_answers_heavy_raiders() {
+    let mut w = World::new(11, 0, 0);
+    w.stock = [3000; N_RES];
+    // an army of spearmen only: the next recruit is not another spearman
+    w.army = [12, 0, 0, 0, 0, 0];
+    let k = crate::ai::Ai::wanted_kind_for_tests(&w, 1).unwrap();
+    assert_ne!(k, 0, "balance: {k}");
+    // against plated raiders the AI leans away from archers
+    w.army = [4, 2, 4, 3, 0, 0];
+    w.report = vec![1, 1, 0, 0, 0, 0, 0, 0, 6, 3, 0, 0];
+    let heavy = crate::ai::Ai::wanted_kind_for_tests(&w, 2).unwrap();
+    w.report = vec![1, 1, 0, 0, 0, 0, 6, 6, 0, 0, 0, 0];
+    let light = crate::ai::Ai::wanted_kind_for_tests(&w, 2).unwrap();
+    assert!(heavy != 1, "no more archers against plate: {heavy}");
+    assert_eq!(light, 1, "archers against light raiders");
+}

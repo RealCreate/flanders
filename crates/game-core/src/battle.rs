@@ -53,6 +53,12 @@ pub const BOULDER_REACH: f32 = 12.0;
 pub const LAIR_SECS: f32 = 200.0;
 
 /// How hard a ram hits what it is set against.
+/// A routed soldier whose side is still above `RALLY_SIDE` of its strength runs for `RALLY_FLAG`+... seconds (the flag marks it) and comes back if no enemy is within `RALLY_CLEAR`.
+const RALLY_FLAG: f32 = 100.0;
+const RALLY_SIDE: f32 = 0.4;
+const RALLY_CLEAR: f32 = 14.0;
+const RALLY_STEADY: f32 = 15.0;
+
 fn ram_mult(kind: u8) -> f32 { match kind { GATE => RAM_VS_GATE, WALL | FENCE => RAM_VS_WALL, _ => RAM_VS_OTHER } }
 
 pub fn max_hp(kind: u8, tier: u8) -> f32 {
@@ -153,6 +159,14 @@ impl World {
                 j += 1;
             }
         }
+        // veterans of earlier fights stand in the ranks: more hit points, a harder blow
+        for kind in 0..NK {
+            let mut n = self.vets[kind].min(self.army[kind]);
+            for u in units.iter_mut().filter(|u| u.side == 0 && u.from_army && u.kind as usize == kind) {
+                if n == 0 { break; }
+                u.maxhp = UNITS[kind].hp * tactics::VET_HP; u.hp = u.maxhp; n -= 1;
+            }
+        }
         let mut guards: Vec<(f32, f32, u8, u32)> = vec![];
         for b in &self.buildings {
             if matches!(b.kind, TOWER | KEEP) && b.garrison > 0 { guards.push((b.x, b.y, 1, b.garrison as u32)); }
@@ -208,8 +222,9 @@ impl World {
         let boss = b.units[j].boss;
         let plate = if boss > 0 && !siege { let bd = &BOSSES[(boss - 1) as usize]; if bd.heavy > 0.0 && dmg < bd.heavy { bd.soft } else { 1.0 } } else { 1.0 };
         let tech = b.tactics.tech_for(&b.units[j]);
+        let stance = tactics::stance_taken(b.tactics.order_for(&b.units[j], false).mode);
         let armor = st.armor + if tech & tactics::PADDED_ARMOR != 0 { 1.0 } else { 0.0 } + if tech & tactics::MAIL_ARMOR != 0 { 1.4 } else { 0.0 };
-        let d = (dmg * (1.0 - armor * 0.1)).max(1.0) * plate * if b.units[j].elev > 0.0 { 0.8 } else { 1.0 } * if b.units[j].wading { WADE_DAMAGE } else { 1.0 };
+        let d = (dmg * (1.0 - armor * 0.1)).max(1.0) * plate * if b.units[j].elev > 0.0 { 0.8 } else { 1.0 } * if b.units[j].wading { WADE_DAMAGE } else { 1.0 } * stance;
         b.units[j].hp -= d;
         if boss > 0 && b.units[j].phase == 0 && b.units[j].hp > 0.0 && b.units[j].hp < b.units[j].maxhp * BOSSES[(boss - 1) as usize].rage_at { b.units[j].phase = 1; }
         if b.units[j].hp <= 0.0 && b.units[j].alive {
@@ -371,7 +386,16 @@ impl World {
             if u.kind == 4 && tech & tactics::SIEGE_SLINGS != 0 { stats.range *= 1.2; stats.cd *= 0.85; }
             let ud = &stats;
             // morale: a unit running away does not fight; once clear of the field it is gone (alive, but out of the battle)
+            // one of ours caught in the water (a deck drawn up under him): he scrambles back towards the hall until he is on dry ground
+            if u.side == 0 && u.elev <= 0.0 && !tower_guards[i] && self.own_wet(&b, &wet, &cr, u.x, u.y) {
+                let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
+                let (dx, dy) = (hx - u.x, hy - u.y); let d = dx.hypot(dy).max(0.1);
+                b.units[i].x = u.x + dx / d * ud.speed * dt; b.units[i].y = u.y + dy / d * ud.speed * dt;
+                continue;
+            }
+            if b.rout[i] < 0.0 { b.rout[i] = (b.rout[i] + dt).min(0.0); }   // a rallied soldier is steady for a while
             if b.rout[i] > 0.0 {
+                let was = b.rout[i];
                 b.rout[i] -= dt;
                 let (mut best, mut bd) = (usize::MAX, f32::MAX);
                 for j in 0..n { if b.units[j].alive && b.units[j].side != u.side { let d = (b.units[j].x - u.x).powi(2) + (b.units[j].y - u.y).powi(2); if d < bd { bd = d; best = j; } } }
@@ -382,17 +406,27 @@ impl World {
                     if u.side == 1 && u.wading { self.move_attacker(&mut b, i, (dx, dy), step, &bars, &wet); }
                     else {
                         let (x, y) = (u.x + dx * step, u.y + dy * step);
-                        if u.side == 1 || !self.own_wet(&b, &wet, &cr, x, y) { (b.units[i].x, b.units[i].y) = (x, y); }
+                        if u.side == 1 || (!self.own_wet(&b, &wet, &cr, x, y) && self.own_line_dry(&b, &wet, &cr, (u.x, u.y), (x, y), 0.0)) { (b.units[i].x, b.units[i].y) = (x, y); }
                         b.units[i].face = dy.atan2(dx);
                     }
+                }
+                // a soldier whose side still holds together (flagged above RALLY_FLAG) may come back to the line once clear of the enemy
+                if was > RALLY_FLAG && b.rout[i] <= RALLY_FLAG {
+                    if bd > RALLY_CLEAR * RALLY_CLEAR { b.rout[i] = -RALLY_STEADY; } else { b.rout[i] = 3.0; }
+                    continue;
                 }
                 if b.rout[i] <= 0.0 { b.units[i].alive = false; b.units[i].escaped = true; b.fled[u.side as usize] += 1; if u.side == 1 && (u.kind as usize) < NK { b.fled_kinds[u.kind as usize] += 1; } }
                 continue;
             }
-            if !tower_guards[i] && u.kind != 4 && u.kind != 3 && u.kind != RAM && u.boss == 0 && !(u.held && u.pelev > 0.0) {
+            if b.rout[i] == 0.0 && !tower_guards[i] && u.kind != 4 && u.kind != RAM && u.boss == 0 && !(u.held && u.pelev > 0.0) {
                 let hpf = u.hp / ud.hp;
-                let broken = if u.side == 1 { let limit = if b.tag == 0 { 0.6 } else { 0.45 }; (ratio[1] < limit && hpf < 0.5 && self.rf() < 0.03) || (ratio[1] < 0.3 && self.rf() < 0.02) } else { ratio[0] < if self.hero.is_some() { 0.15 } else { 0.3 } && hpf < 0.4 && self.rf() < 0.02 };
-                if broken { b.rout[i] = 7.0; continue; }
+                let knight = u.kind == 3;   // riders break late, and only when they are hurt
+                if ratio[u.side as usize] < 0.7 && (hpf < if knight { 0.35 } else { 0.5 } || (u.side == 1 && ratio[1] < 0.35)) {
+                    let steadied = if u.side == 0 { (if self.hero.is_some() { 0.25 } else { 0.0 }) + self.perks().banner_pct as f32 / 100.0 } else if b.units.iter().any(|l| l.boss > 0 && l.alive && (l.x - u.x).powi(2) + (l.y - u.y).powi(2) < 24.0 * 24.0) { 0.3 } else { 0.0 };
+                    let nerve = tactics::stress(&b, i, hpf, ratio[u.side as usize], steadied + if knight { 0.2 } else { 0.0 } + tactics::stance_nerve(b.tactics.order_for(&u, false).mode));
+                    let chance = tactics::break_chance(nerve) * if u.side == 0 && b.tag == 0 { 0.7 } else { 1.0 };
+                    if chance > 0.0 && self.rf() < chance { b.rout[i] = if ratio[u.side as usize] >= RALLY_SIDE { RALLY_FLAG + 7.0 } else { 7.0 }; continue; }
+                }
             }
             let haste = if u.side == 1 && u.boss == 0 { horns.iter().filter(|h| (h[0] - u.x).powi(2) + (h[1] - u.y).powi(2) < h[2] * h[2]).map(|h| h[3]).fold(0.0f32, f32::max) } else { 0.0 };   // the war horn: the escort recovers faster from each swing
             b.units[i].cd = (u.cd - dt * (1.0 + haste)).max(0.0);
@@ -426,7 +460,7 @@ impl World {
             let ordered = (order.x, order.y);
             let distance_to_order = (ordered.0 - u.x).hypot(ordered.1 - u.y);
             if deploying {
-                if order.mode != 0 && distance_to_order > 3.0 {
+                if (1..=tactics::FLANK).contains(&order.mode) && distance_to_order > 3.0 {
                     let step = (ud.speed * dt).min(distance_to_order);
                     if u.side == 0 { self.own_walk(&mut b, i, ordered.0, ordered.1, step, &wet, &cr, &mut want); }
                     else { self.move_attacker(&mut b, i, ((ordered.0 - u.x) / distance_to_order, (ordered.1 - u.y) / distance_to_order), step, &bars, &wet); }
@@ -455,7 +489,7 @@ impl World {
             let u = b.units[i].clone();
             if u.held && u.pelev > 0.0 { let (dx, dy) = (u.hx - u.x, u.hy - u.y); b.units[i].elev = if (dx * dx + dy * dy).sqrt() < 1.8 { u.pelev } else { 0.0 }; }
             let rng = if tower_guard { radii::TOWER_RANGE } else if b.units[i].elev > 0.0 { ud.range * radii::WALL_HEIGHT_RANGE } else { ud.range };
-            let aggro = if tower_guard { rng } else if u.side == 1 { 26.0 } else if u.held { rng.max(ud.range + 5.0) } else { 34.0 };
+            let aggro = if tower_guard { rng } else { (if u.side == 1 { 26.0 } else if u.held { rng.max(ud.range + 5.0) } else { 34.0 }) * tactics::stance_reach(order.mode) };
             let pinned = (tower_guard || b.units[i].elev > 0.0) && d_enemy > rng;
             let move_to_order = match order.mode {
                 tactics::FALL_BACK => distance_to_order > 5.0,
@@ -515,7 +549,7 @@ impl World {
                         let hit = !ranged || self.rf() < if b.units[best].wading { WADE_HIT } else { HIT_CHANCE };
                         if hit {
                             let pace = if !tower_guard && u.boss == 0 && b.units[best].boss == 0 { 0.8 } else { 1.0 };
-                            let dmg = ud.dmg * charge * weapon * rear * pace * if u.side == 0 { hero_mult } else if u.soak > 0.0 { SOAK_DAMAGE } else { 1.0 };
+                            let dmg = ud.dmg * charge * weapon * rear * pace * tactics::counter(&u, &b.units[best]) * tactics::rank(&u) * tactics::stance_dealt(order.mode) * if u.side == 0 { hero_mult } else if u.soak > 0.0 { SOAK_DAMAGE } else { 1.0 };
                             let (at, reach) = if ranged { ((d_enemy / 30.0).max(0.35), 1.7) } else { (0.5, rng + 0.65) };
                             b.tactics.strikes.push(Strike { attacker: i, target: best, at: b.t + at, dmg, x: tx, y: ty, reach, kind: ranged as u8, splash: 0.0 });
                         }
@@ -1014,6 +1048,7 @@ impl World {
         let mut fell = [0u32; NK];
         for u in b.units.iter().filter(|u| u.side == 0 && u.from_army && !u.alive && (u.kind as usize) < NK) { fell[u.kind as usize] += 1; }
         for k in 0..NK { self.army[k] = self.army[k].saturating_sub(fell[k]); }
+        self.promote_veterans(&b, won);
         // archers who fell in a tower are gone from its garrison
         for t in self.buildings.iter_mut().filter(|t| !lair && matches!(t.kind, TOWER | KEEP)) {
             let alive = b.units.iter().filter(|u| u.side == 0 && u.kind == 1 && !u.from_army && u.alive && (u.hx - t.x).abs() < 0.01 && (u.hy - t.y).abs() < 0.01).count() as u8;
@@ -1213,17 +1248,55 @@ impl World {
         0
     }
 
-    /// Barracks turn queued recruits into soldiers.
+    /// Take recruits out of the queue: the cost comes back whole and the men return to the village.
+    pub(crate) fn try_train_cancel(&mut self, kind: u8, n: u32) -> i32 {
+        if kind as usize >= NK || n == 0 || n > self.queue[kind as usize] { return -1; }
+        for &(r, c) in UNITS[kind as usize].cost { self.stock[r as usize] += c * n as i32; }
+        self.queue[kind as usize] -= n;
+        if self.queue[kind as usize] == 0 { self.train_acc[kind as usize] = 0; }
+        let back = n.min(self.enlisted); self.enlisted -= back; self.population += back;
+        0
+    }
+
+    /// Soldiers who came through a won fight may earn their spurs: a few of the standing army's survivors (one, and one more for every four raiders killed) become veterans.
+    pub(crate) fn promote_veterans(&mut self, b: &Battle, won: bool) {
+        for k in 0..NK {
+            let lost = b.units.iter().filter(|u| u.side == 0 && u.from_army && !u.alive && !u.escaped && u.kind as usize == k && tactics::is_veteran(u)).count() as u32;
+            self.vets[k] = self.vets[k].saturating_sub(lost);
+        }
+        if won && !b.bought {
+            let mut left = (1 + b.atk_dead / 4).min(6);
+            let mut fought = [0u32; NK];
+            for u in b.units.iter().filter(|u| u.side == 0 && u.from_army && u.alive && (u.kind as usize) < NK) { fought[u.kind as usize] += 1; }
+            let start = (self.tick % NK as u64) as usize;
+            for step in 0..NK * 6 {
+                if left == 0 { break; }
+                let k = (start + step) % NK;
+                if self.vets[k] < fought[k].min(self.army[k]) { self.vets[k] += 1; left -= 1; }
+            }
+        }
+        for k in 0..NK { self.vets[k] = self.vets[k].min(self.army[k]); }
+    }
+
+    /// Barracks turn queued recruits into soldiers, every queued kind at once: the drill is shared between them.
     pub(crate) fn training_step(&mut self) {
+        for k in 0..NK { self.vets[k] = self.vets[k].min(self.army[k]); }
         let effort: u32 = self.buildings.iter().filter(|b| b.kind == BARRACKS && b.staff > 0).map(|b| b.tier as u32 + 1).sum();
         if effort == 0 { return; }
         let effort = effort + effort * self.perks().train_pct / 100 + if self.tick % 4 < (effort * self.perks().train_pct % 100 / 25) as u64 { 1 } else { 0 };   // training dummies: faster drill (the remainder is spread over the ticks)
-        let Some(k) = (0..NK).find(|&k| self.queue[k] > 0) else { self.train_prog = 0; return };
-        self.train_prog += effort;
-        if self.train_prog >= UNITS[k].time {
-            self.train_prog -= UNITS[k].time;
-            self.queue[k] -= 1; self.army[k] += 1;
-            self.push_event(EV_TRAINED, k as i32, 0);
+        let kinds: Vec<usize> = (0..NK).filter(|&k| self.queue[k] > 0).collect();
+        if kinds.is_empty() { self.train_prog = 0; return; }
+        if self.train_prog > 0 { self.train_acc[kinds[0]] += self.train_prog; self.train_prog = 0; }   // drill begun before the queues ran side by side
+        let m = kinds.len() as u32;
+        for (n, &k) in kinds.iter().enumerate() {
+            let share = effort / m + if ((n as u64 + self.tick) % u64::from(m)) < u64::from(effort % m) { 1 } else { 0 };
+            self.train_acc[k] += share;
+            while self.queue[k] > 0 && self.train_acc[k] >= UNITS[k].time {
+                self.train_acc[k] -= UNITS[k].time;
+                self.queue[k] -= 1; self.army[k] += 1;
+                self.push_event(EV_TRAINED, k as i32, 0);
+            }
+            if self.queue[k] == 0 { self.train_acc[k] = 0; }
         }
     }
 }

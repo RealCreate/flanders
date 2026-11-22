@@ -338,3 +338,43 @@ fn rams_are_trained_in_a_good_barracks_and_listed_with_the_other_soldiers() {
     assert_eq!(w.det_flat()[3..8].iter().sum::<f32>(), 0.0);
     assert_eq!(w.det_flat()[16], 2.0, "the ram count is the last field of an army");
 }
+
+#[test]
+fn every_queued_kind_is_drilled_at_once_and_a_cancelled_order_is_refunded() {
+    let mut w = World::new(1337, 0, 0);
+    w.stock = [3000; N_RES]; w.population = 60;
+    let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
+    put_t(&mut w, BARRACKS, 3, hx - 14.0, hy + 14.0);
+    w.buildings.last_mut().unwrap().staff = 1;
+    assert_eq!(w.train(0, 6), 0); assert_eq!(w.train(1, 6), 0);
+    let before = w.stock;
+    for _ in 0..12 { w.step(); w.stock = before; }
+    assert!(w.army()[0] > 0 && w.army()[1] > 0, "both queues make progress together: {:?}", w.army());
+    assert!(w.queued()[0] > 0 && w.queued()[1] > 0);
+    let (queued, pop) = (w.queued()[0], w.population);
+    w.stock = [0; N_RES];
+    assert_eq!(w.train_cancel(0, queued + 1), -1, "cannot cancel more than is queued");
+    assert_eq!(w.train_cancel(0, queued), 0);
+    assert_eq!(w.queued()[0], 0);
+    assert_eq!(w.population, pop + queued, "the recruits go back to the village");
+    for &(r, c) in UNITS[0].cost { assert_eq!(w.stock[r as usize], c * queued as i32, "the cost comes back"); }
+}
+
+#[test]
+fn soldiers_who_win_a_fight_may_become_veterans_who_are_saved_and_fight_better() {
+    let mut w = World::new(1337, 0, 0);
+    w.stock = [3000; N_RES]; w.population = 40;
+    w.army = [10, 0, 0, 0, 0, 0];
+    assert!(w.begin_battle([2, 0, 0, 0, 0, 0], 0.0, 0));
+    run(&mut w, 170);
+    assert!(!w.battle_active());
+    let vets = w.army_veterans();
+    assert!(vets[0] >= 1 && vets[0] <= w.army()[0], "a won fight makes veterans among the survivors: {vets:?} of {:?}", w.army());
+    let back = world_restore(&w.snapshot()).expect("a snapshot restores");
+    assert_eq!(back.army_veterans(), vets);
+    assert_eq!(back.state_hash_parts(), w.state_hash_parts());
+    assert!(w.begin_battle([1, 0, 0, 0, 0, 0], 0.0, 0));
+    let b = w.battle.as_ref().unwrap();
+    let vet_units = b.units.iter().filter(|u| u.side == 0 && u.from_army && tactics::is_veteran(u)).count() as u32;
+    assert_eq!(vet_units, vets[0].min(w.army()[0]));
+}

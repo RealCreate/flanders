@@ -16,3 +16,6 @@ graphify-out/graph.json
 graphify-out/manifest.json
 graphify-out/cache/stat-index.json
 graphify-out/*
+
+**/graphify-out/
+.vite/

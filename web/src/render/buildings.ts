@@ -688,14 +688,39 @@ const house: Model = b => {
 
 // The central hall is the heart of the village: a palisaded longhall, a timber manor, a Flemish cloth hall with belfry,
 // and finally a castle.
+/** The wall round the town hall of the lower tiers, with an opening at the front (+z): a ring of sharpened stakes leaning outwards, tied with a rail (the first tier), planks (the second) and, at the
+ *  top of the three, a low dressed-stone wall with iron-tipped railings. `r` is its radius; the stakes lean out by `lean` and their tips are sharpened. */
+function hallWall(b: B, t: number, r: number) {
+  const m = M(), gap = 2.3 / r, lean = 0.2, n = Math.round([30, 36, 40][t]), h = [2.2, 2.5, 1.1][t];
+  const stake = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + 0.07; if (Math.abs(((a + Math.PI * 2) % (Math.PI * 2)) - Math.PI / 2) < gap) continue;
+    const c = Math.cos(a), s = Math.sin(a), tall = h * (0.9 + 0.2 * ((i * 7) % 5) / 4);
+    if (t === 2) {   // the stone wall: a short piece of wall between every two railings, turned to follow the ring
+      const w = (Math.PI * 2 * r) / n + 0.05;
+      b.box(w, h, 0.55, m.stone, c * r, 0, s * r, -a + Math.PI / 2); b.box(w * 0.98, 0.2, 0.75, m.darkstone, c * r, h, s * r, -a + Math.PI / 2);
+      if (i % 2 === 0) { b.box(0.14, 0.9, 0.14, m.iron, c * r, h + 0.2, s * r); b.cone(0.13, 0.3, m.iron, c * r, h + 1.1, s * r, 4); }
+      continue;
+    }
+    const post = b.cyl(0.17, 0.22, tall, m.log, 0, 0, 0, 7), tip = b.cone(0.17, 0.55, m.log, 0, 0, 0, 7);
+    stake.set(s, 0, -c);   // (the axis that tips the post towards the outside)
+    for (const [o, y] of [[post, tall / 2], [tip, tall + 0.275]] as const) { o.quaternion.setFromAxisAngle(stake, lean); o.position.set(c * (r + Math.sin(lean) * y), Math.cos(lean) * y, s * (r + Math.sin(lean) * y)); }
+  }
+  if (t < 2) {   // a rail tying the stakes together, in straight pieces between them, and a taller post either side of the opening
+    const rail = (a0: number, a1: number, y: number) => { const x0 = Math.cos(a0) * r, z0 = Math.sin(a0) * r, x1 = Math.cos(a1) * r, z1 = Math.sin(a1) * r; b.box(Math.hypot(x1 - x0, z1 - z0), 0.1, 0.12, m.darkwood, (x0 + x1) / 2, y, (z0 + z1) / 2, -Math.atan2(z1 - z0, x1 - x0)); };
+    for (let k = 0; k < 28; k++) { const a0 = gap + Math.PI / 2 + (k / 28) * (Math.PI * 2 - 2 * gap), a1 = gap + Math.PI / 2 + ((k + 1) / 28) * (Math.PI * 2 - 2 * gap); rail(a0, a1, 0.9); if (t === 1) rail(a0, a1, 1.7); }
+  }
+  for (const sx of [-1, 1]) { const a = Math.PI / 2 + sx * (gap + 0.04); b.cyl(0.22, 0.26, [2.9, 3.2, 2.0][t], m.darkwood, Math.cos(a) * r, 0, Math.sin(a) * r, 8); b.sphere(0.2, m.iron, Math.cos(a) * r, [2.9, 3.2, 2.0][t] + 0.15, Math.sin(a) * r); }
+}
+
 const townhall: Model = b => {
   const t = b.t, m = M();
   if (t === 0) {
     b.box(9, 3, 5.4, m.wood, 0, 0, 0); b.gable(9, 5.4, 3.2, m.thatch, 0, 3, 0, 0.8);
     b.box(1.4, 2.2, 0.15, m.door, 0, 0, 2.75); for (const x of [-3, -1.5, 1.5, 3]) b.window(x, 1.8, 2.75);
     b.smoke.push(new THREE.Vector3(2.5, 6.2, -0.5)); b.smoke.push(new THREE.Vector3(-2.5, 6.2, -0.5));
-    for (let i = 0; i < 34; i++) { const a = (i / 34) * Math.PI * 2 + 0.1; if (Math.abs(((a + Math.PI * 2) % (Math.PI * 2)) - Math.PI / 2) < 0.28) continue; b.cyl(0.2, 0.22, 2.3, m.log, Math.cos(a) * 6.3, 0, Math.sin(a) * 6.3, 6); b.cone(0.2, 0.5, m.log, Math.cos(a) * 6.3, 2.3, Math.sin(a) * 6.3, 6); }
-    for (const x of [-5.3, 5.3]) b.cyl(0.7, 0.8, 0.9, m.hay, x, 0, -4.2, 10);
+    hallWall(b, 0, 7.0);
+    for (const x of [-5.3, 5.3]) b.cyl(0.7, 0.8, 0.9, m.hay, x * 0.85, 0, -3.8, 10);
     b.flag(-2.8, 6.05, 0, 3.3, 2.3);
   } else if (t === 1) {
     b.box(9.4, 3.6, 5.6, m.timber, 0, 0, 0); b.box(9.5, 0.25, 5.7, m.darkwood, 0, 3.4, 0); b.joists(9.4, 3.2, 2.95, 9, 1); b.joists(9.4, 3.2, 2.95, 9, -1); b.gable(9.4, 5.6, 3.1, m.tile, 0, 3.6, 0, 0.7);
@@ -703,7 +728,7 @@ const townhall: Model = b => {
     b.box(1.4, 2.3, 0.15, m.door, 0, 0, 2.85); for (const x of [-3.2, -1.6, 1.6]) { b.window(x, 2.0, 2.88); b.shutters(x, 2.0, 2.9, m.shutterBlue, 0, 0.5); }
     b.cyl(1.3, 1.4, 5.8, m.stone, -4.2, 0, 2.8, 14); b.cone(1.7, 2.7, m.slate, -4.2, 5.8, 2.8, 14);
     b.chimney(2.4, 5.6, -1.2, 1.6); b.flag(-4.2, 8.5, 2.8, 2.8, 2.3);
-    for (let i = 0; i < 22; i++) { const a = (i / 22) * Math.PI * 2; if (Math.abs(a - Math.PI / 2) < 0.4) continue; b.box(0.18, 1.1, 0.18, m.darkwood, Math.cos(a) * 6.6, 0, Math.sin(a) * 6.6); }
+    hallWall(b, 1, 9.2);
   } else if (t === 2) {
     // Flemish cloth hall: arcaded ground floor, stepped gables, central belfry
     b.box(12, 0.5, 6.4, m.stone, 0, -0.1, 0);
@@ -722,6 +747,7 @@ const townhall: Model = b => {
     b.cyl(0.65, 0.65, 0.12, m.gold, 0, 8.6, 1.33, 16).rotation.x = Math.PI / 2;   // clock face
     b.flag(0, 17.9, -0.3, 3, 2.5);
     b.flag(-5.2, 5.6, 1.0, 2.4); b.flag(5.2, 5.6, 1.0, 2.4);
+    hallWall(b, 2, 11.2);
   } else {
     // The Castle: a vast concentric fortress with a palace inside, in the manner of Harlech (curtain wall, drum towers, gatehouse, great hall, bakehouse, stables, wells and gardens
     // in the wards) and Blenheim (a palace of a great hall between two wings, corner pavilions, courts). Outer curtain 44 x 38 with sixteen towers; a barbican and a bridge in front (+z);
@@ -733,6 +759,15 @@ const townhall: Model = b => {
     const bloom = [0xe04a5a, 0xf2c14e, 0xf0f0f0, 0xd070d0], sack = new THREE.MeshStandardMaterial({ color: 0xcdb98a, roughness: 1 });
     const awn = [new THREE.MeshStandardMaterial({ color: 0xb03a2e, roughness: 1 }), new THREE.MeshStandardMaterial({ color: 0xe8e0cc, roughness: 1 })];
     const merlons = (x0: number, z0: number, x1: number, z1: number, y: number, step = 2.2) => { const n = Math.max(2, Math.round(Math.hypot(x1 - x0, z1 - z0) / step)); for (let i = 0; i < n; i++) { const f = (i + 0.5) / n; b.box(0.7, 0.8, 0.7, m.stone, x0 + (x1 - x0) * f, y, z0 + (z1 - z0) * f); } };
+    // the doors of the two gates: two leaves hinged at the sides of the passage, standing open (swung in against the walls) and shutting while a battle is on (see `Effects.update`)
+    const leaves = (hinge: number, z: number, h: number, th: number, mat: THREE.Material, bars: number[] = []) => {
+      for (const s of [-1, 1]) {
+        const leaf = new THREE.Group(); leaf.position.set(s * hinge, 0, z); leaf.userData.gate = true; leaf.userData.open = -s * Math.PI / 2; leaf.rotation.y = leaf.userData.open;
+        const w = hinge, plank = new THREE.Mesh(new THREE.BoxGeometry(w, h, th), mat); plank.position.set(-s * w / 2, h / 2, 0); plank.castShadow = plank.receiveShadow = true; leaf.add(plank);
+        for (const x of bars) if (Math.sign(x) === s || (x === 0 && s > 0)) { const bar = new THREE.Mesh(new THREE.BoxGeometry(0.12, h, 0.2), m.iron); bar.position.set(x - s * hinge, h / 2, 0.2); bar.castShadow = true; leaf.add(bar); }
+        b.g.add(leaf); b.deck.push(leaf);
+      }
+    };
     const slit = (x: number, y: number, z: number, ry = 0) => { b.box(0.16, 0.9, 0.12, black, x, y, z, ry); };
     const round = (x: number, z: number, r: number, h: number, roof: number, flag = true) => {   // a drum tower: machicolated top, slate cone, arrow slits on the faces
       b.cyl(r, r + 0.2, h, m.stone, x, -0.2, z, 18); b.cyl(r + 0.3, r + 0.3, 0.55, m.darkstone, x, h - 0.6, z, 18); b.cone(r + 0.4, roof, m.slate, x, h - 0.05, z, 18);
@@ -741,7 +776,7 @@ const townhall: Model = b => {
     };
     // the ground: a stone plinth under the whole fortress, the lawn of the wards and a gravel way from the gate to the palace
     b.box(2 * X + 4, 3, 2 * Z + 4, m.darkstone, 0, -3, 0);
-    b.box(2 * X + 3, 0.2, 2 * Z + 3, m.stone, 0, 0, 0);
+    b.box(2 * X + 4, 0.2, 2 * Z + 4, m.stone, 0, 0, 0);   // (as wide as the plinth: its top would otherwise lie in the ground beside the slab and flicker)
     b.box(2 * X - 1, 0.04, 2 * Z - 1, lawn, 0, Y, 0);
     b.box(4.4, 0.06, Z + 5.4 - 2.4, gravel, 0, Y, (Z + 5.4 + 2.4) / 2); b.box(2 * X - 3, 0.06, 2.4, gravel, 0, Y, 6.3);
     // ---- the outer curtain wall, with sixteen towers
@@ -758,14 +793,13 @@ const townhall: Model = b => {
     b.box(3.2, 4.0, 0.3, black, 0, 0, Z + 1.55); for (const x of [-1.2, -0.4, 0.4, 1.2]) b.box(0.12, 4.0, 0.2, m.iron, x, 0, Z + 1.7);
     // ---- the barbican: two walls run out from the gate to an outer arch, and a plank bridge crosses the ditch in front
     for (const sx of [-1, 1]) { b.box(1.0, wh - 1.0, 5.2, m.stone, sx * 2.7, 0, Z + 3.0); merlons(sx * 2.7, Z + 0.6, sx * 2.7, Z + 5.4, wh - 1.0, 1.9); round(sx * 2.7, Z + 5.4, 1.2, wh + 1.0, 1.8, false); }
-    b.box(5.4, 1.5, 1.0, m.darkstone, 0, wh - 2.0, Z + 5.4); b.box(3.2, 3.8, 0.3, m.door, 0, 0, Z + 5.1);
-    for (const x of [-1.2, 0, 1.2]) b.box(0.12, 3.8, 0.14, m.iron, x, 0, Z + 5.3);
+    b.box(5.4, 1.5, 1.0, m.darkstone, 0, wh - 2.0, Z + 5.4); leaves(1.6, Z + 5.1, 3.8, 0.3, m.door, [-1.2, 0, 1.2]);
     b.box(3.4, 0.25, 3.4, m.darkwood, 0, 0, Z + 7.3); for (const sx of [-1, 1]) b.box(0.16, 1.0, 3.4, m.darkwood, sx * 1.6, 0, Z + 7.3);
     // ---- the inner screen wall and its gate, between the outer ward and the palace court
     const iz = 2.6;
     b.box(30, 4.4, 1.0, m.stone, 0, 0, iz); merlons(-15, iz, 15, iz, 4.4, 2.0);
     for (const sx of [-1, 1]) { round(sx * 2.4, iz + 0.4, 1.3, 7.2, 2.6); round(sx * 15, iz, 1.7, 7.6, 3.0); }
-    b.box(3.0, 2.8, 1.6, m.darkstone, 0, 3.6, iz); b.box(2.2, 3.0, 0.3, black, 0, 0, iz + 0.6); b.box(1.0, 2.8, 0.18, m.door, -0.55, 0, iz + 0.62); b.box(1.0, 2.8, 0.18, m.door, 0.55, 0, iz + 0.62);
+    b.box(3.0, 2.8, 1.6, m.darkstone, 0, 3.6, iz); b.box(2.2, 3.0, 0.3, black, 0, 0, iz + 0.6); leaves(1.05, iz + 0.62, 2.8, 0.18, m.door);
     // ---- the palace: great hall pavilion between two wings, a back range, corner pavilions and a donjon behind
     b.box(28, 7, 6, m.stone, 0, 0, -14.2); b.gable(28, 6, 2.6, m.slate, 0, 7, -14.2, 0.5);
     for (const sx of [-1, 1]) { b.box(4.2, 5.6, 12.7, m.stone, sx * 11.9, 0, -4.85); b.gableZ(12.7, 4.2, 2.0, m.slate, sx * 11.9, 5.6, -4.85, 0.45); }
@@ -780,7 +814,6 @@ const townhall: Model = b => {
     for (const sx of [-1, 1]) {
       b.box(5.2, 11.5, 5.2, m.stoneMat, sx * 14.9, 0, -14.2); b.box(5.8, 0.5, 5.8, m.darkstone, sx * 14.9, 11.5, -14.2); b.cyl(1.1, 1.3, 1.8, m.stone, sx * 14.9, 12.0, -14.2, 10); b.cone(1.5, 2.4, m.slate, sx * 14.9, 13.8, -14.2, 10); b.sphere(0.3, m.gold, sx * 14.9, 16.4, -14.2); b.flag(sx * 14.9, 16.6, -14.2, 2.4, 1.3);
       for (const y of [3.0, 6.0, 9.0]) b.window(sx * 14.9, y, -11.54, 0, 0.6, 1.2);
-      b.box(3.8, 8.0, 3.8, m.stoneMat, sx * 14.4, 0, 2.0); b.pyramid(4.6, 4.6, 2.8, m.slate, sx * 14.4, 8.0, 2.0); b.box(0.12, 0.8, 0.12, m.gold, sx * 14.4, 10.8, 2.0);
     }
     // the donjon: a tall square tower rising out of the back range, with corner turrets and a spire
     const dz = -14.2;
@@ -1177,7 +1210,7 @@ const embassy: Model = b => {
   b.box(1.1, 1.9, 0.12, m.door, 0, Y, hz + D / 2 + 1.38);
   for (const x of [-2.6, -1.6, 1.6, 2.6]) b.box(0.6, 0.9, 0.06, m.glass, x, Y + 1.8, hz + D / 2 + 0.04);
   if (t >= 3) { b.cyl(1.4, 1.5, 0.8, m.stone, 0, Y + 6.0, hz, 14); b.sphere(1.1, m.gold, 0, Y + 6.9, hz); }
-  b.flag(0, Y + 6.0, hz - 1.5, 2.4, 1.4);
+  b.flag(0, t >= 3 ? Y + 7.95 : Y + 6.0, hz, 2.4, 1.4);   // (on the middle of the roof, on top of the orb from the top tier: it used to stand behind it)
   // armoury: stone, with racks of spears and shields at the door
   block(6.6, 4.6, 3.0, m.stone, m.slate); b.box(1.2, 1.7, 0.1, m.door, 6.6, Y, hz + D / 2 + 0.03);
   for (const dx of [-1.6, 1.6]) { for (const k of [-0.4, 0, 0.4]) b.cyl(0.03, 0.03, 1.8, m.iron, 6.6 + dx + k, Y, hz + D / 2 + 0.7, 5); b.box(1.0, 0.12, 0.12, m.darkwood, 6.6 + dx, Y + 1.1, hz + D / 2 + 0.7); }
@@ -1256,6 +1289,17 @@ const embassy: Model = b => {
   for (const sx of [-1, 1]) for (const z of [-6, -1, 4, 9]) { b.cyl(0.07, 0.09, 1.6, m.iron, sx * 1.5, Y, z, 6); b.box(0.3, 0.32, 0.3, m.glow, sx * 1.5, Y + 1.6, z); }
   // the steps up to the great hall's porch
   b.box(2.8, 0.2, 0.9, m.stone, 0, Y, hz + D / 2 + 1.95); b.box(2.4, 0.2, 0.6, m.stone, 0, Y + 0.2, hz + D / 2 + 1.85);
+  // the guards at the front gate: a spearman with a shield either side of it, outside the wall, and another pair inside, all facing out
+  {
+    const tabard = new THREE.MeshStandardMaterial({ color: b.banner, roughness: 0.8 }), skin = new THREE.MeshStandardMaterial({ color: 0xd9a77e, roughness: 0.9 });
+    const guard = (gx: number, gz: number, y0: number) => {
+      for (const dx of [-0.11, 0.11]) b.cyl(0.09, 0.1, 0.8, m.darkwood, gx + dx, y0, gz, 6);
+      b.cyl(0.24, 0.2, 0.75, tabard, gx, y0 + 0.8, gz, 8); b.sphere(0.16, skin, gx, y0 + 1.72, gz); b.cyl(0.18, 0.2, 0.2, m.iron, gx, y0 + 1.78, gz, 8); b.cone(0.18, 0.2, m.iron, gx, y0 + 1.97, gz, 8);
+      b.cyl(0.025, 0.025, 2.3, m.darkwood, gx + 0.34, y0, gz + 0.05, 5); b.cone(0.05, 0.22, m.iron, gx + 0.34, y0 + 2.3, gz + 0.05, 5);   // the spear
+      b.box(0.1, 0.62, 0.42, m.iron, gx - 0.3, y0 + 0.85, gz + 0.1);                                                                     // the shield
+    };
+    for (const sx of [-1, 1]) { guard(sx * 3.7, ZF + 1.0, 0); guard(sx * 3.3, ZF - 1.2, Y); }
+  }
   // the gate: its two doors thrown open, and a banner on each tower
   for (const sx of [-1, 1]) b.box(0.15, wh + 1.1, 1.0, m.darkwood, sx * 0.95, 0, ZF - 0.75);
   for (const sx of [-1, 1]) b.flag(sx * 1.9, wh + 2.0 + 1.3, ZF, 1.8, 1.0);
@@ -2171,6 +2215,7 @@ export class Effects {
       const sp: THREE.Object3D[] = g.userData.spin;
       for (const o of sp) {
         if (o.parent === g || o.parent?.parent === g || o.parent?.parent?.parent === g) {
+          if (o.userData.gate) { o.rotation.y += ((view.raised ? 0 : o.userData.open) - o.rotation.y) * (1 - Math.exp(-dt * 2)); continue; }   // the castle's gate doors: shut in a battle
           if (o.userData.deck) { o.rotation.x += ((drawnUp(g.userData.status, view.raised) ? -1.3 : 0) - o.rotation.x) * (1 - Math.exp(-dt * 2)); continue; }
           if ((o as THREE.Mesh).geometry && (o as THREE.Mesh).geometry.type === 'PlaneGeometry') o.rotation.y = Math.sin(t * 3 + g.position.x) * 0.25;
           else o.rotation.z += dt * 0.5 * (g.userData.status === 0 || g.userData.kind === 1 ? 1 : 0.15);

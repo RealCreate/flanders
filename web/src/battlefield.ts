@@ -1,4 +1,6 @@
-export const ORDER_NAMES = ['Automatic', 'Hold line', 'Attack here', 'Fall back', 'Flank'] as const;
+export const ORDER_NAMES = ['Automatic', 'Hold line', 'Attack here', 'Fall back', 'Flank', 'Aggressive', 'Defensive'] as const;
+/** Stances (from this mode on) need no point on the field: they are issued at once. */
+export const FIRST_STANCE = 5;
 export const TROOP_GROUPS = ['Infantry', 'Archers', 'Knights', 'Siege'] as const;
 
 export interface BattlePin { x: number; z: number; text: string; objective?: boolean }

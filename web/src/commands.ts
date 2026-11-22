@@ -12,6 +12,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'upgrade': w.upgrade(c.idx!); break;
     case 'demolish': w.demolish(c.idx!); break;
     case 'train': w.train(c.kind!, c.x!); break;
+    case 'untrain': w.train_cancel(c.kind!, c.x!); break;
     case 'attack': w.send_army(Uint32Array.from(c.units ?? [])); break;
     case 'raid': w.start_raid_equipped(c.angle ?? 0, Uint32Array.from(c.units ?? []), c.tag ?? 1, c.tech ?? 0); break;
     case 'research': w.military_research(c.kind!); break;

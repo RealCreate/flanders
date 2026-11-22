@@ -70,7 +70,17 @@ impl World {
                 PLAZA => o.add(Solid::Circle(b.x, b.y, if b.opts & 4 != 0 { 1.3 } else { 0.4 })),
                 _ => {
                     if matches!(b.kind, FARM | GARDEN | PARK | MARKET) { o.add(Solid::Field(Rc::new(b.clone()))); }
-                    o.add(Solid::Circle(b.x, b.y, crate::solid_radius(b.kind, b.tier)));
+                    match crate::compound::compound(b.kind, b.tier) {
+                        // a walled compound: its walls, towers and buildings as they are drawn, and (shut) the doors of its gates; the ground between them is open
+                        Some(c) => {
+                            let shut = self.compound_shut(b);
+                            for p in c.pieces.iter().chain(c.doors.iter().filter(|_| shut)) {
+                                let (a, e) = (crate::compound::at(b, (p.ax, p.az)), crate::compound::at(b, (p.bx, p.bz)));
+                                if a == e { o.add(Solid::Circle(a.0, a.1, p.r)); } else { o.add(Solid::Wall(a.0, a.1, e.0, e.1, p.r)); }
+                            }
+                        }
+                        None => o.add(Solid::Circle(b.x, b.y, crate::solid_radius(b.kind, b.tier))),
+                    }
                 }
             }
         }

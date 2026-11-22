@@ -383,10 +383,29 @@ impl Ai {
         if have >= want || food_stock(w) < heads * 2 { return; }
         // a mix of what the barracks can make: archers and spearmen first, heavier troops when the stores and barracks allow
         let best = w.buildings.iter().filter(|b| b.kind == BARRACKS).map(|b| b.tier).max().unwrap_or(0);
+        // a balanced army, tilted against what the last raiders brought (arrows glance off plate; spears answer riders): only what the world itself remembers is used, so a restored game plays on the same
+        if let Some(k) = Self::wanted_kind(w, best) { if w.try_train(k, 1) == 0 { let _ = self.rng.range(10); return; } }
         let pick = self.rng.range(10);
         let kinds: [u8; 4] = if best >= 2 && pick < 2 { [3, 2, 0, 1] } else if best >= 1 && pick < 5 { [2, 0, 1, 3] } else if pick < 6 { [1, 0, 2, 3] } else { [0, 1, 2, 3] };
         // keep some wood and planks for building
         for k in kinds { if k == 4 || k == 5 { continue; } if UNITS[k as usize].tier > best { continue; } if w.stock[W as usize] < 40 && k != 2 && k != 3 { continue; } if k == 1 && w.stock[PL as usize] < 40 { continue; } if w.try_train(k, 1) == 0 { break; } }
+    }
+
+    /// The soldier kind this army is furthest short of, given the barracks tier and the survivors of the last raid on this village (the report keeps their kinds).
+    #[cfg(test)] pub(crate) fn wanted_kind_for_tests(w: &World, best: u8) -> Option<u8> { Self::wanted_kind(w, best) }
+    fn wanted_kind(w: &World, best: u8) -> Option<u8> {
+        let raiders: [u32; NK] = if w.report.len() >= 6 + NK { std::array::from_fn(|k| w.report[6 + k].max(0) as u32) } else { [0; NK] };
+        let (light, heavy) = (raiders[0] + raiders[1], raiders[2] + raiders[3]);
+        let mut weight: [u32; 4] = match best { 0 => [5, 4, 0, 0], 1 => [4, 3, 3, 0], _ => [3, 3, 3, 2] };
+        if heavy > light { weight[1] /= 2; weight[2] += 2; }
+        if light > heavy { weight[1] += 2; }
+        if raiders[3] >= 2 { weight[0] += 2; }
+        let towers: u32 = w.buildings.iter().map(|b| b.garrison as u32).sum();
+        let have: [u32; 4] = std::array::from_fn(|k| w.army[k] + w.queue[k] + if k == 1 { towers } else { 0 });
+        let (total, wsum): (u32, u32) = (have.iter().sum(), weight.iter().sum());
+        (0..4u8).filter(|&k| weight[k as usize] > 0 && UNITS[k as usize].tier <= best && UNITS[k as usize].cost.iter().all(|&(r, n)| w.stock[r as usize] >= n)
+                && !(w.stock[W as usize] < 40 && k != 2 && k != 3) && !(k == 1 && w.stock[PL as usize] < 40))
+            .max_by_key(|&k| (weight[k as usize] as i64 * (total as i64 + 1) - have[k as usize] as i64 * wsum as i64, std::cmp::Reverse(k)))
     }
 
     // ------------------------------------------------------------------------------------------------ diplomacy and trade

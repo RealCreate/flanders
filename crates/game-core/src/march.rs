@@ -496,6 +496,13 @@ impl World {
                         for j in j0..=j1 { for i in i0..=i1 { let (cx, cy) = cell_xy((j * NC + i) as usize); if crate::pathnet::in_fields(b, cx, cy, 0.9) { ov.blocked[(j * NC + i) as usize] = true; } } }
                     }
                     if !matches!(b.kind, PLAZA | TOLL) { stamp(&mut ov.blocked, b.x, b.y, crate::solid_radius(b.kind, b.tier)); }
+                    if let Some(c) = crate::compound::compound(b.kind, b.tier) {   // a walled compound: its curtain wall and towers reach out past that circle (the gate in front is left open for the way to the door)
+                        for p in c.pieces.iter().filter(|p| !p.front) {
+                            let (a, e) = (crate::compound::at(b, (p.ax, p.az)), crate::compound::at(b, (p.bx, p.bz)));
+                            let st = ((e.0 - a.0).hypot(e.1 - a.1) / 1.0).ceil().max(1.0) as i32;
+                            for k in 0..=st { let t = k as f32 / st as f32; stamp(&mut ov.blocked, a.0 + (e.0 - a.0) * t, a.1 + (e.1 - a.1) * t, p.r + 1.0); }
+                        }
+                    }
                     if !matches!(b.kind, WALL | FENCE) { stamp(&mut ov.soft, b.x, b.y, crate::footprint(b.kind, b.tier) + 0.7); }   // the margin round it: allowed, but avoided
                 }
             }

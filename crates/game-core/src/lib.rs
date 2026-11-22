@@ -16,6 +16,9 @@ mod military;
 mod tactics;
 mod raid_objective;
 mod pathnet;
+mod compound;
+#[cfg(test)]
+mod compound_tests;
 pub mod doors;
 mod roadline;
 mod flatten;
@@ -390,11 +393,14 @@ pub struct World {
     map_ver: u32,                // changes when trees are felled or bridges built
     #[serde(skip)] military_tech: u16,
     #[serde(skip)] auto_bridge: bool,
+    #[serde(skip)] vets: [u32; NK],       // veterans among the standing army, by kind (they came through a battle: see tactics::is_veteran); saved with the extras of snapshot layout 9
+    #[serde(skip)] train_acc: [u32; NK],  // drill progress of each kind in the queue (the barracks train every queued kind at once)
     #[serde(skip)] last_battle_frame: Vec<f32>,
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD8";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLD9";
+const VETS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD8";
 const TOOLS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD7";
 const ESTATE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD6";
 const OBJECTIVE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD5";
@@ -412,11 +418,13 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         w.moat_water = w.compute_moat_water();
         return Some(w);
     }
-    let (mut w, marches) = if magic == SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let mut extras = ([0u32; NK], [0u32; NK]);
+    let (mut w, marches) = if magic == SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
         type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
         let (((state, estate), tools), planted): (((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>) =
-            if magic == SNAP_MAGIC { bincode::deserialize(payload).ok()? }
+            if magic == SNAP_MAGIC { let (inner, ex): ((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])) = bincode::deserialize(payload).ok()?; extras = ex; inner }
+            else if magic == VETS_SNAP_MAGIC { bincode::deserialize(payload).ok()? }
             else if magic == TOOLS_SNAP_MAGIC { (bincode::deserialize(payload).ok()?, vec![]) }
             else if magic == ESTATE_SNAP_MAGIC { ((bincode::deserialize(payload).ok()?, [0; 2]), vec![]) }
             else if magic == OBJECTIVE_SNAP_MAGIC { (((bincode::deserialize(payload).ok()?, estate::Estate::default()), [0; 2]), vec![]) }
@@ -431,6 +439,8 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         w.estate = estate;
         w.military_tech = tech;
         w.auto_bridge = bridges;
+        if (0..NK).any(|k| extras.0[k] > w.army[k] || extras.1[k] > 100_000) { return None; }
+        w.vets = extras.0; w.train_acc = extras.1;
         if let Some((b, t)) = w.battle.as_mut().zip(state) {
             if t.strikes.iter().any(|s| s.attacker >= b.units.len() || s.target >= b.units.len()) { return None; }
             b.tactics = t;
@@ -515,6 +525,7 @@ pub const CASTLE_FOOTPRINT: f32 = 30.0;
 pub fn footprint(kind: u8, tier: u8) -> f32 {
     let Some(d) = DEFS.get(kind as usize) else { return 0.0 };
     let grow = match kind { FARM => 0.25, TOWN_HALL => 0.2, KEEP => 0.1, BARRACKS | CHAPEL | COURTHOUSE | MARKET | STOREHOUSE | HOSPITAL | GRAVEYARD | EMBASSY => 0.1, _ => 0.0 };
+    if kind == TOWN_HALL && tier < 3 { return [7.5, 9.8, 12.2][tier as usize]; }   // the hall and its wall of stakes grow a little with each tier before the Castle
     if kind == TOWN_HALL && tier >= 3 { return CASTLE_FOOTPRINT; }   // the Castle is a vast concentric fortress (44 x 38 walls, a palace and a bailey inside, a barbican in front): larger than the embassy's 24 (see the town hall model)
     d.r * (1.0 + grow * tier as f32)
 }
@@ -529,7 +540,8 @@ pub fn solid_radius(kind: u8, tier: u8) -> f32 {
         WALL | FENCE => fp + 1.0,
         FARM | GARDEN | PARK | MARKET => fp * 0.42,
         TOWN_HALL if tier >= 3 => fp * 0.72 + 0.3,
-        TOWER | KEEP | TOWN_HALL | CHAPEL | BARRACKS => fp * 0.85 + 0.3,
+        TOWN_HALL => fp * 0.8 + 0.3,
+        TOWER | KEEP | CHAPEL | BARRACKS => fp * 0.85 + 0.3,
         _ => fp * 0.72 + 0.3,
     }
 }
@@ -563,7 +575,7 @@ impl World {
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
         let objective_state = (tactical_state, battle.and_then(|b| b.objective));
-        v.extend(bincode::serialize(&(((objective_state, self.estate), self.emergency_tools), &self.planted)).expect("a world can be written"));
+        v.extend(bincode::serialize(&((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc))).expect("a world can be written"));
         v
     }
 
@@ -572,7 +584,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, last_battle_frame: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, vets: [0; NK], train_acc: [0; NK], last_battle_frame: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], planted: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -1138,8 +1150,8 @@ impl World {
         }
         if d.req != 1 {
             let clear = if is_edit(kind) { 2.6 } else if matches!(kind, WALL | FENCE | GATE) { 0.6 } else { d.r + 1.6 };
-            for dep in &self.deposits {
-                if dep.max > 0 && (dep.x - x).hypot(dep.y - y) < clear { marks.extend([dep.x, dep.y, 2.0]); }
+            for (di, dep) in self.deposits.iter().enumerate() {
+                if dep.max > 0 && (dep.x - x).hypot(dep.y - y) < clear && self.deposit_in_use(di) { marks.extend([dep.x, dep.y, 2.0]); }   // (the rest is cleared away by the building, like trees)
             }
         }
         if !matches!(kind, ROAD | BRIDGE | DRAWBRIDGE) {
@@ -1185,7 +1197,7 @@ impl World {
         if (hi - lo) / (fr * 2.0) > d.max_slope { return -5; }
         if d.req != 1 {   // nothing is built or dug on top of an ore or stone deposit (only mines and quarries stand beside one)
             let clear = if is_edit(kind) { 2.6 } else if matches!(kind, WALL | FENCE | GATE) { 0.6 } else { d.r + 1.6 };   // a wall may run over an outcrop (only its very middle is in the way)
-            if self.deposits.iter().any(|dep| dep.max > 0 && (dep.x - x).powi(2) + (dep.y - y).powi(2) < clear * clear) { return -17; }
+            if self.deposits.iter().enumerate().any(|(di, dep)| dep.max > 0 && (dep.x - x).powi(2) + (dep.y - y).powi(2) < clear * clear && self.deposit_in_use(di)) { return -17; }   // (only one a mine or quarry works stays in the way)
         }
         if d.req == 1 && self.nearest_deposit(x, y, d.req_arg, true).is_none() { return -7; }
         if d.req == 2 && self.forest_here(x, y, 12.0) < 0.12 { return -8; }
@@ -1289,6 +1301,7 @@ impl World {
         let mut status = if d.cycle > 0 { 1 } else { 4 };
         if kind == ROAD { let t = tgts.unwrap_or_else(|| self.road_tgts_near(x, y)); status = if self.road_piece_attached(x, y, &t) { 4 } else { 2 }; self.road_conn.push(roadline::RoadConn { x, y, to: t }); }
         self.buildings.push(Building { kind, tier: 0, x, y, rot: rot & 7, pad_h, progress: 0, status, aux, staff: 0, residents: 0, hp: battle::max_hp(kind, 0), burning: 0.0, garrison: 0, born: self.tick as u32, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
+        if d.req != 1 { let clear = if is_edit(kind) { 2.6 } else if matches!(kind, WALL | FENCE | GATE) { 0.6 } else { d.r + 1.6 }; self.clear_deposits_within(x, y, clear); }   // the building takes the ore or stone in its way off the land, as it does the trees
         if is_edit(kind) { self.terrain_ver += 1; }   // the ground changed: everything standing on it must be re-fitted
         if kind == DRAWBRIDGE {   // clear a way through the trees on the far side so a path can run out from the gate
             let a = (rot & 7) as f32 * std::f32::consts::FRAC_PI_4; let (sx, sy) = (a.sin(), a.cos());
@@ -1637,7 +1650,7 @@ impl World {
         self.buildings[idx as usize].burning = 0.0;
         // a bigger building clears the trees that stand in the room it now takes (the felled ring is drawn as cleared ground and the woodcutters no longer count those trees)
         let (bx, by, fp) = (self.buildings[idx as usize].x, self.buildings[idx as usize].y, footprint(k, t));
-        if fp > footprint(k, t - 1) { self.felled.push([bx, by, fp + 2.0]); self.map_ver += 1; }
+        if fp > footprint(k, t - 1) { self.felled.push([bx, by, fp + 2.0]); self.map_ver += 1; if DEFS[k as usize].req != 1 { self.clear_deposits_within(bx, by, fp + 1.0); } }
         if k == FARM { self.terrain_ver += 1; }   // a bigger farm works more fields: the ground is levelled under them too, so everything standing near must be fitted to it again
         self.after_change();
         0
@@ -1682,6 +1695,15 @@ impl World {
     pub(crate) fn hero_dmg(&self) -> f32 { self.hero.map_or(1.0, |(_, xp)| 1.0 + 0.06 * (Self::hero_level(xp) as f32 - 1.0) + 0.04) }
 
     /// Switch one optional design upgrade of a building on (or off again, without refund). 0 ok, -1 invalid, -6 cannot afford, -10 not available yet (needs a better tier).
+    /// Is a mine or quarry working this deposit? Such a deposit is never cleared away by a building.
+    fn deposit_in_use(&self, i: usize) -> bool { self.buildings.iter().any(|b| b.aux == i as i32 && DEFS[b.kind as usize].req == 1) }
+    /// Take every deposit within `r` of (x, y) off the land (not one a mine works): a building going up or growing clears the stone and ore in its way, as it clears the trees.
+    fn clear_deposits_within(&mut self, x: f32, y: f32, r: f32) {
+        let gone: Vec<usize> = (0..self.deposits.len()).filter(|&i| { let d = &self.deposits[i]; d.max > 0 && (d.x - x).hypot(d.y - y) < r && !self.deposit_in_use(i) }).collect();
+        if gone.is_empty() { return; }
+        for i in gone { let d = &mut self.deposits[i]; d.rem = 0; d.max = 0; d.asleep = false; }
+        self.deposit_layout.set(None); self.map_ver += 1;
+    }
     /// Clear a deposit off the land (the villagers break the rock up and cart it away, or dig the clay out) so the ground can be built on. 0 done, -1 no such deposit,
     /// -2 outside the border, -3 already cleared, -4 a mine or quarry is working it, -6 not enough wood and tools.
     pub fn clear_deposit(&mut self, i: u32) -> i32 {
@@ -2331,6 +2353,10 @@ impl World {
     /// Standing army [spearmen, archers, swordsmen, knights, catapults].
     pub fn army(&self) -> Vec<u32> { self.army.to_vec() }
     pub fn queued(&self) -> Vec<u32> { self.queue.to_vec() }
+    /// Veterans in the standing army, by kind.
+    pub fn army_veterans(&self) -> Vec<u32> { self.vets.to_vec() }
+    /// Take `n` of a kind out of the training queue; its cost comes back and the recruits return to the village. 0 when done.
+    pub fn train_cancel(&mut self, kind: u8, n: u32) -> i32 { self.try_train_cancel(kind, n) }
     pub fn away(&self) -> Vec<u32> { self.away.to_vec() }
     /// Tower and hall guards that defend for free.
     pub fn guards(&self) -> u32 { self.buildings.iter().map(|b| match b.kind { TOWER => b.garrison as u32, TOWN_HALL => 2 * (b.tier as u32 + 1), KEEP => b.garrison as u32, _ => 0 }).sum() }
@@ -3041,7 +3067,7 @@ impl World {
             }),
             part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); mix(d.asleep as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
-            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } mix(self.military_tech as u64); mix(self.auto_bridge as u64); }),
+            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } mix(self.military_tech as u64); mix(self.auto_bridge as u64); for k in 0..NK { mix(self.vets[k] as u64); mix(self.train_acc[k] as u64); } }),
             part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); mix(d.file.dispatch.to_bits() as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); mix(g.file.dispatch.to_bits() as u64); } } }),
             part(&|mix| {   // trade and diplomacy
                 for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }
@@ -3730,7 +3756,7 @@ mod tests {
         let mut w = village();
         let before = w.height_at(-20.0, 0.0);
         assert!(before > 0.4, "dry land to dig in");
-        for i in 0..4 { assert!(w.place(MOAT, -20 + i * 4, 0, 0) >= 0, "adjacent moat pieces can be placed side by side (piece {i})"); }
+        for i in 0..4 { assert!(w.place(MOAT, -22 + i * 4, 0, 0) >= 0, "adjacent moat pieces can be placed side by side (piece {i})"); }
         assert!(w.height_at(-20.0, 0.0) < 0.0, "the ditch holds water");
         assert!(w.height_at(-30.0, 0.0) > 0.4, "land away from the moat is untouched");
         assert_eq!(w.upgrade(w.buildings.len() as u32 - 1), -10, "moats do not upgrade");
@@ -5139,7 +5165,9 @@ mod deposit_tests {
         let mut w = World::new(1337, 0, 0); w.stock = [5000; N_RES];
         let (i, d) = w.deposits.iter().enumerate().find(|(_, d)| w.in_territory(d.x, d.y) && d.max > 0).map(|(i, d)| (i as u32, *d)).expect("a deposit inside the border");
         let blocked = w.can_place(HOUSE, (d.x - w.ox as f32) as i32, (d.y - w.oy as f32) as i32);
-        assert_eq!(blocked, -17, "the rock is in the way");
+        assert_ne!(blocked, -17, "a rock does not stop a building: it is cleared away with it");
+        let (px, py) = ((d.x - w.ox as f32) as i32, (d.y - w.oy as f32) as i32);
+        if w.place(HOUSE, px, py, 0) >= 0 { assert_eq!(w.deposits[i as usize].max, 0, "the house cleared the rock for nothing"); return; }
         let (wood, tools) = (w.stock[W as usize], w.stock[TL as usize]);
         assert_eq!(w.clear_deposit(i), 0); assert_eq!(w.stock[W as usize], wood - 40); assert_eq!(w.stock[TL as usize], tools - 10);
         assert_eq!(w.clear_deposit(i), -3, "only once");
