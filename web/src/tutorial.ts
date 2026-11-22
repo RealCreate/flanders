@@ -22,19 +22,21 @@ export function fillKeys(text: string, label: (action: string) => string = a => 
 }
 
 export const STEPS: Step[] = [
-  { title: 'Welcome to Flanders', text: 'You rule a small village. This guide takes you from a few huts to a castle. Move the camera with {panUp} {panLeft} {panDown} {panRight}, turn it with {rotLeft} and {rotRight}, zoom with the wheel. Press Next when you are ready.' },
-  { title: 'A home for new villagers', text: 'Build one House on flat ground near the town hall. The starting food covers about half a day, so get a farm working before adding more homes.', done: c => c.n(0) >= 1, point: { sel: '#cards .card', has: 'House' } },
-  { title: 'Grain for the table', text: 'Build a Farm on flat ground. Farms harvest more in autumn. In winter they make 55% of their usual grain, or 85% with the Haystacks option.', done: c => c.n(1) >= 1, point: { sel: '#cards .card', has: 'Farm' } },
-  { title: 'Wood', text: 'Almost everything starts as wood. A Woodcutter must stand near a forest: the game tells you if there are too few trees.', done: c => c.n(4) >= 1, point: { sel: '#cards .card', has: 'Woodcutter' } },
-  { title: 'Planks', text: 'A Sawmill turns wood into planks, which better buildings need.', done: c => c.n(5) >= 1, point: { sel: '#cards .card', has: 'Sawmill' } },
-  { title: 'Watch your stores', text: 'Open Food in the top bar to see how long meals in store would last and whether supplies have been growing. Click the season to check food and firewood before winter.', point: { sel: '#treasury' } },
-  { title: 'Stone', text: 'Press {deposits} to show the stone, clay and ore deposits on the map. A Quarry must stand beside a stone deposit.', done: c => c.n(6) >= 1, point: { sel: '#cards .card', has: 'Quarry' } },
-  { title: 'A growing village', text: 'Houses draw in new villagers while there is food and room. Keep building homes and farms until you reach 20 villagers. Happiness matters too: gardens, parks and chapels lift it.', done: c => c.pop >= 20 },
-  { title: 'Look after the soil', text: 'Click a farm to see its soil. A field sown every season wears out and yields less. Set it to Rotate and it rests by itself when the soil is tired. Press Next when you have tried it.', point: { sel: '#cards .card', has: 'Farm' } },
-  { title: 'Defence', text: 'Build a Well to fight fires and a Watchtower for archers. A Watchtower needs a garrison to shoot. Build a Barracks and train archers as soon as you can.', done: c => c.n(3) >= 1 && c.n(16) >= 1 },
-  { title: 'A grander hall', text: 'Click your town hall and upgrade it. A better hall widens your border and unlocks more.', done: c => c.hall >= 1 },
-  { title: 'An army', text: 'Build a Barracks and train soldiers on the Army tab. Soldiers defend the village and can march out on other players.', done: c => c.n(19) >= 1 && c.army >= 5, point: { sel: '#cards .card', has: 'Barracks' } },
-  { title: 'Other players, and keeping your village', text: 'The Players button shows who else is in your world: trade, make treaties, or fight. Caravans, envoys, offers, wedding parties and heralds walk the road between the cities, and what they carry takes effect when they arrive. Press {photo} for photo mode. Your village lives in this browser: save a backup under Display settings. Have a good reign!', point: { sel: '#btn-mp' } },
+  { title: 'Welcome to Flanders', text: 'You rule a small village. This guide takes you from a few huts to a castle. Move the camera with {panUp} {panLeft} {panDown} {panRight}. Turn it with {rotLeft} and {rotRight}. Zoom with the wheel. Press Next to begin.' },
+  { title: 'A home for new villagers', text: 'Build a House on flat ground. New villagers move in while there is room. Pick House on the right, then click the ground.', done: c => c.n(0) >= 1, point: { sel: '#cards .card', has: 'House' } },
+  { title: 'Grain for the table', text: 'Your food will not last. Build a Farm on flat ground. Farms give less grain in winter.', done: c => c.n(1) >= 1, point: { sel: '#cards .card', has: 'Farm' } },
+  { title: 'Wood', text: 'Almost everything starts as wood. Build a Woodcutter next to a forest.', done: c => c.n(4) >= 1, point: { sel: '#cards .card', has: 'Woodcutter' } },
+  { title: 'Planks', text: 'Better buildings need planks. Build a Sawmill. It turns wood into planks.', done: c => c.n(5) >= 1, point: { sel: '#cards .card', has: 'Sawmill' } },
+  { title: 'Watch your stores', text: 'Open Food in the top bar. It shows how long your meals will last. Check food and firewood before each winter. Press Next when you have looked.', point: { sel: '#treasury' } },
+  { title: 'Stone', text: 'Press {deposits} to show the deposits on the map. Build a Quarry right beside a stone deposit.', done: c => c.n(6) >= 1, point: { sel: '#cards .card', has: 'Quarry' } },
+  { title: 'Water against fire', text: 'Raiders and fires will come. Build a Well. Villagers use it to put fires out.', done: c => c.n(16) >= 1, point: { sel: '#cards .card', has: 'Well' } },
+  { title: 'A watchtower', text: 'Build a Watchtower. Its archers shoot at raiders. It needs a garrison to fire.', done: c => c.n(3) >= 1, point: { sel: '#cards .card', has: 'Watchtower' } },
+  { title: 'A barracks', text: 'Build a Barracks. This is where you train soldiers.', done: c => c.n(19) >= 1, point: { sel: '#cards .card', has: 'Barracks' } },
+  { title: 'Train archers', text: 'Open the Army tab. Train at least 5 archers. They man the watchtower and defend the village.', done: c => c.army >= 5 },
+  { title: 'A growing village', text: 'Keep building houses and farms. Reach 20 villagers. Gardens, parks and chapels keep them happy.', done: c => c.pop >= 20 },
+  { title: 'Look after the soil', text: 'Click a farm to see its soil. A field sown every season wears out. Set it to Rotate to let it rest. Press Next when you have looked.', point: { sel: '#cards .card', has: 'Farm' } },
+  { title: 'A grander hall', text: 'Click your town hall and upgrade it. A better hall widens your border. Keep the ground around it clear.', done: c => c.hall >= 1 },
+  { title: 'Other players, and your village', text: 'The Players button shows who else is in your world. You can trade, make treaties, or fight. Press {photo} for photo mode. Your village is saved in this browser. Back it up under Display settings. Have a good reign!', point: { sel: '#btn-mp' } },
 ];
 
 const KEY = 'flanders:tutorial';

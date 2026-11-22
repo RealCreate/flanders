@@ -17,3 +17,8 @@ export function withWorld(href: string, world: string): string {
 export function inviteLink(href: string, world: string): string {
   const u = new URL(href); const w = cleanWorld(world); u.search = ''; u.hash = ''; u.searchParams.set('world', w); return u.toString();
 }
+
+/** Bumped when the map generator changes, so old world names get new maps. */
+export const SEED_SALT = 3;
+/** The map seed of a world name (a plain number is used as the seed itself). */
+export const hashSeed = (s: string): bigint => { if (/^\d{1,15}$/.test(s)) return BigInt(s) + BigInt(SEED_SALT) * 1000003n; let h = 1469598103934665603n; for (const c of (s.toLowerCase() + '|map' + SEED_SALT)) h = ((h ^ BigInt(c.charCodeAt(0))) * 1099511628211n) & 0xffffffffffffn; return h; };
