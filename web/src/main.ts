@@ -1066,6 +1066,12 @@ function updateDets() {
     list.push({ id: f[o], units: [f[o + 3], f[o + 4], f[o + 5], f[o + 6], f[o + 7], f[o + 16]], text: state, selected: multiDets.includes(f[o]), leftWp: f[o + 10] });
   }
   ui.setDets(list);
+  const picked = list.filter(d => d.selected);
+  if (picked.length && !lv.world.battle_active()) {
+    const units = [0, 0, 0, 0, 0, 0]; for (const d of picked) d.units.forEach((n, k) => { units[k] += n; });
+    commandScreen().setSelection({ title: picked.length > 1 ? `${picked.length} armies` : `Army ${picked[0].id}`, units, state: picked.length > 1 ? '' : picked[0].text, armies: picked.length },
+      act => { const ids = multiDets.slice(); if (act === 'recall') void orderArmies(ids, orderRecall); else ids.forEach(id => detAction(act, id)); });
+  } else cmdScreen?.setSelection(null, () => {});
   if (multiDets.some(id => !list.some(d => d.id === id))) { multiDets = multiDets.filter(id => list.some(d => d.id === id)); selectedDet = multiDets[0] ?? null; lv.field.select(multiDets); if (selectedDet === null) pathLine?.set(null); }
 }
 
@@ -2629,9 +2635,9 @@ function updateSelection() {
     const fi = w.field_info(selectedIdx);
     if (fi.length) {
       const soil = Math.round(fi[0] / 100), mode = fi[1], resting = fi[2] === 1;
-      html += `<div><h3>The field</h3><div class="eyebrow">Soil ${soil}% rich · ${resting ? 'resting' : 'sown'}</div><div class="bar ${soil < 50 ? 'red' : ''}"><i style="width:${soil}%"></i></div>
+      html += `<div><h3>The field</h3><div class="eyebrow">Soil ${soil}% rich · ${resting ? 'resting' : 'sown'}</div><div class="bar ${soil < 50 ? 'red' : ''}" title="Harvest at this soil: ${50 + Math.round(soil / 2)}% of a rich field. A resting field recovers${w.season() === 3 ? ' twice as fast in this winter frost' : ', twice as fast in winter'}."><i style="width:${soil}%"></i></div>
         <div class="btnrow" style="flex-wrap:wrap">${[['Always sow', 0], ['Fallow', 1], ['Rotate', 2]].map(([t, m]) => `<button class="pbtn ${mode === m ? 'on' : ''}" data-act="field:${m}">${mode === m ? '● ' : ''}${t}</button>`).join('')}</div>
-        <p class="muted">Sowing every season wears the soil down and the harvest shrinks (to half at worst). A fallow field makes no grain but recovers. <b>Rotate</b> rests the field by itself when the soil is worn and sows it again when it is restored.${soil < 60 && mode === 0 ? ' <b>This soil is tired: try rotating.</b>' : ''}</p></div>`;
+        <p class="muted">Sowing every season wears the soil down and the harvest shrinks (to half at worst). A fallow field makes no grain but recovers, twice as fast in winter. <b>Rotate</b> rests the field by itself when the soil is worn and sows it again when it is restored.${soil < 60 && mode === 0 ? ' <b>This soil is tired: try rotating.</b>' : ''}</p></div>`;
     }
   }
   if (smokeMode >= 0) {

@@ -42,6 +42,16 @@ export function strengthHtml(mine: SideSummary, theirs: SideSummary, myLabel: st
   return `${side(myLabel, mine, 'mine')}<span class="cs-vs">vs</span>${side(theirLabel, theirs, 'theirs')}`;
 }
 
+export interface ArmyCardInfo { title: string; units: number[]; state: string; armies: number }
+
+/** The card for the armies selected on the map: what they are made of, and what they are doing. */
+export function armyCardHtml(a: ArmyCardInfo, icon: (kind: number) => string): string {
+  const total = a.units.reduce((x, y) => x + y, 0);
+  const rows = a.units.map((n, kind) => n > 0 ? `<div class="cs-row" data-kind="${kind}"><span class="cs-name">${icon(kind)} ${KIND_NAMES[kind]}</span><b class="cs-n">${n}</b></div>` : '').join('');
+  return `<h3>${a.title}</h3><p class="cs-state">${total} soldiers${a.state ? ` · ${a.state}` : ''}</p>${rows}
+    <div class="cs-acts"><button type="button" class="pbtn" data-army="halt" title="Stop where they stand (G)">Halt</button><button type="button" class="pbtn" data-army="recall" title="Send them home (B)">Home</button>${a.armies === 1 ? '<button type="button" class="pbtn" data-army="split" title="Split the army in two">Split</button>' : ''}</div>`;
+}
+
 /** The command screen: a layer over the battlefield. Everything but its panels lets clicks through to the field, so orders are still given there. */
 export class CommandScreen {
   private el: HTMLElement;
@@ -54,6 +64,20 @@ export class CommandScreen {
     this.el.innerHTML = '<div id="cs-top"></div><div id="cs-left"><h3>Your troops</h3><div id="cs-mine"></div></div><div id="cs-right"><h3>The enemy</h3><div id="cs-theirs"></div></div>';
     document.body.appendChild(this.el);
   }
+  private card: HTMLElement | null = null;
+  /** The card of the selected armies (null hides it). `act` is called with halt, recall or split when a button is pressed. */
+  setSelection(a: ArmyCardInfo | null, act: (action: string) => void) {
+    if (!a) { if (this.card) this.card.hidden = true; return; }
+    if (!this.card) {
+      this.card = document.createElement('aside'); this.card.id = 'cs-sel';
+      this.card.onclick = e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-army]'); if (b) this.cardAct?.(b.dataset.army!); };
+      document.body.appendChild(this.card);
+    }
+    this.cardAct = act; this.card.hidden = false;
+    const html = armyCardHtml(a, this.icon);
+    if (this.card.innerHTML !== html) this.card.innerHTML = html;
+  }
+  private cardAct: ((action: string) => void) | null = null;
   get active() { return this.on; }
   set(on: boolean) { this.on = on; this.el.hidden = !on; document.body.classList.toggle('cmd-mode', on); }
   toggle() { this.set(!this.on); return this.on; }

@@ -78,3 +78,32 @@ fn the_embassy_has_walls_and_a_way_from_its_gate_to_the_great_hall() {
     for (lx, lz) in [(0.0, 18.0), (0.0, 10.0), (0.0, -8.4), (8.0, -8.4)] { let p = at(lx, lz); assert!(!w.member_blocked(p.0, p.1, 0), "{lx},{lz} is open ground"); }
     network_joins(&w, (x, y), at(0.0, 20.2), &[(at(0.0, 16.4), "the gate"), (at(0.0, -8.4), "the hall's door"), (at(12.0, -8.4), "the smithy"), (at(-12.0, -8.4), "the granary"), (at(4.2, 16.4), "a guard house")]);
 }
+
+#[test]
+fn an_army_can_march_out_past_an_embassy_and_a_castle() {
+    for (castle, embassy_at, rot) in [(false, (0, -32), 0u8), (true, (0, -32), 0), (true, (0, -32), 1), (true, (0, -32), 2), (true, (0, -32), 3), (false, (30, 0), 0)] {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.flatten(90, 5.0);
+        if castle { w.buildings[0].tier = 3; w.buildings[0].rot = rot; w.after_change(); }
+        let e = w.place(EMBASSY, embassy_at.0, embassy_at.1, 0);
+        assert!(w.cheat(3, 0, 0));
+        for k in [0, 1, 2, 4, 5] { w.cheat(2, k, 10); }
+        let id = w.det_form(&[10, 10, 10, 0, 10, 10]); assert!(id > 0);
+        let f = w.det_flat(); let (x, y) = (f[1], f[2]); eprintln!("hall at ({:.0},{:.0}) rot {}", w.buildings[0].x, w.buildings[0].y, w.buildings[0].rot);
+        for (tx, ty) in [(120.0f32, 0.0f32), (-120.0, 40.0), (0.0, 120.0), (0.0, -120.0)] {
+            let plan = w.plan_march(&[10, 10, 10, 0, 10, 10], x, y, tx, ty);
+            let code = w.det_march(id, tx, ty, true, tx, ty);
+            eprintln!("castle {castle} rot {rot} embassy {e} at {embassy_at:?} from ({x:.0},{y:.0}) to ({tx},{ty}): plan {} order {code}", plan[0]);
+            assert!(plan[0] != 1.0 || code == 0, "the preview finds a route but the order says {code}: castle {castle} embassy at {embassy_at:?} to ({tx},{ty})");
+            let mut blocked_at = None; let mut moved = 0.0f32;
+            for t in 0..2400 {
+                w.step(); w.stock = [30000; N_RES];
+                let f = w.det_flat(); if f.is_empty() { break; }
+                moved = moved.max((f[1] - x).hypot(f[2] - y));
+                if f[8] as u8 == march::S_BLOCKED && blocked_at.is_none() { blocked_at = Some((t, f[1], f[2])); break; }
+                if f[8] as u8 == march::S_ARRIVED { break; }
+            }
+            eprintln!("   -> moved {moved:.0}, blocked {blocked_at:?}");
+            assert!(blocked_at.is_none(), "the army got stuck on its way: castle {castle} embassy at {embassy_at:?} to ({tx},{ty}): {blocked_at:?}");
+        }
+    }
+}

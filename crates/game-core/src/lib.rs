@@ -19,6 +19,8 @@ mod pathnet;
 mod compound;
 #[cfg(test)]
 mod compound_tests;
+#[cfg(test)]
+mod repro_tests;
 pub mod doors;
 mod roadline;
 mod flatten;
@@ -106,6 +108,8 @@ pub(crate) const LEND_HOLD_FIGHT: u32 = 3;   // long enough that a bridge does n
 const FERT_MAX: u16 = 10_000;
 const FERT_WEAR: u16 = 6;
 const FERT_REST: u16 = 12;
+/// A fallow field recovers this many times faster in winter: frost breaks the clods and the field is not worked anyway.
+const FERT_WINTER_REST: u16 = 2;
 /// Rotation: a field rests when its soil drops to the first figure and is sown again at the second.
 const FERT_TIRED: u16 = 4_500;
 const FERT_RESTORED: u16 = 9_000;
@@ -385,6 +389,7 @@ pub struct World {
     #[serde(skip)] ground_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the natural land heights under the path network's grid (derived)
     #[serde(skip)] height_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<f32>>)>>,   // the ground heights under the path network's grid (derived)
     #[serde(skip)] net_base: std::cell::RefCell<Option<(u64, std::rc::Rc<pathnet::Net>)>>,   // the same without the road marks: what the roads themselves are routed over (derived)
+    #[serde(skip)] link_stamp: std::cell::Cell<u64>,   // what the village looked like when the invisible paths were last worked out (derived: see `refresh_links`)
     moat_water: Vec<[f32; 4]>,   // the surface of the water in each moat piece, for drawing: [x, y, reach, level] (derived: see `compute_moat_water`)
     #[serde(skip)] planted: Vec<forestry::Planted>,   // trees the player (or a forester) planted [x, y, tick]: carried beside the world in a snapshot (see `snapshot`), part of the state hash
     groves: Vec<[f32; 3]>,       // patches of forest kept standing inside a big cleared area [x, y, radius] (the model village's woodcutter grove)
@@ -585,7 +590,7 @@ impl World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
             events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, vets: [0; NK], train_acc: [0; NK], last_battle_frame: vec![],
-            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], planted: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
+            army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], planted: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), link_stamp: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
         w.stock[PL as usize] = 20;
@@ -1765,6 +1770,7 @@ impl World {
     /// Advance one simulation tick (one in-game second).
     pub fn step(&mut self) {
         self.tick += 1;
+        self.refresh_links();
         self.refill_emergency_tools();
         let before = self.stock;
         self.ledger.begin(self.tick, &self.stock);
@@ -1793,7 +1799,7 @@ impl World {
                 if kind == FARM {   // soil: a resting field makes nothing and recovers; a sown one wears the soil down (see FERT_*)
                     let m = self.buildings[i].mode;
                     if m == 1 || m == 3 {
-                        let b = &mut self.buildings[i]; b.fert = (b.fert + FERT_REST).min(FERT_MAX); if b.mode == 3 && b.fert >= FERT_RESTORED { b.mode = 2; }
+                        let b = &mut self.buildings[i]; b.fert = (b.fert + if season == 3 { FERT_REST * FERT_WINTER_REST } else { FERT_REST }).min(FERT_MAX); if b.mode == 3 && b.fert >= FERT_RESTORED { b.mode = 2; }
                         status = 4; p -= need; continue;
                     }
                 }
@@ -2310,11 +2316,51 @@ impl World {
         if (tx - hx).hypot(ty - hy) < 40.0 { return -4; }
         let same = |pl: &Vec<(f32, f32)>| pl.last().map_or(false, |e| (e.0 - tx).hypot(e.1 - ty) < 12.0);
         if self.links.len() >= 24 && !self.links.iter().any(same) { return -3; }
-        let route = match self.route_on_graph(&[1, 0, 0, 0, 0, 0], hx, hy, tx, ty, true) { Ok(r) => r, Err(_) => return -2 };
-        let pl: Vec<(f32, f32)> = route.iter().map(|w| (w.x, w.y)).collect();
+        // (worked out over the village without the old invisible paths, which would pull the new one along their line)
+        let kept = std::mem::take(&mut self.links);
+        let route = self.link_route(tx, ty);
+        self.links = kept;
+        let Ok(pl) = route else { return -2 };
         if let Some(k) = self.links.iter().position(same) { self.links[k] = pl; } else { self.links.push(pl); }
+        let st = self.links_free_stamp(); self.link_stamp.set(st);
         if !self.defer_roads { self.rebuild_roads(); }   // the network changed: so do the roads that are made of it
         0
+    }
+
+    /// Where the invisible paths leave the city: the node outside the gate of the hall (the Castle's walls and halls are never crossed), not the middle of the hall.
+    fn city_exit(&self) -> (f32, f32) {
+        let net = self.net();
+        net.ring.first().and_then(|r| r.iter().copied().find(|&id| id != u32::MAX)).map(|id| net.nodes[id as usize]).unwrap_or((self.buildings[0].x, self.buildings[0].y))
+    }
+
+    /// The cheapest dry way from the edge of our city to (tx, ty): out of the gate, along the village's own paths (round the buildings, never through them) and across the land. Call it with `links` taken out.
+    fn link_route(&self, tx: f32, ty: f32) -> Result<Vec<(f32, f32)>, i32> {
+        let (sx, sy) = self.city_exit();
+        let route = self.route_on_graph(&[1, 0, 0, 0, 0, 0], sx, sy, tx, ty, true)?;
+        let mut pl: Vec<(f32, f32)> = route.iter().map(|w| (w.x, w.y)).collect();
+        if pl.last().map_or(true, |e| (e.0 - tx).hypot(e.1 - ty) >= 12.0) { pl.push((tx, ty)); }
+        Ok(pl)
+    }
+
+    /// What the invisible paths depend on, without them.
+    fn links_free_stamp(&mut self) -> u64 {
+        let kept = std::mem::take(&mut self.links);
+        let s = self.route_revision();
+        self.links = kept;
+        s
+    }
+
+    /// Every few ticks: when something was built or torn down since the invisible paths were worked out, work them out again, so they never run through a building that came later and go
+    /// round one that was taken away. A path whose goal can no longer be reached stays as it was.
+    fn refresh_links(&mut self) {
+        if self.links.is_empty() || self.tick % 8 != 0 || self.buildings.is_empty() { return; }
+        let stamp = self.links_free_stamp();
+        if stamp == self.link_stamp.get() { return; }
+        let old = std::mem::take(&mut self.links);
+        let fresh: Vec<Vec<(f32, f32)>> = old.iter().map(|pl| match pl.last() { Some(&(tx, ty)) => self.link_route(tx, ty).unwrap_or_else(|_| pl.clone()), None => pl.clone() }).collect();
+        self.links = fresh;
+        self.link_stamp.set(stamp);
+        if !self.defer_roads { self.rebuild_roads(); }
     }
     /// Is there already an invisible path to the village whose hall is at (tx, ty)?
     pub fn link_exists(&self, tx: f32, ty: f32) -> bool { self.links.iter().any(|pl| pl.last().map_or(false, |e| (e.0 - tx).hypot(e.1 - ty) < 12.0)) }
@@ -5324,6 +5370,13 @@ mod pathing_room_tests {
     }
 
     #[test]
+    fn a_fallow_field_recovers_twice_as_fast_in_winter() {
+        let rest = |tick: u64| { let (mut w, f) = fert_world(); w.buildings[f as usize].fert = 3_000; w.set_field_mode(f, 1); w.tick = tick; run_keeping_fed(&mut w, 200); w.field_info(f)[0] - 3_000 };
+        let (summer, winter) = (rest(DAY * SEASON_DAYS), rest(DAY * SEASON_DAYS * 3));
+        assert!(summer > 0 && winter >= summer * 3 / 2, "winter {winter} vs summer {summer}");
+    }
+
+    #[test]
     fn a_fallow_field_recovers_and_makes_nothing() {
         let (mut w, f) = fert_world();
         w.buildings[f as usize].fert = 3_000;
@@ -5739,6 +5792,24 @@ mod pathnet_tests {
         let (apart, total) = comps(&w);
         assert!(total > 40, "{total} nodes");
         assert_eq!(apart, 0, "every building's lines join the castle's: {apart} of {total} nodes are cut off");
+    }
+
+    #[test]
+    fn the_chained_path_starts_outside_the_castle_and_moves_when_something_is_built_on_it() {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.buildings[0].tier = 3; w.after_change();
+        for (k, x, y) in [(HOUSE, 40, 4), (HOUSE, -40, 6), (HOUSE, 60, 30), (HOUSE, 30, -40)] { w.place(k, x, y, 0); }
+        assert_eq!(w.link_village(300.0, 40.0), 0);
+        let inside = |w: &World| w.links[0].iter().take(w.links[0].len().saturating_sub(1)).filter(|p| w.member_blocked_inner(p.0, p.1, 0)).count();
+        assert_eq!(inside(&w), 0, "the invisible path runs through a building or the castle: {:?}", w.links[0]);
+        let first = w.links[0][0];
+        assert!(first.0.hypot(first.1) > 24.0, "the path starts outside the castle: {first:?}");
+        // something is built right on the path: a few ticks later it has moved round it
+        let on = w.links[0].iter().skip(2).copied().find(|p| p.0.hypot(p.1) > 40.0 && p.0.hypot(p.1) < 100.0).expect("a point of the path out in the village");
+        let before = w.links[0].clone();
+        w.place(HOUSE, on.0.round() as i32, on.1.round() as i32, 0);
+        for _ in 0..16 { w.step(); }
+        assert_ne!(w.links[0], before, "the path did not move");
+        assert_eq!(inside(&w), 0, "the moved path still runs through a building: {:?}", w.links[0]);
     }
 
     #[test]

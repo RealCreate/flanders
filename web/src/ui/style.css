@@ -547,3 +547,20 @@ body.cmd-mode #cs-top { top: auto; bottom: 96px; }
 body.cmd-mode #cs-left, body.cmd-mode #cs-right { top: 150px; max-height: calc(100vh - 300px); }
 body.cmd-mode #battle-controls { flex-wrap: wrap; justify-content: center; }
 #battle-orders { flex-wrap: wrap; }
+/* the card of the selected armies */
+#cs-sel { position: fixed; z-index: 6; left: 14px; bottom: 14px; width: 220px; padding: 10px 12px; background: #1d150de6; border: 1px solid #c9a24a; border-radius: 8px; color: #f1e4c3; font: 13px system-ui, sans-serif; box-shadow: 0 8px 24px #0007; }
+#cs-sel[hidden] { display: none; }
+#cs-sel h3 { margin: 0 0 4px; font-family: var(--f-display); letter-spacing: .08em; font-size: 14px; color: #e9c46a; }
+.cs-state { margin: 0 0 6px; color: #b9a98a; }
+.cs-acts { display: flex; gap: 6px; margin-top: 8px; }
+body.cmd-mode #cs-sel { display: none; }
+/* the march button under the village picker: full width, taller, and clear of the dropdown */
+#atk-sel { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 44px; margin: 12px 0 8px; padding: 10px 14px; font-size: 17px; box-sizing: border-box; }
+#atk-sel[hidden] { display: none; }
+#atk-sel svg, #atk-sel img { width: 20px; height: 20px; }
+/* army card: buttons share the width evenly, rows are tighter, and the pop-up messages stay on top of it */
+.cs-acts { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 8px; }
+.cs-acts .pbtn { width: 100%; margin: 0; padding: 8px 0; text-align: center; }
+#cs-sel .cs-row { padding: 3px 0; }
+#cs-sel { padding: 8px 12px; bottom: 14px; }
+#toasts { z-index: 9; }

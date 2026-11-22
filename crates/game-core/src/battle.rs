@@ -387,7 +387,7 @@ impl World {
             let ud = &stats;
             // morale: a unit running away does not fight; once clear of the field it is gone (alive, but out of the battle)
             // one of ours caught in the water (a deck drawn up under him): he scrambles back towards the hall until he is on dry ground
-            if u.side == 0 && u.elev <= 0.0 && !tower_guards[i] && self.own_wet(&b, &wet, &cr, u.x, u.y) {
+            if u.side == 0 && !wet.is_empty() && u.elev <= 0.0 && !tower_guards[i] && self.own_wet(&b, &wet, &cr, u.x, u.y) {
                 let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
                 let (dx, dy) = (hx - u.x, hy - u.y); let d = dx.hypot(dy).max(0.1);
                 b.units[i].x = u.x + dx / d * ud.speed * dt; b.units[i].y = u.y + dy / d * ud.speed * dt;

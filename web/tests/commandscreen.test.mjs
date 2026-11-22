@@ -31,3 +31,12 @@ test('the strength line names both sides', () => {
   const html = strengthHtml(sideSummary(f, 0), sideSummary(f, 1), 'Defenders', 'Bandits');
   assert.match(html, /Defenders/); assert.match(html, /Bandits/); assert.match(html, /4 men/); assert.match(html, /2 men/);
 });
+
+import { armyCardHtml } from '../src/ui/commandscreen.ts';
+test('the card of a selected army lists its troops and offers orders', () => {
+  const one = armyCardHtml({ title: 'Army 3', units: [8, 3, 0, 0, 0, 0], state: 'Marching (40%)', armies: 1 }, k => `<i>${k}</i>`);
+  assert.match(one, /Army 3/); assert.match(one, /11 soldiers · Marching/); assert.match(one, /Spearmen/); assert.match(one, /Archers/); assert.doesNotMatch(one, /Knights/);
+  assert.match(one, /data-army="split"/);
+  const many = armyCardHtml({ title: '2 armies', units: [4, 0, 0, 1, 0, 0], state: '', armies: 2 }, () => '');
+  assert.doesNotMatch(many, /data-army="split"/); assert.match(many, /data-army="halt"/);
+});

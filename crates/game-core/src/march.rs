@@ -1205,7 +1205,7 @@ impl World {
                 if d.file.formation_step(&d.units) { d.state = if d.atk.is_some() { S_ARRIVED } else { S_IDLE }; }
                 return true;
             }
-            if d.state == S_BLOCKED && d.blocked_stamp != stamp && self.tick >= d.retry_at {
+            if d.state == S_BLOCKED && self.tick >= d.retry_at {   // (it tries again when its wait is over, whether or not the village changed: a stuck army must never stay stuck for good)
                 d.state = if d.home { S_HOME } else { S_MARCH };
             }
             let travelling = matches!(d.state, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
@@ -1215,8 +1215,10 @@ impl World {
                 obst.solid_clear((a.x, a.y), (b.x, b.y), members::FOOT_MARGIN)
             } else { walk(self, (a.x, a.y), (b.x, b.y), false) };
             if travelling && (!d.file.check(stamp, &hu, check) || d.grp.iter_mut().any(|g| !g.file.check(stamp, &g.units, check))) {
-                d.state = S_BLOCKED; d.speed = 0.0; d.blocked_stamp = stamp;
-                return true;
+                // The trail the soldiers follow crosses something that was not there when they passed (a castle raised over the muster ground, a wall built behind them), so it can never be walked
+                // again: it is forgotten and the soldiers gather on the head of the army. If the way ahead is blocked the legs below find that and the army re-plans, as it always did.
+                d.file = Default::default();
+                for g in d.grp.iter_mut() { g.file = Default::default(); }
             }
             let mut blocked = false;
             if d.wi < d.path.len() && d.file.points.last().is_some_and(|p| (p.wp.x, p.wp.y) != (d.x, d.y)) { d.file = Default::default(); }
@@ -1472,5 +1474,55 @@ mod nav_slices {
         let mut cut = vec![]; let mut y = cy0;
         while y < cy1 { let k = (y + 5).min(cy1); cut.extend(terrain::trees_cells(seed, cx0, cx1, y, k)); y = k; }
         assert!(!all.is_empty() && all == cut);
+    }
+}
+
+#[cfg(test)]
+impl World {
+    /// (test aid) Why is the first army not moving: each hop of its path against the checks the march step makes.
+    pub(crate) fn diagnose_march(&self) {
+
+        let ns = nav_static(self.seed); let obst = self.obst(); let terrain = self.ground_samples();
+        let d = &self.dets[0];
+        eprintln!("path from wi={}:", d.wi);
+        for (i, p) in d.path.iter().enumerate() { eprintln!("  wp{} ({:.1},{:.1}) mode {}", i, p.x, p.y, p.mode); }
+        let mut prev = (d.x, d.y);
+        for (i, p) in d.path.iter().enumerate().skip(d.wi.saturating_sub(1)) {
+            let b = (p.x, p.y);
+            let mc = obst.movement_clear(prev, b, members::FOOT_MARGIN);
+            let ws = self.walk_surface_with(&ns, &obst, prev, b, 1.6, false, |x, y| terrain.height(self, x, y));
+            eprintln!("  hop to wp{} from ({:.1},{:.1}): movement_clear {} walk_surface {}", i, prev.0, prev.1, mc, ws);
+            prev = b;
+        }
+        for (gi, g) in d.grp.iter().enumerate() { eprintln!("group {} units {:?} wi {}/{} at ({:.1},{:.1})", gi, g.units, g.wi, g.path.len(), g.x, g.y); for (i, p) in g.path.iter().enumerate() { eprintln!("   gwp{} ({:.1},{:.1}) mode {}", i, p.x, p.y, p.mode); } }
+        for g in &d.grp {
+            let mut prev = (g.x, g.y);
+            eprintln!("  group at ({:.2},{:.2}) itself: movement_clear {} blocked_at_point {}", g.x, g.y, obst.movement_clear(prev, prev, members::FOOT_MARGIN), self.member_blocked(g.x, g.y, 0));
+            for (i, p) in g.path.iter().enumerate().skip(g.wi) {
+                let b = (p.x, p.y);
+                let mc = obst.movement_clear(prev, b, members::FOOT_MARGIN);
+                let ws = self.walk_surface_with(&ns, &obst, prev, b, 1.6, false, |x, y| terrain.height(self, x, y));
+                let ws_lend = self.walk_surface_with(&ns, &obst, prev, b, 1.6, true, |x, y| terrain.height(self, x, y));
+                eprintln!("  group hop to gwp{} from ({:.1},{:.1}): movement_clear {} walk_surface {} (lend {})", i, prev.0, prev.1, mc, ws, ws_lend);
+                prev = b;
+            }
+        }
+        {
+            let walk = |a: Wp, b: Wp| obst.movement_clear((a.x, a.y), (b.x, b.y), members::FOOT_MARGIN) && self.walk_surface_with(&ns, &obst, (a.x, a.y), (b.x, b.y), 1.6, false, |x, y| terrain.height(self, x, y));
+            let mut files: Vec<(String, &MarchFile, [u32; NK])> = vec![("army".to_string(), &d.file, Self::head_units(d))];
+            for (gi, g) in d.grp.iter().enumerate() { files.push((format!("group {gi}"), &g.file, g.units)); }
+            for (name, f, units) in files {
+                let behind = f.dispatch - MarchFile::lag(&units);
+                eprintln!("  file {name}: dispatch {:.1} behind {:.1} points {} approaches {}", f.dispatch, behind, f.points.len(), f.approaches.len());
+                let start = f.points.partition_point(|p| p.dist < behind).saturating_sub(1);
+                for w in f.points[start..].windows(2) { if !(w[1].dist <= behind || walk(w[0].wp, w[1].wp)) { eprintln!("    FAILS point segment ({:.1},{:.1}) -> ({:.1},{:.1}) dist {:.1}..{:.1}", w[0].wp.x, w[0].wp.y, w[1].wp.x, w[1].wp.y, w[0].dist, w[1].dist); } }
+                for (rank, path) in f.approaches.iter().enumerate() {
+                    let at = f.dispatch - rank as f32 * MarchFile::gap(&units);
+                    for w in path.windows(2) { if !(w[1].dist <= at || walk(w[0].wp, w[1].wp)) { eprintln!("    FAILS approach {rank} segment ({:.1},{:.1}) -> ({:.1},{:.1}) dist {:.1}..{:.1} (at {:.1})", w[0].wp.x, w[0].wp.y, w[1].wp.x, w[1].wp.y, w[0].dist, w[1].dist, at); } }
+                }
+            }
+        }
+        for b in &self.buildings { eprintln!("building kind {} tier {} at ({:.0},{:.0}) rot {}", b.kind, b.tier, b.x, b.y, b.rot); }
+    
     }
 }
