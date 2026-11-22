@@ -231,6 +231,8 @@ pub struct Det {
     pub since_fell: f32,
     pub grp: Vec<Grp>,      // riders and engines marching apart (see Grp); their soldiers are still counted in `units`
     pub defend: bool,       // sent to fight in the battle at home: joins it as soon as it is close to an attacker
+    /// 0 for our own army. Otherwise the tag of the allied village whose soldiers these are: guests (see `host_guests`) who fight beside our defenders and cannot be ordered about by us.
+    pub ally: i32,
     #[serde(skip)] pub(crate) file: MarchFile,
     #[serde(skip)] destination: Option<(f32, f32)>,
     #[serde(skip)] blocked_stamp: u64,
@@ -1043,6 +1045,11 @@ impl World {
     /// Take soldiers out of the barracks into a new field army. Returns its id, or 0 if impossible.
     pub(crate) fn det_form_inner(&mut self, units: [u32; NK]) -> u32 {
         if units.iter().all(|&u| u == 0) || (0..NK).any(|k| units[k] > self.army[k]) { return 0; }
+        self.det_muster(units, 0)
+    }
+
+    /// Put a field army on the ground at the barracks (or the castle gate). `ally` 0: our own soldiers, taken from the standing army. Otherwise guests of that allied village, who come from elsewhere.
+    pub(crate) fn det_muster(&mut self, units: [u32; NK], ally: i32) -> u32 {
         let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
         let (bx, by) = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hx + 10.0, hy + 10.0), |b| (b.x, b.y + 8.0));
         let ns = nav_static(self.seed); let ov = self.ov();
@@ -1076,10 +1083,12 @@ impl World {
         let mut file = MarchFile::default();
         file.record(x, y, 0);
         file.assign_approaches(self.muster_approaches(&ns, (x, y), &units, 0.0, &[]), &units);
-        if !self.battle_release_army(units) { return 0; }
-        for k in 0..NK { self.army[k] -= units[k]; }
+        if ally == 0 {
+            if !self.battle_release_army(units) { return 0; }
+            for k in 0..NK { self.army[k] -= units[k]; }
+        }
         self.next_det += 1;
-        self.dets.push(Det { id: self.next_det, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![], file, destination: None, blocked_stamp: 0, retry_at: 0, retry_n: 0 });
+        self.dets.push(Det { id: self.next_det, ally, units, x, y, path: vec![], wi: 0, state: S_IDLE, phase: 0, work: 0.0, work_total: 0.0, sx: x, sy: y, atk: None, home: false, heading: 0.0, speed: 0.0, since_fell: 0.0, defend: false, grp: vec![], file, destination: None, blocked_stamp: 0, retry_at: 0, retry_n: 0 });
         self.next_det
     }
 
@@ -1090,6 +1099,7 @@ impl World {
 
     pub(crate) fn det_march_mode(&mut self, id: u32, tx: f32, ty: f32, attack: Option<(f32, f32)>, home: bool, cached_only: bool) -> i32 {
         let Some(ix) = self.det_index(id) else { return -1; };
+        if self.dets[ix].ally != 0 { return -1; }   // guests are not ours to order about
         if cached_only && self.dets[ix].state == S_FIGHT { return ROUTE_PENDING; }
         self.det_disengage(id);   // an army in the fight breaks off to go where it is told
         let Some(i) = self.det_index(id) else { return -1 };
@@ -1153,7 +1163,7 @@ impl World {
     pub(crate) fn det_split_inner(&mut self, id: u32, take: [u32; NK]) -> u32 {
         let Some(i) = self.det_index(id) else { return 0 };
         let d = self.dets[i].clone();
-        if d.state == S_FIGHT { return 0; }
+        if d.state == S_FIGHT || d.ally != 0 { return 0; }
         if take.iter().all(|&u| u == 0) || (0..NK).any(|k| take[k] > d.units[k]) || (0..NK).all(|k| take[k] == d.units[k]) { return 0; }
         for k in 0..NK { self.dets[i].units[k] -= take[k]; }
         self.next_det += 1;
@@ -1181,14 +1191,14 @@ impl World {
 
     pub(crate) fn det_merge_inner(&mut self, a: u32, b: u32) -> bool {
         let (Some(i), Some(j)) = (self.det_index(a), self.det_index(b)) else { return false };
-        if i == j || self.dets[i].state == S_FIGHT || self.dets[j].state == S_FIGHT || ((self.dets[i].x - self.dets[j].x).powi(2) + (self.dets[i].y - self.dets[j].y).powi(2)).sqrt() > 10.0 { return false; }
+        if i == j || self.dets[i].state == S_FIGHT || self.dets[j].state == S_FIGHT || self.dets[i].ally != 0 || self.dets[j].ally != 0 || ((self.dets[i].x - self.dets[j].x).powi(2) + (self.dets[i].y - self.dets[j].y).powi(2)).sqrt() > 10.0 { return false; }
         let u = self.dets[j].units; for k in 0..NK { self.dets[i].units[k] += u[k]; }
         self.dets.remove(j); let i = self.det_index(a).unwrap(); self.dets[i].state = S_IDLE; self.dets[i].path.clear(); self.dets[i].grp.clear(); self.dets[i].file = Default::default(); true
     }
 
     /// Hand an arrived army over to the attack on another village. Returns its soldiers.
     pub(crate) fn det_send_inner(&mut self, id: u32) -> Option<[u32; NK]> {
-        let i = self.det_index(id)?; if self.dets[i].state == S_FIGHT { return None; } let u = self.dets[i].units; self.dets.remove(i);
+        let i = self.det_index(id)?; if self.dets[i].state == S_FIGHT || self.dets[i].ally != 0 { return None; } let u = self.dets[i].units; self.dets.remove(i);
         for k in 0..NK { self.away[k] += u[k]; } Some(u)
     }
 

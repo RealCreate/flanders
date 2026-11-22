@@ -40,7 +40,7 @@ fn no_command_panics_on_hostile_arguments() {
         let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0x1234_5678_9ABC_DEF1));
         let mut w = village();
         for round in 0..4000 {
-            let op = r.next() % 46; if std::env::var("TRACE").is_ok() { eprintln!("seed {seed} round {round} op {op}"); }
+            let op = r.next() % 47; if std::env::var("TRACE").is_ok() { eprintln!("seed {seed} round {round} op {op}"); }
             let t0 = std::time::Instant::now();
             match op {
                 0 => { w.place(r.b(), r.i(), r.i(), r.b()); }
@@ -86,6 +86,7 @@ fn no_command_panics_on_hostile_arguments() {
                 41 => { let _ = w.field_info(r.u()); }
                 43 => { w.set_workers(r.u(), r.i()); let _ = w.staffing_flat(); let _ = w.staffing_totals(); }
                 42 => { let hh = r.f(); w.level_ground(r.i(), r.i(), r.i(), hh); let _ = w.level_check(r.i(), r.i(), r.i(), r.f()); let _ = w.level_target(r.i(), r.i(), r.i(), f32::NAN); let _ = w.level_check(r.i(), r.i(), 6, -1.0e30); w.flatten(r.u(), r.f()); }
+                46 => { let tag = r.i(); if r.next() % 2 == 0 { w.rel_add(tag, 90); w.treaty_set(tag, 1, 30); w.treaty_set(tag, 2, 30); } if r.next() % 3 == 0 { w.host_guests(tag, &r.units()); } else { let _ = w.release_guests(tag); let _ = w.det_ally_flat(); } }
                 45 => { if r.next() % 3 == 0 { w.cheat(4, r.i().clamp(0, 600), r.i().clamp(0, 1000)); } w.bribe(); let _ = (w.bribe_price(), w.bribe_greed(), w.last_report_bought()); }
                 _ => { let n = r.pick(&[1, 2, 5]); for _ in 0..n { w.step(); } }
             }

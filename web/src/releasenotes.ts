@@ -9,6 +9,7 @@ export const RELEASES: Release[] = [
       'Commands no longer get lost: every command a player gives reaches everybody, complete and in order, even over a bad connection. Anything missing is noticed at once and sent again.',
       'The multiplayer panel shows the ping to each player and says when a connection is unstable.',
       'The game now checks for a newer version, and updates itself (after saving) when one is out or when another player is already on a newer one, so everybody plays the same version.',
+      'Allies can help each other: send a selected army to an ally, who is asked to let it in. It then fights beside their defenders whenever they are raided, until it is sent home. You can also ask an ally for help.',
     ],
     changed: [
       'A connection that drops for a moment is picked up again where it left off, without sending whole villages again, and a short break no longer shows "has left the world".',

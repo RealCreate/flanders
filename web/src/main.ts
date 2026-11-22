@@ -135,6 +135,10 @@ const ui: UI = new UI({
   bridgeShortcuts: on => { if (replay?.target === lv) { updateHud(); return; } lv.world.army_set_bridge_shortcuts(on); void commit({ op: 'armybridge', kind: Number(on) }); },
   attack: (key, u) => doAttack(key, u),
   attackSelected: key => doAttackSelected(key),
+  assistSelected: key => void doAssistSelected(key),
+  askHelp: key => askForHelp(key),
+  recallAid: key => recallAid(key),
+  guestsHome: key => { const r = rivals.get(key); if (r) sendGuestsHome(r, false); },
   trade: (key, action, res, amount, escort) => doTrade(key, action, res, amount, escort),
   watch: key => startReplay(key),
   focusPeer: key => { const r = rivals.get(key); if (r) rig.focus(r.village.ox, r.village.oz, 80); },
@@ -581,6 +585,11 @@ function connect() {
         const tag = tagOf(r.key);
         if (lv.world.battle_order(tag, c.idx!, c.kind!, c.x ?? 0, c.y ?? 0)) void commit({ op: 'battleorder', from: r.key, tag, idx: c.idx, kind: c.kind, x: c.x, y: c.y });
       }
+      if (c.op === 'sendaid' && c.to === identity.pub) void receiveAid(r, c);
+      else if (c.op === 'recallaid' && c.to === identity.pub) sendGuestsHome(r, true);
+      else if (c.op === 'ask' && c.to === identity.pub) { ui.toast(`${r.name} asks you for help. Send soldiers to their village from the village list.`, 'info'); sound.alert(); }
+      else if (c.op === 'host' && c.from === identity.pub) ui.toast(`${r.name} let your soldiers in. They fight beside the defenders there.`, 'good');
+      else if (c.op === 'unhost' && c.to === identity.pub) { if (returnRefusedArmy(c.units ?? [])) ui.toast(`Your soldiers are home from ${r.name}.`, 'good'); }
       if (c.op === 'raid') ui.toast(`${r.name}'s village is under attack!`, 'info');
       if (c.to === identity.pub) onTrade(r, c);
     },
@@ -922,6 +931,52 @@ async function doAttack(key: string, u: number[]) {
   if (await orderArmies([id], () => marchOn(id, key, r))) ui.toast(`Your army sets out for ${r.name}. It attacks when it arrives.`, 'good');
 }
 
+/** The armies you have selected march to an ally's village to help: when they arrive the ally is asked to let them in. */
+async function doAssistSelected(key: string) {
+  const r = rivals.get(key); if (!r || r.ai) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (!isAlly(key)) { ui.toast(`You are not allied with ${r.name}.`, 'bad'); return; }
+  if (!r.online) { ui.toast(`${r.name} is away: only a player who is here can let soldiers in.`, 'info'); return; }
+  if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
+  const ids = multiDets.length ? multiDets : selectedDet !== null ? [selectedDet] : [];
+  if (!ids.length) { ui.toast('Select an army first.', 'info'); return; }
+  const sent = await orderArmies(ids, id => marchOn(id, key, r));
+  if (sent) ui.toast(sent > 1 ? `${sent} armies set out to help ${r.name}.` : `Your army sets out to help ${r.name}. ${r.name} is asked to let it in when it arrives.`, 'good');
+}
+
+/** An ally's soldiers have reached our village: let them in (they fight beside our defenders until they are sent home) or send them back. */
+async function receiveAid(from: Rival, c: Cmd) {
+  const soldiers = c.units ?? [], tag = tagOf(from.key), n = soldiers.reduce((a, b) => a + b, 0);
+  const refuse = () => { void commit({ op: 'refuse', to: from.key, units: soldiers }); };
+  if (!isAlly(from.key) || watch.away || replay?.target === lv) { refuse(); return; }
+  const names = soldiers.map((k, i) => k > 0 ? `${k} ${(units[i]?.name ?? 'soldiers').toLowerCase()}` : '').filter(Boolean).join(', ');
+  const yes = await Promise.race([ui.confirm(`${from.name} sends ${n} soldiers (${names}) to stand with your defenders. They eat from your stores and fight beside your soldiers whenever you are attacked, until you send them home.`, 'Let them in', `${from.name} offers help`, 'Send them back'), new Promise<boolean>(res => setTimeout(() => res(false), 90_000))]);
+  if (yes && lv.world.host_guests(tag, Uint32Array.from(soldiers))) {
+    void commit({ op: 'host', from: from.key, tag, units: soldiers });
+    ui.toast(`${from.name}'s soldiers are in your village. They fight beside your defenders.`, 'good'); lv.afterTick(); updateHud(); return;
+  }
+  if (yes) ui.toast(`${from.name}'s soldiers cannot be taken in just now (too many guests, or the alliance has ended).`, 'info');
+  refuse();
+}
+
+/** Send an ally's soldiers who are guests here home (`asked`: they asked to go). Those still in a fight stay until it is over. */
+function sendGuestsHome(r: Rival, asked: boolean) {
+  const tag = tagOf(r.key), back = Array.from(lv.world.release_guests(tag));
+  if (back.reduce((a, b) => a + b, 0) > 0) { void commit({ op: 'unhost', to: r.key, tag, units: back }); ui.toast(`${r.name}'s soldiers are on their way home.`, 'info'); lv.afterTick(); updateHud(); }
+  else if (!asked || lv.world.battle_active()) ui.toast(lv.world.battle_active() ? `${r.name}'s soldiers are fighting: they can leave when it is over.` : `${r.name} has no soldiers in your village.`, 'info');
+}
+
+/** Ask an ally for help: a message, nothing more (they decide what to send). */
+function askForHelp(key: string) {
+  const r = rivals.get(key); if (!r || !isAlly(key)) { ui.toast('Only an ally can be asked for help.', 'info'); return; }
+  void commit({ op: 'ask', to: key, kind: 1 }); ui.toast(`You ask ${r.name} for help.`, 'good');
+}
+
+/** Ask an ally to send our soldiers, who are guests in their village, home. */
+function recallAid(key: string) {
+  const r = rivals.get(key); if (!r) return;
+  void commit({ op: 'recallaid', to: key }); ui.toast(`You ask ${r.name} to send your soldiers home.`, 'info');
+}
+
 /** The armies you have selected march on the village. */
 async function doAttackSelected(key: string) {
   const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
@@ -946,6 +1001,7 @@ let multiDets: number[] = [];   // every selected army; selectedDet is the first
 function selectDet(id: number | null) { selectDets(id === null ? [] : [id]); }
 function selectDets(ids: number[]) {
   cancelMarchPreview();
+  if (ids.length) { const guests = guestIds(); if (ids.some(id => guests.has(id))) { ids = ids.filter(id => !guests.has(id)); if (!ids.length) ui.toast('Soldiers sent by an ally are not yours to command: they fight beside your defenders by themselves. Send them home from the village list.', 'info'); } }
   multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids); ui.setSelectedArmies(ids.length);
   if (ids.length) { selectKind(null); selectBuilding(null); selectRuin(null); ui.setTab('army'); ui.hint(`${ids.length > 1 ? ids.length + ' armies' : 'Army ' + ids[0]} selected · right-click the ground to march · Shift+click adds or removes one · drag a box to select several · ${keyNames('haltArmy')} halt · ${keyNames('recallArmy')} send home · ${keyNames('cancel')} deselect`); }
   else if (selectedKind === null) ui.hint(null);
@@ -1218,7 +1274,11 @@ function checkArrivals() {
     if (pendingArmyOrders.has(id)) continue;
     if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
     const u = detUnits(id)!, sent = lv.world.det_send(id);
-    if (sent.length) {
+    if (sent.length && isAlly(key)) {   // an army that marched to an ally comes to help, not to attack: the ally decides whether to let it in (see receiveAid)
+      attackTargets.delete(id);
+      if (!r.online || r.ai) { returnRefusedArmy(u); ui.toast(`${r.name} is away and cannot take your soldiers in. They come home.`, 'info'); continue; }
+      commit({ op: 'sendaid', idx: id, to: key, units: u }); ui.toast(`Your soldiers reach ${r.name} and wait to be let in.`, 'good');
+    } else if (sent.length) {
       attackTargets.delete(id); commit({ op: 'sendatk', idx: id, to: key, units: u });
       if (r.online) ui.toast(`Your army attacks ${r.name}!`, 'good');
       else attackAway(r, u);
@@ -1652,6 +1712,10 @@ function afterLocalChange(focus?: number) {
 /** Armies may march only on a village we are at war with: declaring war drops the feeling to -80 or lower and ends every treaty. */
 const WAR_BELOW = -60;
 function atWarWith(key: string) { return relOf(key).rel <= WAR_BELOW; }
+/** An alliance is in force with this village (treaty bit 4): allies cannot attack each other, and can send soldiers to help (docs/ALLIES.md). */
+function isAlly(key: string) { return (relOf(key).treaties & 4) !== 0; }
+/** Field armies that are guests of an ally (not ours to order). */
+function guestIds(): Set<number> { const f = lv.world.det_flat(), al = lv.world.det_ally_flat(), out = new Set<number>(); for (let i = 0; i < al.length; i++) if (al[i] !== 0) out.add(f[i * 17]); return out; }
 const NOT_AT_WAR = (name: string) => `You are not at war with ${name}. Declare war on them in the Embassy first.`;
 function relOf(key: string) {
   const tag = tagOf(key), f = lv.world.relations_flat();
@@ -2008,8 +2072,8 @@ function updateFoeArrow() {
 
 /** Field armies that are free to be sent to the fight (not already in it). */
 function freeArmyIds(): number[] {
-  const f = lv.world.det_flat(), out: number[] = [];
-  for (let o = 0; o < f.length; o += 17) if (f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] + f[o + 16] > 0) out.push(f[o]);
+  const f = lv.world.det_flat(), out: number[] = [], guests = guestIds();
+  for (let o = 0; o < f.length; o += 17) if (!guests.has(f[o]) && f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] + f[o + 16] > 0) out.push(f[o]);
   return out;
 }
 const fieldArmiesFree = () => freeArmyIds().length;

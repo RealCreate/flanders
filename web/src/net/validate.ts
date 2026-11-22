@@ -3,7 +3,7 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'untrain', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'turnback', 'carhome', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe', 'research', 'armybridge', 'battleorder', 'reserve', 'plant', 'zone'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'untrain', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'turnback', 'carhome', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe', 'research', 'armybridge', 'battleorder', 'reserve', 'plant', 'zone', 'sendaid', 'host', 'unhost', 'recallaid', 'ask'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {
@@ -104,6 +104,14 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
     out.tech = r.tech;
   }
   for (const f of ['units', 'loot'] as const) if (r[f] !== undefined) { const a = numbers(r[f]); if (!a) return null; out[f] = a; }
+  if (r.op === 'sendaid' || r.op === 'host' || r.op === 'unhost') {   // soldiers sent to help an ally, taken in as guests, sent home again (docs/ALLIES.md)
+    if (!out.units || out.units.length < 5 || out.units.length > 6 || out.units.some(n => n < 0 || n > 100_000) || !out.units.some(n => n > 0)) return null;
+    if (r.op === 'sendaid' && !(out.to && isInt(out.idx) && out.idx >= 0)) return null;
+    if (r.op === 'host' && !(out.from && isInt(out.tag))) return null;
+    if (r.op === 'unhost' && !(out.to && isInt(out.tag))) return null;
+  }
+  if (r.op === 'recallaid' && !out.to) return null;   // ask an ally to send our soldiers home
+  if (r.op === 'ask' && !(out.to && isInt(out.kind) && out.kind >= 1 && out.kind <= 3)) return null;   // a request for help: 1 defence, 2 a raid, 3 work
   if (out.op === 'return' && out.kind === 1 && (out.loot !== undefined || !out.units || out.units.length > 6 || out.units.some(n => n < 0))) return null;
   if (out.h !== undefined && (out.op === 'place' || out.op === 'batch')) {
     const direction = (kind: number | undefined) => kind === 33 || kind === 34;

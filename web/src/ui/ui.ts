@@ -75,6 +75,11 @@ export interface Handlers {
   attack(peerKey: string, units: number[]): void;
   /** March the armies that are selected on the map on a rival village. */
   attackSelected(peerKey: string): void;
+  /** March the armies that are selected on the map to an allied village to help it (the ally is asked to let them in), ask an ally for help, ask an ally to send our soldiers home, and send an ally's soldiers who are our guests home. */
+  assistSelected(peerKey: string): void;
+  askHelp(peerKey: string): void;
+  recallAid(peerKey: string): void;
+  guestsHome(peerKey: string): void;
   trade(peerKey: string, action: string, res: number, amount: number, escort: number): void;
   focusPeer(key: string): void;
   /** Watch a player's history ('' = your own). */
@@ -591,7 +596,10 @@ export class UI {
       const r = this.minimap.getBoundingClientRect();
       this.h.minimapClick(((e.clientX - r.left) / r.width - 0.5) * HALF * 2, ((e.clientY - r.top) / r.height - 0.5) * HALF * 2);
     };
-    $('pane-village').onclick = $('mp').onclick = e => { const wb = (e.target as HTMLElement).closest<HTMLElement>('[data-watch]'); if (wb) { this.modal('mp', false); this.h.watch(wb.dataset.watch!); return; } const b = (e.target as HTMLElement).closest<HTMLElement>('[data-peer]'); if (b) { this.h.focusPeer(b.dataset.peer!); this.modal('mp', false); } };
+    $('pane-village').onclick = $('mp').onclick = e => {
+      const ally = (e.target as HTMLElement).closest<HTMLElement>('[data-ally]');
+      if (ally) { const key = ally.dataset.key!, act = ally.dataset.ally; if (act === 'ask') this.h.askHelp(key); else if (act === 'recall') this.h.recallAid(key); else if (act === 'guests') this.h.guestsHome(key); return; }
+      const wb = (e.target as HTMLElement).closest<HTMLElement>('[data-watch]'); if (wb) { this.modal('mp', false); this.h.watch(wb.dataset.watch!); return; } const b = (e.target as HTMLElement).closest<HTMLElement>('[data-peer]'); if (b) { this.h.focusPeer(b.dataset.peer!); this.modal('mp', false); } };
     addEventListener('keydown', e => {
       if ((e.target as HTMLElement)?.matches?.('input,textarea')) return;
       if (e.key === 'Escape') { document.querySelectorAll('.overlay.clear').forEach(o => ((o as HTMLElement).hidden = true)); }
@@ -1176,7 +1184,7 @@ export class UI {
     this.peers = rows;
     $('mp-count').textContent = rows.length ? `${rows.length + 1} players` : 'Online';
     $('mp-world').textContent = world;
-    const list = rows.length ? rows.map(r => `<li><b>${esc(r.name)}</b> — ${r.pop} villagers, ${r.buildings} buildings · ${r.sync} <button class="chip" data-peer="${esc(r.key)}">Visit</button> <button class="chip" data-watch="${esc(r.key)}" title="Replay this player's history">Watch history</button></li>`).join('') : '<li class="muted">Nobody else is here yet.</li>';
+    const list = rows.length ? rows.map(r => `<li><b>${esc(r.name)}</b> — ${r.pop} villagers, ${r.buildings} buildings · ${r.sync} <button class="chip" data-peer="${esc(r.key)}">Visit</button> <button class="chip" data-watch="${esc(r.key)}" title="Replay this player's history">Watch history</button>${(r.treaties ?? 0) & 4 ? ` <button class="chip" data-ally="ask" data-key="${esc(r.key)}" title="Ask your ally for help">Ask for help</button> <button class="chip" data-ally="recall" data-key="${esc(r.key)}" title="Ask your ally to send your soldiers, who are guests in their village, home">Recall my soldiers</button> <button class="chip" data-ally="guests" data-key="${esc(r.key)}" title="Send your ally's soldiers, who are guests in your village, home">Send their soldiers home</button>` : ''}</li>`).join('') : '<li class="muted">Nobody else is here yet.</li>';
     $('peer-list').innerHTML = list; $('mp-peers').innerHTML = list;
     const form = $('attack-form');
     const sig = rows.map(r => r.key + r.busy + r.name + r.where).join(',');
@@ -1185,6 +1193,7 @@ export class UI {
       form.innerHTML = rows.length
         ? `<select id="atk-target">${rows.map(r => `<option value="${esc(r.key)}">${esc(r.name)}${r.where ? ' · ' + esc(r.where) : ''} · ${r.buildings} buildings</option>`).join('')}</select>
            <button class="pbtn danger" id="atk-sel" hidden></button>
+           <button class="pbtn" id="aid-sel" hidden></button>
            <p class="muted" id="atk-hint"></p>
            <h4>Trade</h4><p class="muted">Everything travels the road between the two cities and works when it arrives.</p>
            <div class="trade-row"><select id="trd-res" aria-label="Goods">${RES.map((r, i) => `<option value="${i}">${r.name}</option>`).join('')}</select><label class="tfield" title="Amount"><span>#</span><input type="number" min="1" max="500" value="50" id="trd-amt"></label><label class="tfield" title="Spearmen as escort"><span>${bi('shield', 14)}</span><input type="number" min="0" value="0" id="trd-esc"></label></div>
@@ -1196,6 +1205,8 @@ export class UI {
       for (const [id, a] of [['trd-send', 'caravan'], ['trd-gift', 'gift'], ['trd-pact', 'pact'], ['trd-peace', 'peace'], ['dip-envoy', 'envoy'], ['dip-ally', 'alliance'], ['dip-marry', 'marriage'], ['dip-war', 'war']] as const) { const b = document.getElementById(id); if (b) b.onclick = () => trade(a); }
       const goSel = document.getElementById('atk-sel');
       if (goSel) goSel.onclick = () => this.h.attackSelected(($('atk-target') as HTMLSelectElement).value);
+      const goAid = document.getElementById('aid-sel');
+      if (goAid) goAid.onclick = () => this.h.assistSelected(($('atk-target') as HTMLSelectElement).value);
     }
     this.showAttackMode();
     const sel = document.getElementById('atk-target') as HTMLSelectElement | null, rel = document.getElementById('dip-rel');
@@ -1213,8 +1224,10 @@ export class UI {
     if (!go || !hint) return;
     const n = this.selectedArmies, sel = document.getElementById('atk-target') as HTMLSelectElement | null, row = this.peers.find(x => x.key === sel?.value);
     const war = (row?.rel ?? 0) <= -60;   // armies march only on a village we have declared war on
+    const ally = ((row?.treaties ?? 0) & 4) !== 0, aid = document.getElementById('aid-sel') as HTMLButtonElement | null;   // ...or to an ally, to help it
     go.hidden = n === 0 || !war; go.innerHTML = `${bi('attack')} ${n > 1 ? `March the ${n} selected armies` : 'March the selected army'}`;
-    hint.textContent = !n ? 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.' : war ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : `You are not at war with ${row?.name ?? 'them'}: declare war first, then your army can march on them.`;
+    if (aid) { aid.hidden = n === 0 || !ally; aid.innerHTML = `${bi('shield', 14)} ${n > 1 ? `Send the ${n} selected armies to help` : 'Send the selected army to help'}`; }
+    hint.textContent = ally ? (!n ? `${row?.name} is your ally. Select an army on the map, then send it to help: ${row?.name} lets it in and it fights beside their defenders.` : `Your army walks to ${row?.name}, who is asked to let it in. Call it home from the village list.`) : !n ? 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.' : war ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : `You are not at war with ${row?.name ?? 'them'}: declare war first, then your army can march on them.`;
   }
 
   private battleMin = false;
