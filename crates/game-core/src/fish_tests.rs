@@ -96,11 +96,11 @@ fn every_kind_of_food_is_eaten_together_and_cooked_food_goes_further() {
     assert_eq!(q0 - quarters(&w), 40, "a tick's meals, no more");
     assert!(w.stock[SF as usize] < 100 && w.stock[GR as usize] <= 100, "the fish store, holding more food, goes first");
     for _ in 0..20 { w.step(); }
-    let (f, g) = (w.stock[SF as usize] * 6, w.stock[GR as usize] * 4); assert!((f - g).abs() <= 6, "the stores level out: fish {f}, grain {g}");
+    let (f, g) = (w.stock[SF as usize] * 6, w.stock[GR as usize] * 3); assert!((f - g).abs() <= 6, "the stores level out: fish {f}, grain {g}");
     // raw fish and raw grain fill less: the same head count eats more items of them than of bread
     let eaten = |res: u8| { let mut v = World::new(1337, 0, 0); v.stock = [0; N_RES]; v.population = 100; v.children = 0; v.elders = 0; v.stock[res as usize] = 1000; for _ in 0..40 { v.step(); } 1000 - v.stock[res as usize] };
     let (raw, bread) = (eaten(GR), eaten(BD));
-    assert_eq!(eaten(FI), raw, "raw fish and raw grain fill the same"); assert!(bread * 3 <= raw * 2 + 3, "bread {bread} against grain {raw}");
+    assert!(eaten(FI) < raw, "raw grain fills less than raw fish"); assert!(bread * 2 <= raw + 3, "bread {bread} against grain {raw}");
     // when there is not enough food everything is eaten and people starve
     let mut h = World::new(1337, 0, 0); h.stock = [0; N_RES]; h.population = 100; h.stock[FI as usize] = 5; h.step();
     assert_eq!(h.stock[FI as usize], 0); assert_eq!(h.food(), 0);
@@ -113,7 +113,7 @@ fn every_kind_of_food_is_eaten_together_and_cooked_food_goes_further() {
 #[test]
 fn the_food_reserve_uses_current_rations_and_meal_credit() {
     let mut w = World::new(1337, 0, 0);
-    assert_eq!(w.food_reserve_days(), 0.5);
+    assert_eq!(w.food_reserve_days(), 0.375);
     w.stock = [0; N_RES];
     w.stock[BD as usize] = 320;
     w.away[0] = 5;
@@ -185,5 +185,6 @@ fn hunters_bring_meat_and_a_smokehouse_smokes_fish_or_meat() {
     assert!(w.stock[SM as usize] > 0, "set to meat: smoked meat {}", w.stock[SM as usize]);
     assert!(w.stock[ME as usize] < 60, "it used the meat");
     assert_eq!(w.set_field_mode(s as u32, 2), -2);
-    assert!(FOODS.iter().any(|&(r, _)| r == ME) && FOODS.iter().any(|&(r, _)| r == SM), "both meats are food");
+    assert!(!FOODS.iter().any(|&(r, _)| r == ME || r == SM), "meat is a luxury, not a staple");
+    let mut m = World::new(1337, 0, 0); m.stock = [0; N_RES]; m.stock[GR as usize] = 5000; let h0 = m.happiness(); m.stock[ME as usize] = 50; assert!(m.happiness() > h0, "meat on the table lifts the mood");
 }

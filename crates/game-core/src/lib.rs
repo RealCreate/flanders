@@ -138,7 +138,7 @@ pub(crate) const ROAD_MAX_SLOPE: f32 = 0.4;
 /// A road follows the ground smoothed over this far along it.
 const ROAD_SMOOTH: f32 = 4.5;
 
-const RADIUS_CAP: f32 = 110.0;
+const RADIUS_CAP: f32 = 150.0;
 /// Past this far from the town hall buildings stop claiming land: only roads joined to the village do, and a building needs a road beside it.
 const TERRITORY_MAX: f32 = 170.0;
 const INFRASTRUCTURE_LIMIT: f32 = 1192.0; // leave room for the terrain and navigation grid at the map edge
@@ -211,7 +211,10 @@ fn staffed_first(kind: u8) -> bool {   // (4 is the woodcutter)
 const RAID_FROM_TICK: u64 = 3 * DAY;
 const RAID_ONE_IN: u32 = 7 * DAY as u32;
 /// Warning time before a bandit raid: 30 game seconds.
-const RAID_WARNING_TICKS: u32 = 30;
+const RAID_WARNING_TICKS: u32 = 45;
+/// Raiders form up between `RAID_SPAWN_NEAR` and `RAID_SPAWN_FAR` units beyond the build limit: as far out as the ground along their line stays dry (so they come from the country, not from a lake).
+pub(crate) const RAID_SPAWN_NEAR: f32 = 22.0;
+pub(crate) const RAID_SPAWN_FAR: f32 = 60.0;
 /// The town hall's backup: every `BACKUP_EVERY` ticks it adds `BACKUP_AMOUNT` + `BACKUP_PER_TIER` per tier of wood and of grain, but only while that store holds less than `BACKUP_BELOW`.
 const BACKUP_EVERY: u64 = 6;
 const BACKUP_AMOUNT: i32 = 1;
@@ -222,7 +225,12 @@ const BACKUP_BELOW: i32 = 60;
 /// What a smokehouse set to meat takes and makes.
 const SMOKE_MEAT_IN: &[Amount] = &[(ME, 3), (W, 1)];
 const SMOKE_MEAT_OUT: &[Amount] = &[(SM, 3)];
-pub const FOODS: [(u8, i32); 6] = [(GR, 4), (FI, 4), (BD, 6), (SF, 6), (ME, 4), (SM, 6)];
+/// Raw grain is only half a meal-quarter filling: it has to be milled and baked (bakery) to feed people properly. Meat is not a staple: see `LUXURY_MEAT_*`.
+pub const FOODS: [(u8, i32); 4] = [(GR, 3), (FI, 4), (BD, 6), (SF, 6)];
+/// Meat and smoked meat are a luxury: every `LUXURY_EVERY` ticks the village eats one unit per `LUXURY_HEADS` people, and while it is on the table it lifts the mood (up to `LUXURY_HAPPY`).
+const LUXURY_EVERY: u64 = 10;
+const LUXURY_HEADS: u32 = 20;
+const LUXURY_HAPPY: i32 = 6;
 const HALF_F: f32 = terrain::HALF;
 pub const SEASON_DAYS: u64 = 10;
 /// How far out from a waterwheel house's middle its wheel hangs (the model's axle), and the highest the house's pad may stand so the wheel reaches the water.
@@ -499,13 +507,15 @@ pub fn warm_navigation_step(seed: u64, rows: u32) -> f32 { march::nav_build_step
 #[wasm_bindgen]
 pub fn village_sites(seed: u64) -> Vec<f32> { terrain::sites(seed).into_iter().flat_map(|(x, y)| [x, y]).collect() }
 
+/// The Castle's footprint: the corner towers of its 44 x 38 curtain wall lie about 29 from its middle.
+pub const CASTLE_FOOTPRINT: f32 = 30.0;
 #[wasm_bindgen]
 /// How much room a building takes at a tier: the grander buildings spread out as they are upgraded (a farm gains fields, a keep its courtyard), so an upgrade can need the
 /// neighbours to make way.
 pub fn footprint(kind: u8, tier: u8) -> f32 {
     let Some(d) = DEFS.get(kind as usize) else { return 0.0 };
-    let grow = match kind { FARM => 0.25, TOWN_HALL => 0.1, KEEP => 0.1, BARRACKS | CHAPEL | COURTHOUSE | MARKET | STOREHOUSE | HOSPITAL | GRAVEYARD => 0.1, _ => 0.0 };
-    if kind == TOWN_HALL && tier >= 3 { return 12.6; }   // the Castle is a walled rectangle 18 x 12 with towers at its corners: it needs the room (see the town hall model)
+    let grow = match kind { FARM => 0.25, TOWN_HALL => 0.2, KEEP => 0.1, BARRACKS | CHAPEL | COURTHOUSE | MARKET | STOREHOUSE | HOSPITAL | GRAVEYARD | EMBASSY => 0.1, _ => 0.0 };
+    if kind == TOWN_HALL && tier >= 3 { return CASTLE_FOOTPRINT; }   // the Castle is a vast concentric fortress (44 x 38 walls, a palace and a bailey inside, a barbican in front): larger than the embassy's 24 (see the town hall model)
     d.r * (1.0 + grow * tier as f32)
 }
 #[wasm_bindgen]
@@ -518,6 +528,7 @@ pub fn solid_radius(kind: u8, tier: u8) -> f32 {
     match kind {
         WALL | FENCE => fp + 1.0,
         FARM | GARDEN | PARK | MARKET => fp * 0.42,
+        TOWN_HALL if tier >= 3 => fp * 0.72 + 0.3,
         TOWER | KEEP | TOWN_HALL | CHAPEL | BARRACKS => fp * 0.85 + 0.3,
         _ => fp * 0.72 + 0.3,
     }
@@ -606,6 +617,39 @@ impl World {
 
     /// The fog of war: FOG_N x FOG_N cells, 1 where your people have been or can see.
     pub fn explored_flat(&self) -> Vec<u8> { self.explored.clone() }
+    /// How far from the village centre raiders coming from `angle` form up: along the ray, the farthest point (in steps of 6, over dry ground only) before the first water, between near and far.
+    pub fn raid_distance(&self, angle: f32) -> f32 {
+        let br = self.build_radius() as f32;
+        let (cx, cy, dx, dy) = (self.ox as f32, self.oy as f32, angle.cos(), angle.sin());
+        let mut d = RAID_SPAWN_NEAR;
+        let mut n = d;
+        while n + 2.0 <= RAID_SPAWN_FAR {
+            n += 2.0; let (x, y) = (cx + dx * (br + n), cy + dy * (br + n));
+            if x.abs() > HALF_F - 10.0 || y.abs() > HALF_F - 10.0 || self.height_ground(x, y) < 0.3 { break; }
+            if n - d >= 6.0 { d = n; }   // (only a stretch of dry ground that is long enough counts: a lone dry spot beyond a stream does not)
+        }
+        br + d
+    }
+    /// The direction (radians, as the raid angle) of one of the three nearest bandit camps or lairs that are not yet cleared: the raiders' bases. None when all are cleared (raids then come from anywhere, from the sea).
+    fn raid_camp_angle(&mut self) -> Option<f32> {
+        let (ox, oy) = (self.ox as f32, self.oy as f32);
+        let mut live: Vec<(f32, f32, f32)> = terrain::neutrals(self.seed).iter().enumerate()
+            .filter(|(i, n)| n.0 >= 2 && !self.neutral_done.get(*i).copied().unwrap_or(false))
+            .map(|(_, n)| ((n.1 - ox).hypot(n.2 - oy), n.1, n.2)).collect();
+        if live.is_empty() { return None; }
+        live.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let k = self.rng.range(live.len().min(3) as u32) as usize;
+        let (_, x, y) = live[k];
+        Some((y - oy).atan2(x - ox))
+    }
+    /// Raiders can only be seen coming if a watchtower (tower or keep) stands: otherwise there is no warning, they are simply noticed when they reach the fields.
+    pub fn raid_spotted(&self) -> bool { self.buildings.iter().any(|b| matches!(b.kind, TOWER | KEEP)) }
+    /// True when every bandit camp and lair of this world has been cleared (there is at least one): the raiders are broken. Raids still come: the game goes on.
+    pub fn raiders_broken(&self) -> bool {
+        let list = terrain::neutrals(self.seed);
+        let camps: Vec<usize> = list.iter().enumerate().filter(|(_, n)| n.0 >= 2).map(|(i, _)| i).collect();
+        !camps.is_empty() && camps.iter().all(|&i| self.neutral_done.get(i).copied().unwrap_or(false))
+    }
     /// Neutral places you know about: [kind, x, y, done] each (kind 0 abbey, 1 ruined castle, 2 bandit camp, 3 lair). Unseen places are left out.
     pub fn neutrals_flat(&self) -> Vec<f32> {
         terrain::neutrals(self.seed).iter().enumerate().filter(|(_, n)| self.is_seen(n.1, n.2)).flat_map(|(i, n)| [n.0 as f32, n.1, n.2, self.neutral_done.get(i).copied().unwrap_or(false) as u8 as f32]).collect()
@@ -988,7 +1032,7 @@ impl World {
             let d = &DEFS[b.kind as usize];
             if is_edit(b.kind) { continue; }   // ditches and earthworks were applied above, before roads and pads
             if !d.pad { continue; }
-            let r0 = pad_inner(d);
+            let r0 = if b.kind == TOWN_HALL && b.tier >= 3 { footprint(TOWN_HALL, 3) } else { pad_inner(d) };
             let r1 = r0 + 3.5;
             let (dx, dy) = (x - b.x, y - b.y);
             // a farm's fields reach far past its circle once it is upgraded (up to 15 from its middle, and to one side): the ground is levelled under all of them, not just the circle
@@ -1033,7 +1077,11 @@ impl World {
 
     pub fn build_radius(&self) -> u32 {
         let w: u32 = self.buildings.iter().map(|b| DEFS[b.kind as usize].weight * (b.tier as u32 + 1)).sum();
-        ((24.0 + 7.0 * (w as f32).sqrt()).min(RADIUS_CAP)) as u32
+        // the town hall's own tier widens the border a great deal: a manor, a keep and above all the vast Castle (whose footprint alone reaches 30) claim far more land
+        let hall = self.buildings.iter().filter(|b| b.kind == TOWN_HALL).map(|b| [0.0f32, 8.0, 20.0, 40.0][(b.tier as usize).min(3)]).fold(0.0f32, f32::max);
+        // so does the embassy (the best one standing): a vast compound of diplomats and merchants draws a wide circle of land to it
+        let embassy = self.buildings.iter().filter(|b| b.kind == EMBASSY).map(|b| [6.0f32, 16.0, 28.0, 44.0][(b.tier as usize).min(3)]).fold(0.0f32, f32::max);
+        ((24.0 + 7.0 * (w as f32).sqrt() + hall + embassy).min(RADIUS_CAP)) as u32
     }
 
     /// How far a building claims land round itself (0 for earthworks). The town hall claims the circle of `build_radius`; every other building, and every piece of road, claims a patch round it,
@@ -1587,6 +1635,9 @@ impl World {
         let (k, t) = (self.buildings[idx as usize].kind, self.buildings[idx as usize].tier);
         self.buildings[idx as usize].hp = battle::max_hp(k, t);
         self.buildings[idx as usize].burning = 0.0;
+        // a bigger building clears the trees that stand in the room it now takes (the felled ring is drawn as cleared ground and the woodcutters no longer count those trees)
+        let (bx, by, fp) = (self.buildings[idx as usize].x, self.buildings[idx as usize].y, footprint(k, t));
+        if fp > footprint(k, t - 1) { self.felled.push([bx, by, fp + 2.0]); self.map_ver += 1; }
         if k == FARM { self.terrain_ver += 1; }   // a bigger farm works more fields: the ground is levelled under them too, so everything standing near must be fitted to it again
         self.after_change();
         0
@@ -1794,6 +1845,13 @@ impl World {
         // tax
         if self.tick % 10 == 0 { let n = ((self.population as i32 / 10).max(1) * (50 + self.happiness() as i32) / 100).max(1); self.gain(ledger::EX_TAX, GD, n, cap); }
 
+        // luxury: meat (smoked or fresh) is eaten for the mood, not to stay alive
+        if self.tick % LUXURY_EVERY == 0 {
+            let want = (self.population / LUXURY_HEADS).max(1) as i32;
+            let mut left = want;
+            for r in [SM, ME] { let t = left.min(self.stock[r as usize].max(0)); self.stock[r as usize] -= t; left -= t; }
+        }
+
         // seasons, warmth and the generations
         self.household_step();
 
@@ -1829,6 +1887,7 @@ impl World {
             }
         } else if self.tick > RAID_FROM_TICK && self.battle.is_none() && self.rng.range(self.raid_one_in()) == 0 {
             self.raid_warning_angle = self.rng.range(628) as f32 * 0.01;
+            if let Some(a) = self.raid_camp_angle() { self.raid_warning_angle = a; }   // raiders come from a camp that still stands, if there is one
             self.raid_warning_rf = self.rng.range(1000) as f32 / 1000.0;
             self.raid_warning_boss = self.boss_due();
             self.raid_warning_name = if self.raid_warning_boss { self.rng.range(4) as u8 } else { 0 };
@@ -2394,24 +2453,56 @@ impl World {
 
     /// Travel speed of newly dispatched caravans, as a percentage of the usual pace.
     pub fn caravan_speed_percent(&self) -> u32 {
-        if self.buildings.iter().any(|b| b.kind == STABLE && b.opts & 1 != 0 && b.burning <= 0.0) { 150 } else { 100 }
+        100 + if self.supplied(STABLE, 0) { 100 } else { 0 } + if self.supplied(EMBASSY, 0) { 75 } else { 0 } + self.horse_bonus()
+    }
+
+    /// The tier of the best standing embassy, if the village has one.
+    fn embassy_tier(&self) -> Option<u8> { self.buildings.iter().filter(|b| b.kind == EMBASSY && b.hp > 0.0).map(|b| b.tier).max() }
+    /// How many diplomatic parties (envoys, treaty riders, wedding parties, heralds) may be on the road at once: with an embassy, 4 / 8 / 12 / 16 by its tier; a village without one (the computer's) has the old 16.
+    pub fn journey_capacity(&self) -> u32 { self.embassy_tier().map_or(16, |t| 4 + 4 * t as u32) }
+    /// How many caravans may be on the road at once: 2 / 4 / 6 / 8 by the embassy's tier, or the old 8 without an embassy.
+    pub fn caravan_capacity(&self) -> u32 { self.embassy_tier().map_or(8, |t| 2 + 2 * t as u32) }
+    /// [parties on the road, how many may be, caravans on the road, how many may be].
+    pub fn party_limits(&self) -> Vec<u32> { vec![self.journeys.len() as u32, self.journey_capacity(), self.caravans.len() as u32, self.caravan_capacity()] }
+
+    /// Is there a standing building of this kind with design upgrade `bit`? One is enough: bonuses of the same upgrade never stack across several buildings. A burning or ruined one gives nothing.
+    fn supplied(&self, kind: u8, bit: u8) -> bool {
+        self.buildings.iter().any(|b| b.kind == kind && b.opts & (1 << bit) != 0 && b.burning <= 0.0 && b.hp > 0.0)
+    }
+    /// The extra pace (in percent) every horse has from the stables' "Swift horses" upgrade.
+    fn horse_bonus(&self) -> u32 { if self.supplied(STABLE, 1) { 30 } else { 0 } }
+    /// Pace of the village's knights in percent: the swift horses, plus the stables' warhorses.
+    pub fn cavalry_speed_percent(&self) -> u32 { 100 + self.horse_bonus() + if self.supplied(STABLE, 3) { 40 } else { 0 } }
+
+    /// Travel speed of a party of the given kind (0..2 treaty riders, 3 envoy, 4 wedding party, 5 war herald, 6 caravan) dispatched now, in percent of its usual pace.
+    /// Stables speed up all the horses; the embassy's upgrades speed up each kind of party on its own.
+    pub fn journey_speed_percent(&self, kind: u8) -> u32 {
+        let courier = if self.supplied(STABLE, 2) { 100 } else { 0 };
+        match kind {
+            TREATY_TRADE | TREATY_PEACE | TREATY_ALLIANCE => 100 + self.horse_bonus() + courier + if self.supplied(EMBASSY, 2) { 100 } else { 0 },
+            JK_ENVOY | JK_WAR => 100 + self.horse_bonus() + courier + if self.supplied(EMBASSY, 1) { 100 } else { 0 },
+            JK_MARRIAGE => 100 + self.horse_bonus() + if self.supplied(EMBASSY, 3) { 100 } else { 0 },
+            _ => self.caravan_speed_percent(),
+        }
     }
 
     /// Send goods with an optional escort. Already dispatched caravans keep their arrival time.
     pub fn caravan_send(&mut self, res: u8, amount: i32, to: i32, distance: f32, escort: u32) -> i32 {
-        if res as usize >= N_RES || amount <= 0 || amount > 500 || to == 0 || self.caravans.len() >= 8 || !(0.0..=3000.0).contains(&distance) { return -1; }
+        if res as usize >= N_RES || amount <= 0 || amount > 500 || to == 0 || !(0.0..=3000.0).contains(&distance) { return -1; }
+        if self.caravans.len() as u32 >= self.caravan_capacity() { return -4; }
         if self.stock[res as usize] < amount { return -2; }
         if escort > self.army[0] { return -3; }
         self.stock[res as usize] -= amount; self.army[0] -= escort;
         let speed = CARAVAN_SPEED * self.caravan_speed_percent() as f32 / 100.0;
-        self.caravans.push(Caravan { res, amount, to, start: self.tick, eta: self.tick + 60 + (distance / speed) as u64, escort });
+        self.caravans.push(Caravan { res, amount, to, start: self.tick, eta: self.tick + 60 * 100 / self.caravan_speed_percent() as u64 + (distance / speed) as u64, escort });
         0
     }
     /// Send an errand to another village (tag) over `distance` units of road: kind 0..2 a treaty offer (arg = days), 3 an envoy with gifts (20 coins), 4 a royal marriage (150 coins), 5 a declaration of war.
-    /// It costs what the instant version cost, now; the effect comes when the party arrives. 0 ok, -1 nonsense, -6 poor, -7 one of that kind is already on the road, -20 too soon, -21 not liked enough, -22 will not agree.
+    /// It costs what the instant version cost, now; the effect comes when the party arrives. 0 ok, -1 nonsense, -6 poor, -7 one of that kind is already on the road, -20 too soon, -21 not liked enough, -22 will not agree, -8 the embassy has all its parties out.
     pub fn journey_start(&mut self, kind: u8, tag: i32, arg: i32, distance: f32) -> i32 {
-        if kind > JK_WAR || tag == 0 || self.journeys.len() >= 16 || !(0.0..=3000.0).contains(&distance) { return -1; }
+        if kind > JK_WAR || tag == 0 || !(0.0..=3000.0).contains(&distance) { return -1; }
         if self.journeys.iter().any(|j| j.tag == tag && j.kind == kind) { return -7; }
+        if self.journeys.len() as u32 >= self.journey_capacity() { return -8; }
         match kind {
             TREATY_TRADE | TREATY_PEACE | TREATY_ALLIANCE => { if arg < 1 || arg > 120 { return -1; } if !self.treaty_acceptable(tag, kind) { return -22; } }
             JK_ENVOY => {
@@ -2427,7 +2518,7 @@ impl World {
             }
             _ => {}
         }
-        let dur = 30 + (distance / JOURNEY_SPEED[kind as usize]) as u64;
+        let dur = 30 * 100 / self.journey_speed_percent(kind) as u64 + (distance / (JOURNEY_SPEED[kind as usize] * self.journey_speed_percent(kind) as f32 / 100.0)) as u64;
         self.journeys.push(Journey { kind, tag, arg, start: self.tick, arrive: self.tick + dur });
         0
     }
@@ -2854,6 +2945,7 @@ impl World {
         let tiers = |k: u8| self.buildings.iter().filter(|b| b.kind == k).map(|b| b.tier as i32 + 1).sum::<i32>();
         let mut h = 40 + (4 * count(PARK)).min(16) + (2 * count(GARDEN)).min(8) + (5 * tiers(CHAPEL)).min(20) + (4 * count(MARKET)).min(8) + (4 * count(COURTHOUSE)).min(8) + (2 * count(WELL)).min(6);
         if self.food() < 10 { h -= 15; }
+        if self.stock[ME as usize] + self.stock[SM as usize] > 0 { h += LUXURY_HAPPY; }   // meat on the table
         if self.population > 0 { h -= (self.sick as i32 * 40) / self.population as i32; }
         if self.eff < 60 { h -= (60 - self.eff as i32) / 3; }
         if self.population > self.capacity() { h -= 10; }
@@ -4177,20 +4269,81 @@ mod trade_tests {
         assert_eq!(w.caravan_send(W, 10, 7, 180.0, 0), 0);
         let old_eta = w.caravans[0].eta;
         assert_eq!(w.set_option(stable as u32, 0, true), 0);
-        assert_eq!(w.caravan_speed_percent(), 150);
+        assert_eq!(w.caravan_speed_percent(), 200);
         assert_eq!(w.caravan_send(W, 10, 8, 180.0, 0), 0);
         assert!(w.caravans[1].eta < old_eta);
         assert_eq!(w.caravans[0].eta, old_eta);
         let second = w.place(STABLE, -16, 0, 0);
         assert!(second >= 0);
         assert_eq!(w.set_option(second as u32, 0, true), 0);
-        assert_eq!(w.caravan_speed_percent(), 150);
+        assert_eq!(w.caravan_speed_percent(), 200);
         w.buildings[stable as usize].burning = 1.0;
         w.buildings[second as usize].burning = 1.0;
         assert_eq!(w.caravan_speed_percent(), 100);
         let restored = world_restore(&w.snapshot()).unwrap();
         assert_eq!(restored.state_hash(), w.state_hash());
         assert_eq!(restored.caravans[0].eta, old_eta);
+    }
+
+    #[test]
+    fn the_embassy_and_the_stables_speed_up_each_kind_of_party() {
+        let mut w = rich(); w.flatten(90, 5.0);
+        let (stable, embassy) = (w.place(STABLE, -16, 0, 0), w.place(EMBASSY, 0, -32, 0));
+        assert!(stable >= 0 && embassy >= 0, "both can be built");
+        for k in 0..=6 { assert_eq!(w.journey_speed_percent(k), 100, "nothing is faster at first (kind {k})"); }
+        assert_eq!(w.cavalry_speed_percent(), 100);
+        // the embassy's own upgrades: one for each kind of party
+        for (bit, kinds, pct) in [(0u8, vec![6u8], 175u32), (1, vec![JK_ENVOY, JK_WAR], 200), (2, vec![TREATY_TRADE, TREATY_PEACE, TREATY_ALLIANCE], 200), (3, vec![JK_MARRIAGE], 200)] {
+            assert_eq!(w.set_option(embassy as u32, bit, true), 0);
+            for k in 0..=6u8 { assert_eq!(w.journey_speed_percent(k), if kinds.contains(&k) { pct } else { 100 }, "upgrade {bit} on kind {k}"); }
+            assert_eq!(w.set_option(embassy as u32, bit, false), 0);
+        }
+        // a party sent now arrives sooner
+        let slow = { let mut v = rich(); v.journey_start(JK_ENVOY, 7, 0, 300.0); v.journeys[0].arrive - v.journeys[0].start };
+        w.set_option(embassy as u32, 1, true);
+        w.journey_start(JK_ENVOY, 7, 0, 300.0);
+        let fast = w.journeys[0].arrive - w.journeys[0].start;
+        assert!(fast < slow, "an envoy with the herald's tower takes {fast}, without {slow}");
+        // the stables' horses help everyone on horseback, and the knights
+        assert_eq!(w.set_option(stable as u32, 1, true), 0);
+        assert_eq!(w.journey_speed_percent(JK_ENVOY), 230); assert_eq!(w.journey_speed_percent(JK_MARRIAGE), 130); assert_eq!(w.caravan_speed_percent(), 130);
+        assert_eq!(w.cavalry_speed_percent(), 130);
+        assert_eq!(w.set_option(stable as u32, 2, true), 0);
+        assert_eq!(w.journey_speed_percent(JK_ENVOY), 330); assert_eq!(w.journey_speed_percent(JK_MARRIAGE), 130);
+        assert_eq!(w.set_option(stable as u32, 3, true), 0);
+        assert_eq!(w.cavalry_speed_percent(), 170);
+        assert_eq!(w.set_option(stable as u32, 0, true), 0);
+        assert_eq!(w.caravan_speed_percent(), 230, "caravan horses and the swift horses");
+        // a burning building gives nothing, and the state survives a snapshot
+        w.buildings[embassy as usize].burning = 1.0;
+        assert_eq!(w.journey_speed_percent(JK_ENVOY), 230);
+        let restored = world_restore(&w.snapshot()).unwrap();
+        assert_eq!(restored.state_hash(), w.state_hash());
+        assert_eq!(restored.journey_speed_percent(JK_ENVOY), 230);
+    }
+
+    #[test]
+    fn a_higher_embassy_tier_lets_more_parties_out_at_once() {
+        let mut w = rich(); w.flatten(90, 5.0);
+        assert_eq!((w.journey_capacity(), w.caravan_capacity()), (16, 8), "without an embassy the old limits hold");
+        let e = w.place(EMBASSY, 0, -32, 0); assert!(e >= 0);
+        assert_eq!((w.journey_capacity(), w.caravan_capacity()), (4, 2));
+        for tag in 1..=4 { assert_eq!(w.journey_start(JK_ENVOY, tag, 0, 100.0), 0); w.last_envoy.clear(); }
+        assert_eq!(w.journey_start(JK_ENVOY, 5, 0, 100.0), -8, "the embassy is full");
+        for _ in 0..2 { assert_eq!(w.caravan_send(W, 10, 7, 50.0, 0), 0); }
+        assert_eq!(w.caravan_send(W, 10, 7, 50.0, 0), -4);
+        for t in 1..=3u8 { w.buildings[e as usize].tier = t; assert_eq!(w.journey_capacity(), 4 + 4 * t as u32); assert_eq!(w.caravan_capacity(), 2 + 2 * t as u32); }
+    }
+
+    #[test]
+    fn warhorses_make_knights_march_faster_but_not_the_slower_soldiers_with_them() {
+        let base = World::new(1337, 0, 0);
+        let mut quick = rich(); quick.flatten(60, 5.0);
+        let stable = quick.place(STABLE, 16, 0, 0); assert!(stable >= 0);
+        assert_eq!(quick.set_option(stable as u32, 3, true), 0);
+        let (knights, mixed) = ([0, 0, 0, 5, 0, 0], [3, 0, 0, 5, 0, 0]);
+        assert!(quick.march_speed(&knights) > base.march_speed(&knights));
+        assert_eq!(quick.march_speed(&mixed), base.march_speed(&mixed), "the slowest soldier sets the pace");
     }
 
     #[test]
@@ -4645,7 +4798,7 @@ mod territory_tests {
         let mut w = rich(); let r0 = w.build_radius();
         for k in 0..3 { w.upgrade(0); let _ = k; }
         let r1 = w.build_radius(); assert!(r1 > r0 + 15, "the hall's circle grows: {r0} -> {r1}");
-        for (x, y) in [(14, 4), (20, 8), (-14, 6), (-20, 12), (6, 26), (-6, 26)] { w.place(HOUSE, x, y, 0); }
+        for (x, y) in [(38, 4), (44, 8), (-38, 6), (-44, 12), (6, 40), (-6, 40)] { w.place(HOUSE, x, y, 0); }
         assert!(w.build_radius() > r1, "and every building widens it");
         w.stock = [1_000_000; N_RES];
         for k in 0..40 { w.place(KEEP, 30 + k, 30, 0); w.place(STOREHOUSE, -30 - k, 30, 0); }

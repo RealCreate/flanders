@@ -57,7 +57,7 @@ for (const seed of SEEDS.slice(0, 4)) test(`seed ${seed}: farms and every resour
 
 for (const seed of SEEDS.slice(0, 4)) test(`seed ${seed}: all deposits are cleared except the ones the mines and quarry work`, () => {
   const w = buildDemo(seed), f = w.buildings_flat(), d = Array.from(w.deposits_flat()), ox = w.origin_x(), oy = w.origin_y();
-  const alive = []; for (let i = 0; i < d.length; i += 5) if (d[i + 4] > 0 && Math.hypot(d[i + 1] - ox, d[i + 2] - oy) < 118) alive.push({ kind: d[i], x: d[i + 1], y: d[i + 2] });
+  const alive = []; for (let i = 0; i < d.length; i += 5) if (d[i + 4] > 0 && Math.hypot(d[i + 1] - ox, d[i + 2] - oy) < 126) alive.push({ kind: d[i], x: d[i + 1], y: d[i + 2] });
   assert.equal(alive.length, 4, 'one deposit of each kind');
   for (const dep of alive) {
     let worked = false;

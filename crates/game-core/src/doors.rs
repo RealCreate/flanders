@@ -17,7 +17,7 @@ pub fn door_local(kind: u8, tier: u8) -> ((f32, f32), (f32, f32)) {
         4 => ((0.0, 1.0), fwd),                                           // woodcutter
         11 => (if t == 0 { (2.0, 0.7) } else { (2.0, 0.65) }, fwd),       // charcoal burner (its hut door stands to one side)
         14 => ((0.0, 1.8), fwd),                                          // mint
-        TOWN_HALL => ([(0.0, 2.8), (0.0, 2.9), (0.0, 3.2), (0.0, 3.5)][t], fwd),
+        TOWN_HALL => ([(0.0, 2.8), (0.0, 2.9), (0.0, 3.2), (0.0, 24.1)][t], fwd),
         CHAPEL => (([2.9, 3.6, 4.5, 5.3][t], 0.0), (1.0, 0.0)),           // the door is in the end wall
         LODGE => ([(0.0, 1.9), (0.0, 2.0), (0.0, 2.1), (0.0, 2.3)][t], fwd),
         BARRACKS => ((0.0, -0.9), (0.0, -1.0)),
@@ -33,6 +33,7 @@ pub fn door_local(kind: u8, tier: u8) -> ((f32, f32), (f32, f32)) {
         GARDEN => ((0.0, 4.4), fwd),                                      // the gap in the fence
         PASTURE | PIGSTY => ((0.0, 4.4), fwd),
         STABLE => ((0.0, 2.65), fwd),
+        EMBASSY => ((0.0, -9.07), fwd),
         PARK => ((0.0, 1.3), fwd),                                        // along the gravel cross
         MARKET => ((0.0, 5.0), fwd),
         _ => ((0.0, solid_radius(kind, tier) * 0.9), fwd),

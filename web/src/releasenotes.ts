@@ -4,6 +4,21 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.3.0', date: '2026-11-22', title: 'A new castle, embassies and computer rivals',
+    added: [
+      'Play against the computer: the start screen has a PVE mode with two computer-run villages that trade, send envoys and raid you through the same rules as other players.',
+      'The Embassy is a new building for all diplomacy. Open it to trade, send envoys, declare war or march on rival villages, and upgrade it through four tiers.',
+      'Plant trees with the Forester so your woodcutters never run dry.',
+      'Select several buildings at once and act on them together.',
+      'Fallen soldiers, villagers and animals leave corpses on the field and around the village.',
+    ],
+    changed: [
+      'The castle has a redesigned look, with new walls, towers and gatehouse.',
+      'Diplomacy has moved out of the Army tab into the Embassy. The Army tab now points you to it for trade, envoys and marching on other villages.',
+    ],
+    fixed: [],
+  },
+  {
     version: '0.2.3', date: '2026-11-20', title: 'Helping hands, happy livestock and clearer workshops',
     added: [
       'Workshops explain exactly what is holding up production, including missing materials, protected reserves, workers and full storage. Follow Show or Build links to the supplier from the building panel or work overview.',

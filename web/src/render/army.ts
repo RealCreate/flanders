@@ -4,7 +4,8 @@ import { buildCatapult, buildRam, buildStandard, setSiegeWheelTravel, ARM_REST, 
 import type { ArmyPicker } from './armypick';
 import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses';
 import { smoothPath } from './field';
-import { lunge, fallen, mix } from './fight';
+import { lunge, fallen, mix, decay } from './fight';
+import { Remains } from './remains';
 import { standHeight, onWater, chase } from './wading';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -40,6 +41,7 @@ export class ArmyView {
   private field: Field[] = [];
   private posts: Post[] = [];
   private corpses: { f: Field; t: number }[] = [];
+  private remains = new Remains();
   /** Called when a soldier is struck (x, z, height above ground, killed?), so the scene can throw up a puff of dust and blood. */
   onHit: ((x: number, z: number, y: number, killed: boolean) => void) | null = null;
   private siege: THREE.Group[] = [];
@@ -76,7 +78,7 @@ export class ArmyView {
   plan: (ax: number, az: number, bx: number, bz: number) => number[] | null = () => null;
   radii: number[] = [];
 
-  constructor(private terrain: Terrain) {}
+  constructor(private terrain: Terrain) { this.group.add(this.remains.group); }
 
   /** Standing army and guards, from the village state. */
   syncPeace(buildings: Float32Array, army: number[], guards: number, garrison: number[]) {
@@ -233,6 +235,14 @@ export class ArmyView {
     return f ? { x: f.x, y: this.height(f) + f.elev + (f.boss === 1 ? 3.6 : 5.4), z: f.z, boss: f.boss, name: f.bname, hp: f.hp, max: f.max, phase: f.phase } : null;
   }
 
+  /** Wounded soldiers on the field (not bosses: they have their own bar): where to draw a health bar over each. */
+  woundedAt(): { x: number; y: number; z: number; hp: number; max: number; side: number }[] {
+    if (!this.battle) return [];
+    const out = [];
+    for (const f of this.field) if (f.alive && f.boss === 0 && f.max > 0 && f.hp < f.max - 0.01 && f.hp > 0) out.push({ x: f.x, y: this.height(f) + f.elev + 2.1, z: f.z, hp: f.hp, max: f.max, side: f.side });
+    return out;
+  }
+
   private mark(i: number) {
     if (!this.markGeo) { this.markGeo = new THREE.RingGeometry(0.93, 1, 48); this.markGeo.rotateX(-Math.PI / 2); }
     let m = this.marks[i];
@@ -302,7 +312,7 @@ export class ArmyView {
       f.spd += ((moved / Math.max(dt, 0.001)) - f.spd) * Math.min(1, dt * 5);          // smoothed ground speed, so strides match how fast they really move
       f.gait += Math.PI * moved / (0.55 + 0.13 * f.spd);                               // one step per stride length: no sliding feet
     }
-    this.corpses = this.corpses.filter(c => this.t - c.t < 40);
+    this.corpses = this.corpses.filter(c => !decay(this.t - c.t).done).slice(-150);
     this.rageT -= dt;
     if (this.battle && this.rageT <= 0) { this.rageT = 0.12; for (const f of this.field) if (f.boss > 0 && f.alive && f.phase > 0) this.onRage?.(f.x, this.terrain.walkAt(f.x, f.z) + f.elev + 1, f.z); }
   }
@@ -345,8 +355,18 @@ export class ArmyView {
   /** A soldier who has been killed: topples over, then lies where it fell. */
   private drawFallen(crowd: Crowd, f: Field) {
     if (f.kind === 4 || f.kind === 5) return;
-    const l = this.look(f.side, f.kind, f.seed, false), since = f.deadAt >= 0 ? this.t - f.deadAt : 99;
-    crowd.add({ x: f.x, y: this.height(f) + f.elev * (1 - fallen(since)), z: f.z, yaw: f.yaw, pose: 4, fall: fallen(since), phase: 0, skin: f.boss === 2 ? 0x8a9a62 : 0xd9a877, scale: f.boss === 1 ? 1.5 : f.boss === 2 ? 2.4 : undefined, ...(f.boss ? { body: f.boss === 1 ? 0x7a1f1f : 0x6f7f4a } : l), mounted: false, tool: undefined, shield: undefined } as Draw);
+    const since = f.deadAt >= 0 ? this.t - f.deadAt : 99, d = decay(since);
+    if (d.done) return;
+    const gy = this.height(f);
+    const sc = f.boss === 1 ? 1.5 : f.boss === 2 ? 2.4 : 1, back = -0.8 * sc;   // a fallen soldier topples forward about the feet: the body lies ahead of where it stood
+    this.remains.add(f.x + Math.sin(f.yaw) * back, gy, f.z + Math.cos(f.yaw) * back, f.yaw, sc, d);
+    if (!d.body) return;
+    const l = this.look(f.side, f.kind, f.seed, false);
+    const body = f.boss ? (f.boss === 1 ? 0x7a1f1f : 0x6f7f4a) : l.body;
+    let skin = f.boss === 2 ? 0x8a9a62 : 0xd9a877, b = body;
+    if (d.blood > 0 && b !== undefined) b = mix(b, 0x7a1010, 0.45 * d.blood);
+    if (d.rot > 0) { skin = mix(skin, 0x8d907a, d.rot); if (b !== undefined) b = mix(b, 0x4a4a3c, d.rot * 0.7); }
+    crowd.add({ x: f.x, y: gy + f.elev * (1 - fallen(since)) - d.rot * 0.14, z: f.z, yaw: f.yaw, pose: 4, fall: fallen(since), phase: 0, scale: f.boss === 1 ? 1.5 : f.boss === 2 ? 2.4 : undefined, ...l, ...(b !== undefined ? { body: b } : {}), skin, mounted: false, tool: undefined, shield: undefined } as Draw);
   }
 
   /** How high above the ground an archer shoots from at (x, z): up on the walkway if it stands in a tower. */
@@ -359,6 +379,7 @@ export class ArmyView {
   draw(crowd: Crowd, hallPos: { x: number; z: number }, cx = 0, cz = 0, radius = 1e9) {
     const t = this.t, r2 = radius * radius, near = (x: number, z: number) => (x - cx) ** 2 + (z - cz) ** 2 <= r2;
     const sg = new Set<THREE.Group>();
+    this.remains.begin();
     const placeSiege = (x: number, z: number, yaw: number, fire: number, i: number, y = this.terrain.walkAt(x, z), wheelTravel = 0) => {
       let g = this.siege[i]; if (!g) { g = buildCatapult(); g.visible = true; this.siege[i] = g; this.group.add(g); }
       g.position.set(x, y, z); g.rotation.y = yaw; g.visible = true; sg.add(g);
@@ -440,6 +461,7 @@ export class ArmyView {
         crowd.add({ x: g.x, y: this.terrain.walkAt(g.x, g.z), z: g.z, yaw: g.yaw, pose: moving ? 1 : 0, phase: moving ? g.gait : t + g.idx, speed: g.spd, skin: 0xd9a877, ...this.look(0, 0, g.idx, true) } as Draw);
       }
     }
+    this.remains.end();
     for (const g of this.shown) if (!sg.has(g)) g.visible = false;
     this.shown = sg;
   }

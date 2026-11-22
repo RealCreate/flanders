@@ -49,7 +49,7 @@ function outline(R: number, step: number, from: number, phase = 0): { x: number;
 }
 
 /** Everything within this radius of the hall is cleared of trees and deposits: the city, its moat and the farmland and workshops round it. */
-export const CLEAR_RADIUS = 118;
+export const CLEAR_RADIUS = 126;
 
 export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   api.clearLand(CLEAR_RADIUS);   // a bare, level site: trees and deposits come back only where a resource building needs them (step 6b)
@@ -63,16 +63,16 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   /** Spots that keep a building clear of the walls: its own radius, the wall piece's, and 3 units of room between them. */
   const clearOfWalls = (r: number) => (x: number, y: number) => wallPts.every(([wx, wy]) => Math.hypot(wx - x, wy - y) >= r + 2.4 + 3.0);
   const put = (kind: number, x: number, y: number, r: number, rot = 0, search = 4) => { const i = api.place(kind, x, y, rot, search, clearOfWalls(r)); if (i >= 0) { const [px, py] = api.at(i); reserved.push([px, py, r]); } return i; };
-  reserved.push([0, 0, 6]);
+  reserved.push([0, 0, 30]);   // the castle: its footprint reaches 30 from the hall
 
-  // 1. the inner ward: keep, church, court, barracks, well and a garden under the keep's walls
-  const keep = put(KEEP, 0, -22, 13, 0, 3);
-  const chapel = put(CHAPEL, -21, -2, 6, 0, 3);
+  // 1. the inner ward: a ring of keep, church, court, barracks, well and a garden round the castle (which fills the middle out to 30), inside the inner wall
+  const keep = put(KEEP, 0, -42, 10, 0, 3);
+  const chapel = put(CHAPEL, -43, -2, 8, 0, 3);
   up(keep, 3); up(chapel, 2);   // the keep and the church grow to their full size first, so everything else is placed round them
-  put(COURTHOUSE, 21, -12, 6, 0, 3); put(BARRACKS, 17, 15, 7, 0, 3); put(WELL, -3, 14, 2, 0, 2); put(GARDEN, -16, 17, 4, 0, 3);
+  put(COURTHOUSE, 32, -29, 7, 0, 3); put(BARRACKS, 32, 29, 8, 0, 3); put(WELL, -4, 42, 2, 0, 2); put(GARDEN, -32, 29, 5, 0, 3);
 
   // 2. the mural towers of the inner and outer walls, standing a little inside the curtain
-  const R1 = 39, R2 = 61, R3 = 76;   // a roomy inner ward and bailey: buildings grow as they are upgraded and need the space
+  const R1 = 56, R2 = 78, R3 = 91;   // a roomy inner ward and bailey: buildings grow as they are upgraded and need the space
   const innerTowers: number[] = [], outerTowers: number[] = [];
   for (let k = 0; k < 8; k++) { const a = Math.PI / 8 + (k * Math.PI) / 4, p = pt(R1 - 9.4, a); innerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
   for (let k = 0; k < 12; k++) { const a = Math.PI / 12 + (k * Math.PI) / 6, p = pt(R2 - 9.4, a, 0.3); outerTowers.push(put(TOWER, p[0], p[1], 3.2, 0, 2)); }
@@ -112,8 +112,8 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
     const n = Math.floor((Math.PI * 2 * (ring ? R2 - 8.5 : R1 + 8.5)) / 7.6);
     for (let k = 0; k < n && houses.length < 44; k++) {
       const a = (k / n) * Math.PI * 2 + (ring ? 0.11 : 0), r = ring ? shape(R2, a, 0.3) - 8.5 : shape(R1, a, 0) + 8.5, p: [number, number] = [Math.round(Math.cos(a) * r), Math.round(Math.sin(a) * r)];
-      if (Math.abs(p[1]) < 5 && p[0] > 26) continue;                          // from the inner gate (east) ...
-      if (Math.abs(p[0]) < 5 && p[1] > 26) continue;                          // ... to the outer gate (south)
+      if (Math.abs(p[1]) < 5 && p[0] > 40) continue;                          // from the inner gate (east) ...
+      if (Math.abs(p[0]) < 5 && p[1] > 40) continue;                          // ... to the outer gate (south)
       if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 4.4)) continue;
       const i = api.place(HOUSE, p[0], p[1], 0, 2, clearOfWalls(3.2)); if (i >= 0) { houses.push(i); reserved.push([...api.at(i), 3.2]); }
     }
@@ -123,7 +123,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   for (let deg = 0; deg < 360 && houses.length < 40; deg += 7) for (const off of [-6, 0, 6]) {
     if (houses.length >= 40) break;
     const p = bail(deg + (off ? 3 : 0), off);
-    if (Math.abs(p[1]) < 5 && p[0] > 26) continue; if (Math.abs(p[0]) < 5 && p[1] > 26) continue;
+    if (Math.abs(p[1]) < 5 && p[0] > 40) continue; if (Math.abs(p[0]) < 5 && p[1] > 40) continue;
     if (reserved.some(([rx, ry, rr]) => Math.hypot(rx - p[0], ry - p[1]) < rr + 4.4)) continue;
     const i = api.place(HOUSE, p[0], p[1], 0, 1, clearOfWalls(3.2)); if (i >= 0) { houses.push(i); reserved.push([...api.at(i), 3.2]); }
   }
@@ -157,7 +157,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
   // 6b. outside the moat, as in a real medieval town: the farms and everything that digs, fells or smelts. Trees and deposits were all cleared at the start;
   //     each resource building gets back exactly the one deposit (or the grove) it needs, set down beside it.
   {
-    const ring = 98;   // the moat's outer bank is about 82 from the hall: farms and works stand a little beyond it, inside the land the hall holds
+    const ring = 105;   // the moat's outer bank is about 82 from the hall: farms and works stand a little beyond it, inside the land the hall holds
     const polar = (deg: number, r: number): [number, number] => { const a = (deg * Math.PI) / 180; return [Math.round(Math.cos(a) * r), Math.round(Math.sin(a) * r)]; };
     const dry = (x: number, y: number) => ![[0, 0], [7, 0], [-7, 0], [0, 7], [0, -7]].some(([dx, dy]) => api.wet(x + dx, y + dy));
     /** A dry spot near this direction and distance (trying neighbouring directions and distances when the first is water). */
@@ -169,7 +169,7 @@ export function buildModelVillage(api: ModelApi, hallIdx = 0) {
       const [bx, by] = [s[0] * (1 - 7 / Math.hypot(s[0], s[1])), s[1] * (1 - 7 / Math.hypot(s[0], s[1]))];
       return api.place(building, Math.round(bx), Math.round(by), 0, search, beyondMoat);
     };
-    const beyondMoat = (x: number, y: number) => Math.hypot(x, y) >= 90;   // never back inside the moat's outer bank
+    const beyondMoat = (x: number, y: number) => Math.hypot(x, y) >= 98;   // never back inside the moat's outer bank
     const mines: number[] = [];
     mines.push(works(0, QUARRY, 0, 4.5));
     const clay = works(1, CLAY_PIT, 58, 4);

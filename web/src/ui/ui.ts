@@ -123,7 +123,7 @@ const findBuildCards = buildSearch([
     const category = d.id === 37 || d.id === 38 ? 7 : d.cat;
     return { id: d.id, category, name: d.name,
       outputs: [...d.outputs, ...(d.alternateRecipe?.outputs ?? [])].map(([r]) => RES[r].name),
-      keywords: [...(TIER_NAMES[d.id] ?? []), ...(d.id === 35 ? ['harbor', 'dock'] : []), ...(d.id === 47 ? ['stables', 'horse', 'horses', 'packhorse', 'caravan', 'transport'] : [])],
+      keywords: [...(TIER_NAMES[d.id] ?? []), ...(d.id === 35 ? ['harbor', 'dock'] : []), ...(d.id === 47 ? ['stables', 'horse', 'horses', 'packhorse', 'caravan', 'transport'] : []), ...(d.id === 49 ? ['diplomacy', 'diplomat', 'envoy', 'herald', 'treaty', 'trade', 'flags', 'war', 'attack'] : [])],
       description: `${CATS[category].name} ${d.desc}` };
   }),
   { id: PLANT_TOOL, category: defs[33].cat, name: 'Plant Trees', keywords: ['forest', 'wood', 'tree', 'forester', 'grow'], description: PLANT_DESC },
@@ -236,7 +236,7 @@ export class UI {
       <p class="muted tiny">Click an army's banner (or press <b>Tab</b>) to select it, then <b>right-click</b> the ground to march. <b>G</b> halts it, <b>B</b> sends it home. Armies walk round buildings, fell trees in their way and bridge or ferry over water.</p>
       <label class="tiny" title="Armies may spend planks to shorten new routes across water. With shortcuts off, they build only if no route over land or an existing bridge is available."><input id="army-bridging" type="checkbox"> Allow automatic bridge shortcuts</label>
     </div>
-    <div class="sect" id="attack-box"><h3>Rival villages</h3><div id="attack-form"></div></div>
+    <div class="sect" id="army-embassy"><h3>Rival villages</h3><p class="muted tiny">Trade, diplomacy and marching on other villages are handled by the Embassy.</p><button class="pbtn" id="army-embassy-go">${bi('embassy')} Open the Embassy</button></div>
     <details class="sect" id="muster-box"><summary>Muster a new army</summary>
       <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
       <div class="mrows" id="muster-row"></div>
@@ -246,6 +246,7 @@ export class UI {
     <details class="sect"><summary>Armory upgrades</summary><div class="cards" id="military-upgrades"></div></details>
     <p class="muted tiny">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
   </section>
+  <div id="embassy-home" hidden><div class="sect" id="attack-box"><div id="attack-form"></div></div></div>
   <section class="pane" id="pane-village">
     <div><div class="eyebrow" id="v-sub">Your settlement</div><h2>The Village</h2></div>
     <div class="btnrow wrap"><button class="pbtn" data-steward="open">${bi('townhall')} Village steward</button><button class="pbtn" id="find-villager">${bi('pop')} Villagers</button></div>
@@ -492,6 +493,7 @@ export class UI {
       }
     };
     $('army-bridging').onchange = e => this.h.bridgeShortcuts((e.target as HTMLInputElement).checked);
+    $('army-embassy-go').onclick = () => this.h.act('embassy:open');
     $('military-upgrades').onclick = e => { const id = (e.target as HTMLElement).closest('button')?.dataset.research; if (id !== undefined) this.h.research(Number(id)); };
     $('speed').onclick = e => { const button = (e.target as Element).closest<HTMLButtonElement>('button[data-s]'); if (button) this.h.speed(Number(button.dataset.s)); };
     { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
@@ -1264,8 +1266,15 @@ export class UI {
     }
     if (html === null) { tab.hidden = true; if (this.tab === 'sel') this.setTab('build'); if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); } return; }
     if (this.sliding) return;   // a slider is being dragged: do not pull it from under the pointer
-    $('selected-details').innerHTML = html; tab.hidden = false;
+    // the embassy's diplomacy form lives in one piece of the page (so what is typed into it survives): it is taken out before the pane is drawn again, and put back into its slot
+    const box = document.getElementById('attack-box'), details = $('selected-details');
+    if (html === this.lastPaneHtml && (!html.includes('id="embassy-slot"') || document.getElementById('embassy-slot')?.contains(box))) { tab.hidden = false; return; }
+    this.lastPaneHtml = html;
+    if (box && details.contains(box)) $('embassy-home').appendChild(box);
+    details.innerHTML = html; tab.hidden = false;
+    const slot = document.getElementById('embassy-slot'); if (slot && box) slot.appendChild(box);
   }
+  private lastPaneHtml = '';
   showSelectedTab() { if (this.pref.ledger && !this.tempOpen) { this.tempOpen = true; this.applyPanels(); } this.setTab('sel'); }
   get currentTab() { return this.tab; }
 

@@ -149,7 +149,7 @@ impl Army { fn idle(&self) -> bool { matches!(self, Army::Idle) } }
 fn count(w: &World, kind: u8) -> u32 { w.buildings.iter().filter(|b| b.kind == kind && b.hp > 0.0).count() as u32 }
 /// Food in the stores (everything the villagers eat, counted in grain-equivalents of the cheapest: one meal each) against the heads to feed.
 fn food_stock(w: &World) -> i64 { FOODS_LIST.iter().map(|&r| w.stock[r as usize].max(0) as i64).sum() }
-const FOODS_LIST: [u8; 6] = [GR, FI, BD, SF, ME, SM];
+const FOODS_LIST: [u8; 4] = [GR, FI, BD, SF];
 fn affordable(w: &World, kind: u8) -> bool { DEFS[kind as usize].cost.iter().all(|&(r, n)| w.stock[r as usize] >= n) }
 
 #[wasm_bindgen]

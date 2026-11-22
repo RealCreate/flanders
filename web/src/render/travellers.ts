@@ -158,6 +158,29 @@ export class Travellers {
     if (trimHex !== undefined) this.prim('cloth', f, k, lx, h - ht * 0.5 - 0.1, lz + 0.01, w * 0.98, ht * 0.22, 1, trimHex, 0, Math.PI / 2 + fl, 0);
   }
 
+  /** A herald's banner: a pole with a golden finial and a long pennant of five strips that ripple one after the other, edged in a second colour, with an emblem across the first two strips. The
+   *  emblem follows the cloth (its position and turn are worked out from the same ripple) and is thicker than the cloth, so it shows from both sides whatever the flag is doing. `taper` is how much
+   *  the pennant narrows towards its tip: a lot for war, a little for peace. */
+  private banner(f: Frame, k: number, lx: number, lz: number, h: number, w: number, ht: number, seed: number, st: { a: number; b: number; edge: number; pole: number; taper: number; emblem: 'swords' | 'olive' }) {
+    this.pole(f, k, lx, lz, h, st.pole); this.prim('ball', f, k, lx, h + 0.08, lz, 0.3, 0.3, 0.3, GOLD); this.prim('cone', f, k, lx, h + 0.35, lz, 0.14, 0.5, 0.14, GOLD);
+    const n = 5, sw = w / n, top = h - 0.15;
+    let x = lx, z = lz, ex = lx, ez = lz, ea = Math.PI / 2;
+    for (let i = 0; i < n; i++) {
+      const ang = Math.PI / 2 + Math.sin(this.t * 5 + seed - i * 0.9) * (0.12 + 0.07 * i), sh = ht * (1 - st.taper * i);
+      this.prim('cloth', f, k, x, top - sh / 2, z, sw * 1.04, sh, 1, i % 2 ? st.b : st.a, 0, ang, 0);
+      this.prim('cloth', f, k, x, top - 0.06, z + 0.01, sw * 1.04, 0.12, 1, st.edge, 0, ang, 0);
+      this.prim('cloth', f, k, x, top - sh + 0.06, z + 0.01, sw * 1.04, 0.1, 1, st.edge, 0, ang, 0);
+      x += Math.cos(ang) * sw; z -= Math.sin(ang) * sw;
+      if (i === 0) { ex = x; ez = z; ea = ang; }   // the emblem sits where the first strip ends
+    }
+    const ey = top - ht * 0.5, dx = Math.cos(ea), dz = -Math.sin(ea);
+    if (st.emblem === 'swords') for (const r of [-0.7, 0.7]) this.prim('box', f, k, ex, ey, ez, 1.15, 0.13, 0.2, GOLD, 0, ea, r);
+    else {
+      for (let q = 0; q < 9; q++) { const th = q / 9 * Math.PI * 2, c = 0.4 * Math.cos(th), v = 0.4 * Math.sin(th); this.prim('ball', f, k, ex + dx * c, ey + v, ez + dz * c, 0.22, 0.16, 0.22, q % 2 ? 0x8aa84a : 0x4f7a2c); }
+      this.prim('ball', f, k, ex, ey, ez, 0.26, 0.26, 0.26, GOLD);
+    }
+  }
+
   private wheel(f: Frame, k: number, lx: number, lz: number, r: number, hex: number) { this.prim('cyl', f, k, lx, r, lz, r * 2, 0.14, r * 2, hex, 0, 0, Math.PI / 2); }
 
   /** The two-wheeled cart the caravan is made of, with its load piled in the colour of what it carries, under a strip of the sender's colour. */
@@ -218,7 +241,7 @@ export class Travellers {
         }
         case 'white-flag': {
           p({ body: WHITE, hat: HAT.COIF, legs: 0xd8d4c8, tool: undefined });
-          this.flag(f, k, 0.4, 0.15, 3.7, 2.1, 1.35, WHITE, sd); break;
+          this.banner(f, k, 0.45, 0.05, 4.2, 2.8, 1.7, sd, { a: 0xf6f2e6, b: 0xe8e2d0, edge: 0xd9a93a, pole: 0x6a4a2a, taper: 0.06, emblem: 'olive' }); break;
         }
         case 'olive': {
           p({ body: 0xe8e4d4, hat: HAT.COIF, legs: 0xd8d4c8 });
@@ -259,7 +282,7 @@ export class Travellers {
         }
         default: {   // war: a lone rider at a gallop with a red banner and a horn, nobody with him
           p({ mounted: true, body: 0x8a1c1c, hat: HAT.GREAT, legs: 0x2a2a30, armor: true, shield: 0, shieldCol: RED });
-          this.flag(f, k, 0.4, -0.7, 4.9, 2.1, 1.4, RED, sd, 0x1a1a1a);
+          this.banner(f, k, 0.45, 0.05, 5.2, 3.0, 1.9, sd, { a: 0xc01c1c, b: 0xa81414, edge: 0x1a1a1a, pole: 0x2a1a10, taper: 0.17, emblem: 'swords' });
           this.prim('cone', f, k, -0.4, 1.95, 0.55, 0.3, 0.9, 0.3, GOLD, 1.1, 0, 0.2); break;
         }
       }

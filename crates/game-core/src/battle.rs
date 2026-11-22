@@ -122,7 +122,7 @@ impl World {
         self.raid_warning_ticks = 0;
         let boss = if tag == 0 && (boss as usize) <= N_BOSSES { boss } else { 0 };
         let (cx, cy) = (self.ox as f32, self.oy as f32);
-        let dist = self.build_radius() as f32 + 22.0;
+        let dist = self.raid_distance(angle);   // they form up out in the country (as far as dry ground goes) and march in: time for a fight in the fields
         let (dx, dy) = (angle.cos(), angle.sin());
         let mut units: Vec<Unit> = vec![];
         // attackers form up in a line facing the village
@@ -962,7 +962,7 @@ impl World {
 
     /// More attackers (same tag) arrive from the same direction and form up behind the first.
     pub(crate) fn reinforce_attackers(&mut self, tag: i32, atk: [u32; NK]) -> bool {
-        let (cx, cy, dist) = (self.ox as f32, self.oy as f32, self.build_radius() as f32 + 22.0);
+        let ang = self.battle.as_ref().map_or(0.0, |b| b.angle); let (cx, cy, dist) = (self.ox as f32, self.oy as f32, self.raid_distance(ang));
         let Some(b) = self.battle.as_mut() else { return false };
         if b.tag != tag || atk.iter().sum::<u32>() == 0 { return false; }
         let (dx, dy) = (b.angle.cos(), b.angle.sin());

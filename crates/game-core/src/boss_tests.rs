@@ -269,7 +269,7 @@ fn the_camera_target_is_where_the_attackers_stand() {
                 let mut w = World::new(1337, ox, oy);
                 w.stock = [3000; N_RES]; w.population = 40; w.tick = 20 * DAY;
                 for (kind, x, y) in [(HOUSE, 12, 4), (HOUSE, 17, 4), (HOUSE, -12, 6), (HOUSE, -16, 10)] { w.place(kind, x, y, 0); }
-                let r = w.build_radius() as f32 + 22.0;
+                let r = w.raid_distance(angle);
                 let atk = [14, 6, 3, 0, 0, 0];
                 assert!(if boss > 0 { w.begin_battle_boss(atk, angle, 0, boss, 0, 1.0) } else { w.begin_battle(atk, angle, 7) });
                 let sp = w.battle_spawn(); assert_eq!(sp.len(), 2);

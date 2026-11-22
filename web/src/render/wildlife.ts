@@ -3,6 +3,8 @@ import { deer, boar, rabbit, wolf, sheep, cow, chicken, pig } from './animalmode
 import type { Terrain } from './terrain';
 import type { Huntable, WildLike } from './people';
 import { GRAZING_RADIUS, PASTURE, PIGSTY, isLivestockPen } from '../pasture';
+import { decay } from './fight';
+import { Remains } from './remains';
 import { surfaceTexture, type Surface } from './surfaces';
 
 type Gait = 'quad' | 'biped' | 'hop';
@@ -28,6 +30,10 @@ const SPECIES: Spec[] = [
   { ...pig, name: 'pig', coat: 'hide', max: 70, huntable: false, gait: 'quad', walk: 0.68, run: 3.7, stride: 0.72, size: 1, neck: [0, 0.59, 0.31], legs: [[0.16, 0.41, 0.23], [-0.16, 0.41, 0.23], [0.16, 0.41, -0.39], [-0.16, 0.41, -0.39]] },
 ];
 
+const BONE_SIZE: Record<string, number> = { deer: 1.2, boar: 0.8, rabbit: 0.3, wolf: 0.9, sheep: 0.8, cow: 1.4, chicken: 0.25, pig: 0.9 };
+
+const BODY_H: Record<string, number> = { deer: 0.95, boar: 0.5, rabbit: 0.2, wolf: 0.85, sheep: 0.5, cow: 0.9, chicken: 0.2, pig: 0.45 };   // how high the body sits: how far it swings sideways when it falls over
+
 interface Animal extends Huntable {
   sp: number; y: number; yaw: number; state: 'graze' | 'walk' | 'flee' | 'dead' | 'gone'; tx: number; tz: number; timer: number;
   hx: number; hz: number; roam: number; seed: number; huntable: boolean; deadT: number; domestic: boolean; owner?: string;
@@ -52,6 +58,7 @@ function upload(mesh: THREE.InstancedMesh, count: number) {
  *  Each species walks, trots and gallops with its own stride; each animal has its own pace. Only animals near the camera are simulated and drawn. */
 export class Wildlife implements WildLike {
   group = new THREE.Group();
+  private remains = new Remains();
   private animals: Animal[] = [];
   private bodies: THREE.InstancedMesh[] = []; private heads: THREE.InstancedMesh[] = []; private legMeshes: (THREE.InstancedMesh | null)[] = [];
   private normalHeads: THREE.BufferGeometry[] = [];
@@ -62,6 +69,7 @@ export class Wildlife implements WildLike {
   visible = 0;
 
   constructor(seed: bigint, private terrain: Terrain, trees: { x: number; z: number }[], sites: number[]) {
+    this.group.add(this.remains.group);
     const r = rng(Number(seed % 1000003n) + 17);
     const skin = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
     SPECIES.forEach(spec => {
@@ -140,13 +148,14 @@ export class Wildlife implements WildLike {
     const counts = SPECIES.map(() => 0), legCounts = SPECIES.map(() => 0), r2 = radius * radius;
     const wolves = this.animals.filter(a => SPECIES[a.sp].name === 'wolf' && a.state !== 'dead' && a.state !== 'gone');
     let shown = 0;
+    this.remains.begin();
     for (const a of this.animals) {
       const spec = SPECIES[a.sp];
       if (a.state === 'gone') { a.deadT += dt; if (a.deadT > 120 && !a.domestic) { a.state = 'graze'; a.alive = true; a.x = a.hx + (Math.random() - 0.5) * 8; a.z = a.hz + (Math.random() - 0.5) * 8; a.huntable = spec.huntable; } continue; }
       if ((a.x - cx) ** 2 + (a.z - cz) ** 2 > r2) continue;       // far from the camera: frozen and not drawn
       shown++;
       if (dt === 0) { this.draw(a, spec, counts, legCounts); continue; }
-      if (a.state === 'dead') { a.deadT += dt; if (a.deadT > 40) { a.state = 'gone'; a.deadT = 0; } this.draw(a, spec, counts, legCounts); continue; }
+      if (a.state === 'dead') { a.deadT += dt; if (decay(a.deadT).done) { a.state = 'gone'; a.deadT = 0; } this.draw(a, spec, counts, legCounts); continue; }
       // fear
       let danger = false, fx = 0, fz = 0;
       if (spec.name !== 'wolf') {
@@ -188,6 +197,7 @@ export class Wildlife implements WildLike {
       a.headT += dt;
       this.draw(a, spec, counts, legCounts);
     }
+    this.remains.end();
     this.visible = shown;
     this.bodies.forEach((mesh, i) => {
       upload(mesh, counts[i]);
@@ -198,15 +208,20 @@ export class Wildlife implements WildLike {
   }
 
   private draw(a: Animal, spec: Spec, counts: number[], legCounts: number[]) {
+    const dead = a.state === 'dead', dc = dead ? decay(a.deadT) : null;
+    if (dc) {   // a dead animal is rolled onto its side about its feet, so its body lies sideways of where it stood: put the remains under the body
+      const lx = (BODY_H[spec.name] ?? 0.5) * (a.seed > 50 ? -1 : 1), ox = Math.cos(a.yaw) * lx, oz = -Math.sin(a.yaw) * lx;
+      this.remains.add(a.x + ox, a.y, a.z + oz, a.yaw, BONE_SIZE[spec.name] ?? 0.7, dc); if (!dc.body) return;
+    }
     const i = counts[a.sp]; if (i >= spec.max) return; counts[a.sp]++;
-    const dead = a.state === 'dead', moving = a.speed > 0.15, ratio = a.speed / spec.walk;
+    const moving = a.speed > 0.15, ratio = a.speed / spec.walk;
     const gallop = spec.gait === 'quad' && ratio > 3.6, trot = spec.gait === 'quad' && ratio > 1.7 && !gallop;
     const ph = a.gait;
     // body motion
     let bob = 0, pitch = 0;
     if (spec.gait === 'hop') { const hop = moving ? Math.abs(Math.sin(ph * 0.5)) : 0; bob = hop * (0.1 + 0.05 * ratio); pitch = moving ? Math.cos(ph * 0.5) * 0.35 : 0; }
     else if (moving) { bob = Math.abs(Math.sin(ph)) * (gallop ? 0.12 : trot ? 0.05 : 0.025); pitch = Math.sin(ph) * (gallop ? 0.09 : 0.03); }
-    if (dead) { this.e.set(0, a.yaw, Math.PI / 2 * (a.seed > 50 ? 1 : -1), 'YXZ'); this.p.set(a.x, a.y + 0.28, a.z); }
+    if (dead) { this.e.set(0, a.yaw, Math.PI / 2 * (a.seed > 50 ? 1 : -1), 'YXZ'); this.p.set(a.x, a.y + 0.28 - dc!.rot * 0.15, a.z); }
     else { this.e.set(pitch, a.yaw, 0, 'YXZ'); this.p.set(a.x, a.y + bob, a.z); }
     this.q.setFromEuler(this.e); this.s.setScalar(spec.size * (a.domestic ? 1 : 0.95 + (a.seed % 10) * 0.012));
     this.b.compose(this.p, this.q, this.s);

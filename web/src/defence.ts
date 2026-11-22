@@ -17,8 +17,8 @@ export function actionsFor(role: Role, o: { armies: number; standing: number; re
 }
 
 /** Where the camera goes to see the attackers: out from the village centre along the direction they came from, just outside the village. */
-export function foeFocus(angle: number, ox: number, oz: number, buildRadius: number): { x: number; z: number } {
-  const r = buildRadius + 22;
+export function foeFocus(angle: number, ox: number, oz: number, buildRadius: number, distance = buildRadius + 22): { x: number; z: number } {
+  const r = distance;
   return { x: ox + Math.cos(angle) * r, z: oz + Math.sin(angle) * r };
 }
 

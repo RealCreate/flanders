@@ -53,7 +53,7 @@ import { startAgentBridge } from './agent';
 import { nearestWithin, TOUCH_DRAG_PIXELS } from './render/camerafx';
 import { paintFlag } from './ui/flagdesigner';
 import { keyNames } from './ui/ui';
-import { loadFlag, packFlag, unpackFlag, hasSavedFlag, type Flag } from './flag';
+import { loadFlag, packFlag, unpackFlag, hasSavedFlag, drawFlag, type Flag } from './flag';
 import { territoryOutline } from './render/border';
 import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
@@ -775,13 +775,13 @@ function doTrade(key: string, action: string, res: number, amount: number, escor
   const w = lv.world, their = tagOf(key), dist = roadTo(r);
   if (action === 'caravan') {
     const code = w.caravan_send(res, amount, their, dist, escort);
-    if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : 'Cannot send that.', 'bad'); return; }
+    if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : code === -4 ? 'The embassy has all its caravans out: upgrade it to send more at once.' : 'Cannot send that.', 'bad'); return; }
     commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud(); return;
   }
   const kind = action === 'alliance' ? JK.ALLIANCE : action === 'peace' ? JK.PEACE : action === 'envoy' ? JK.ENVOY : action === 'marriage' ? JK.MARRIAGE : action === 'war' ? JK.WAR : JK.TRADE, days = kind <= 2 ? 30 : 0;
   const code = w.journey_start(kind, their, days, dist);
   if (code !== 0) {
-    ui.toast(code === -7 ? 'One of those is already on its way.' : code === -20 ? 'An envoy went recently: wait a few days.' : code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -6 ? (kind === JK.ENVOY ? 'An envoy costs 20 gold.' : 'A wedding costs 150 gold.') : code === -1 && kind === JK.MARRIAGE ? 'You are already married into that house.' : code === -22 ? (kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.') : 'Cannot send that now.', 'bad'); return;
+    ui.toast(code === -8 ? 'The embassy has all its parties out: wait for one to arrive, or upgrade the embassy.' : code === -7 ? 'One of those is already on its way.' : code === -20 ? 'An envoy went recently: wait a few days.' : code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -6 ? (kind === JK.ENVOY ? 'An envoy costs 20 gold.' : 'A wedding costs 150 gold.') : code === -1 && kind === JK.MARRIAGE ? 'You are already married into that house.' : code === -22 ? (kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.') : 'Cannot send that now.', 'bad'); return;
   }
   commit({ op: 'journey', kind, idx: their, x: days, y: dist }); sound.click(); updateHud();
   ui.toast(kind === JK.ENVOY ? `An envoy with gifts sets out for ${r.name}.` : kind === JK.MARRIAGE ? `A wedding party sets out for ${r.name}.` : kind === JK.WAR ? `A herald with your declaration of war rides for ${r.name}.` : `Envoys set out for ${r.name} to offer ${kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact'} for ${days} days.`, kind === JK.WAR ? 'bad' : 'info');
@@ -1237,7 +1237,15 @@ function updatePeers() {
   });
   rows.sort((a, b) => Number(b.row.online) - Number(a.row.online) || a.dist - b.dist);   // villages with somebody at home first, then by distance
   ui.setPeers(rows.map(x => x.row), worldName);
+  lv.view.setForeignFlags(foreignFlags().map(x => x.flag));
 }
+/** The flags of the other cities, nearest first (their villages' own flags: the embassy flies them). */
+function foreignFlags(): { name: string; flag: Flag }[] {
+  const out: { name: string; flag: Flag; dist: number }[] = [];
+  for (const r of rivals.values()) { const flag = unpackFlag(r.village.world.style()); if (flag) out.push({ name: r.name, flag, dist: Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz) }); }
+  return out.sort((a, b) => a.dist - b.dist);
+}
+
 
 // ---------- replay and spectating ----------
 interface ReplaySession { r: Replay<Cmd>; target: Village; key: string; playing: boolean; rate: number; goal: number; bar: ReplayBar; label: string }
@@ -1482,13 +1490,19 @@ const remoteTerrainTiles = new WeakMap<World, Set<string>>();
 const REMOTE_TILE = 32;
 
 /** Re-level the ground of a whole village: pads, graded paths, craters and burn scars. */
+/** How far from the hall the ground is read: the village's border, and the levelled ground of an embassy that stands near it, which reaches far past it. */
+function terrainReach(w: World): number {
+  const ox = w.origin_x(), oz = w.origin_y(), f = w.buildings_flat(); let reach = w.build_radius() + 12;
+  for (let i = 0; i + 9 < f.length; i += 10) if (f[i] === 49) reach = Math.max(reach, Math.hypot(f[i + 2] - ox, f[i + 3] - oz) + (radii[49] ?? 24) * 1.15 + 5);
+  return reach;
+}
 function refreshTerrain(w: World, box: [number, number, number, number] | null = null) {
   atmo.invalidateShadows();
   terrain.scorch = allScorch();
   const ox = w.origin_x(), oz = w.origin_y();
   const others = [...rivals.values()].map(r => ({ x: r.village.ox, z: r.village.oz })).concat(lv ? [{ x: lv.ox, z: lv.oz }] : []).filter(p => Math.hypot(p.x - ox, p.z - oz) > 1);
   if (box) terrain.refreshBox(w, box[0], box[1], box[2], box[3], ox, oz, others);
-  else terrain.refresh(w, ox, oz, w.build_radius() + 12, others);
+  else terrain.refresh(w, ox, oz, terrainReach(w), others);
   const city = w.build_radius() + 12, old = remoteTerrainTiles.get(w), remote = new Set<string>();
   const buildings = w.buildings_flat();
   for (let i = 0; i + 9 < buildings.length; i += 10) {
@@ -1521,7 +1535,7 @@ let settleTimer: number | undefined;
 function settleTerrain() {
   clearTimeout(settleTimer);
   settleTimer = window.setTimeout(() => {
-    const w = lv.world, R = w.build_radius() + 12, ox = w.origin_x(), oz = w.origin_y();
+    const w = lv.world, R = terrainReach(w), ox = w.origin_x(), oz = w.origin_y();
     for (let k = 0; k < 4; k++) window.setTimeout(() => { if (lv.world === w) refreshTerrain(w, [ox - R, oz - R + (2 * R * k) / 4, ox + R, oz - R + (2 * R * (k + 1)) / 4]); }, 70 * k);
   }, 1500);
 }
@@ -1550,7 +1564,17 @@ function relOf(key: string) {
   return { rel: 0, married: false, treaties: 0 };
 }
 
+let raidersBrokenSeen = false;
+/** Victory: every bandit camp and lair of the world has been cleared. The game carries on (raids still come by sea and land): this only says so once. */
+let brokenCheck = 0;
+function checkRaidersBroken() {
+  if (brokenCheck++ % 120 !== 0) return;
+  const broken = lv.world.raiders_broken();
+  if (broken && !raidersBrokenSeen) { const t = 'Every bandit camp and lair is cleared: the raiders are broken. You have won — but raiders still come, and the village carries on.'; ui.toast(t, 'good'); ui.log(t, 'good', Number(lv.world.tick())); }
+  raidersBrokenSeen = broken;
+}
 function updateHud() {
+  checkRaidersBroken();
   const w = lv.world;
   let barracks = -1; const f = w.buildings_flat(); for (let i = 0; i < f.length; i += 10) if (f[i] === 19) barracks = Math.max(barracks, f[i + 1]);
   const flow = parseLedger(w.ledger_flat(), LEDGER_EXTRAS); for (let i = 0; i < rates.length; i++) rates[i] = steadyRate(flow, i);
@@ -1686,9 +1710,9 @@ function battleBanner() {
   for (const { v, mine, key } of list) {   // every village is watched, including during the warning period
     const on = v.world.battle_active(), was = fightSeen.get(key) ?? false; fightSeen.set(key, on);
     const warning = v.world.raid_warning_ticks() > 0, warned = raidWarningSeen.get(key) ?? false; raidWarningSeen.set(key, warning);
-    if (warning && !warned) {
+    if (warning && !warned && (!mine || v.world.raid_spotted())) {
       const dir = compassWord(Math.cos(v.world.raid_warning_angle()), Math.sin(v.world.raid_warning_angle()));
-      const msg = `Bandits are gathering to attack ${mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village"} from the ${dir}.`;
+      const msg = `${mine ? 'Your watchtower sights' : 'Lookouts sight'} bandits gathering to attack ${mine ? 'your village' : (rivals.get(key)?.name ?? 'a village') + "'s village"} from the ${dir}.`;
       ui.toast(msg, 'bad'); ui.log(msg, 'bad', Number(v.world.tick()));
       if (mine && replay?.target !== v) {
         sound.warhorn();
@@ -1702,13 +1726,13 @@ function battleBanner() {
   if (pendingBattleOrder && (pendingBattleOrder.village !== controllable?.v || replay?.target === pendingBattleOrder.village)) setPendingBattleOrder(null);
   for (const { v, who, mine, key } of controllable ? [controllable] : list) {
     const w = v.world;
-    if (!w.battle_active() && w.raid_warning_ticks() > 0) {
+    if (!w.battle_active() && w.raid_warning_ticks() > 0 && (!mine || w.raid_spotted())) {
       const seconds = arrivalTime(w.raid_warning_ticks(), TICK_RATE);
       const dir = compassWord(Math.cos(w.raid_warning_angle()), Math.sin(w.raid_warning_angle()));
       const bossWarning = w.raid_warning_boss() ? ' A warlord leads them.' : '';
       const objective = parseRaidObjective(w.raid_objective());
       const text = `Raid approaching from the ${dir} in about ${seconds} at 1×.${bossWarning}`;
-      const f = foeFocus(w.raid_warning_angle(), v.ox, v.oz, w.build_radius());
+      const f = foeFocus(w.raid_warning_angle(), v.ox, v.oz, w.build_radius(), w.raid_distance(w.raid_warning_angle()));
       setBattlefield([], objective, w.raid_warning_angle());
       const preparing = mine && replay?.target !== v;
       const towers = preparing ? openGarrisons(w, objective ?? f) : [];
@@ -1823,6 +1847,28 @@ function updateBossBar() {
   bossBarEl.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; bossBarEl.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
   (bossBarEl.firstElementChild as HTMLElement).textContent = bossTitle(bosses, b.boss, b.name);
   const fill = bossBarEl.querySelector('b') as HTMLElement; fill.style.width = Math.round(Math.max(0, Math.min(1, b.hp / b.max)) * 100) + '%'; fill.classList.toggle('rage', b.phase > 0);
+}
+
+/** Small health bars over wounded soldiers in a fight (friend green, foe red), nearest few only. */
+const unitBarEls: HTMLDivElement[] = [];
+function updateUnitBars() {
+  let list: { x: number; y: number; z: number; hp: number; max: number; side: number }[] = [];
+  for (const v of allVillages()) { if (v.world.battle_active()) list = list.concat(v.army.woundedAt()); }
+  const cx = rig.cam.position.x, cy = rig.cam.position.y, cz = rig.cam.position.z;
+  list.sort((a, b) => ((a.x - cx) ** 2 + (a.y - cy) ** 2 + (a.z - cz) ** 2) - ((b.x - cx) ** 2 + (b.y - cy) ** 2 + (b.z - cz) ** 2));
+  let n = 0;
+  for (const u of list) {
+    if (n >= 60) break;
+    vtmp.set(u.x, u.y, u.z).project(rig.cam);
+    if (vtmp.z >= 1 || Math.abs(vtmp.x) > 1.05 || Math.abs(vtmp.y) > 1.05) continue;
+    let el = unitBarEls[n];
+    if (!el) { el = document.createElement('div'); el.className = 'unitbar'; el.innerHTML = '<b></b>'; document.body.appendChild(el); unitBarEls[n] = el; }
+    el.hidden = false; el.classList.toggle('foe', u.side === 1);
+    el.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; el.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
+    (el.firstElementChild as HTMLElement).style.width = Math.round(Math.max(0, Math.min(1, u.hp / u.max)) * 100) + '%';
+    n++;
+  }
+  for (let i = n; i < unitBarEls.length; i++) unitBarEls[i].hidden = true;
 }
 
 /** Move the camera to where the attackers stand. */
@@ -2514,7 +2560,7 @@ function updateSelection() {
   const io = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)} ${n} ${RES[r].name}`).join(', ');
   const health = hp[selectedIdx * 3] / hp[selectedIdx * 3 + 1], burning = hp[selectedIdx * 3 + 2] > 0;
   let html = `<div><div class="eyebrow">${CATS[d.cat].name} · Tier ${tier + 1} of ${d.maxTier + 1}</div><h2>${tierName(kind, tier)}</h2><p class="muted">${d.name}</p></div><p>${d.desc}</p>`;
-  html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'}</div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
+  html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'} · <b>${Math.ceil(hp[selectedIdx * 3])} / ${Math.round(hp[selectedIdx * 3 + 1])} hp</b></div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
   html += reachHtml(kind, tier);
   html += productionProblemsHtml(selectedIdx);
   if (health < 0.995 && !burning) {   // damaged: offer repairs
@@ -2522,6 +2568,7 @@ function updateSelection() {
     const rok = rcost.every(([r, n]) => stocks[r] >= n);
     html += `<div><h3>Repair</h3><div class="cost">${ui.costHtml(rcost, stocks)}</div></div><button class="pbtn primary" data-act="repair" ${rok ? '' : 'disabled'}>${rok ? 'Repair' : 'Not enough resources'}</button>`;
   }
+  if (kind === 49) { html += embassyHtml(selectedIdx, tier, stocks); ui.setSelectedPane(html, demolitionTip(w, selectedIdx)); return; }
   if (kind === 3 || kind === 26) {   // towers and keeps need archers stationed inside to defend
     const cap = w.garrison_cap(selectedIdx), cur = w.garrison_flat()[selectedIdx] ?? 0, avail = w.army()[1];
     html += `<div><h3>Garrison</h3><div class="stats"><div class="stat"><b>${cur} / ${cap}</b><span>archers inside</span></div><div class="stat"><b>${avail}</b><span>archers free in the barracks</span></div></div>
@@ -2569,10 +2616,11 @@ function updateSelection() {
       <div><div class="eyebrow">Production cycle</div><div class="bar"><i style="width:${pct}%"></i></div></div>${depositHtml(selectedIdx)}
       <p class="muted">${recipe.inputs.length ? `Uses ${io(scaled(recipe.inputs, tier))}<br>` : ''}Makes ${io(scaled(recipe.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(recipe.outputs, tier + 1))}.` : ''}</p>`;
   } else if (d.housing) html += `<div class="stats"><div class="stat"><b>${icon('house', 20)} ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
-  if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p>`;
+  if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p><h3>Diplomacy</h3><p class="muted">Envoys, treaties, trade and war are handled from the town hall.</p><button class="pbtn primary" data-act="diplomacy">Open diplomacy</button>`;
   if (kind === 47) {
     const equipped = ((w.options_flat()[selectedIdx] ?? 0) & 1) !== 0;
-    html += `<p>${equipped && !burning ? 'Caravan horses ready. Newly dispatched caravans travel 50% faster.' : equipped ? 'The stable is burning. Horse transport resumes when the fire is out.' : 'Equip Caravan horses below to supply faster transport.'} Loading takes 60 seconds. Horses from one stable serve the village.</p>`;
+    html += `<p>${burning ? 'The stable is burning: its horses give no bonus until the fire is out.' : 'Its upgrades are the village\'s horses: each counts once, however many stables you build.'}${equipped && !burning ? ' Caravan horses ready: newly dispatched caravans travel twice as fast.' : ''} Loading a caravan takes 60 seconds.</p>
+      <div class="stats"><div class="stat"><b>${w.caravan_speed_percent()}%</b><span>Caravans</span></div><div class="stat"><b>${w.journey_speed_percent(3)}%</b><span>Riders</span></div><div class="stat"><b>${w.cavalry_speed_percent()}%</b><span>Knights</span></div></div>`;
   }
   if (kind === 19) {   // the lord who leads the defence
     const h = w.hero_flat();
@@ -2586,16 +2634,58 @@ function updateSelection() {
     const ok = cost.every(([r, n]) => stocks[r] >= n);
     html += `<div><h3>Upgrade to ${tierName(kind, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div><button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button>`;
   } else html += `<p><b>Fully upgraded.</b></p>`;
-  const opts = d.opts ?? [];
-  if (opts.length) {   // optional designs: small changes to the look and use of this one building
-    const have = w.options_flat()[selectedIdx] ?? 0, oc = World.option_cost_flat(kind), ocost: [number, number][] = []; for (let i = 0; i < oc.length; i += 2) ocost.push([oc[i], oc[i + 1]]);
-    const afford = ocost.every(([r, n]) => stocks[r] >= n);
-    html += `<div><h3>Design options</h3><div class="optlist">` + opts.map((op, i) => {
-      const on = (have & (1 << i)) !== 0, locked = tier < op.t;
-      return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
-    }).join('') + `</div></div>`;
-  }
+  html += optionsHtml(selectedIdx, kind, tier, stocks, kind === 47 ? 'Upgrades' : 'Design options');
   ui.setSelectedPane(html, kind !== 15 ? demolitionTip(w, selectedIdx) : '');
+}
+
+/** The optional designs of a building: small changes to its look and use, each with what it does, what it costs, and a click to build or remove it. */
+function optionsHtml(idx: number, kind: number, tier: number, stocks: number[], title: string): string {
+  const opts = defs[kind].opts ?? [];
+  if (!opts.length) return '';
+  const w = lv.world, have = w.options_flat()[idx] ?? 0, oc = World.option_cost_flat(kind), ocost: [number, number][] = []; for (let i = 0; i < oc.length; i += 2) ocost.push([oc[i], oc[i + 1]]);
+  const afford = ocost.every(([r, n]) => stocks[r] >= n);
+  return `<div><h3>${title}</h3><div class="optlist">` + opts.map((op, i) => {
+    const on = (have & (1 << i)) !== 0, locked = tier < op.t;
+    return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small>${kind === 47 || kind === 49 ? `<small class="muted">${op.d}</small>` : ''}</button>`;
+  }).join('') + `</div></div>`;
+}
+
+// ---------- the embassy ----------
+type EmbassyTab = 'building' | 'dip';
+let embassyTab: EmbassyTab = 'building';
+const flagImages = new Map<number, string>();
+/** A small picture of a flag, for the pane (made once per design). */
+function flagImage(f: Flag): string {
+  const key = packFlag(f); let url = flagImages.get(key);
+  if (!url) { const c = document.createElement('canvas'); c.width = 66; c.height = 42; drawFlag(c.getContext('2d')!, c.width, c.height, f); url = c.toDataURL(); flagImages.set(key, url); }
+  return url;
+}
+/** Select the first embassy, on its Diplomacy tab; with none yet, point the way to building one. */
+function openEmbassy(tab: EmbassyTab = 'dip') {
+  const f = lv.world.buildings_flat();
+  for (let i = 0; i * 10 < f.length; i++) if (f[i * 10] === 49) { embassyTab = tab; selectBuilding(i); return; }
+  ui.toast('Build an Embassy first: it sends the caravans, envoys, treaties and armies to other villages.', 'info'); ui.setTab('build'); ui.showBuildKind(49);
+}
+/** The embassy's pane: a Building tab (the flags flown on its forecourt, how fast each kind of party travels, and its four upgrades) and a Diplomacy tab (the trade, treaty and attack form). */
+function embassyHtml(idx: number, tier: number, stocks: number[]): string {
+  const w = lv.world, tabs = (['building', 'dip'] as const).map(t => `<button class="pbtn ${embassyTab === t ? 'on' : ''}" data-act="etab:${t}" aria-pressed="${embassyTab === t}">${t === 'dip' ? 'Diplomacy' : 'Building'}</button>`).join('');
+  let html = `<div class="btnrow" role="tablist">${tabs}</div>`;
+  if (embassyTab === 'dip') return html + `<div id="embassy-slot"></div>`;
+  const flags = foreignFlags();
+  html += `<div><h3>Halls of the other cities</h3>` + (flags.length
+    ? `<div class="flagrow" style="display:flex;flex-wrap:wrap;gap:6px">${flags.map(x => `<figure style="margin:0;text-align:center"><img src="${flagImage(x.flag)}" width="44" height="28" alt="${esc(x.name)}'s flag"><figcaption class="tiny muted">${esc(x.name)}</figcaption></figure>`).join('')}</div><p class="muted">Each city has its own little hall in the courtyard, with its flag on the roof${flags.length > 8 ? ' (the eight nearest cities)' : ''}.</p>`
+    : `<p class="muted">No other city yet: a hall with its flag is raised here for every city that settles near you.</p>`) + `</div>`;
+  const lim = w.party_limits();
+  html += `<div><h3>Parties at once</h3><div class="stats"><div class="stat"><b>${lim[0]} / ${lim[1]}</b><span>${icon('envoy', 14)} Envoys, riders, heralds</span></div><div class="stat"><b>${lim[2]} / ${lim[3]}</b><span>${icon('caravan', 14)} Caravans</span></div></div><p class="muted">A higher tier lets the embassy send more out at once.</p></div>`;
+  const rows: [string, number, string][] = [['caravan', 6, 'Caravans'], ['envoy', 3, 'Envoys'], ['pact', 0, 'Treaty riders'], ['marriage', 4, 'Wedding parties'], ['war', 5, 'War heralds']];
+  html += `<div><h3>Speed of your parties</h3><div class="stats five">${rows.map(([ic, k, name]) => `<div class="stat"><b>${w.journey_speed_percent(k)}%</b><span>${icon(ic, 14)} ${name}</span></div>`).join('')}</div><p class="muted">The stables' horses and these upgrades both count. Parties already on the road keep their pace.</p></div>`;
+  if (tier < defs[49].maxTier) {
+    const uc = upgrade_cost_flat(49, tier + 1), cost: [number, number][] = []; for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1]]);
+    const ok = cost.every(([r, n]) => stocks[r] >= n);
+    html += `<div><h3>Upgrade to ${tierName(49, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div><p class="muted">Sends ${4 * (tier + 2)} parties and ${2 * (tier + 2)} caravans out at once, and grows the compound.</p></div><button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button>`;
+  } else html += `<p><b>Fully upgraded.</b></p>`;
+  html += optionsHtml(idx, 49, tier, stocks, 'Upgrades');
+  return html;
 }
 
 /** Give a building a number of workers (-1 auto, 0 paused). Returns true when the core took it. */
@@ -2668,6 +2758,7 @@ function onAct(a: string) {
     if (n !== row.want) setWorkers(selectedIdx, n);
     return;
   }
+  if (a === 'diplomacy') { ui.setTab('army'); document.getElementById('attack-box')?.scrollIntoView({ block: 'start' }); return; }
   if (a === 'gar+' || a === 'gar-' || a === 'garfill' || a === 'garempty') {
     const cap = lv.world.garrison_cap(selectedIdx), cur = lv.world.garrison_flat()[selectedIdx] ?? 0, avail = lv.world.army()[1];
     const want = a === 'gar+' ? cur + 1 : a === 'gar-' ? Math.max(0, cur - 1) : a === 'garempty' ? 0 : Math.min(cap, cur + avail);
@@ -2710,6 +2801,8 @@ function onAct(a: string) {
     else if (code === -3) ui.toast('Soldiers are still crossing the drawbridge.', 'bad');
     return;
   }
+  if (a === 'embassy:open') { openEmbassy(); return; }
+  if (a.startsWith('etab:')) { embassyTab = a.slice(5) === 'dip' ? 'dip' : 'building'; updateSelection(); return; }
   if (a.startsWith('opt:')) {
     const bit = Number(a.slice(4)), on = ((lv.world.options_flat()[selectedIdx] ?? 0) & (1 << bit)) === 0;
     const code = lv.world.set_option(selectedIdx, bit, on);
@@ -2748,6 +2841,7 @@ function openContext(e: PointerEvent) {
     if (kind === 22 && tier >= 2) items.push({ label: f[o + 6] === 5 ? 'Open the gate' : 'Close the gate', run: () => { selectBuilding(idx); onAct('gate'); } });
     if (kind === 23) items.push({ label: drawnUp(f[o + 6], lv.world.battle_active()) ? 'Lower the drawbridge' : 'Raise the drawbridge', run: () => { selectBuilding(idx); onAct('bridge'); } });
     if (kind === 3 || kind === 26) items.push({ label: 'Fill with archers', run: () => { selectBuilding(idx); onAct('garfill'); } }, { label: 'Empty the tower', run: () => { selectBuilding(idx); onAct('garempty'); } });
+    if (kind === 15 || kind === 49) items.push({ label: 'Diplomacy…', run: () => onAct('diplomacy') });
     if (kind !== 15) items.push('-', { label: 'Demolish', tip: demolitionTip(lv.world, idx), run: () => { selectBuilding(idx); onAct('demolish'); } });
     if (items.length === 0) items.push({ label: 'Nothing to do here', disabled: true });
   } else if (ruin !== null) {
@@ -2755,7 +2849,7 @@ function openContext(e: PointerEvent) {
     items.push({ label: 'Rebuild', run: () => { selectRuin(ruin); onAct('rebuild'); } });
   } else {
     let rival: Rival | null = null; for (const rv of rivals.values()) if (rv.village.pick(r) !== null) { rival = rv; break; }
-    if (rival) { const rv = rival; title = `${rv.name}'s village`; items.push({ label: 'March on this village…', run: () => ui.setTab('army') }, '-'); }
+    if (rival) { const rv = rival; title = `${rv.name}'s village`; items.push({ label: 'March on this village…', run: () => openEmbassy() }, '-'); }
     if (hit) {
       items.push({ label: 'Look here', run: () => rig.focus(hit.x, hit.z) }, { label: 'Build here…', run: () => ui.setTab('build') });
       for (const id of lv.field.ids()) items.push({ label: `March Army ${id} here`, run: () => { selectDet(id); void orderArmies([id], () => orderMarch(id, hit.x, hit.z)); } });
@@ -3261,7 +3355,7 @@ function bindInput() {
       const idx = pickBuilding(pointerRay(e));
       if (idx === null) { const ri = lv.ruins.pick(pointerRay(e)); if (ri !== null) { selectRuin(ri); return; } }
       if (idx !== null) { if (e.shiftKey || e.ctrlKey) toggleMulti(idx); else selectBuilding(idx); }
-      else for (const r of rivals.values()) if (r.village.pick(ray) !== null) { ui.setTab('army'); ui.toast(`${r.name}'s village — choose an army in the Army tab to march on it.`, 'info'); return; }
+      else for (const r of rivals.values()) if (r.village.pick(ray) !== null) { openEmbassy(); ui.toast(`${r.name}'s village — pick it in the Embassy's Diplomacy tab to trade, talk or march on it.`, 'info'); return; }
       if (idx === null) { selectBuilding(null); selectRuin(null); if (selectedDet !== null) selectDet(null); }
     }
   });
@@ -3596,7 +3690,7 @@ function frame(now: number) {
   if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }
   perf.start('labels + minimap');
   updateHallLabels(all); updateJourneyLabels();
-  updateLabels(); updateCovLabels(); drawBattlefieldPins(); updateBossBar(); updateFoeTrack(now); updateFoeArrow();
+  updateLabels(); updateCovLabels(); drawBattlefieldPins(); updateBossBar(); updateUnitBars(); updateFoeTrack(now); updateFoeArrow();
   sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
   if (now - miniT > 250) {
     miniT = now;

@@ -46,7 +46,7 @@ fn every_meal_and_every_harvest_has_its_own_line() {
     assert!(villagers > 0 && soldiers > 0, "villagers {villagers}, soldiers {soldiers}");
     assert!(soldiers < villagers, "ten soldiers eat less than twenty-four villagers");
     let (farm_in, _) = line(FARM as usize, GR); assert!(farm_in > 0, "the farms' grain is its own line");
-    let total = (24 + 10 + 5) / 10 * 120; assert!((villagers + soldiers - total).abs() <= 120, "about {total} eaten, ledger says {}", villagers + soldiers);
+    let total = (24 + 10 + 5) / 10 * 120 * 4 / 3;   // grain fills 3 of the 4 quarters of a meal, so more items are eaten assert!((villagers + soldiers - total).abs() <= 120, "about {total} eaten, ledger says {}", villagers + soldiers);
 }
 
 #[test]

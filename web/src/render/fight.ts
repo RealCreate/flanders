@@ -43,3 +43,22 @@ export function nearestFoe(u: ArrayLike<number>, i: number, stride = 14): number
   }
   return best;
 }
+
+/** Seconds after death when each stage of a corpse ends: fresh (blood), rotting (ribs show), skeleton (bones and a dried stain), then it all sinks away. */
+export const DECAY = { fresh: 12, rotting: 35, skeleton: 60, end: 75 } as const;
+const ramp = (a: number, b: number, x: number) => Math.min(1, Math.max(0, (x - a) / (b - a)));
+
+/** What a corpse looks like `age` seconds after death. blood: wet red on the body (1 fresh .. 0); stain: size of the stain on the ground (0..1); rot: 0..1 body pallor/sinking; body: whether the body is still drawn; bones: ribs showing (0..1); fade: 0 present .. 1 gone; done: remove it. Deterministic in `age` and purely visual. */
+export function decay(age: number) {
+  const a = Math.max(0, age);
+  const fade = ramp(DECAY.skeleton, DECAY.end, a);
+  return {
+    blood: 1 - ramp(0, DECAY.fresh * 2, a),
+    stain: Math.min(1, 0.45 + ramp(0, 8, a) * 0.55) * (1 - fade),
+    rot: ramp(DECAY.fresh, DECAY.rotting, a),
+    body: a < DECAY.rotting,
+    bones: ramp(DECAY.fresh, DECAY.fresh + 12, a) * (1 - fade),
+    fade,
+    done: a >= DECAY.end,
+  };
+}

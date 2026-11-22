@@ -939,8 +939,9 @@ impl World {
         out
     }
 
-    fn march_speed(units: &[u32; NK]) -> f32 {
-        let mut m = f32::MAX; for k in 0..NK { if units[k] > 0 { m = m.min(UNITS[k].speed); } }
+    pub(crate) fn march_speed(&self, units: &[u32; NK]) -> f32 {
+        let horse = self.cavalry_speed_percent() as f32 / 100.0;
+        let mut m = f32::MAX; for k in 0..NK { if units[k] > 0 { m = m.min(if k == 3 { UNITS[k].speed * horse } else { UNITS[k].speed }); } }
         if m == f32::MAX { 3.0 } else { m * 1.65 }
     }
 
@@ -1202,7 +1203,7 @@ impl World {
             }
             let travelling = matches!(d.state, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
             let hu = Self::head_units(&d);
-            let base = Self::march_speed(&hu);
+            let base = self.march_speed(&hu);
             let check = |a: Wp, b: Wp| if b.mode == 2 {
                 obst.solid_clear((a.x, a.y), (b.x, b.y), members::FOOT_MARGIN)
             } else { walk(self, (a.x, a.y), (b.x, b.y), false) };
@@ -1294,7 +1295,7 @@ impl World {
                 let passed = &d.path[..d.wi.min(d.path.len())];
                 for g in d.grp.iter_mut() {
                     blocked |= self.step_group(&ns, g, passed, |a, b| leg(self, a, b), &obst) == Leg::Blocked;
-                    groups_done &= g.wi >= g.path.len() && g.file.finish(&g.units, Self::march_speed(&g.units));
+                    groups_done &= g.wi >= g.path.len() && g.file.finish(&g.units, self.march_speed(&g.units));
                     g.file.trim(&g.units);
                 }
             }
@@ -1340,10 +1341,10 @@ impl World {
     /// army has passed the matching waypoint.
     fn step_group(&self, ns: &NavStatic, g: &mut Grp, passed: &[Wp], leg: impl Fn((f32, f32), (f32, f32)) -> Leg, obst: &members::Obst) -> Leg {
         if g.wi >= g.path.len() || g.delay > 0 { g.speed = 0.0; g.delay = g.delay.saturating_sub(1); return Leg::Clear; }
-        if !g.file.release(Self::march_speed(&g.units)) { return Leg::Clear; }
+        if !g.file.release(self.march_speed(&g.units)) { return Leg::Clear; }
         g.file.record(g.x, g.y, 0);
         let dens = ns.dens_at(g.x, g.y) as f32;
-        g.speed = self.army_walk_speed(Self::march_speed(&g.units), g.x, g.y, dens, self.on_road(g.x, g.y));
+        g.speed = self.army_walk_speed(self.march_speed(&g.units), g.x, g.y, dens, self.on_road(g.x, g.y));
         let mut left = g.speed; let mut moved = false;
         while left > 1e-4 && g.wi < g.path.len() {
             let wp = g.path[g.wi];
@@ -1396,7 +1397,7 @@ impl World {
         match self.find_path(route_units, sx, sy, tx, ty) {
             Err(e) => vec![e as f32, 0.0, 0.0, 0.0, 0.0],
             Ok(p) => {
-                let base = Self::march_speed(&head); let workers = (head[0] + head[2]) as f32; let total: u32 = units.iter().sum();
+                let base = self.march_speed(&head); let workers = (head[0] + head[2]) as f32; let total: u32 = units.iter().sum();
                 let (mut t, mut planks, mut wood, mut prev) = (0.0f32, 0i32, 0i32, (sx, sy));
                 let mut bridges = self.bridges.len();
                 let ns = nav_static(self.seed);
@@ -1418,7 +1419,7 @@ impl World {
                     prev = (w.x, w.y);
                 }
                 t += MarchFile::lag(&head) / base;
-                for gu in &gus { let gt = ((tx - sx).hypot(ty - sy) * 1.3 + MarchFile::lag(gu)) / Self::march_speed(gu); if gt > t { t = gt; } }
+                for gu in &gus { let gt = ((tx - sx).hypot(ty - sy) * 1.3 + MarchFile::lag(gu)) / self.march_speed(gu); if gt > t { t = gt; } }
                 let mut v = vec![1.0, t, planks as f32, wood as f32, p.len() as f32];
                 for w in &p { v.extend_from_slice(&[w.x, w.y, w.mode as f32]); }
                 v

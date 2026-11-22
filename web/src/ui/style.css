@@ -512,3 +512,8 @@ table.flowbld .pbtn { padding: 2px 8px; font-size: 12px; }
 #army-stats .stat { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 3px; padding: 8px 2px; }
 #army-stats .stat span { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; }
 #army-stats .stat span svg, #army-stats .stat span img { flex: none; }
+
+.unitbar { position: fixed; z-index: 5; width: 26px; height: 4px; transform: translate(-50%, -100%); pointer-events: none; background: #1a0a08; border: 1px solid #000a; border-radius: 2px; overflow: hidden; }
+.unitbar[hidden] { display: none; }
+.unitbar b { display: block; height: 100%; background: #62c04a; }
+.unitbar.foe b { background: #d4422a; }
