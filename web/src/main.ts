@@ -54,7 +54,7 @@ import { startAgentBridge } from './agent';
 import { nearestWithin, TOUCH_DRAG_PIXELS } from './render/camerafx';
 import { paintFlag } from './ui/flagdesigner';
 import { keyNames } from './ui/ui';
-import { loadFlag, packFlag, unpackFlag, hasSavedFlag, drawFlag, type Flag } from './flag';
+import { loadFlag, packFlag, unpackFlag, randomFlag, hasSavedFlag, drawFlag, type Flag } from './flag';
 import { territoryOutline } from './render/border';
 import { showChoice } from './ui/choicebox';
 import { showPopulationInfo } from './ui/hudinfo';
@@ -1252,10 +1252,17 @@ function updatePeers() {
   ui.setPeers(rows.map(x => x.row), worldName);
   lv.view.setForeignFlags(foreignFlags().map(x => x.flag));
 }
+/** A computer city has no flag of its own design: it flies one made from its name, the same on every screen and in every session. */
+const computerFlags = new Map<string, Flag>();
+function computerFlag(key: string): Flag {
+  let f = computerFlags.get(key);
+  if (!f) { let h = 2166136261; for (const c of key) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0; f = randomFlag(() => { h = (Math.imul(h, 1664525) + 1013904223) >>> 0; return h / 4294967296; }); computerFlags.set(key, f); }
+  return f;
+}
 /** The flags of the other cities, nearest first (their villages' own flags: the embassy flies them). */
 function foreignFlags(): { name: string; flag: Flag }[] {
   const out: { name: string; flag: Flag; dist: number }[] = [];
-  for (const r of rivals.values()) { const flag = unpackFlag(r.village.world.style()); if (flag) out.push({ name: r.name, flag, dist: Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz) }); }
+  for (const r of rivals.values()) { const flag = unpackFlag(r.village.world.style()) ?? (r.ai ? computerFlag(r.key) : null); if (flag) out.push({ name: r.name, flag, dist: Math.hypot(r.village.ox - lv.ox, r.village.oz - lv.oz) }); }
   return out.sort((a, b) => a.dist - b.dist);
 }
 
