@@ -40,3 +40,22 @@ test('key names in the guide come from the player\'s own bindings', () => {
   for (const s of STEPS) assert.ok(!/\{\w+\}/.test(fillKeys(s.text)), 'unfilled placeholder in: ' + s.title);
   assert.ok(STEPS.some(s => s.text.includes('{panUp}')), 'the camera step names the movement keys');
 });
+
+test('each step asks for one thing, in short sentences', () => {
+  for (const s of STEPS) {
+    for (const sentence of fillKeys(s.text).split(/(?<=[.!?])\s+/)) assert.ok(sentence.split(/\s+/).length <= 20, `long sentence in "${s.title}": ${sentence}`);
+    assert.ok(s.text.length <= 240, `"${s.title}" is too long (${s.text.length} characters)`);
+  }
+});
+test('defences come before the village is asked to grow', () => {
+  const at = t => STEPS.findIndex(s => s.title === t);
+  assert.ok(at('Water against fire') < at('A growing village') && at('Train archers') < at('A growing village'));
+});
+
+import { TUTORIAL_WORLD, TUTORIAL_SCRIPT } from '../src/tutorialvillage.ts';
+import { cleanWorld } from '../src/worldname.ts';
+test('the tutorial village script is ordered and its world name survives cleaning', () => {
+  assert.equal(cleanWorld(TUTORIAL_WORLD), TUTORIAL_WORLD);
+  for (let i = 1; i < TUTORIAL_SCRIPT.length; i++) assert.ok(TUTORIAL_SCRIPT[i].at > TUTORIAL_SCRIPT[i - 1].at);
+  for (const a of TUTORIAL_SCRIPT) if (a.op === 'place') assert.ok(Math.hypot(a.dx, a.dy) >= 20 || a.kind === 6, 'keep the hall\'s surroundings clear');
+});

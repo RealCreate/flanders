@@ -66,7 +66,7 @@ import { GOALS, countsOf } from './goals';
 import { togglePhotoMode } from './photo';
 import { Ledger } from './ledger';
 import { dayPhase, DAY_TICKS } from './daycycle';
-import { cleanWorld, inviteLink, withWorld } from './worldname';
+import { cleanWorld, hashSeed, inviteLink, withWorld } from './worldname';
 import { VillageWatch, stewardRisks, type StewardAction, type StewardMode } from './steward';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
@@ -214,8 +214,6 @@ let touchInput = false;
 /** Bumped whenever the map generator changes: every world gets a fresh map and old saves are discarded. */
 const MAP_VERSION = 7;
 /** The map layout comes from the world name plus this salt. It stays at 3 (the layout of the earlier maps that players liked) even when MAP_VERSION moves on; change it only to deliberately roll new continents. */
-const SEED_SALT = 3;
-const hashSeed = (s: string) => { if (/^\d{1,15}$/.test(s)) return BigInt(s) + BigInt(SEED_SALT) * 1000003n; let h = 1469598103934665603n; for (const c of (s.toLowerCase() + '|map' + SEED_SALT)) h = ((h ^ BigInt(c.charCodeAt(0))) * 1099511628211n) & 0xffffffffffffn; return h; };
 
 // ---------- commands, saving, networking ----------
 let identity!: Identity;
