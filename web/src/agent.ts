@@ -26,12 +26,18 @@ export interface AgentHost {
   rivals(): { key: string; name: string; x: number; z: number; online: boolean }[];
   /** Start an attack on a rival with these soldiers [spear, archer, sword, knight, catapult] (the same as the Army tab's attack button). */
   attack(key: string, units: number[]): boolean;
+  /** How the other villages feel about us and what we have agreed with them. */
+  relations(): { key: string; name: string; relation: number; married: boolean; trade: boolean; peace: boolean; alliance: boolean }[];
+  /** The same as the trade form in the peers pane: action 'gift' | 'envoy' | 'alliance' | 'marriage' | 'war'. True when the party or caravan set out (the game shows the reason on screen when not). */
+  diplomacy(key: string, action: string, res: number, amount: number): boolean;
 }
 
 /** Tools the agent may call. Anything else is refused. */
-export const AGENT_TOOLS = ['observe', 'catalog', 'buildings', 'probe', 'can_place', 'place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'rivals', 'attack', 'prices', 'choice', 'decide', 'bribe'] as const;
+export const AGENT_TOOLS = ['observe', 'catalog', 'buildings', 'probe', 'can_place', 'place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'rivals', 'attack', 'prices', 'choice', 'decide', 'bribe', 'relations', 'envoy', 'gift', 'alliance', 'marriage', 'declare_war'] as const;
+/** The most goods one gift may carry (the game itself allows 500). */
+export const MAX_GIFT = 100;
 
-const MUTATING = new Set(['place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'attack', 'decide', 'bribe']);
+const MUTATING = new Set(['place', 'upgrade', 'option', 'demolish', 'repair', 'train', 'garrison', 'drawbridge', 'form_army', 'march_army', 'recall_army', 'attack', 'decide', 'bribe', 'envoy', 'gift', 'alliance', 'marriage', 'declare_war']);
 const NEVER_BUILD = new Set([15]);   // the town hall cannot be built (the game refuses it too)
 
 /** A token-bucket-ish limiter: a minimum gap between calls plus a budget per minute. */
@@ -54,6 +60,12 @@ const int = (v: unknown, lo: number, hi: number, name: string): number => {
   return v;
 };
 
+/** The village an agent names must be one that is in this world. */
+export const rivalKeyIn = (known: string[], a: Record<string, unknown>): string => {
+  if (typeof a.key !== 'string' || !known.includes(a.key)) throw new Error('unknown village: use a key from rivals');
+  return a.key;
+};
+
 export function startAgentBridge(host: AgentHost, port: number, token: string) {
   const pace = new URLSearchParams(location.search).get('pace') ?? 'normal';
   const acts = new Limiter(pace === 'slow' ? 5000 : 2500, pace === 'slow' ? 8 : 15);
@@ -62,6 +74,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
   let paused = false, connected = false, ws: WebSocket | null = null, stopped = false, count = 0;
   const allowAttack = new URLSearchParams(location.search).get('allow_attack') === '1';
   const log: string[] = [];
+  const rivalKey = (a: Record<string, unknown>) => rivalKeyIn(host.rivals().map(r => r.key), a);
 
   // ---- the badge ----
   const badge = document.createElement('div');
@@ -163,6 +176,22 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
     decide(a) { const opt = int(a.option, 0, 2, 'option'), code = w().choose(opt); if (code === 0) { host.commit({ op: 'choose', kind: opt }); host.afterChange(); } return { ok: code === 0, code }; },
     bribe() { const world = w(), price = world.bribe_price(), code = world.bribe(); if (code === 0) { host.commit({ op: 'bribe' }); host.afterChange(); } return { ok: code === 0, code, price }; },
     rivals() { const h = hall(); return host.rivals().map(r => ({ key: r.key, name: r.name, online: r.online, dx: Math.round(r.x - h.x), dy: Math.round(r.z - h.z) })); },
+    relations() { return host.relations(); },
+    envoy(a) { return { ok: host.diplomacy(rivalKey(a), 'envoy', 0, 0) }; },
+    gift(a) {
+      const res = RES.findIndex(r => r.key === a.resource); if (res < 0) throw new Error(`resource must be one of ${RES.map(r => r.key).join(', ')}`);
+      return { ok: host.diplomacy(rivalKey(a), 'gift', res, int(a.amount, 1, MAX_GIFT, 'amount')) };
+    },
+    alliance(a) { return { ok: host.diplomacy(rivalKey(a), 'alliance', 0, 0) }; },
+    marriage(a) {
+      if (a.confirm !== true) throw new Error('marriage needs confirm: true. It costs 150 gold and binds for good.');
+      return { ok: host.diplomacy(rivalKey(a), 'marriage', 0, 0) };
+    },
+    declare_war(a) {
+      if (!allowAttack) throw new Error('declaring war on other players is switched off. The human must open the game with allow_attack=1 to allow it.');
+      if (a.confirm_attack !== true) throw new Error('declare_war needs confirm_attack: true. Treaties end and relations collapse.');
+      return { ok: host.diplomacy(rivalKey(a), 'war', 0, 0) };
+    },
     attack(a) {
       if (!allowAttack) throw new Error('attacking other players is switched off. The human must open the game with allow_attack=1 to allow it.');
       if (a.confirm_attack !== true) throw new Error('attack needs confirm_attack: true. This starts a real battle against another person\'s village.');

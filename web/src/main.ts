@@ -40,7 +40,7 @@ import { Deposits } from './render/deposits';
 import { depositLabel, depositPanel, parseBuildingDeposit } from './depositinfo';
 import { Crowd } from './render/crowd';
 import { Travellers, type TVillage } from './render/travellers';
-import { JK, arrivedText } from './render/journey';
+import { JK, GIFT, arrivedText } from './render/journey';
 import { Effects2, EffectView } from './render/fx';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
@@ -739,12 +739,18 @@ function onTrade(r: Rival, c: Cmd) {
   const w = lv.world, their = tagOf(r.key);
   if (c.op === 'goods') {   // their caravan reached us (we check on their copy of their village that it really did, so nobody can push goods on us)
     if (!r.village.world.is_awaiting(c.kind ?? 0, c.x ?? 0, myTag())) return;
-    const paid = w.receive_goods(c.kind ?? 0, c.x ?? 0);
-    commit({ op: 'accept', kind: c.kind, x: c.x, to: r.key });
-    ui.toast(`${r.name}'s caravan arrived: ${c.x} ${RES[c.kind ?? 0]?.name.toLowerCase() ?? 'goods'}${paid ? `, we paid ${paid} gold` : ''}.`, 'good'); afterLocalChange();
+    const kind = c.kind ?? 0, name = RES[kind & ~GIFT]?.name.toLowerCase() ?? 'goods';
+    const paid = w.receive_goods_from(kind, c.x ?? 0, their);
+    if (paid < 0) { commit({ op: 'refuse', kind: c.kind, x: c.x, to: r.key }); ui.toast(`${r.name}'s caravan was turned back: we want nothing from a hostile village.`, 'info'); return; }
+    commit({ op: 'accept', kind: c.kind, x: c.x, idx: their, to: r.key });
+    ui.toast(kind & GIFT ? `${r.name} sends us a gift: ${c.x} ${name}.` : `${r.name}'s caravan arrived: ${c.x} ${name}${paid ? `, we paid ${paid} gold` : ''}.`, 'good'); afterLocalChange();
   } else if (c.op === 'accept') {   // they took what our caravan carried
-    const got = w.settle(c.kind ?? 0, c.x ?? 0, their);
-    if (got > 0) { commit({ op: 'settle', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} paid ${got} gold for the goods.`, 'good'); updateHud(); }
+    const kind = c.kind ?? 0, gift = (kind & GIFT) !== 0, was = gift && w.is_awaiting(kind, c.x ?? 0, their);
+    const got = w.settle(kind, c.x ?? 0, their);
+    if (was) { commit({ op: 'settle', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} accepted your gift.`, 'good'); updateHud(); }
+    else if (got > 0) { commit({ op: 'settle', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} paid ${got} gold for the goods.`, 'good'); updateHud(); }
+  } else if (c.op === 'refuse') {   // they turned our caravan back: the goods come home
+    if (w.caravan_returned(c.kind ?? 0, c.x ?? 0, their)) { commit({ op: 'returned', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} turned your caravan back. The goods are home again.`, 'bad'); updateHud(); }
   } else if (c.op === 'treaty' && (c.y ?? 1) !== 0) {   // an offer: we agree, and tell them with our own signed copy (without `to`, so it is not answered again)
     const what = c.kind === 2 ? 'an alliance' : c.kind === 1 ? 'peace' : 'a trade pact';
     if (w.treaty_acceptable(their, c.kind ?? 0) && w.treaty_set(their, c.kind ?? 0, c.x ?? 10)) { commit({ op: 'treaty', idx: their, kind: c.kind, x: c.x }); ui.toast(`${r.name} offers ${what} for ${c.x} days. Agreed.`, 'good'); }
@@ -773,22 +779,24 @@ function answerOffer(r: Rival, kind: number, days: number) {
 }
 
 /** What the trade form in the peers pane asks for. Nothing happens at once: a caravan, an offer, an envoy, a wedding party or a herald sets out along the path to the other city and does its work on arrival. */
-function doTrade(key: string, action: string, res: number, amount: number, escort: number) {
-  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
-  if (action === 'caravan' && !r.online && !r.ai) { ui.toast('That village is not online right now: caravans need somebody to take the goods.', 'bad'); return; }
+function doTrade(key: string, action: string, res: number, amount: number, escort: number): boolean {
+  const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return false; }
+  const gift = action === 'gift'; if (gift) { action = 'caravan'; res += GIFT; }
+  if (action === 'caravan' && !r.online && !r.ai) { ui.toast('That village is not online right now: caravans need somebody to take the goods.', 'bad'); return false; }
   const w = lv.world, their = tagOf(key), dist = roadTo(r);
   if (action === 'caravan') {
     const code = w.caravan_send(res, amount, their, dist, escort);
-    if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : code === -4 ? 'The embassy has all its caravans out: upgrade it to send more at once.' : 'Cannot send that.', 'bad'); return; }
-    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A caravan of ${amount} ${RES[res].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud(); return;
+    if (code !== 0) { ui.toast(code === -2 ? 'You do not have that much to send.' : code === -3 ? 'Not enough spearmen for the escort.' : code === -4 ? 'The embassy has all its caravans out: upgrade it to send more at once.' : code === -5 ? 'They loathe you too much to take a gift.' : 'Cannot send that.', 'bad'); return false; }
+    commit({ op: 'caravan', kind: res, x: amount, idx: their, y: dist, ax: escort }); sound.click(); ui.toast(`A ${gift ? 'gift caravan' : 'caravan'} of ${amount} ${RES[res & ~GIFT].name.toLowerCase()} sets out for ${r.name}.`, 'good'); updateHud(); return true;
   }
   const kind = action === 'alliance' ? JK.ALLIANCE : action === 'peace' ? JK.PEACE : action === 'envoy' ? JK.ENVOY : action === 'marriage' ? JK.MARRIAGE : action === 'war' ? JK.WAR : JK.TRADE, days = kind <= 2 ? 30 : 0;
   const code = w.journey_start(kind, their, days, dist);
   if (code !== 0) {
-    ui.toast(code === -8 ? 'The embassy has all its parties out: wait for one to arrive, or upgrade the embassy.' : code === -7 ? 'One of those is already on its way.' : code === -20 ? 'An envoy went recently: wait a few days.' : code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -6 ? (kind === JK.ENVOY ? 'An envoy costs 20 gold.' : 'A wedding costs 150 gold.') : code === -1 && kind === JK.MARRIAGE ? 'You are already married into that house.' : code === -22 ? (kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.') : 'Cannot send that now.', 'bad'); return;
+    ui.toast(code === -8 ? 'The embassy has all its parties out: wait for one to arrive, or upgrade the embassy.' : code === -7 ? 'One of those is already on its way.' : code === -20 ? 'An envoy went recently: wait a few days.' : code === -21 ? 'They do not like you enough yet. Send envoys first.' : code === -6 ? (kind === JK.ENVOY ? 'An envoy costs 20 gold.' : 'A wedding costs 150 gold.') : code === -1 && kind === JK.MARRIAGE ? 'You are already married into that house.' : code === -22 ? (kind === 2 ? 'They will not ally with you yet: you need a trade pact and warm relations.' : kind === 0 ? 'They do not like you enough for a trade pact yet. Send an envoy.' : 'They will not make peace with you.') : 'Cannot send that now.', 'bad'); return false;
   }
   commit({ op: 'journey', kind, idx: their, x: days, y: dist }); sound.click(); updateHud();
   ui.toast(kind === JK.ENVOY ? `An envoy with gifts sets out for ${r.name}.` : kind === JK.MARRIAGE ? `A wedding party sets out for ${r.name}.` : kind === JK.WAR ? `A herald with your declaration of war rides for ${r.name}.` : `Envoys set out for ${r.name} to offer ${kind === 2 ? 'an alliance' : kind === 1 ? 'peace' : 'a trade pact'} for ${days} days.`, kind === JK.WAR ? 'bad' : 'info');
+  return true;
 }
 
 /** Caravans that arrived: tell the village they were sent to, so it can take them and pay. */
@@ -1460,6 +1468,11 @@ async function startGame(name: string, username: string, pve = false) {
     toast: (m, k) => ui.toast(m, k ?? 'info'),
     rivals: () => [...rivals.entries()].map(([key, r]) => ({ key, name: r.name, x: r.village.ox, z: r.village.oz, online: r.online })),
     attack: (key, u) => { const r = rivals.get(key); if (!r || !r.online) return false; doAttack(key, u); return true; },
+    relations: () => {
+      const f = Array.from(lv.world.relations_flat()), rel = new Map<number, number[]>(); for (let i = 0; i + 3 < f.length; i += 4) rel.set(f[i], [f[i + 1], f[i + 2], f[i + 3]]);
+      return [...rivals.entries()].map(([key, r]) => { const [v, m, bits] = rel.get(tagOf(key)) ?? [0, 0, 0]; return { key, name: r.name, relation: v, married: m === 1, trade: (bits & 1) !== 0, peace: (bits & 2) !== 0, alliance: (bits & 4) !== 0 }; });
+    },
+    diplomacy: (key, action, res, amount) => doTrade(key, action, res, amount, 0),
   }, agentPort, agentToken);
   setInterval(() => { save(); updatePeers(); checkpoint(); }, 8000);
   tutorial.begin(!saved); updateGoals();
@@ -2059,16 +2072,22 @@ function stepAis() {
       else ui.toast(arrivedText(kind, r.name, 'you', false), kind === JK.WAR ? 'bad' : 'good');
     }
     const delivered = w.take_delivered();
-    for (let i = 0; i + 2 < delivered.length; i += 3) if (delivered[i + 2] === tag) { onTrade(r, { op: 'goods', kind: delivered[i], x: delivered[i + 1], tick: now, n: 0 }); w.settle(delivered[i], delivered[i + 1], tag); }
+    for (let i = 0; i + 2 < delivered.length; i += 3) if (delivered[i + 2] === tag) { onTrade(r, { op: 'goods', kind: delivered[i], x: delivered[i + 1], tick: now, n: 0 }); if (lv.world.caravan_welcome(tagOf(r.key))) w.settle(delivered[i], delivered[i + 1], tag); else w.caravan_returned(delivered[i], delivered[i + 1], tag); }   // (its own copy settles the sale or gift; a hostile us turns it back)
     if (w.battle_active() || aiFrame % 3 === 0) r.village.afterTick();
   }
 }
 
 /** Our caravan reached a computer village: it pays for the goods (or takes them as a gift when it cannot) and we collect what it paid. */
 function aiTakesGoods(r: Rival, res: number, amount: number) {
-  r.village.world.receive_goods(res, amount);
-  const got = lv.world.settle(res, amount, tagOf(r.key));
-  if (got > 0) { void commit({ op: 'settle', kind: res, x: amount, idx: tagOf(r.key) }); ui.toast(`${r.name} paid ${got} gold for the goods.`, 'good'); updateHud(); }
+  const their = tagOf(r.key), gift = (res & GIFT) !== 0;
+  if (r.village.world.receive_goods_from(res, amount, myTag()) < 0) {   // it will not have goods from somebody it loathes: they come home
+    if (lv.world.caravan_returned(res, amount, their)) { void commit({ op: 'returned', kind: res, x: amount, idx: their }); ui.toast(`${r.name} turned your caravan back. The goods are home again.`, 'bad'); updateHud(); }
+    return;
+  }
+  const was = gift && lv.world.is_awaiting(res, amount, their);
+  const got = lv.world.settle(res, amount, their);
+  if (was) { void commit({ op: 'settle', kind: res, x: amount, idx: their }); ui.toast(`${r.name} accepted your gift.`, 'good'); updateHud(); }
+  else if (got > 0) { void commit({ op: 'settle', kind: res, x: amount, idx: tagOf(r.key) }); ui.toast(`${r.name} paid ${got} gold for the goods.`, 'good'); updateHud(); }
 }
 
 /** An errand of ours reached a computer village: it answers an offer, welcomes an envoy, takes our wedding party or our declaration of war. */

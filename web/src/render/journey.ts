@@ -2,6 +2,8 @@
 // The core keeps the list (World.journeys_flat, the same on every copy of a village); this file turns it into places on a polyline and a cast of figures.
 
 /** The kinds of journey, as the core numbers them (0..2 are treaty kinds). */
+/** Added to a resource number to make a caravan a gift (the core's `GIFT_FLAG`). */
+export const GIFT = 64;
 export const JK = { TRADE: 0, PEACE: 1, ALLIANCE: 2, ENVOY: 3, MARRIAGE: 4, WAR: 5, CARAVAN: 6 } as const;
 export const JOURNEY_STRIDE = 7;
 

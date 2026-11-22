@@ -264,6 +264,11 @@ const WINTER_DEATH_MAX: u32 = 60;
 /// What a unit of each resource is worth in gold coins (a merchant pays 80% of it).
 const PRICE: [i32; N_RES] = [1, 2, 2, 1, 3, 2, 5, 6, 1, 2, 1, 6, 1, 2, 2, 2, 3];
 
+/// Added to a resource number to make a caravan a gift: `GIFT_FLAG + res` carries `res` for nothing, to warm the other village's feelings. The flag travels with the caravan
+/// (in commands, notices and the awaiting list), so nothing else about the wire format changes.
+pub const GIFT_FLAG: u8 = 64;
+/// A village whose relation (towards the sender) is at or below this turns their caravans back, which also covers any village we have declared war on or who declared it on us.
+pub const HOSTILE_REL: i32 = -40;
 /// Goods on their way to another village (`to` is that village's tag), arriving at tick `eta`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Caravan { res: u8, amount: i32, to: i32, start: u64, eta: u64, escort: u32 }
@@ -2169,7 +2174,7 @@ impl World {
     fn caravan_step(&mut self) {
         let mut lost = vec![];
         for (i, c) in self.caravans.iter().enumerate() { if c.eta > self.tick && self.tick % 10 == 0 && self.rng.range(300 + 120 * c.escort) == 0 { lost.push(i); } }
-        for &i in lost.iter().rev() { let c = self.caravans.remove(i); self.push_event(EV_ROBBED, c.amount, c.res as i32); }
+        for &i in lost.iter().rev() { let c = self.caravans.remove(i); self.push_event(EV_ROBBED, c.amount, (c.res & !GIFT_FLAG) as i32); }
         // arrivals: the escort comes home, and the goods wait for the other village to take them
         let now = self.tick; let mut rest = vec![];
         for c in std::mem::take(&mut self.caravans) {
@@ -2514,11 +2519,14 @@ impl World {
 
     /// Send goods with an optional escort. Already dispatched caravans keep their arrival time.
     pub fn caravan_send(&mut self, res: u8, amount: i32, to: i32, distance: f32, escort: u32) -> i32 {
-        if res as usize >= N_RES || amount <= 0 || amount > 500 || to == 0 || !(0.0..=3000.0).contains(&distance) { return -1; }
+        let base = res & !GIFT_FLAG; let gift = res & GIFT_FLAG != 0;
+        if res >= 2 * GIFT_FLAG || base as usize >= N_RES || amount <= 0 || amount > 500 || to == 0 || !(0.0..=3000.0).contains(&distance) { return -1; }
+        if gift && self.relation(to) <= HOSTILE_REL { return -5; }   // (a gift to somebody who loathes us would only be thrown back)
+        let res = if gift { base | GIFT_FLAG } else { base };
         if self.caravans.len() as u32 >= self.caravan_capacity() { return -4; }
-        if self.stock[res as usize] < amount { return -2; }
+        if self.stock[base as usize] < amount { return -2; }
         if escort > self.army[0] { return -3; }
-        self.stock[res as usize] -= amount; self.army[0] -= escort;
+        self.stock[base as usize] -= amount; self.army[0] -= escort;
         let speed = CARAVAN_SPEED * self.caravan_speed_percent() as f32 / 100.0;
         self.caravans.push(Caravan { res, amount, to, start: self.tick, eta: self.tick + 60 * 100 / self.caravan_speed_percent() as u64 + (distance / speed) as u64, escort });
         0
@@ -2572,11 +2580,34 @@ impl World {
     pub fn settle(&mut self, res: u8, amount: i32, from: i32) -> i32 {
         let Some(i) = self.awaiting.iter().position(|a| a[0] == res as i32 && a[1] == amount && a[2] == from) else { return 0 };
         self.awaiting.remove(i);
+        if res & GIFT_FLAG != 0 { self.rel_add(from, Self::gift_warmth(res & !GIFT_FLAG, amount)); self.push_event(EV_DIPLO, 3, 0); return 0; }   // a gift is not paid for: it is remembered
         let pact = self.has_treaty(from, TREATY_TRADE); let ally = self.has_treaty(from, TREATY_ALLIANCE);
         self.rel_add(from, 2);   // honest trade builds trust
         let gold = amount * PRICE[res as usize] * if ally { 120 } else if pact { 110 } else { 100 } / 100;
         let cap = self.storage_cap(); let before = self.stock[GD as usize];
         self.stock[GD as usize] = Self::add_capped(before, gold, cap); self.stock[GD as usize] - before
+    }
+    /// How much a gift of this size warms the feelings of whoever gets it: a point for every ten coins' worth, at least 2 and at most 12.
+    fn gift_warmth(res: u8, amount: i32) -> i32 { if res as usize >= N_RES { return 0; } (amount.clamp(0, 500) * PRICE[res as usize] / 10).clamp(2, 12) }
+    /// Would we let a caravan from this village in? Not when they loathe us, or we them (relation at or below `HOSTILE_REL`, as after a declaration of war).
+    pub fn caravan_welcome(&self, from: i32) -> bool { self.relation(from) > HOSTILE_REL }
+    /// Goods from the caravan of village `from`, like `receive_goods` but with the sender known: a hostile village's caravan is turned away (-1, nothing taken), and a gift
+    /// costs nothing and warms our feelings towards them. Returns the coins paid, or -1 when refused.
+    pub fn receive_goods_from(&mut self, res: u8, amount: i32, from: i32) -> i32 {
+        if from == 0 || !self.caravan_welcome(from) { return -1; }
+        if res & GIFT_FLAG == 0 { return self.receive_goods(res, amount); }
+        let base = res & !GIFT_FLAG;
+        if res >= 2 * GIFT_FLAG || base as usize >= N_RES || amount <= 0 || amount > 500 { return 0; }
+        let room = (self.storage_cap() - self.stock[base as usize]).max(0); let take = amount.min(room);
+        self.stock[base as usize] += take; self.rel_add(from, Self::gift_warmth(base, take)); self.push_event(EV_DIPLO, 3, 0); 0
+    }
+    /// A village turned our caravan back: the goods come home (as far as the stores take them) and the account is closed. Only for a caravan that really arrived and has not been
+    /// settled. Returns whether it did. A gift that was refused is not remembered as one.
+    pub fn caravan_returned(&mut self, res: u8, amount: i32, from: i32) -> bool {
+        let Some(i) = self.awaiting.iter().position(|a| a[0] == res as i32 && a[1] == amount && a[2] == from) else { return false };
+        self.awaiting.remove(i);
+        let base = (res & !GIFT_FLAG) as usize; if base >= N_RES { return false; }
+        let cap = self.storage_cap(); self.stock[base] = Self::add_capped(self.stock[base], amount, cap); true
     }
     /// Goods arrive from another village's caravan: they go into the stores (up to what fits), and the sender is owed their worth, which we pay in coin at our own price when we can. Returns the coins paid.
     pub fn receive_goods(&mut self, res: u8, amount: i32) -> i32 {
@@ -4284,6 +4315,46 @@ mod trade_tests {
         // limits
         assert_eq!(sender.caravan_send(IR, 9999, 7, 10.0, 0), -1); assert_eq!(sender.caravan_send(IR, 40, 7, 10.0, 99), -3);
         sender.stock[IR as usize] = 5; assert_eq!(sender.caravan_send(IR, 40, 7, 10.0, 0), -2);
+    }
+
+    #[test]
+    fn a_gift_caravan_costs_the_receiver_nothing_and_warms_both_sides() {
+        let mut sender = rich(); let mut buyer = rich();
+        let iron_s = sender.stock[IR as usize];
+        assert_eq!(sender.caravan_send(GIFT_FLAG + IR, 40, 7, 120.0, 0), 0);
+        assert_eq!(sender.stock[IR as usize], iron_s - 40);
+        assert_eq!(sender.caravan_send(2 * GIFT_FLAG, 40, 7, 10.0, 0), -1, "no such resource");
+        assert_eq!(sender.caravan_send(GIFT_FLAG + 99, 40, 7, 10.0, 0), -1);
+        for _ in 0..200 { sender.step(); sender.stock[GR as usize] = 300; }
+        let d = sender.take_delivered(); assert_eq!(d, vec![(GIFT_FLAG + IR) as i32, 40, 7]);
+        assert!(sender.is_awaiting(GIFT_FLAG + IR, 40, 7) && !sender.is_awaiting(IR, 40, 7), "a gift is not mistaken for a sale");
+        let (gold_b, iron_b, rel_b) = (buyer.stock[GD as usize], buyer.stock[IR as usize], buyer.relation(5));
+        assert_eq!(buyer.receive_goods_from(GIFT_FLAG + IR, 40, 5), 0);
+        assert_eq!(buyer.stock[IR as usize], iron_b + 40); assert_eq!(buyer.stock[GD as usize], gold_b, "no payment");
+        assert!(buyer.relation(5) > rel_b);
+        let (gold_s, rel_s) = (sender.stock[GD as usize], sender.relation(7));
+        assert_eq!(sender.settle(GIFT_FLAG + IR, 40, 7), 0); assert_eq!(sender.stock[GD as usize], gold_s, "nothing is paid for a gift");
+        assert!(sender.relation(7) > rel_s, "but it is remembered"); assert!(!sender.is_awaiting(GIFT_FLAG + IR, 40, 7));
+        assert_eq!(sender.settle(GIFT_FLAG + IR, 40, 7), 0); assert_eq!(sender.relation(7), rel_s + (sender.relation(7) - rel_s), "never twice");
+        let again = sender.relation(7); sender.settle(GIFT_FLAG + IR, 40, 7); assert_eq!(sender.relation(7), again);
+    }
+
+    #[test]
+    fn hostile_villages_caravans_are_turned_back_and_the_goods_come_home() {
+        let mut sender = rich(); let mut buyer = rich();
+        assert!(buyer.caravan_welcome(5));
+        buyer.declare_war(5); assert!(!buyer.caravan_welcome(5), "a village at war is not welcome");
+        let (iron_s, iron_b) = (sender.stock[IR as usize], buyer.stock[IR as usize]);
+        assert_eq!(sender.caravan_send(IR, 40, 7, 10.0, 0), 0);
+        for _ in 0..100 { sender.step(); sender.stock[GR as usize] = 300; }
+        assert_eq!(buyer.receive_goods_from(IR, 40, 5), -1); assert_eq!(buyer.stock[IR as usize], iron_b, "nothing taken");
+        assert_eq!(buyer.receive_goods_from(GIFT_FLAG + IR, 40, 5), -1, "nor a gift");
+        assert!(sender.caravan_returned(IR, 40, 7)); assert_eq!(sender.stock[IR as usize], iron_s, "the goods came home");
+        assert!(!sender.caravan_returned(IR, 40, 7), "only once"); assert!(!sender.caravan_returned(IR, 41, 7));
+        // a village that loathes us does not get gifts at all
+        sender.rel_add(7, -60); assert_eq!(sender.caravan_send(GIFT_FLAG + IR, 10, 7, 10.0, 0), -5);
+        // a cool village is still welcome; a plain stranger too
+        buyer.rel_add(6, -20); assert!(buyer.caravan_welcome(6)); assert!(buyer.caravan_welcome(8));
     }
 
     #[test]

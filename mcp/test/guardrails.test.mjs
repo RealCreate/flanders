@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { Guard, Limiter } from '../guardrails.mjs';
+import { Guard, Limiter, MAX_GIFT } from '../guardrails.mjs';
 
 let t = 0; const now = () => t;
 
@@ -39,6 +39,22 @@ let t = 0; const now = () => t;
   const g = new Guard({ allowAttack: true, gapMs: 0 }, now);
   assert.match(g.check('attack', {}).error, /confirm_attack/);
   assert.equal(g.check('attack', { confirm_attack: true }), null);
+}
+// diplomacy: reading is free, a marriage needs confirm, a gift is capped, war is as fenced as an attack, and every call must name a village
+{
+  t = 0; const g = new Guard({ gapMs: 0, perMinute: 1000, lookGapMs: 0, lookPerMinute: 1000 }, now);
+  assert.equal(g.check('relations'), null);
+  assert.equal(g.check('envoy', { key: 'abc' }), null);
+  assert.match(g.check('envoy', {}).error, /village's key/); assert.match(g.check('envoy', { key: 7 }).error, /village's key/);
+  assert.match(g.check('marriage', { key: 'abc' }).error, /confirm/); assert.equal(g.check('marriage', { key: 'abc', confirm: true }), null);
+  assert.equal(g.check('gift', { key: 'abc', amount: MAX_GIFT }), null);
+  for (const amount of [0, -5, MAX_GIFT + 1, 2.5, '50', undefined]) assert.match(g.check('gift', { key: 'abc', amount }).error, /a gift carries/);
+  assert.equal(g.check('alliance', { key: 'abc' }), null);
+  assert.match(g.check('declare_war', { key: 'abc', confirm_attack: true }).error, /switched off/, 'war is off unless the human allows attacks');
+  const war = new Guard({ allowAttack: true, gapMs: 0 }, now);
+  assert.match(war.check('declare_war', { key: 'abc' }).error, /confirm_attack/); assert.equal(war.check('declare_war', { key: 'abc', confirm_attack: true }), null);
+  const tiny = new Guard({ gapMs: 0, perMinute: 1000, maxActions: 1 }, now);
+  assert.equal(tiny.check('envoy', { key: 'abc' }), null); assert.match(tiny.check('gift', { key: 'abc', amount: 5 }).error, /budget/, 'diplomacy counts against the action budget');
 }
 // a pause stops everything, and the session budget caps the total
 {

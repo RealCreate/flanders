@@ -19,7 +19,7 @@ impl Rng {
     fn pick<T: Copy + std::fmt::Debug>(&mut self, v: &[T]) -> T { let x = v[(self.next() % v.len() as u64) as usize]; if std::env::var("TRACE").is_ok() { eprintln!("  = {x:?}"); } x }
     fn i(&mut self) -> i32 { self.pick(&[0, 1, 2, 3, 4, 5, 7, 9, 15, 20, 40, 100, 255, 256, 1000, 65_535, -1, -2, -100, i32::MAX, i32::MIN, i32::MAX - 1]) }
     fn u(&mut self) -> u32 { self.pick(&[0, 1, 2, 3, 4, 5, 6, 8, 10, 50, 200, 1000, 100_000, u32::MAX, u32::MAX - 1]) }
-    fn b(&mut self) -> u8 { self.pick(&[0, 1, 2, 3, 4, 5, 8, 20, 30, 60, 255]) }
+    fn b(&mut self) -> u8 { self.pick(&[0, 1, 2, 3, 4, 5, 8, 20, 30, 60, 64, 65, 80, 127, 128, 255]) }
     fn f(&mut self) -> f32 { self.pick(&[0.0, -0.0, 1.0, -1.0, 3.14, 1e9, -1e9, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, f32::MIN, 1e-30]) }
     fn units(&mut self) -> Vec<u32> { let n = self.pick(&[0usize, 1, 4, 5, 6, 12]); (0..n).map(|_| self.pick(&[0u32, 1, 3, 20, 300, u32::MAX])).collect() }
     fn flat(&mut self) -> Vec<i32> { let n = self.pick(&[0usize, 1, 3, 4, 5, 8, 40]); (0..n).map(|_| self.i()).collect() }
@@ -60,7 +60,7 @@ fn no_command_panics_on_hostile_arguments() {
                 14 => { w.hero_hire(); }
                 15 => { w.set_style(r.u()); }
                 16 => { w.receive_goods(r.b(), r.i()); }
-                17 => { w.settle(r.b(), r.i(), r.i()); }
+                17 => { w.settle(r.b(), r.i(), r.i()); w.receive_goods_from(r.b(), r.i(), r.i()); w.caravan_returned(r.b(), r.i(), r.i()); w.caravan_welcome(r.i()); }
                 18 => { w.choose(r.b()); }
                 19 => { let (t, k, d) = (r.i(), r.b(), r.u()); w.treaty_set(t, k, d); }
                 20 => { let (t, k) = (r.i(), r.b()); w.treaty_end(t, k); }

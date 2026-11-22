@@ -81,6 +81,12 @@ tool('choice', 'Is a decision waiting for you (plague, preacher, noble, hard win
 tool('decide', 'Answer the waiting decision with option 0, 1 or 2 (see the game for what each means).', { option: z.number().int().min(0).max(2) });
 tool('bribe', 'Pay a bandit raid to turn back before it strikes (price in observe.attack_price when one is on). They return sooner and stronger if you pay often. Not for players.', {});
 tool('rivals', 'Other players\' villages that are online, with their positions relative to your hall.', {});
+tool('relations', 'How each other village feels about you (-100 hostile .. 100 devoted), and your marriages and treaties with them. Read this before sending anything.', {});
+tool('envoy', 'Send an envoy with gifts to a village (20 gold, once every 3 days each): relations improve when he arrives.', { key: z.string().max(200) });
+tool('gift', 'Send goods to a village as a gift (nothing is paid, relations improve). resource is a key such as grain, wood, iron; amount 1-100. A village that loathes you turns it back.', { key: z.string().max(200), resource: z.string().max(20), amount: z.number().int().min(1).max(100) });
+tool('alliance', 'Propose an alliance (needs a trade pact and warm relations; they may refuse).', { key: z.string().max(200) });
+tool('marriage', 'Marry into a village house: 150 gold, needs relations of 30, lasting. Needs confirm: true.', { key: z.string().max(200), confirm: z.boolean() });
+if (guard.o.allowAttack) tool('declare_war', 'Declare war on another player village: treaties and marriage end, relations collapse. Only with confirm_attack: true.', { key: z.string().max(200), confirm_attack: z.boolean() });
 if (guard.o.allowAttack) tool('attack', 'Attack another player\'s village with a field army. Real people play there: only with confirm_attack: true.', { key: z.string(), units: z.array(z.number().int().min(0).max(300)).length(5), confirm_attack: z.boolean() });
 server.tool('wait', 'Let the game run for a few real seconds (the agent cannot speed it up).', { seconds: z.number().min(1).max(30) }, async ({ seconds }) => { await new Promise(r => setTimeout(r, seconds * 1000)); return { content: [{ type: 'text', text: 'waited' }] }; });
 
