@@ -207,12 +207,13 @@ export class Village {
     if (fighting) this.army.foe = pickFoe(this.army.friend, this.foeColor(w.battle_tag()) ?? 0x4a3a2a);
     if (!fighting) { const last = w.take_last_battle_frame(); if (this.army.battle && last.length) this.army.syncBattle(last); }
     this.army.syncBattle(fighting ? w.battle_units_flat() : new Float32Array(0), fighting ? w.battle_detachment_ids() : undefined);
-    this.army.syncSiegeWorks(fighting ? w.battle_ladders_flat() : new Float32Array(0), fighting ? w.battle_bridges_flat() : new Float32Array(0));
+    this.army.syncSiegeWorks(fighting ? w.battle_ladders_flat() : new Float32Array(0), fighting ? w.battle_bridges_flat() : new Float32Array(0), fighting ? w.battle_siege_flat() : new Float32Array(0));
     this.people.hidden = fighting;
     const tk = Number(w.tick()), jumped = tk - this.lastShotTick > 8; this.lastShotTick = tk;   // after loading or catching up, old shots must not fly again
     const s = w.take_shots();
     if (!jumped) for (let i = 0; i < s.length; i += 7) {
       if (s[i] === 2) { this.sh.fx.slam(s[i + 1], s[i + 2], 3.5); Village.onBossFx?.(2, s[i + 1], s[i + 2]); }   // a boss's slam
+      else if (s[i] === 4) this.sh.fx.slam(s[i + 1], s[i + 2], 5);   // a wall section falls to a sap, or a siege tower is wrecked
       else if (s[i] === 3) { this.sh.fx.hornBlast(s[i + 1], s[i + 2], 32); Village.onBossFx?.(3, s[i + 1], s[i + 2]); }   // a warlord's horn
       else this.sh.fx.shot(s[i], s[i + 1], s[i + 2], s[i + 3], s[i + 4], s[i + 5] > 0.5, s[i] === 0 ? this.army.shooterHeight(s[i + 1], s[i + 2]) : 1.5);
     }

@@ -1,20 +1,20 @@
 //! Rules of combat: walls, ladders, wading, fire, field armies joining a defence, retreat, and the roads of siege engines.
 use super::*;
 
-fn put_t(w: &mut World, kind: u8, tier: u8, x: f32, y: f32) {
+pub(crate) fn put_t(w: &mut World, kind: u8, tier: u8, x: f32, y: f32) {
     let pad_h = w.base(x, y);
     w.buildings.push(Building { kind, tier, x, y, rot: 0, pad_h, progress: 0, status: 4, aux: -1, staff: 0, residents: 0, hp: battle::max_hp(kind, tier), burning: 0.0, garrison: 0, born: 0, opts: 0, fert: FERT_MAX, mode: 0, target: -1, beff: 100 });
 }
 /// A wall across the east side of the village (x = 24), `tier` 0 timber / 2 stone, pieces overlapping so nobody slips through.
-fn east_wall(tier: u8) -> World {
+pub(crate) fn east_wall(tier: u8) -> World {
     let mut w = World::new(1337, 0, 0);
     w.stock = [3000; N_RES]; w.population = 12;
     let (hx, hy) = (w.buildings[0].x, w.buildings[0].y);
     for k in -9..=9 { put_t(&mut w, WALL, tier, hx + 24.0, hy + k as f32 * 3.0); }
     w
 }
-fn wall_hp(w: &World) -> f32 { w.buildings.iter().filter(|b| b.kind == WALL).map(|b| b.hp).sum() }
-fn run(w: &mut World, secs: u32) { for _ in 0..secs { w.step(); w.stock[GR as usize] = 3000; if !w.battle_active() { break; } } }
+pub(crate) fn wall_hp(w: &World) -> f32 { w.buildings.iter().filter(|b| b.kind == WALL).map(|b| b.hp).sum() }
+pub(crate) fn run(w: &mut World, secs: u32) { for _ in 0..secs { w.step(); w.stock[GR as usize] = 3000; if !w.battle_active() { break; } } }
 
 #[test]
 fn stone_walls_are_immune_to_infantry_but_timber_walls_are_not() {
@@ -45,7 +45,7 @@ fn foot_soldiers_need_ladders_to_cross_a_stone_wall() {
     // no ladders: nobody gets over in two minutes
     let mut w = east_wall(2);
     assert!(w.begin_battle([10, 0, 6, 0, 0, 0], 0.0, 0));
-    w.battle.as_mut().unwrap().ladders = 0;
+    { let b = w.battle.as_mut().unwrap(); b.ladders = 0; b.siege = Default::default(); }   // (no towers and no saps either)
     let full = wall_hp(&w);
     let mut got_in = 0; for _ in 0..120 { w.step(); w.stock[GR as usize] = 3000; got_in = got_in.max(inside(&w)); if !w.battle_active() { break; } }
     assert_eq!(got_in, 0, "without ladders nobody crosses a stone wall");

@@ -6,6 +6,7 @@ import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses'
 import { smoothPath } from './field';
 import { lunge, fallen, mix, decay } from './fight';
 import { Remains } from './remains';
+import { SiegeWorks } from './siegeworks';
 import { standHeight, onWater, chase } from './wading';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -78,7 +79,8 @@ export class ArmyView {
   plan: (ax: number, az: number, bx: number, bz: number) => number[] | null = () => null;
   radii: number[] = [];
 
-  constructor(private terrain: Terrain) { this.group.add(this.remains.group); }
+  private siegeWorks: SiegeWorks;
+  constructor(private terrain: Terrain) { this.group.add(this.remains.group); this.siegeWorks = new SiegeWorks((x, z) => this.terrain.walkAt(x, z)); this.group.add(this.siegeWorks.group); }
 
   /** Standing army and guards, from the village state. */
   syncPeace(buildings: Float32Array, army: number[], guards: number, garrison: number[]) {
@@ -205,7 +207,8 @@ export class ArmyView {
   private siegeWood = new THREE.MeshStandardMaterial({ color: 0x8a6a42, roughness: 0.9 });
   private ladderObjs: THREE.Group[] = []; private bridgeObjs: THREE.Group[] = [];
   /** Ladders against walls and bridges over moats that the attackers have built, from World.battle_ladders_flat / battle_bridges_flat. */
-  syncSiegeWorks(ladders: Float32Array, bridges: Float32Array) {
+  syncSiegeWorks(ladders: Float32Array, bridges: Float32Array, siege: Float32Array = new Float32Array(0)) {
+    this.siegeWorks.sync(siege, this.t);   // siege towers and saps (World.battle_siege_flat)
     const wood = this.siegeWood;
     const mkLadder = () => {
       const g = new THREE.Group(), H = 3.8, L = Math.hypot(H, 0.9), tilt = -Math.atan2(0.9, H);
@@ -232,7 +235,7 @@ export class ArmyView {
   /** The boss on the field, if one is alive: where he stands and how tall he is (for the health bar over him). */
   bossAt(): { x: number; y: number; z: number; boss: number; name: number; hp: number; max: number; phase: number } | null {
     const f = this.battle ? this.field.find(q => q.boss > 0 && q.alive) : undefined;
-    return f ? { x: f.x, y: this.height(f) + f.elev + (f.boss === 1 ? 3.6 : 5.4), z: f.z, boss: f.boss, name: f.bname, hp: f.hp, max: f.max, phase: f.phase } : null;
+    return f ? { x: f.x, y: this.height(f) + f.elev + (f.boss === 1 ? 3.6 : f.boss === 4 ? 4.2 : f.boss === 3 ? 2.8 : 5.4), z: f.z, boss: f.boss, name: f.bname, hp: f.hp, max: f.max, phase: f.phase } : null;
   }
 
   /** Wounded soldiers on the field (not bosses: they have their own bar): where to draw a health bar over each. */
@@ -256,15 +259,17 @@ export class ArmyView {
 
   /** The boss as a large figure (twice a soldier's height), with a standard on his back for the warlord, a gold ring while his horn sounds and a red glow when he is enraged. */
   private drawBoss(crowd: Crowd, f: Field, t: number, bi: number, shown: Set<THREE.Group>) {
-    const warlord = f.boss === 1, sc = warlord ? 1.5 : 2.4, lg = lunge(f.anim, 0.6, warlord ? 0.7 : 0.9), gy = this.height(f);
-    let body = warlord ? 0x7a1f1f : 0x6f7f4a;
+    const warlord = f.boss === 1, doctor = f.boss === 3, ironclad = f.boss === 4, sc = doctor ? 1.15 : ironclad ? 1.7 : warlord ? 1.5 : 2.4, lg = lunge(f.anim, 0.6, warlord || ironclad ? 0.7 : 0.9), gy = this.height(f);
+    let body = doctor ? 0x24242b : ironclad ? 0x8c929e : warlord ? 0x7a1f1f : 0x6f7f4a;
     if (f.phase > 0) body = mix(body, 0xff5a2a, 0.25 + 0.12 * Math.sin(t * 7));
     if (f.flash > 0) body = mix(body, 0xff3a2a, Math.min(0.75, f.flash / 0.3 * 0.75));
-    const look: Partial<Draw> = warlord
+    const look: Partial<Draw> = doctor ? { hat: HAT.HOOD, tool: TOOL.STAFF, legs: 0x24242b }   // a plague doctor: dark robes, a hood, a staff
+      : ironclad ? { hat: HAT.GREAT, tool: TOOL.SWORD, shield: 1, shieldCol: 0x2c3a5a, mounted: true, armor: true, legs: 0x8c929e }   // a knight in full steel on a great horse
+      : warlord
       ? { hat: HAT.GREAT, tool: TOOL.SWORD, shield: 1, shieldCol: 0x7a1f1f, mounted: true, armor: true, legs: 0x5a5a62 }
       : { tool: TOOL.CLUB, legs: 0x4a3a2a };
     crowd.add({ x: f.x + Math.sin(f.yaw) * lg, y: gy + f.elev, z: f.z + Math.cos(f.yaw) * lg, yaw: f.yaw, pose: f.anim > 0 ? 3 : f.moving ? 1 : 3, phase: f.anim > 0 || !f.moving ? t + f.seed : f.gait,
-      speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.6) : 0, skin: warlord ? 0xd9a877 : 0x8a9a62, scale: sc, body, ...look } as Draw);
+      speed: f.moving ? f.spd : 0, swing: f.anim > 0 ? Math.min(1, f.anim / 0.6) : 0, skin: doctor ? 0xcfc6b0 : warlord || ironclad ? 0xd9a877 : 0x8a9a62, scale: sc, body, ...look } as Draw);
     if (warlord) {   // the standard rides behind him and its banner sways
       let g = this.decos[bi]; if (!g) { g = buildStandard(); this.decos[bi] = g; this.group.add(g); }
       const back = 0.9; g.position.set(f.x - Math.sin(f.yaw) * back, gy + f.elev + 1.0, f.z - Math.cos(f.yaw) * back); g.rotation.y = f.yaw + Math.PI / 2 * 0 + Math.sin(t * 2.2) * 0.12; g.scale.setScalar(1.0); g.visible = true; shown.add(g);

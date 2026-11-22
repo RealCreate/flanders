@@ -60,7 +60,37 @@ pub(crate) fn wave_pct(phase: u64, peak: u32) -> u32 {
     if phase < PEAK_AT { SEED_PCT.min(peak) + ((peak.saturating_sub(SEED_PCT)) as u64 * phase / PEAK_AT) as u32 } else { (peak as u64 * (1000 - phase) / (1000 - PEAK_AT)) as u32 }
 }
 
+/// A plague camp: where the Plague Doctor stands (see `BOSSES`), from when, and which of his names.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct Camp { pub x: f32, pub y: f32, pub since: u64, pub name: u8 }
+
 impl World {
+    /// The camp of the doctor, if one stands: [x, y, name].
+    pub fn plague_camp_flat(&self) -> Vec<f32> { self.plague_camp.map_or(vec![], |c| vec![c.x, c.y, c.name as f32]) }
+
+    /// A new outbreak may bring a doctor: one time in `camp_one_in` in a village old enough, from the random stream only when it could happen.
+    fn camp_roll(&mut self) {
+        let d = &BOSSES[(DOCTOR - 1) as usize];
+        if self.plague_camp.is_some() || d.camp_one_in == 0 || self.tick < d.camp_from_days * DAY || self.population < BOSS_FROM_POP { return; }
+        if self.rng.range(d.camp_one_in) != 0 { return; }
+        let a = self.rng.range(628) as f32 * 0.01; let name = self.rng.range(4) as u8;
+        let dist = self.raid_distance(a);
+        self.plague_camp = Some(Camp { x: self.ox as f32 + a.cos() * dist, y: self.oy as f32 + a.sin() * dist, since: self.tick, name });
+        self.push_event(EV_BOSS, DOCTOR as i32 * 16 + name as i32, 2);
+    }
+
+    /// While the doctor stands he breathes the plague back in whenever it has ended; after `camp_stay_days` he moves on.
+    fn camp_step(&mut self) {
+        let Some(c) = self.plague_camp else { return };
+        let d = &BOSSES[(DOCTOR - 1) as usize];
+        if self.tick >= c.since + d.camp_stay_days * DAY { self.plague_camp = None; return; }
+        if self.tick >= self.plague_end && self.population > 0 {
+            self.plague_start = self.tick; self.plague_end = self.tick + d.camp_reinfect_days * DAY;
+            self.sick = self.sick.max(self.population * d.camp_reinfect_pct / 100).max(2).min(self.population);
+            self.push_event(EV_PLAGUE, self.sick as i32, 1);
+        }
+    }
+
     /// Is an outbreak running?
     pub fn plague_active(&self) -> bool { self.tick < self.plague_end }
     /// [started at tick, ends at tick] of the latest outbreak (zeros before the first).
@@ -79,6 +109,7 @@ impl World {
         self.sick = (self.population * SEED_PCT / 100).max(2).min(self.population);
         self.push_event(EV_PLAGUE, self.sick as i32, 0);
         self.offer(CH_PLAGUE);
+        self.camp_roll();
     }
 
     /// End the outbreak at once and heal everybody (an abbey, the testing tools).
@@ -90,6 +121,7 @@ impl World {
     /// Called every tick; the plague moves once a step.
     pub(crate) fn plague_step(&mut self) {
         if self.tick % STEP != 0 { return; }
+        self.camp_step();
         let wells = self.buildings.iter().filter(|b| b.kind == WELL).count() as u32;
         let parks = self.buildings.iter().filter(|b| b.kind == PARK).count() as u32;
         let chapels: u32 = self.buildings.iter().filter(|b| b.kind == CHAPEL).map(|b| b.tier as u32 + 1).sum();

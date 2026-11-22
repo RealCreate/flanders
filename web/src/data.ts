@@ -127,7 +127,7 @@ export const EVENT_TEXT = (k: number, a: number, b: number): { text: string; ton
     case 17: return { text: `Robbers waylaid a caravan: ${a} ${RES[b]?.name.toLowerCase() ?? 'goods'} lost.`, tone: 'bad' };
     case 15: return a >= 0 ? { text: `Merchants at your port bought ${RES[b]?.name.toLowerCase() ?? 'goods'} for ${a} gold.`, tone: 'good' } : { text: `Merchants sold you grain for ${-a} gold.`, tone: 'info' };
     case 10: return { text: `A new ${UNIT_NAMES[a] ?? 'soldier'} finished training.`, tone: 'good' };
-    case 25: return { text: `${bossTitle(bosses, a >> 4, a & 15)}, has fallen!`, tone: 'good' };
+    case 25: return b === 2 ? { text: `${bossTitle(bosses, a >> 4, a & 15)}, has pitched a plague camp outside the village and the sickness will not die down. Send a fast raid to kill him.`, tone: 'bad' } : { text: `${bossTitle(bosses, a >> 4, a & 15)}, has fallen!`, tone: 'good' };
     case 26: return { text: 'Your army goes into a lair.', tone: 'info' };
     default: return { text: 'Something happened.', tone: 'info' };
   }

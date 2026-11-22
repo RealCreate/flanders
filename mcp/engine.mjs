@@ -26,7 +26,7 @@ export const cleanWorld = raw => String(raw ?? '').replace(/[\u0000-\u001f\u007f
 const hashSeed = s => { if (/^\d{1,15}$/.test(s)) return BigInt(s) + BigInt(SEED_SALT) * 1000003n; let h = 1469598103934665603n; for (const c of (s.toLowerCase() + '|map' + SEED_SALT)) h = ((h ^ BigInt(c.charCodeAt(0))) * 1099511628211n) & 0xffffffffffffn; return h; };
 
 /** Why an action was refused, in a word or two. */
-const WHY = { [-1]: 'unknown', [-2]: 'outside border', [-3]: 'blocked', [-4]: 'water', [-5]: 'too steep', [-6]: 'not enough resources', [-7]: 'needs deposit', [-8]: 'needs forest', [-9]: 'not buildable', [-10]: 'maxed or needs tier', [-11]: 'needs barracks', [-12]: 'barracks too basic', [-13]: 'not enough villagers', [-14]: 'burning', [-15]: 'nothing to repair', [-16]: 'needs water', [-17]: 'deposit in the way', [-18]: 'no water to bridge', [-19]: 'too wide', [-20]: 'gate needs a wall' };
+const WHY = { [-1]: 'unknown', [-2]: 'outside border', [-3]: 'blocked', [-4]: 'water', [-5]: 'too steep', [-6]: 'not enough resources', [-7]: 'needs deposit', [-8]: 'needs forest', [-9]: 'not buildable', [-10]: 'maxed or needs tier', [-11]: 'needs barracks', [-12]: 'barracks too basic', [-13]: 'not enough villagers', [-14]: 'burning', [-15]: 'nothing to repair', [-16]: 'needs water', [-17]: 'deposit in the way', [-18]: 'no water to bridge', [-19]: 'too wide', [-20]: 'gate needs a wall', [-27]: 'outside border' };
 const why = c => WHY[c] ?? `code ${c}`;
 
 /** Decisions the village puts to you (answer with ["decide", n]). */
