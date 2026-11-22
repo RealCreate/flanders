@@ -103,7 +103,7 @@ const NAMES = ['Aldric', 'Beatrix', 'Cedric', 'Dunstan', 'Eleanor', 'Fulk', 'God
 
 const ui: UI = new UI({
   restartInfo: () => restartInfo(), restartRun: () => restartVillage(), restartRestore: () => restoreArchivedVillage(),
-  start: (w, n, pve, withComputer) => startGame(w, n, !!pve, !!withComputer),
+  start: (w, n, pve) => startGame(w, n, !!pve),
   select: k => selectKind(k === selectedKind ? null : k),
   act: a => onAct(a),
   upgradeHover: on => showUpgradeOutline(on),
@@ -145,7 +145,7 @@ document.addEventListener('mouseover', e => { const t = (e.target as HTMLElement
 let worldName = 'flanders', seedBig = 1n, started = false;
 /** A PVE game: two villages run by the computer instead of other players (see docs/PVE.md, web/src/pve.ts). It has its own save and never joins the shared room. */
 let pveMode = false;
-/** Computer villages are present: always in PVE, and in a shared world when the player asked for them (they are simulated on this computer only; other players do not see them). */
+/** Computer villages are present in every game, shared worlds included (they are simulated on this computer only; other players do not see them). */
 let computerVillages = false;
 let renderer!: THREE.WebGLRenderer, scene!: THREE.Scene, terrain!: Terrain, forest!: Forest, atmo!: Atmosphere, rig!: CameraRig;
 let bigMap!: Minimap;
@@ -1300,10 +1300,10 @@ function tickReplay(dt: number) {
 }
 
 // ---------- start ----------
-async function startGame(name: string, username: string, pve = false, withComputer = false) {
+async function startGame(name: string, username: string, pve = false) {
   const openedAt = Date.now();
   ui.setMilitaryUpgrades(JSON.parse(military_upgrades()));
-  if (started) return; started = true; pveMode = pve; computerVillages = pve || withComputer;
+  if (started) return; started = true; pveMode = pve; computerVillages = true;
   worldName = cleanWorld(name); seedBig = hashSeed(worldName); history.replaceState(null, '', withWorld(location.href, worldName)); myName = cleanName(username);
   try { localStorage.setItem('flanders:name', myName); } catch { /* ignore */ }
   ui.setOwner(myName);

@@ -44,7 +44,7 @@ const worldOptions = (cur: string) => [...new Set([...WORLDS, cur])].map(w => `<
 export interface Handlers {
   /** Start the village again (see restart.ts): what the dialog shows, doing it, and bringing the archived village back. */
   restartInfo: RestartHooks['info']; restartRun: RestartHooks['run']; restartRestore: RestartHooks['restore'];
-  start(world: string, name: string, pve?: boolean, withComputer?: boolean): void;
+  start(world: string, name: string, pve?: boolean): void;
   select(kind: number | null): void;
   act(name: string): void;
   upgradeHover(on: boolean): void;
@@ -322,7 +322,6 @@ export class UI {
     <div class="userfield"><div><label for="username">Your name</label><input id="username" value="${esc(name)}" maxlength="20" spellcheck="false" autocomplete="off"></div><div><label for="world">World</label><select id="world">${worldOptions(world)}</select><input id="world-custom" placeholder="Name your world" maxlength="30" spellcheck="false" autocomplete="off" hidden></div></div>
     <p class="muted">Everyone who enters the same world shares the same lands. Other players see your name over your town hall.</p>
     <div class="flagrow"><button type="button" class="flagmini" id="flag-mini" title="Design your flag"><canvas width="60" height="40"></canvas></button><div><b>Your flag</b><div class="muted">Click it to design your own.</div></div></div>
-    <label class="muted" style="display:block;margin:6px 0"><input type="checkbox" id="with-ai"> Also add two computer villages to the shared world (only you will see them)</label>
     <div class="btnrow"><button class="pbtn primary" id="found">Enter the world</button><button class="pbtn" id="found-pve" title="A game of your own: two villages run by the computer grow beside yours, trade with you, and raid you, under the same rules as a player.">Play against the computer (PVE)</button></div>
     <p class="muted">There is no game server: every player runs a copy of the game and your browsers connect to each other. Your village is saved in this browser and keeps growing while you are away.</p>
     <div class="btnrow"><button class="pbtn" id="home-keys-btn">${bi('keys')} Controls and keybindings</button><button class="pbtn" id="home-display-btn">${bi('gear')} Display settings</button></div>
@@ -468,7 +467,7 @@ export class UI {
     // rebinding a key must work on the start page too, before the game's own key handler exists
     document.addEventListener('keydown', e => { this.captureKey(e); }, true);
     { const h = () => { $('help-mouse').innerHTML = controlsHtml() + ' Number keys <b>1-9</b> pick a building on any keyboard layout.'; }; h(); keys.onChange(h); }
-    $('found').onclick = () => { const s = cleanWorld(wsel.value === '__custom' ? wcus.value : wsel.value), n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n, false, ($('with-ai') as HTMLInputElement).checked); };
+    $('found').onclick = () => { const s = cleanWorld(wsel.value === '__custom' ? wcus.value : wsel.value), n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n); };
     $('found-pve').onclick = () => { const s = cleanWorld(wsel.value === '__custom' ? wcus.value : wsel.value), n = ($('username') as HTMLInputElement).value.replace(/[<>]/g, '').trim().slice(0, 20) || 'Traveller'; this.h.start(s, n, true); };
     ($('username') as HTMLInputElement).onkeydown = wcus.onkeydown = e => { if (e.key === 'Enter') $('found').click(); };
     $('tabs').onclick = e => { const t = (e.target as HTMLElement).dataset.t; if (t) this.setTab(t); };
