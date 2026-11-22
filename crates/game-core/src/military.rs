@@ -180,6 +180,7 @@ pub struct Battle {
     pub lair_at: [f32; 2],      // where that place is
     pub boss: u8,               // the boss in the fight (0 none) and its name, for the report
     pub bname: u8,
+    #[serde(skip)] pub siege: crate::siege::Siege,   // towers and saps (see siege.rs); stored beside the world in a snapshot, like the tactics
     #[serde(default)] pub bought: bool,      // the raiders were paid to leave (see bribe.rs): they walk off and nobody fights
     #[serde(default)] pub bought_t: f32,    // seconds since they were paid
     #[serde(skip)] pub tactics: crate::tactics::Tactics, // stored separately in world snapshots to preserve legacy layouts

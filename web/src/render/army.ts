@@ -6,6 +6,7 @@ import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses'
 import { smoothPath } from './field';
 import { lunge, fallen, mix, decay } from './fight';
 import { Remains } from './remains';
+import { SiegeWorks } from './siegeworks';
 import { standHeight, onWater, chase } from './wading';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -78,7 +79,8 @@ export class ArmyView {
   plan: (ax: number, az: number, bx: number, bz: number) => number[] | null = () => null;
   radii: number[] = [];
 
-  constructor(private terrain: Terrain) { this.group.add(this.remains.group); }
+  private siegeWorks: SiegeWorks;
+  constructor(private terrain: Terrain) { this.group.add(this.remains.group); this.siegeWorks = new SiegeWorks((x, z) => this.terrain.walkAt(x, z)); this.group.add(this.siegeWorks.group); }
 
   /** Standing army and guards, from the village state. */
   syncPeace(buildings: Float32Array, army: number[], guards: number, garrison: number[]) {
@@ -205,7 +207,8 @@ export class ArmyView {
   private siegeWood = new THREE.MeshStandardMaterial({ color: 0x8a6a42, roughness: 0.9 });
   private ladderObjs: THREE.Group[] = []; private bridgeObjs: THREE.Group[] = [];
   /** Ladders against walls and bridges over moats that the attackers have built, from World.battle_ladders_flat / battle_bridges_flat. */
-  syncSiegeWorks(ladders: Float32Array, bridges: Float32Array) {
+  syncSiegeWorks(ladders: Float32Array, bridges: Float32Array, siege: Float32Array = new Float32Array(0)) {
+    this.siegeWorks.sync(siege, this.t);   // siege towers and saps (World.battle_siege_flat)
     const wood = this.siegeWood;
     const mkLadder = () => {
       const g = new THREE.Group(), H = 3.8, L = Math.hypot(H, 0.9), tilt = -Math.atan2(0.9, H);

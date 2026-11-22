@@ -45,6 +45,7 @@ mod moat_water_tests;
 mod route_height_tests;
 #[cfg(test)]
 mod snapshot_tests;
+mod siege;
 mod terrain;
 use catalog::*;
 use military::*;
@@ -399,7 +400,8 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
-const SNAP_MAGIC: &[u8; 8] = b"FLWORLD9";
+const SNAP_MAGIC: &[u8; 8] = b"FLWORLDA";
+const EXTRAS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD9";
 const VETS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD8";
 const TOOLS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD7";
 const ESTATE_SNAP_MAGIC: &[u8; 8] = b"FLWORLD6";
@@ -419,11 +421,13 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         return Some(w);
     }
     let mut extras = ([0u32; NK], [0u32; NK]);
-    let (mut w, marches) = if magic == SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let mut siege: Option<Option<siege::Siege>> = None;
+    let (mut w, marches) = if magic == SNAP_MAGIC || magic == EXTRAS_SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
         type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
         let (((state, estate), tools), planted): (((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>) =
-            if magic == SNAP_MAGIC { let (inner, ex): ((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])) = bincode::deserialize(payload).ok()?; extras = ex; inner }
+            if magic == SNAP_MAGIC { let ((inner, ex), sg): (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), Option<siege::Siege>) = bincode::deserialize(payload).ok()?; extras = ex; siege = Some(sg); inner }
+            else if magic == EXTRAS_SNAP_MAGIC { let (inner, ex): ((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])) = bincode::deserialize(payload).ok()?; extras = ex; inner }
             else if magic == VETS_SNAP_MAGIC { bincode::deserialize(payload).ok()? }
             else if magic == TOOLS_SNAP_MAGIC { (bincode::deserialize(payload).ok()?, vec![]) }
             else if magic == ESTATE_SNAP_MAGIC { ((bincode::deserialize(payload).ok()?, [0; 2]), vec![]) }
@@ -444,6 +448,13 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
         if let Some((b, t)) = w.battle.as_mut().zip(state) {
             if t.strikes.iter().any(|s| s.attacker >= b.units.len() || s.target >= b.units.len()) { return None; }
             b.tactics = t;
+        }
+        if let Some(sg) = siege {
+            if w.battle.is_some() != sg.is_some() { return None; }
+            if let Some((b, sg)) = w.battle.as_mut().zip(sg) {
+                if sg.towers.len() > 8 || sg.saps.len() > 64 || sg.towers.iter().any(|t| !t.x.is_finite() || !t.y.is_finite() || !t.hp.is_finite()) || sg.saps.iter().any(|q| !q.x.is_finite() || !q.y.is_finite() || !q.secs.is_finite() || q.secs <= 0.0) { return None; }
+                b.siege = sg;
+            }
         }
         if let Some(o) = objective {
             let b = w.battle.as_mut()?;
@@ -575,7 +586,7 @@ impl World {
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
         let objective_state = (tactical_state, battle.and_then(|b| b.objective));
-        v.extend(bincode::serialize(&((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc))).expect("a world can be written"));
+        v.extend(bincode::serialize(&(((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc)), battle.map(|b| &b.siege))).expect("a world can be written"));
         v
     }
 
@@ -2408,6 +2419,8 @@ impl World {
     /// Tick at which each building was founded (roads to it grow in over the following days).
     pub fn birth_flat(&self) -> Vec<u32> { self.buildings.iter().map(|b| b.born).collect() }
     /// Ladders standing against walls in the current battle: [x, y, angle, busy] per ladder.
+    /// Siege towers `[0, x, y, face, hull share, state, soldiers carried]` then saps `[1, x, y, face, dug share, state, 0]` in the current battle (see siege.rs).
+    pub fn battle_siege_flat(&self) -> Vec<f32> { self.siege_flat() }
     pub fn battle_ladders_flat(&self) -> Vec<f32> { self.battle.as_ref().map_or(vec![], |b| b.spots.iter().flatten().copied().collect()) }
     /// Crossings the attackers have thrown over moats and rivers: [x, y, angle] per bridge, then [x, y, angle, work done] per one being built.
     pub fn battle_bridges_flat(&self) -> Vec<f32> { self.battle.as_ref().map_or(vec![], |b| { let mut v: Vec<f32> = b.bridges.iter().flat_map(|g| [g[0], g[1], g[2], 1.0]).collect(); v.extend(b.sites.iter().flat_map(|s| [s[0], s[1], s[2], (s[3] / 8.0).min(0.99)])); v }) }
@@ -3080,7 +3093,7 @@ impl World {
                 for l in &self.levels { for v in l { mix(v.to_bits() as u64); } } for l in &self.flats { for v in l { mix(v.to_bits() as u64); } } for c in &self.craters { mix(c[0].to_bits() as u64); mix(c[1].to_bits() as u64); }
                 mix(self.scorch.len() as u64); mix(self.ruins.len() as u64);
             }),
-            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); mix(bt.lair as i64 as u64); bt.tactics.hash(mix); if let Some(o) = bt.objective { o.hash(mix); } } }),
+            part(&|mix| { if let Some(bt) = &self.battle { mix(1); for u in &bt.units { mix(u.x.to_bits() as u64); mix(u.y.to_bits() as u64); mix(u.hp.to_bits() as u64); mix(u.det as u64); mix(u.soak.to_bits() as u64); mix(u.maxhp.to_bits() as u64); mix(u.boss as u64 | (u.bname as u64) << 8 | (u.phase as u64) << 16); mix(u.t1.to_bits() as u64); mix(u.t2.to_bits() as u64); } mix(bt.boss as u64 | (bt.bname as u64) << 8 | (bt.bought as u64) << 16); mix(bt.bought_t.to_bits() as u64); bt.siege.hash(mix); mix(bt.lair as i64 as u64); bt.tactics.hash(mix); if let Some(o) = bt.objective { o.hash(mix); } } }),
         ]
     }
 
@@ -5810,6 +5823,8 @@ mod pathnet_tests {
 
 #[cfg(test)]
 mod combat_tests;
+#[cfg(test)]
+mod siege_tests;
 #[cfg(test)]
 mod boss_tests;
 

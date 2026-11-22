@@ -204,9 +204,10 @@ impl World {
         for bridge in self.buildings.iter_mut().filter(|b| b.kind == DRAWBRIDGE && b.status == DB_MANUAL_DOWN) {
             bridge.status = 4;
         }
-        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4, bought: false, bought_t: 0.0, objective: None, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
+        self.battle = Some(Battle { ladders, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag, angle, spawn: [cx + dx * dist, cy + dy * dist], atk_start: atk, atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, 0], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: -1, lair_at: [0.0, 0.0], boss, bname: bname % 4, bought: false, bought_t: 0.0, objective: None, siege: Default::default(), tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
+        let siege = self.siege_train(&atk, cx, cy, dx, dy, dist);
         let fixed = self.bridge_points();
-        if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; }
+        if let Some(b) = self.battle.as_mut() { for u in &b.units { b.start_side[u.side as usize] += 1; } b.fixed = fixed; b.siege = siege; }
         self.push_event(EV_BATTLE, atk.iter().sum::<u32>() as i32, tag);
         true
     }
@@ -651,6 +652,7 @@ impl World {
             for i in 0..b.units.len() { if b.units[i].alive && b.units[i].side == 0 && (b.units[i].x - x).powi(2) + (b.units[i].y - y).powi(2) < 9.0 { Self::damage_from(&mut b, i, 35.0, true); } }
             if terrain::forest_near(self.seed, x, y, 4.0) > 0.2 { self.start_wildfire(x, y); }
         }
+        self.siege_step(&mut b, dt, deploying, &wet, &mut shots);
         self.shots.extend(shots);
         self.db_want.extend(want);
         self.raid_objective_step(&mut b, dt);
@@ -733,7 +735,7 @@ impl World {
         wet.iter().any(|&(wx, wy, wr)| (x - wx).powi(2) + (y - wy).powi(2) < (wr + grow) * (wr + grow)) && !Self::battle_bridge(b, x, y)
     }
 
-    fn battle_bridge(b: &Battle, x: f32, y: f32) -> bool {
+    pub(crate) fn battle_bridge(b: &Battle, x: f32, y: f32) -> bool {
         b.bridges.iter().any(|g| (g[0] - x).powi(2) + (g[1] - y).powi(2) < 3.4 * 3.4)
             || b.fixed.iter().any(|g| (g[0] - x).powi(2) + (g[1] - y).powi(2) < 3.4 * 3.4)
     }
@@ -853,7 +855,8 @@ impl World {
                     if let Some(si) = b.spots.iter().position(|s| (s[0] - bx).powi(2) + (s[1] - by).powi(2) < 3.3 * 3.3 && s[3] == 0.0) { b.spots[si][3] = 1.0; b.units[i].spot = si as i32; b.units[i].climb = secs; return; }
                     if b.ladders_used < b.ladders { b.ladders_used += 1; b.spots.push([bx + ang.cos() * (r + 0.4), by + ang.sin() * (r + 0.4), ang, 0.0]); return; }
                 }
-                if is_stone(bk, self.buildings[k].tier) {   // nothing a man with a spear can do to stone: wait for a ladder, or look for another way round
+                if is_stone(bk, self.buildings[k].tier) {   // nothing a man with a spear can do to stone: wait for a ladder, dig under it (see siege.rs), or look for another way round
+                    if matches!(kind, 0 | 2) && !big && bk == WALL { self.try_sap(b, k, ang); }
                     if !matches!(kind, 0 | 2) || big { let t = ang + std::f32::consts::FRAC_PI_2 * if i % 2 == 0 { 1.0 } else { -1.0 }; b.units[i].x += t.cos() * ud.speed * _dt * 0.6; b.units[i].y += t.sin() * ud.speed * _dt * 0.6; b.units[i].face = t; }
                     return;
                 }
@@ -1099,7 +1102,7 @@ impl World {
             units.push(Unit::new(1, kind as u8, nx + a.cos() * r, ny + a.sin() * r, face + std::f32::consts::PI)); j += 1;
         } }
         let n1 = units.len() as u32;
-        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0, objective: None, tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
+        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0, objective: None, siege: Default::default(), tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
         self.det_join(di);
         self.push_event(EV_LAIR, ni as i32, 0);
         true
