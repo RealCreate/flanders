@@ -103,7 +103,7 @@ const NAMES = ['Aldric', 'Beatrix', 'Cedric', 'Dunstan', 'Eleanor', 'Fulk', 'God
 
 const ui: UI = new UI({
   restartInfo: () => restartInfo(), restartRun: () => restartVillage(), restartRestore: () => restoreArchivedVillage(),
-  start: (w, n, pve) => startGame(w, n, !!pve),
+  start: (w, n, pve, withComputer) => startGame(w, n, !!pve, !!withComputer),
   select: k => selectKind(k === selectedKind ? null : k),
   act: a => onAct(a),
   upgradeHover: on => showUpgradeOutline(on),
@@ -145,6 +145,8 @@ document.addEventListener('mouseover', e => { const t = (e.target as HTMLElement
 let worldName = 'flanders', seedBig = 1n, started = false;
 /** A PVE game: two villages run by the computer instead of other players (see docs/PVE.md, web/src/pve.ts). It has its own save and never joins the shared room. */
 let pveMode = false;
+/** Computer villages are present: always in PVE, and in a shared world when the player asked for them (they are simulated on this computer only; other players do not see them). */
+let computerVillages = false;
 let renderer!: THREE.WebGLRenderer, scene!: THREE.Scene, terrain!: Terrain, forest!: Forest, atmo!: Atmosphere, rig!: CameraRig;
 let bigMap!: Minimap;
 let penPreview!: PenPreview;
@@ -1298,10 +1300,10 @@ function tickReplay(dt: number) {
 }
 
 // ---------- start ----------
-async function startGame(name: string, username: string, pve = false) {
+async function startGame(name: string, username: string, pve = false, withComputer = false) {
   const openedAt = Date.now();
   ui.setMilitaryUpgrades(JSON.parse(military_upgrades()));
-  if (started) return; started = true; pveMode = pve;
+  if (started) return; started = true; pveMode = pve; computerVillages = pve || withComputer;
   worldName = cleanWorld(name); seedBig = hashSeed(worldName); history.replaceState(null, '', withWorld(location.href, worldName)); myName = cleanName(username);
   try { localStorage.setItem('flanders:name', myName); } catch { /* ignore */ }
   ui.setOwner(myName);
@@ -1420,7 +1422,8 @@ async function startGame(name: string, username: string, pve = false) {
   bindInput();
   watch.openSave(performance.now(), saved ? openedAt - saved.savedAt : 0);
   startVillageWatch();
-  if (pveMode) await setupPve(); else connect();
+  if (computerVillages) await setupPve();
+  if (!pveMode) connect();
   setupPerf(); applySettings(settings()); onSettings(applySettings);
   const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
   if (Number.isInteger(agentPort) && agentPort >= 1024 && agentPort <= 65535 && /^[A-Za-z0-9_-]{8,128}$/.test(agentToken)) startAgentBridge({
@@ -1929,7 +1932,7 @@ async function setupPve() {
     }
     refreshAll();
   }
-  ui.toast(`Two villages are run by the computer: ${[...rivals.values()].map(r => `${r.name} (${Ai.layout_name(r.ai!.layout())})`).join(' and ')}. They grow, trade and raid like real players.`, 'info');
+  ui.toast(`Two villages near you are run by the computer: ${[...rivals.values()].filter(r => r.ai).map(r => r.name).join(' and ')}. They grow, trade and raid like real players.`, 'info');
   updatePeers();
 }
 
@@ -1956,13 +1959,13 @@ function aiRaid(r: Rival, units: number[]) {
 
 /** A battle at our village ended: if the attackers were a computer village's army, its survivors go home with the loot. */
 function aiReport(rep: number[]) {
-  if (!pveMode || !rep[2]) return;
+  if (!computerVillages || !rep[2]) return;
   for (const r of rivals.values()) if (r.ai && tagOf(r.key) === rep[2]) { r.ai.returned(r.village.world, Uint32Array.from(rep.slice(6, 12)), Int32Array.from(rep.slice(12, 12 + RES.length))); break; }
 }
 
 let aiFrame = 0;
 function stepAis() {
-  if (!pveMode || replay?.target === lv) return;
+  if (!computerVillages || replay?.target === lv) return;
   aiFrame++;
   for (const r of rivals.values()) {
     if (!r.ai) continue;

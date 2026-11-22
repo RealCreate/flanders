@@ -28,10 +28,12 @@ export function pickLayouts(world: string, player: string, layouts = LAYOUT_COUN
   return out;
 }
 
-/** Where the computer villages stand: the village sites nearest the player's that are not the player's own, at least `gap` apart from each other. */
-export function pickSites(sites: { x: number; z: number }[], mine: number, count = AI_COUNT, gap = 150): number[] {
+/** Where the computer villages stand: the village sites a good way off (the nearest ones beyond `far`) that are not the player's own, at least `gap` apart from each other. */
+export function pickSites(sites: { x: number; z: number }[], mine: number, count = AI_COUNT, gap = 150, far = 500): number[] {
   const me = sites[mine]; if (!me) return [];
   const order = sites.map((s, i) => ({ i, d: Math.hypot(s.x - me.x, s.z - me.z) })).filter(s => s.i !== mine && s.d > 120).sort((a, b) => a.d - b.d || a.i - b.i);
+  // far from the player: sites at least `far` away come first (nearest of those first), the closer ones only if there are too few
+  order.sort((a, b) => Number(b.d >= far) - Number(a.d >= far));
   const out: number[] = [];
   for (const s of order) { if (out.length >= count) break; if (out.every(o => Math.hypot(sites[o].x - sites[s.i].x, sites[o].z - sites[s.i].z) >= gap)) out.push(s.i); }
   for (const s of order) { if (out.length >= count) break; if (!out.includes(s.i)) out.push(s.i); }   // too few sites far enough apart: take what there is
