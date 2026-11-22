@@ -1911,7 +1911,7 @@ async function setupPve() {
     const village = new Village(new World(seedBig, o.x, o.z), 'rival:' + key, name, false, shared, n ? 0xb08030 : 0xb03030); village.foeColor = foeColorOf;
     village.onReport = rep => onRivalReport(key, rep);
     const ai = new Ai(seedBig, n, layouts[n] ?? n, tagOf(key));
-    rivals.set(key, { key, peerId: '', name, site, village, online: false, sync: `computer (${Ai.layout_name(ai.layout())})`, tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0, ai });
+    rivals.set(key, { key, peerId: '', name, site, village, online: false, sync: 'computer', tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0, ai });
     village.setWorld(village.world); refreshTerrain(village.world); village.syncFull(); village.markCaughtUp();
     chainTo(rivals.get(key)!);                 // the road between the two cities, for our armies...
     village.world.link_village(lv.ox, lv.oz);  // ... and for theirs
