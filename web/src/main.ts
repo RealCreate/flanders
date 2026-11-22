@@ -119,6 +119,7 @@ const ui: UI = new UI({
   villagers: () => ({ rows: lv.people.roster(), sheltering: lv.people.hidden }),
   followVillager: id => followVillager(id),
   goBuilding: i => { const f = lv.world.buildings_flat(); rig.focus(f[i * STRIDE + 2], f[i * STRIDE + 3]); selectBuilding(i); },
+  goHome: () => { if (showroom) toggleShowroom(); rig.stopFollowing(); rig.focus(lv.ox, lv.oz, 75); },
   speed: n => setSpeed(n),
   steward: action => stewardAction(action),
   toggleResources: () => toggleResources(),

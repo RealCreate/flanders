@@ -156,6 +156,8 @@ impl MarchFile {
     }
 
     pub(crate) fn mustered(&self) -> bool { self.points.len() == 1 && !self.approaches.is_empty() }
+    /// Where each soldier of an army that has spread out stands: the first point of their approach, by rank.
+    pub(crate) fn slots(&self) -> Vec<(f32, f32)> { self.approaches.iter().filter_map(|p| p.first()).map(|p| (p.wp.x, p.wp.y)).collect() }
 
     pub(crate) fn write_approaches(&self, id: u32, kind: u8, out: &mut Vec<f32>) {
         let mut anchor_drawn = self.approaches.first().is_some_and(|path| path.len() == 1);
@@ -478,7 +480,6 @@ impl World {
                 stamp(&mut ov.edited, b.x, b.y, r);
             }
             match b.kind {
-                GATE if self.gate_shut(b) => stamp(&mut ov.blocked, b.x, b.y, 3.4),   // a barred gate: no way through
                 GATE | ROAD => {}                                             // an opening in the wall, or a road: nothing blocks it
                 BRIDGE => { let (ux, uy, l) = Self::bridge_dir(b); let st = l.ceil().max(1.0) as i32; for k in 0..=st { let t = (k as f32 / st as f32 - 0.5) * l; stamp(&mut ov.bridge, b.x + ux * t, b.y + uy * t, 1.8); } }
                 MOAT | RIVER | RAISE | LOWER => {}
@@ -507,7 +508,7 @@ impl World {
                 }
             }
         }
-        let (segs, _) = self.wall_lines();
+        let (segs, _) = self.friendly_wall_lines();
         for sg in &segs {   // the runs of wall and fence between the pieces (the pieces alone leave gaps)
             let l = (sg.bx - sg.ax).hypot(sg.by - sg.ay); let st = (l / 1.0).ceil().max(1.0) as i32;
             for k in 0..=st { let t = k as f32 / st as f32; stamp(&mut ov.blocked, sg.ax + (sg.bx - sg.ax) * t, sg.ay + (sg.by - sg.ay) * t, sg.r + 0.4); }
@@ -914,12 +915,12 @@ impl World {
     /// Wherever a route passes through an open gate or over a lowered drawbridge it is made to run along the middle of the doorway, straight in and straight out (the open-ground
     /// search only knows grid cells, which would have it hug one side).
     fn through_doors(&self, wps: Vec<Wp>, own: bool) -> Vec<Wp> {
-        let (_, doors) = self.wall_lines();
+        let (_, doors) = self.friendly_wall_lines();
         // (centre, direction one walks through it, half-width across, nodes along it)
         let mut lanes: Vec<(f32, f32, f32, f32, f32, &'static [f32])> = vec![];
         const GATE_T: &[f32] = &[-7.5, -3.8, 0.0, 3.8, 7.5];
         const DECK_T: &[f32] = &[-9.0, -6.0, -3.0, 0.0, 3.0, 6.0, 9.0];
-        for d in &doors { if !self.gate_shut(&self.buildings[d.b]) { lanes.push((d.x, d.y, -d.uy, d.ux, crate::wallnet::GATE_HALF + 1.5, GATE_T)); } }
+        for d in &doors { lanes.push((d.x, d.y, -d.uy, d.ux, crate::wallnet::GATE_HALF + 1.5, GATE_T)); }   // (a shut gate opens for your own armies)
         for b in &self.buildings { if b.kind == DRAWBRIDGE && (!self.drawn_up(b) || (own && self.db_lendable(b))) { let a = b.rot as f32 * std::f32::consts::FRAC_PI_4; lanes.push((b.x, b.y, a.sin(), a.cos(), 3.0, DECK_T)); } }
         if lanes.is_empty() { return wps; }
         let mut out = wps;
@@ -1045,7 +1046,19 @@ impl World {
         let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
         let (bx, by) = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hx + 10.0, hy + 10.0), |b| (b.x, b.y + 8.0));
         let ns = nav_static(self.seed); let ov = self.ov();
-        let Some(cell) = self.near_free(&ns, &ov, bx, by, if units[4] + units[5] > 0 { 1 } else { 0 }) else { return 0; };
+        let siege = if units[4] + units[5] > 0 { 1 } else { 0 };
+        let Some(mut cell) = self.near_free(&ns, &ov, bx, by, siege) else { return 0; };
+        // a castle: an army mustered within its walls (or in the shadow of them) comes out at the front gate, in front of the bridge, never beside a wall it cannot get through
+        let hall = &self.buildings[0];
+        if hall.kind == TOWN_HALL && hall.tier >= 3 {
+            let reach = crate::compound::extent(TOWN_HALL, hall.tier);
+            let (sx, sy) = cell_xy(cell);
+            if (bx - hx).hypot(by - hy) < reach || (sx - hx).hypot(sy - hy) < reach {
+                let gate = crate::compound::at(hall, (0.0, 31.0));
+                let Some(c) = self.near_free(&ns, &ov, gate.0, gate.1, siege) else { return 0; };
+                cell = c;
+            }
+        }
         let spawn = cell_xy(cell);
         let net = self.net(); let obst = self.obst();
         let distance = |p: (f32, f32)| (p.0 - spawn.0).hypot(p.1 - spawn.1);

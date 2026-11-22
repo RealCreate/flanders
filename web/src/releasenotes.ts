@@ -14,13 +14,17 @@ export const RELEASES: Release[] = [
       'Choose a roof tile palette for your village in the flag designer. Every player sees your village in those colours.',
       'A scripted tutorial village gives everyone the same first ten minutes.',
       'Select armies on the map to see what they are made of and halt them, send them home or split them from a new card.',
+      'Armies that stop after a march pitch a camp: tents appear round the soldiers and a few guards stand watch, and it is struck when they move on.',
     ],
     changed: [
       'The tutorial has been rewritten as 15 short steps with one action each, and teaches defence before growth.',
       'A fallow field recovers its soil twice as fast in winter. Hover the soil bar to see how much grain the field gives at its current soil.',
+      'The Iron Mine no longer needs tools to build, only to upgrade, so a village can start on iron without them. Bread now fills twice as much as raw grain.',
+      'The battle alert can be closed, and command mode keeps the map clear of it.',
     ],
     fixed: [
       'Armies can march out past an embassy and a castle without getting stuck.',
+      'Your own armies pass through a shut gate, and an army mustered at a castle comes out at the front gate instead of beside a wall.',
     ],
   },
   {

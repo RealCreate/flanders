@@ -542,9 +542,10 @@ body.cmd-mode #battle-controls { max-width: 100%; }
 body.cmd-mode #battle-orders { min-width: 0; justify-content: center; }
 @media (max-width: 900px) { #cs-left, #cs-right { width: 190px; } #cs-right { top: auto; bottom: 90px; } }
 /* keep the strength line and the panels clear of the battle banner, and let the order buttons wrap on a narrow window */
-body.cmd-mode #battle { top: 8px; }
-body.cmd-mode #cs-top { top: auto; bottom: 96px; }
-body.cmd-mode #cs-left, body.cmd-mode #cs-right { top: 150px; max-height: calc(100vh - 300px); }
+body.cmd-mode #battle { display: none !important; }
+body.cmd-mode #cs-top { top: 10px; bottom: auto; }
+body.cmd-mode #cs-left, body.cmd-mode #cs-right { top: 76px; max-height: calc(100vh - 76px - 190px); }
+@media (max-width: 900px) { body.cmd-mode #cs-right { top: auto; bottom: 190px; } }
 body.cmd-mode #battle-controls { flex-wrap: wrap; justify-content: center; }
 #battle-orders { flex-wrap: wrap; }
 /* the card of the selected armies */
@@ -564,3 +565,8 @@ body.cmd-mode #cs-sel { display: none; }
 #cs-sel .cs-row { padding: 3px 0; }
 #cs-sel { padding: 8px 12px; bottom: 14px; }
 #toasts { z-index: 9; }
+
+#battle { padding-right: 34px; }
+#battle-close { position: absolute; top: 4px; right: 6px; pointer-events: auto; background: none; border: 0; color: #ffd8cf; font-size: 20px; line-height: 1; cursor: pointer; opacity: .7; padding: 2px 6px; }
+#battle-close:hover { opacity: 1; }
+#btn-bell.alert { color: #ff9a88; animation: pulse 1.6s ease-in-out infinite; }

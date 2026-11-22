@@ -559,7 +559,7 @@ pub fn footprint(kind: u8, tier: u8) -> f32 {
     let grow = match kind { FARM => 0.25, TOWN_HALL => 0.2, KEEP => 0.1, BARRACKS | CHAPEL | COURTHOUSE | MARKET | STOREHOUSE | HOSPITAL | GRAVEYARD | EMBASSY => 0.1, _ => 0.0 };
     if kind == TOWN_HALL && tier < 3 { return [7.5, 9.8, 12.2][tier as usize]; }   // the hall and its wall of stakes grow a little with each tier before the Castle
     if kind == TOWN_HALL && tier >= 3 { return CASTLE_FOOTPRINT; }   // the Castle is a vast concentric fortress (44 x 38 walls, a palace and a bailey inside, a barbican in front): larger than the embassy's 24 (see the town hall model)
-    d.r * (1.0 + grow * tier as f32)
+    d.r * (1.0 + grow * tier as f32) + if kind == FARM { FARM_YARD } else { 0.0 }   // (the yard round a farm's fields, where its design extras stand)
 }
 #[wasm_bindgen]
 pub fn footprint_of(kind: u8, tier: u8) -> f32 { footprint(kind, tier) }
@@ -586,7 +586,7 @@ pub fn ring_radius_of(kind: u8, tier: u8) -> f32 { pathnet::ring_radius(kind, ti
 #[wasm_bindgen]
 pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
     match DEFS.get(kind as usize) {
-        Some(d) => upgrade_cost(d.weight, new_tier).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(),
+        Some(_) => upgrade_cost_for(kind, new_tier).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(),
         None => vec![],
     }
 }
@@ -1094,7 +1094,7 @@ impl World {
             let (dx, dy) = (x - b.x, y - b.y);
             // a farm's fields reach far past its circle once it is upgraded (up to 15 from its middle, and to one side): the ground is levelled under all of them, not just the circle
             if b.kind == FARM && dx.abs() <= FARM_PAD_REACH && dy.abs() <= FARM_PAD_REACH {
-                let fd = pathnet::field_distance(b, x, y);
+                let fd = (pathnet::field_distance(b, x, y) - FARM_YARD).max(0.0);
                 if fd < FARM_PAD_BLEND { h = lerp(h, b.pad_h, 1.0 - smoothstep(FARM_PAD_FLAT, FARM_PAD_BLEND, fd)); }
             }
             if dx.abs() > r1 || dy.abs() > r1 { continue; }
@@ -1686,7 +1686,7 @@ impl World {
         let Some(b) = self.buildings.get(idx as usize) else { return -1 };
         if b.tier >= max_tier(b.kind) { return -10; }
         if !self.upgrade_blockers(idx).is_empty() { return -3; }   // the bigger building would run into its neighbours: they must be demolished first
-        let cost = upgrade_cost(DEFS[b.kind as usize].weight, b.tier + 1);
+        let cost = upgrade_cost_for(b.kind, b.tier + 1);
         if cost.iter().any(|&(r, n)| self.stock[r as usize] < n) { return -6; }
         for &(r, n) in &cost { self.stock[r as usize] -= n; }
         self.buildings[idx as usize].tier += 1;
@@ -3252,7 +3252,9 @@ fn pad_inner(d: &Def) -> f32 { d.r * 1.15 + 0.5 }
 const FARM_PAD_FLAT: f32 = 0.9;
 const FARM_PAD_BLEND: f32 = 4.6;
 /// No field of a farm of any tier lies farther than this from its middle (plus the blend).
-const FARM_PAD_REACH: f32 = 22.0;
+const FARM_PAD_REACH: f32 = 28.0;
+/// The yard round a farm's fields that its design extras (scarecrow, barn, windmill, orchard...) stand in: levelled with the fields and counted in its footprint.
+pub const FARM_YARD: f32 = 5.0;
 
 #[cfg(test)]
 mod option_tests;
@@ -3721,7 +3723,7 @@ mod tests {
         let before = w.height_at(20.0, -30.0);
         for i in 0..3 { assert!(w.place(RIVER, 20 + i * 4, -30, 2) >= 0); }
         assert!(w.height_at(24.0, -30.0) < 0.0 && before > 0.4, "a river channel holds water");
-        let wheel_dry = w.can_place(WATERWHEEL, -20, -20);
+        let wheel_dry = w.can_place(WATERWHEEL, -36, -24);
         assert_eq!(wheel_dry, -16, "no water there");
         assert!(w.can_place(WATERWHEEL, 24, -22) != -16 || w.can_place(WATERWHEEL, 24, -36) != -16, "a waterwheel can stand beside the river");
         let _ = h0;
@@ -3877,11 +3879,11 @@ mod tests {
     #[test]
     fn moat_pieces_dig_a_water_filled_ditch() {
         let mut w = village();
-        let before = w.height_at(-20.0, 0.0);
+        let before = w.height_at(-34.0, 0.0);   // (out past the farm's yard)
         assert!(before > 0.4, "dry land to dig in");
-        for i in 0..4 { assert!(w.place(MOAT, -22 + i * 4, 0, 0) >= 0, "adjacent moat pieces can be placed side by side (piece {i})"); }
-        assert!(w.height_at(-20.0, 0.0) < 0.0, "the ditch holds water");
-        assert!(w.height_at(-30.0, 0.0) > 0.4, "land away from the moat is untouched");
+        for i in 0..4 { assert!(w.place(MOAT, -36 + i * 4, 0, 0) >= 0, "adjacent moat pieces can be placed side by side (piece {i})"); }
+        assert!(w.height_at(-34.0, 0.0) < 0.0, "the ditch holds water");
+        assert!(w.height_at(-44.0, 0.0) > 0.4, "land away from the moat is untouched");
         assert_eq!(w.upgrade(w.buildings.len() as u32 - 1), -10, "moats do not upgrade");
         let n = w.buildings.len() as u32 - 1; w.demolish(n);
     }

@@ -6,10 +6,12 @@ import type { ArmyPicker } from './armypick';
 import { dotsAlong } from './trail';
 import { buildArmyBanner, paintArmyBanner, waveArmyBanner } from './armybanner';
 import { arrivalSlot, marchPoint, marchSlot } from '../marchfile';
+import { campLayout, type Camp } from '../camplayout';
+import { ArmyCamp } from './armycamp';
 
 interface Member {
   kind: number; x: number; z: number; y: number; yaw: number; gait: number; spd: number; seed: number;
-  visible: boolean; drawn: boolean; mode: number; boat?: THREE.Group;
+  visible: boolean; drawn: boolean; mode: number; boat?: THREE.Group; guard?: boolean;
 }
 interface Track { points: Float32Array; gap: number; from: number; to: number; time: number; duration: number }
 interface Det {
@@ -19,10 +21,13 @@ interface Det {
   approaches: Map<number, Float32Array[]>;
   dest: [number, number] | null; wps: number[];
   dots: THREE.InstancedMesh | null; flag: THREE.Group | null;
+  /** The camp it makes when it stops after a march: tents and guards (see camplayout.ts), rising over a couple of seconds. */
+  camp: ArmyCamp | null; lay: Camp | null; laySig: string; travelled: boolean; campT: number;
 }
 
 export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle', 'Route blocked', 'Taking position'];
 const FORMING = 10;
+const MOVING = new Set([1, 2, 3, 4, 6, 7]);
 
 const SIEGE_LEN = 3.2;
 
@@ -53,10 +58,11 @@ export class FieldView {
       if (!d) {
         const banner = buildArmyBanner(this.friend);
         this.group.add(banner);
-        d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null };
+        d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null, camp: null, lay: null, laySig: '', travelled: false, campT: 0 };
         this.dets.set(id, d);
       }
       d.tx = flat[o + 1]; d.tz = flat[o + 2]; d.state = flat[o + 8]; d.heading = flat[o + 14];
+      if (MOVING.has(d.state)) d.travelled = true;
       d.approaches.clear();
       const remaining = path(id);
       d.wps = [];
@@ -96,6 +102,7 @@ export class FieldView {
       if (!seen.has(id)) {
         this.dropMarks(d);
         this.dropModel(d.banner);
+        if (d.camp) this.group.remove(d.camp.group);
         for (const model of [...d.siege, ...d.rams]) this.group.remove(model);
         for (const m of d.members) if (m.boat) this.dropModel(m.boat);
         this.dets.delete(id);
@@ -200,6 +207,32 @@ export class FieldView {
     }
   }
 
+  /** The camp of an army that has stopped, built up as its soldiers get there: each soldier that reaches the destination adds to it (a tent now and then, a guard on watch), so it grows while the rest are
+   *  still on the road, and is struck when the army moves on. Laid out from where the soldiers stand once they have been given places, before that from a loose heap at the destination. `ratio` is the share
+   *  of the foot soldiers that are there. Null while nobody has arrived, while fighting, or when there is nobody to camp. */
+  private pitchCamp(d: Det, dt: number): { lay: Camp; ratio: number } | null {
+    const n = d.members.length + d.siege.length + d.rams.length;
+    const standing = d.state === 0 || d.state === 5 || d.state === FORMING;
+    let ratio = standing ? 1 : 0, ax = d.tx, az = d.tz;
+    const track = d.tracks.get(0);
+    if (!standing && MOVING.has(d.state) && track && track.points.length >= 8) {
+      const pts = track.points, end = pts[pts.length - 1], footN = d.members.filter(m => !(m.kind === 3 && d.tracks.has(3))).length;
+      const there = this.dispatch(track) >= end ? Math.min(footN, Math.floor((this.dispatch(track) - end) / Math.max(0.1, track.gap)) + 1) : 0;
+      ratio = footN > 0 ? there / footN : 0; ax = pts[pts.length - 4]; az = pts[pts.length - 3];
+    }
+    if (ratio <= 0 || n < 2) { d.camp?.hide(); d.campT = 0; return null; }
+    const slots: { x: number; z: number }[] = [];
+    if (standing) for (const lanes of d.approaches.values()) for (const lane of lanes) if (lane && lane.length >= 2) slots.push({ x: lane[0], z: lane[1] });
+    if (slots.length < 2) for (let i = 0; i < n; i++) { const r = 1.3 * Math.sqrt(i + 0.5), a = i * 2.4; slots.push({ x: ax + Math.sin(a) * r, z: az + Math.cos(a) * r }); }   // not given places yet: a loose heap on the spot
+    const sig = `${slots.length}:${slots.reduce((a, q) => a + q.x * 3 + q.z, 0).toFixed(1)}`;
+    if (sig !== d.laySig) { d.laySig = sig; d.lay = campLayout(slots, n); }
+    if (!d.lay) { d.camp?.hide(); return null; }
+    d.campT = Math.min(1, d.campT + dt / 2.5);
+    if (!d.camp) { d.camp = new ArmyCamp(); this.group.add(d.camp.group); }
+    d.camp.show(d.lay, (x, z) => this.terrain.walkAt(x, z), d.campT, this.friend, this.t, Math.ceil(d.lay.tents.length * ratio - 1e-6));
+    return { lay: d.lay, ratio };
+  }
+
   update(dt: number) {
     dt = Math.max(0, Math.min(dt, 0.2)); this.t += dt;
     for (const d of this.dets.values()) {
@@ -210,11 +243,14 @@ export class FieldView {
       d.banner.visible = !fighting;
       d.banner.position.set(d.x, leader?.mode === 2 ? 0.3 : this.terrain.walkAt(d.x, d.z), d.z);
       paintArmyBanner(d.banner, this.friend); waveArmyBanner(d.banner, this.t, d.id);
-      let foot = 0, riders = 0;
+      const camp = this.pitchCamp(d, dt), lay = camp?.lay, watch = camp && lay ? Math.ceil(lay.guards.length * camp.ratio - 1e-6) : 0, there = camp ? Math.round(camp.ratio * d.members.length) : 0;
+      let foot = 0, riders = 0, posted = 0;
       for (const m of d.members) {
         const separate = m.kind === 3 && d.tracks.has(3);
         const rank = separate ? riders++ : foot++;
-        const p = fighting ? null : this.slot(d, separate ? 3 : 0, rank);
+        const post = lay && m.kind === 0 && !separate && rank < there && posted < watch ? lay.guards[posted++] : null;   // a few foot soldiers stand watch at the edge of the camp
+        m.guard = !!post;
+        const p = fighting ? null : post ? { x: post.x, z: post.z, mode: 0, yaw: post.yaw } : this.slot(d, separate ? 3 : 0, rank);
         if (!p) {
           m.visible = false;
           if (m.boat) m.boat.visible = false;
@@ -267,7 +303,7 @@ export class FieldView {
         const working = d.state === 2 && i === 0;
         const walking = m.spd > 0.35 && m.mode !== 2;
         m.y = m.mode === 2 ? this.waterline(m.x, m.z) - 0.21 : this.terrain.walkAt(m.x, m.z);
-        crowd.add({ x: m.x, y: m.y, z: m.z, yaw: m.yaw, pose: m.mode === 2 ? 5 : working ? 2 : walking ? 1 : 0, phase: walking ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...lookOf(m.kind, this.friend), ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}), ...(m.mode === 2 ? { mounted: false, tool: undefined, shield: undefined, scale: 0.9 } : {}) } as Draw);
+        crowd.add({ x: m.x, y: m.y, z: m.z, yaw: m.yaw, pose: m.mode === 2 ? 5 : working ? 2 : walking ? 1 : 0, phase: walking ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...lookOf(m.kind, this.friend), ...(m.guard ? { hat: HAT.HELM, armor: true, tool: TOOL.SPEAR, shield: 0, shieldCol: this.friend } : {}), ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}), ...(m.mode === 2 ? { mounted: false, tool: undefined, shield: undefined, scale: 0.9 } : {}) } as Draw);
       }
     }
   }

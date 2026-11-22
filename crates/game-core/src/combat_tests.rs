@@ -378,3 +378,25 @@ fn soldiers_who_win_a_fight_may_become_veterans_who_are_saved_and_fight_better()
     let vet_units = b.units.iter().filter(|u| u.side == 0 && u.from_army && tactics::is_veteran(u)).count() as u32;
     assert_eq!(vet_units, vets[0].min(w.army()[0]));
 }
+
+#[test]
+fn an_army_that_made_camp_fights_out_of_it_not_from_one_heap() {
+    let mut w = World::new(1337, 0, 0); w.stock = [10_000; N_RES];
+    assert_eq!(w.flatten(88, 7.0), 0);
+    w.army = [16, 0, 0, 0, 0, 0];
+    let id = w.det_form(&[16, 0, 0, 0, 0, 0]); assert!(id > 0);
+    assert_eq!(w.det_march(id, 23.0, 24.0, false, 0.0, 0.0), 0);
+    for _ in 0..200 { w.step(); if w.dets[0].state == march::S_IDLE && w.dets[0].file.mustered() { break; } }
+    assert_eq!(w.dets[0].state, march::S_IDLE, "the army arrived and spread out");
+    let slots: Vec<(f32, f32)> = w.dets[0].file.slots();
+    assert_eq!(slots.len(), 16);
+    assert!(w.start_raid(0.0, &[6, 2, 0, 0, 0, 0], 0));
+    w.det_join(0);
+    let b = w.battle.as_ref().unwrap();
+    let mine: Vec<(f32, f32)> = b.units.iter().filter(|u| u.det == id).map(|u| (u.x, u.y)).collect();
+    assert_eq!(mine.len(), 16);
+    for (i, p) in mine.iter().enumerate() {
+        assert!(mine[..i].iter().all(|q| (q.0 - p.0).hypot(q.1 - p.1) > 1.0), "soldier {i} does not stand on another");
+        assert_eq!(*p, slots[i], "and each starts at their own place in the camp");
+    }
+}

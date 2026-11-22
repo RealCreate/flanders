@@ -107,3 +107,20 @@ fn an_army_can_march_out_past_an_embassy_and_a_castle() {
         }
     }
 }
+
+#[test]
+fn an_army_mustered_in_a_castle_can_always_be_ordered_out_by_the_gate() {
+    for rot in 0..4u8 { for (bx, by) in [(-16, -6), (-12, 12), (12, 10), (14, -10), (0, 14), (-18, 0), (18, 4)] {
+        let mut w = World::new(1337, 0, 0); w.stock = [30000; N_RES]; w.flatten(90, 5.0);
+        let r = w.place(BARRACKS, bx, by, 0);
+        if r < 0 { eprintln!("place {bx},{by}: {r}"); continue; }
+        w.buildings[0].tier = 3; w.buildings[0].rot = rot; w.after_change();
+        w.army = [10; NK];
+        let id = w.det_form(&[10, 10, 10, 0, 10, 10]);
+        if id == 0 { eprintln!("rot {rot} {bx},{by}: no form"); continue; }
+        let f = w.det_flat(); let (x, y) = (f[1], f[2]);
+        let mut res = vec![];
+        for (tx, ty) in [(120.0f32, 0.0f32), (-120.0, 40.0), (0.0, 120.0), (0.0, -120.0)] { res.push(w.det_march(id, tx, ty, true, tx, ty)); }
+        assert!(res.iter().all(|&c| c == 0), "rot {rot} barracks {bx},{by} spawn ({x:.1},{y:.1}): orders {res:?}");
+    } }
+}

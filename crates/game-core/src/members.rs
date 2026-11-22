@@ -58,7 +58,7 @@ impl World {
         let mut o = Obst { solids: HashMap::new(), decks: vec![], lendable: vec![] };
         for b in &self.buildings {
             match b.kind {
-                GATE => { if self.gate_shut(b) { o.add(Solid::Circle(b.x, b.y, 3.4)); } }
+                GATE => {}   // (the doors of a shut gate open for your own soldiers: only the pillars stand in the way, see `friendly_wall_lines`)
                 ROAD | MOAT | RIVER | RAISE | LOWER => {}
                 BRIDGE | DRAWBRIDGE => {} // handled with the battle's crossing geometry below
                 TOLL => {
@@ -87,7 +87,7 @@ impl World {
         for d in self.deposits.iter().filter(|d| d.max > 0) {
             o.add(Solid::Deposit(d.x, d.y, d.walk_radius()));
         }
-        let (segs, _) = self.wall_lines();
+        let (segs, _) = self.friendly_wall_lines();
         for sg in &segs { o.add(Solid::Wall(sg.ax, sg.ay, sg.bx, sg.by, sg.r)); }
         for c in self.crossings() {
             let deck = (c.ax, c.ay, c.bx, c.by, c.half);

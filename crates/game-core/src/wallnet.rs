@@ -53,7 +53,12 @@ pub fn link(nodes: &[Piece]) -> (Vec<(usize, usize)>, Vec<Vec<usize>>) {
 
 impl World {
     /// Every solid line of walls and fences, and the doorways of the gates. A shut gate's doors are a solid line across its doorway.
-    pub(crate) fn wall_lines(&self) -> (Vec<Seg>, Vec<Door>) {
+    pub(crate) fn wall_lines(&self) -> (Vec<Seg>, Vec<Door>) { self.wall_lines_for(false) }
+
+    /// The same lines as your own soldiers see them: a shut gate's doors open for them, so only its pillars stand there.
+    pub(crate) fn friendly_wall_lines(&self) -> (Vec<Seg>, Vec<Door>) { self.wall_lines_for(true) }
+
+    fn wall_lines_for(&self, friendly: bool) -> (Vec<Seg>, Vec<Door>) {
         let nodes: Vec<Piece> = self.buildings.iter().enumerate().filter(|(_, b)| matches!(b.kind, WALL | FENCE | GATE)).map(|(i, b)| Piece { b: i, x: b.x, y: b.y, kind: b.kind, rot: b.rot }).collect();
         if nodes.is_empty() { return (vec![], vec![]); }
         let (edges, adj) = link(&nodes);
@@ -87,7 +92,7 @@ impl World {
         }
         for d in &doors {   // the pillars, and the doors across the doorway when they are shut
             for s in [-1.0f32, 1.0] { let (px, py) = (d.x + d.ux * GATE_HALF * s, d.y + d.uy * GATE_HALF * s); segs.push(Seg { ax: px, ay: py, bx: px, by: py, r: 1.0 }); }
-            if self.gate_shut(&self.buildings[d.b]) { segs.push(Seg { ax: d.x - d.ux * GATE_HALF, ay: d.y - d.uy * GATE_HALF, bx: d.x + d.ux * GATE_HALF, by: d.y + d.uy * GATE_HALF, r: 1.3 }); }
+            if !friendly && self.gate_shut(&self.buildings[d.b]) { segs.push(Seg { ax: d.x - d.ux * GATE_HALF, ay: d.y - d.uy * GATE_HALF, bx: d.x + d.ux * GATE_HALF, by: d.y + d.uy * GATE_HALF, r: 1.3 }); }
         }
         (segs, doors)
     }

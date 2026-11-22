@@ -1666,15 +1666,18 @@ const REPLACES: Record<number, Record<number, string>> = { 3: { 2: 'roof' }, 35:
 const DEPENDS: Record<number, Record<number, number[]>> = { 3: { 0: [2] } };
 /** Where the fishing hut's land ends in its model frame (+x is towards the water): the jetty starts here, so nothing but the jetty goes past it. */
 const hutLandX = (tier: number) => (3.0 + tier * 0.3) / 2 - 0.45;
+/** How far past its fields a farm's yard reaches: the footprint and the levelled ground (FARM_YARD in lib.rs) include it, so the extras stand on flat ground that is the farm's own. */
+const FARM_YARD = 5.0;
 function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const m = M(), { all, cx, cz, hw, hd, reach, seed } = c, solid = c.solid;
   const top = c.top;
   /** A free spot (centre) for a w x d x h item standing on the ground at height y0: the first place on a widening spiral round the building that touches nothing. */
   const spot = (w: number, d: number, h: number, y0 = 0): [number, number] | null => {
-    for (let k = 0; k < 90; k++) {
-      const a = seed * 0.83 + bit * 1.7 + k * 0.62, rad = kind === 49 ? 20 + k * 0.45 : Math.max(hw, hd) * 0.55 + k * 0.1;   // (the embassy's extras stand outside its wall, never in the courtyard)
-      if (rad > reach * 1.25 + 2.2) break;
+    for (let k = 0; k < (kind === 1 ? 260 : 90); k++) {
+      const a = seed * 0.83 + bit * 1.7 + k * 0.62, rad = kind === 49 ? 20 + k * 0.45 : kind === 1 ? Math.max(hw, hd) * 0.8 + k * 0.06 : Math.max(hw, hd) * 0.55 + k * 0.1;   // (the embassy's extras stand outside its wall, never in the courtyard)
+      if (rad > (kind === 1 ? reach + FARM_YARD + 1 : reach * 1.25 + 2.2)) break;
       const x = cx + Math.cos(a) * rad, z = cz + Math.sin(a) * rad, bb = new THREE.Box3(new THREE.Vector3(x - w / 2 - 0.12, y0, z - d / 2 - 0.12), new THREE.Vector3(x + w / 2 + 0.12, y0 + h, z + d / 2 + 0.12));
+      if (kind === 1 && (bb.min.x < all.min.x - FARM_YARD || bb.max.x > all.max.x + FARM_YARD || bb.min.z < all.min.z - FARM_YARD || bb.max.z > all.max.z + FARM_YARD || (bb.max.x > all.min.x - 0.7 && bb.min.x < all.max.x + 0.7 && bb.max.z > all.min.z - 0.7 && bb.min.z < all.max.z + 0.7))) continue;   // a farm's extras stand in the yard round its fields, never on the fields themselves
       if (kind === 49 && Math.abs(x) < 16 + w / 2 + 1.2 && Math.abs(z) < 18 + d / 2 + 1.2) continue;
       if (kind === 29 && x + w / 2 + 0.4 > 3.0) continue;   // the watermill's extras stay on the land side, never by the wheel
       if (kind === 41 && x + w / 2 + 1.0 > hutLandX(c.tier)) continue;   // the fishing hut's extras stay on the land side, behind the jetty's start (never on the jetty or over the water)
@@ -1961,15 +1964,15 @@ export class VillageView {
     const key = list.map(packFlag).join(',');
     if (key === this.foreignKey) return false;
     this.foreignKey = key; this.foreign = list.slice();
+    let removed = false;
     for (const [i, it] of [...this.items]) {
       if (it.group.userData.kind !== 49) continue;
       this.unbatch(it.cell); this.endBuild(it); this.dispose(it.group); this.animating.delete(it); this.items.delete(i); this.quiet = true; removed = true;
-    let removed = false;
     }
+    return removed;
   }
   /** Change the flag every banner flies (or go back to the plain colour with null): the buildings are rebuilt with it. */
   setFlag(f: Flag | null, color: number) {
-    return removed;
     const key = f ? packFlag(f) : 0, old = this.flag ? packFlag(this.flag) : 0;
     if (key === old && color === this.banner) return;
     this.flag = f ?? undefined; this.banner = color; this.roof = f?.roof ?? 0;

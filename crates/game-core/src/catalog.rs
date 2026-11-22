@@ -99,7 +99,7 @@ pub static DEFS: [Def; 50] = [
     Def { name: "Quarry", cat: 2, r: 4.5, weight: 2, cost: &[(W, 25), (PL, 5)], jobs: 3, inputs: &[], outputs: &[(ST, 3)], cycle: 8, req: 1, req_arg: 0, housing: 0, max_slope: 0.8, pad: true, desc: "Cuts stone. Build it next to a stone outcrop." },
     Def { name: "Clay Pit", cat: 2, r: 4.0, weight: 1, cost: &[(W, 20)], jobs: 2, inputs: &[], outputs: &[(CL, 4)], cycle: 6, req: 1, req_arg: 1, housing: 0, max_slope: 0.5, pad: true, desc: "Digs clay (dirt) from a clay bank." },
     Def { name: "Brickworks", cat: 3, r: 4.0, weight: 2, cost: &[(W, 20), (ST, 15)], jobs: 2, inputs: &[(CL, 3), (CH, 1)], outputs: &[(BR, 3)], cycle: 10, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Fires clay and charcoal into bricks." },
-    Def { name: "Iron Mine", cat: 2, r: 4.2, weight: 3, cost: &[(PL, 20), (W, 20), (TL, 2)], jobs: 4, inputs: &[], outputs: &[(IO, 2)], cycle: 10, req: 1, req_arg: 2, housing: 0, max_slope: 0.9, pad: true, desc: "Mines iron ore from a rich vein." },
+    Def { name: "Iron Mine", cat: 2, r: 4.2, weight: 3, cost: &[(PL, 20), (W, 20)], jobs: 4, inputs: &[], outputs: &[(IO, 2)], cycle: 10, req: 1, req_arg: 2, housing: 0, max_slope: 0.9, pad: true, desc: "Mines iron ore from a rich vein." },
     Def { name: "Gold Mine", cat: 2, r: 4.2, weight: 3, cost: &[(PL, 30), (ST, 10), (TL, 3)], jobs: 4, inputs: &[], outputs: &[(GO, 1)], cycle: 14, req: 1, req_arg: 3, housing: 0, max_slope: 0.9, pad: true, desc: "Mines gold ore. Veins are small and precious." },
     Def { name: "Charcoal Burner", cat: 3, r: 3.5, weight: 1, cost: &[(W, 15)], jobs: 1, inputs: &[(W, 4)], outputs: &[(CH, 2)], cycle: 10, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Smoulders wood into charcoal, the fuel of every furnace." },
     Def { name: "Smelter", cat: 3, r: 4.0, weight: 3, cost: &[(ST, 30), (W, 20)], jobs: 3, inputs: &[(IO, 2), (CH, 1)], outputs: &[(IR, 1)], cycle: 12, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A bloomery furnace that turns ore and charcoal into iron." },
@@ -150,6 +150,14 @@ pub fn upgrade_cost(weight: u32, new_tier: u8) -> Vec<Amount> {
         2 => vec![(ST, 16 * w), (BR, 8 * w), (PL, 6 * w)],
         _ => vec![(ST, 30 * w), (IR, 8 * w), (GD, 6 * w), (BR, 12 * w)],
     }
+}
+
+/// Upgrade cost for a particular building: the weight-based cost, plus tools for the Iron Mine (its first level needs none, so a village can start on iron without tools).
+pub fn upgrade_cost_for(kind: u8, new_tier: u8) -> Vec<Amount> {
+    let d = &DEFS[kind as usize];
+    let mut v = upgrade_cost(d.weight, new_tier);
+    if d.name == "Iron Mine" { v.push((TL, 1 + new_tier as i32)); }
+    v
 }
 
 /// Option bits 0-3 are open from the start of the game; bits 4-7 are the second tier, unlocked by the building's own tier (the `Opt` third field, 2 or 3).

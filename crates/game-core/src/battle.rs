@@ -27,6 +27,8 @@ pub const SOAK_SPEED: f32 = 0.6;
 pub const SOAK_DAMAGE: f32 = 0.6;
 /// A field army that marches to a fight joins it once it is this close to an attacker.
 pub const JOIN_REACH: f32 = 26.0;
+/// A soldier of an army that made camp starts the battle at their own place in it only if that is this close to the army's centre; anyone further out (strung along a road) starts beside the army instead.
+const CAMP_REACH: f32 = 10.0;
 /// A burning building loses `FIRE_DAMAGE` x (4 + 14 x flammability) hit points a second; fire jumps to a neighbour with `FIRE_SPREAD` x flammability x ... a second, up to `FIRE_RANGE` away.
 pub const FIRE_DAMAGE: f32 = 0.4;
 pub const FIRE_SPREAD: f32 = 0.1;
@@ -920,18 +922,21 @@ impl World {
     }
 
     /// The army's soldiers enter the battle where the army stands, on the defenders' side, free to charge (they have no post).
-    fn det_join(&mut self, di: usize) {
+    pub(crate) fn det_join(&mut self, di: usize) {
         let wet: Vec<(f32, f32, f32)> = self.buildings.iter().filter(|x| matches!(x.kind, MOAT | RIVER)).map(|x| (x.x, x.y, if x.kind == MOAT { MOAT_FLOOR * moat_scale(x) + 0.5 } else { RIVER_FLOOR + 0.5 })).collect();
         let cr = self.crossings();
         let Some(mut b) = self.battle.take() else { return };
         let d = &self.dets[di];
         let foe = b.units.iter().filter(|u| u.side == 1 && u.alive).min_by(|p, q| ((p.x - d.x).powi(2) + (p.y - d.y).powi(2)).total_cmp(&((q.x - d.x).powi(2) + (q.y - d.y).powi(2))));
         let face = foe.map_or(0.0, |f| (f.y - d.y).atan2(f.x - d.x));
+        // an army that has pitched camp (its soldiers are spread over their slots, see march_formation) fights out of it: each soldier starts at their own slot, not piled up at the army's centre
+        let camp: Vec<(f32, f32)> = d.file.slots();
+        let camped = camp.len() >= d.units.iter().sum::<u32>() as usize;
         let mut j = 0u32;
         for kind in 0..NK {
             for _ in 0..d.units[kind] {
                 let a = j as f32 * 2.4; let r = 1.0 + (j / 8) as f32 * 1.4;
-                let (mut px, mut py) = (d.x + a.cos() * r, d.y + a.sin() * r);
+                let (mut px, mut py) = if camped && (camp[j as usize].0 - d.x).hypot(camp[j as usize].1 - d.y) <= CAMP_REACH { camp[j as usize] } else { (d.x + a.cos() * r, d.y + a.sin() * r) };
                 if self.own_wet(&b, &wet, &cr, px, py) { px = d.x; py = d.y; }   // (never into the water)
                 let mut u = Unit::new(0, kind as u8, px, py, face); u.det = d.id; u.cd = 0.3;
                 b.units.push(u); b.start_side[0] += 1; j += 1;

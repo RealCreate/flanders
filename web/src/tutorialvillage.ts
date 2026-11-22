@@ -11,7 +11,7 @@ export type Action =
 /** Buildings sit at least 20 units from the hall, so the hall has room to grow when it is upgraded. The first raid can come from day 3 (720 ticks), so the defences go up before the second round of houses. */
 export const TUTORIAL_SCRIPT: Action[] = [
   { at: 0, op: 'place', kind: 0, dx: -20, dy: -20 },      // house
-  { at: 150, op: 'place', kind: 1, dx: -20, dy: -10 },    // farm
+  { at: 150, op: 'place', kind: 1, dx: -33, dy: -10 },    // farm
   { at: 300, op: 'place', kind: 4, dx: -20, dy: 0 },      // woodcutter
   { at: 450, op: 'place', kind: 5, dx: -20, dy: 8 },      // sawmill
   { at: 600, op: 'place', kind: 6, dx: -2, dy: 26 },      // quarry on the stone deposit
@@ -20,9 +20,9 @@ export const TUTORIAL_SCRIPT: Action[] = [
   { at: 1050, op: 'place', kind: 19, dx: -12, dy: -20 },  // barracks
   { at: 1350, op: 'train', kind: 1, n: 6 },               // archers
   { at: 1500, op: 'place', kind: 0, dx: -10, dy: 20 },
-  { at: 1650, op: 'place', kind: 1, dx: 0, dy: -20 },
+  { at: 1650, op: 'place', kind: 1, dx: 0, dy: -31 },
   { at: 1800, op: 'place', kind: 0, dx: 4, dy: 20 },
-  { at: 1950, op: 'place', kind: 0, dx: 10, dy: -20 },
+  { at: 1950, op: 'place', kind: 0, dx: 16, dy: -20 },
   { at: 2100, op: 'place', kind: 0, dx: 10, dy: 20 },
   { at: 2400, op: 'upgrade' },                            // town hall to a manor
 ];

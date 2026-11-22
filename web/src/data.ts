@@ -28,7 +28,7 @@ export const RES = [
   { key: 'tools', name: 'Tools', icon: 'tools', hint: 'Forged by the blacksmith. Needed for mines.' },
   { key: 'fish', name: 'Fish', icon: 'fish', hint: 'Landed by fishing huts. Raw fish provides a meal per fish. Smoking makes it more filling.' },
   { key: 'smokedfish', name: 'Smoked fish', icon: 'smokedfish', hint: 'Smoked in a smokehouse. Cooked food fills half as much again as raw.' },
-  { key: 'bread', name: 'Bread', icon: 'bread', hint: 'Baked from grain in a bakery. Cooked food fills half as much again as raw.' },
+  { key: 'bread', name: 'Bread', icon: 'bread', hint: 'Baked from grain in a bakery. Fills twice as much as raw grain.' },
   { key: 'meat', name: 'Meat', icon: 'meat', hint: 'Raised in pastures or brought in by hunters. Feeds the village, or smoke it for more.' },
   { key: 'smokedmeat', name: 'Smoked meat', icon: 'smokedmeat', hint: 'Meat smoked in a smokehouse set to meat. Cooked food fills half as much again as raw.' },
 ] as const;

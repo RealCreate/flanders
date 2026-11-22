@@ -63,6 +63,7 @@ export interface Handlers {
   /** Centre the camera on the next building behind the rate (of one kind, or of any). Returns false when there is none. */
   stockGo(res: number[], sign: number, kind?: number): boolean;
   speed(n: number): void;
+  goHome(): void;
   steward(action: StewardAction): void;
   toggleResources(): void;
   toggleCoverage(): void;
@@ -189,6 +190,8 @@ export class UI {
     <button class="btn on" data-s="1" title="Normal speed (calm)"><svg viewBox="0 0 16 16"><path d="M4 2l10 6-10 6z"/></svg></button>
     <button class="btn" data-s="2" title="Fast x2"><svg viewBox="0 0 16 16"><path d="M1 2l7 6-7 6zM8 2l7 6-7 6z"/></svg></button>
     <button class="btn" data-s="4" title="Very fast x4"><svg viewBox="0 0 16 16"><path d="M0 3l5.4 5L0 13zM5.3 3l5.4 5-5.4 5zM10.6 3L16 8l-5.4 5z"/></svg></button></div>
+  <button class="btn" id="btn-home" aria-label="Go to your town hall" title="Go to your town hall (centre the camera on your village)">${bi('townhall')} Home</button>
+  <button class="btn" id="btn-bell" hidden aria-pressed="false" aria-label="Notifications" title="Show the battle notice">${bi('attack')}</button>
   <button class="btn" id="btn-mp" title="Players in this world">${bi('globe')} <span id="mp-count">Online</span></button>
   <button class="btn" id="btn-steward" title="Away policy and village recovery">${bi('townhall')} <span id="watch-label">Steward</span></button>
   <button class="btn" id="btn-map" title="Full-screen map (M)">${bi('map')} Map</button>
@@ -209,6 +212,7 @@ export class UI {
 <button type="button" id="follow-stop" class="btn" hidden></button>
 <div id="follow-marker" class="lbl" hidden></div>
 <div id="battle" hidden>
+  <button type="button" id="battle-close" aria-label="Minimize to the notification bell" title="Minimize (the bell in the top bar brings it back)">×</button>
   <div id="battle-text"></div>
   <div id="battle-bribe" hidden>
     <button type="button" id="battle-pay" class="pbtn">${bi('gold')} <span id="battle-pay-label"></span></button>
@@ -523,6 +527,10 @@ export class UI {
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
     $('btn-mp').onclick = () => this.modal('mp', true);
     $('btn-steward').onclick = () => this.h.steward('open');
+    const setBattleMin = (min: boolean) => { this.battleMin = min; $('battle').hidden = min || $('btn-bell').hidden; $('btn-bell').classList.toggle('alert', min); $('btn-bell').setAttribute('aria-pressed', String(!min)); };
+    $('btn-home').onclick = () => this.h.goHome();
+    $('battle-close').onclick = () => setBattleMin(true);
+    $('btn-bell').onclick = () => setBattleMin(!this.battleMin);
     document.querySelectorAll<HTMLButtonElement>('[data-steward]').forEach(button => {
       button.onclick = () => this.h.steward(button.dataset.steward as StewardAction);
     });
@@ -1209,9 +1217,14 @@ export class UI {
     hint.textContent = !n ? 'Select an army on the map (or in the Army tab) first, then pick a village here to send it.' : war ? 'Pick the village above, then march. The army goes on its own and attacks when it arrives.' : `You are not at war with ${row?.name ?? 'them'}: declare war first, then your army can march on them.`;
   }
 
+  private battleMin = false;
+
   /** Battle status, the click-to-focus shortcut, and the local bandits' payment details. */
   battle(text: string | null, onClick?: () => void, bribe?: RaidBribe) {
-    const b = $('battle'); b.hidden = !text;
+    const b = $('battle');
+    if (!text) this.battleMin = false;
+    b.hidden = !text || this.battleMin;
+    const bell = $('btn-bell'); bell.hidden = !text; bell.classList.toggle('alert', !!text && this.battleMin); bell.setAttribute('aria-pressed', String(!!text && !this.battleMin));
     $('battle-bribe').hidden = !bribe || !text;
     const pay = $<HTMLButtonElement>('battle-pay');
     const offer = bribe?.offer;
