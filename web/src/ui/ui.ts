@@ -38,6 +38,14 @@ export const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<
 export function toggleFullscreen() {
   if (document.fullscreenElement) void document.exitFullscreen(); else void document.documentElement.requestFullscreen?.().catch(() => { /* refused: ignore */ });
 }
+// Keyboard Lock: while full-screen, a tap on Esc is delivered to the page (closes modals) and only
+// *holding* Esc leaves full-screen (the browser's own long-press). F11 still toggles. Chromium only; elsewhere Esc keeps its default.
+document.addEventListener('fullscreenchange', () => {
+  const kb = (navigator as any).keyboard;
+  if (!kb) return;
+  if (document.fullscreenElement) void kb.lock?.(['Escape'])?.catch?.(() => { /* unsupported: ignore */ });
+  else kb.unlock?.();
+});
 export const WORLDS = ['flanders', 'brabant', 'hainaut', 'limburg', 'ardennes', 'zeeland', 'holland', 'friesland'];
 const worldOptions = (cur: string) => [...new Set([...WORLDS, cur])].map(w => `<option value="${esc(w)}" ${w === cur ? 'selected' : ''}>${esc(w.charAt(0).toUpperCase() + w.slice(1))}</option>`).join('') + '<option value="__custom">Custom…</option>';
 
