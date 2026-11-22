@@ -232,7 +232,7 @@ pub struct Det {
     pub grp: Vec<Grp>,      // riders and engines marching apart (see Grp); their soldiers are still counted in `units`
     pub defend: bool,       // sent to fight in the battle at home: joins it as soon as it is close to an attacker
     /// 0 for our own army. Otherwise the tag of the allied village whose soldiers these are: guests (see `host_guests`) who fight beside our defenders and cannot be ordered about by us.
-    pub ally: i32,
+    #[serde(skip)] pub ally: i32,   // (kept out of the world's bytes so that saved villages from before guests still load: it travels in its own part of the snapshot, see `World::snapshot`)
     #[serde(skip)] pub(crate) file: MarchFile,
     #[serde(skip)] destination: Option<(f32, f32)>,
     #[serde(skip)] blocked_stamp: u64,

@@ -419,6 +419,7 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
+const GUESTS_SNAP_MAGIC: &[u8; 8] = b"FLWORLDC";
 const SNAP_MAGIC: &[u8; 8] = b"FLWORLDB";
 const SIEGE_SNAP_MAGIC: &[u8; 8] = b"FLWORLDA";
 const EXTRAS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD9";
@@ -443,11 +444,15 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     let mut extras = ([0u32; NK], [0u32; NK]);
     let mut siege: Option<Option<siege::Siege>> = None;
     let mut camp: Option<plague::Camp> = None;
-    let (mut w, marches) = if magic == SNAP_MAGIC || magic == SIEGE_SNAP_MAGIC || magic == EXTRAS_SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let mut allies: Vec<i32> = vec![];
+    let (mut w, marches) = if magic == GUESTS_SNAP_MAGIC || magic == SNAP_MAGIC || magic == SIEGE_SNAP_MAGIC || magic == EXTRAS_SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
         type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
         let (((state, estate), tools), planted): (((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>) =
-            if magic == SNAP_MAGIC { let ((inner, ex), (sg, cp)): (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), (Option<siege::Siege>, Option<plague::Camp>)) = bincode::deserialize(payload).ok()?; extras = ex; siege = Some(sg); camp = cp; inner }
+            if magic == SNAP_MAGIC || magic == GUESTS_SNAP_MAGIC {
+                type Body = (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), (Option<siege::Siege>, Option<plague::Camp>));
+                let ((inner, ex), (sg, cp)): Body = if magic == GUESTS_SNAP_MAGIC { let (body, a): (Body, Vec<i32>) = bincode::deserialize(payload).ok()?; allies = a; body } else { bincode::deserialize(payload).ok()? };
+                extras = ex; siege = Some(sg); camp = cp; inner }
             else if magic == SIEGE_SNAP_MAGIC { let ((inner, ex), sg): (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), Option<siege::Siege>) = bincode::deserialize(payload).ok()?; extras = ex; siege = Some(sg); inner }
             else if magic == EXTRAS_SNAP_MAGIC { let (inner, ex): ((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])) = bincode::deserialize(payload).ok()?; extras = ex; inner }
             else if magic == VETS_SNAP_MAGIC { bincode::deserialize(payload).ok()? }
@@ -489,6 +494,7 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     } else if magic == MARCH_SNAP_MAGIC { bincode::deserialize(payload).ok()? } else { return None; };
     if w.dets.len() != marches.len() { return None; }
     for (det, saved) in w.dets.iter_mut().zip(marches) { det.restore_march(saved)?; }
+    if !allies.is_empty() { if allies.len() != w.dets.len() { return None; } for (det, a) in w.dets.iter_mut().zip(allies) { det.ally = a; } }
     w.ledger.ensure_kinds(DEFS.len());
     Some(w)
 }
@@ -605,12 +611,13 @@ fn demolition_refund(kind: u8) -> impl Iterator<Item = Amount> {
 impl World {
     /// The whole state of the village as bytes (the caches are not in it: they are rebuilt on demand). `world_restore` turns it back into the same world, to the last bit.
     pub fn snapshot(&self) -> Vec<u8> {
-        let mut v = SNAP_MAGIC.to_vec();
+        let mut v = GUESTS_SNAP_MAGIC.to_vec();
         let marches: Vec<_> = self.dets.iter().map(march::Det::save_march).collect();
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
         let objective_state = (tactical_state, battle.and_then(|b| b.objective));
-        v.extend(bincode::serialize(&(((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc)), (battle.map(|b| &b.siege), self.plague_camp))).expect("a world can be written"));
+        let allies: Vec<i32> = self.dets.iter().map(|d| d.ally).collect();   // (whose soldiers each field army is: 0 ours; see `host_guests`)
+        v.extend(bincode::serialize(&((((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc)), (battle.map(|b| &b.siege), self.plague_camp)), allies)).expect("a world can be written"));
         v
     }
 
