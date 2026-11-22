@@ -86,7 +86,7 @@ fn session(seed: u64, ox: i32, oy: i32, ticks: u64, mut rng: Rng, watch: bool) -
                 23 => C::Buy([0u8, 2, 3, 10, 1][rng.below(5) as usize], rng.range(1, 120)),
                 24 | 25 => C::Rel(rng.range(5, 8), rng.range(10, 40)),
                 26 | 27 => C::Journey(rng.below(6) as u8, rng.range(5, 8), 20, rng.range(20, 400) as f32),
-                28 => C::Caravan(rng.range(0, 3) as u8, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
+                28 => C::Caravan((rng.range(0, 3) as u8) + if rng.range(0, 2) == 0 { game_core::GIFT_FLAG } else { 0 }, rng.range(10, 60), rng.range(5, 8), rng.range(20, 300) as f32, rng.range(0, 2) as u32),
                 29..=31 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(6, 40) as f32; let n = rng.range(2, 6); C::Road((0..n).flat_map(|i| { let a = ang + i as f32 * 0.25; let rr = r + i as f32 * 6.0; [(a.cos() * rr) as i32, (a.sin() * rr) as i32] }).collect()) }   // a curved road, laid outwards
                 32 => C::Workers(rng.below(n) as u32, rng.range(-2, 5)),   // some of these are out of range on purpose
                 33 | 34 => { let ang = rng.below(628) as f32 / 100.0; let r = rng.range(8, 50) as f32; C::Level((ang.cos() * r) as i32, (ang.sin() * r) as i32, rng.range(3, 14), [-1.0, 1.0, 3.5, 6.0, 9.5, 12.0, 24.0][rng.below(7) as usize]) }   // levelled at explicit heights too (some of them refused)

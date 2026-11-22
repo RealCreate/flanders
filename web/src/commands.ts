@@ -39,7 +39,9 @@ export function applyCmd(w: World, c: Cmd) {
     case 'reserve': w.set_reserves(c.x!, c.y!); break;
     case 'style': w.set_style(c.kind ?? 0); break;
     case 'goods': break;   // a notice that a caravan arrived: the receiver acts on it (see onCmd), nothing to replay
-    case 'accept': w.receive_goods(c.kind ?? 0, c.x ?? 0); break;
+    case 'accept': w.receive_goods_from(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;   // idx the sender's tag: a hostile village's caravan is turned away by the core
+    case 'carhome': w.caravan_returned(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;   // our caravan was turned back: the goods come home
+    case 'turnback': break;   // a notice that we turned a caravan back: the sender takes its goods home (see onTrade), nothing to replay
     case 'settle': w.settle(c.kind ?? 0, c.x ?? 0, c.idx ?? 0); break;
     case 'choose': w.choose(c.kind ?? 0); break;
     case 'bribe': w.bribe(); break;   // the raiders are paid to turn back (the core checks it is allowed and affordable at this tick)

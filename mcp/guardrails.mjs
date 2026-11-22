@@ -6,7 +6,14 @@ export const TOOLS = {
   place: { mutating: true }, upgrade: { mutating: true }, option: { mutating: true }, demolish: { mutating: true, destructive: true }, repair: { mutating: true }, train: { mutating: true },
   garrison: { mutating: true }, drawbridge: { mutating: true }, form_army: { mutating: true }, march_army: { mutating: true }, recall_army: { mutating: true },
   attack: { mutating: true, aggressive: true },
+  // diplomacy (browser game only: the headless server has no neighbours). Reading is free; an envoy and a gift cost goods; a marriage costs 150 gold and binds for good, so it needs
+  // `confirm`; a declaration of war is as aggressive as an attack: off unless the human allows it, and `confirm_attack` on top.
+  relations: { mutating: false }, envoy: { mutating: true }, gift: { mutating: true }, alliance: { mutating: true }, marriage: { mutating: true, costly: true },
+  declare_war: { mutating: true, aggressive: true },
 };
+
+/** The most goods one gift may carry (the game itself allows 500): an agent cannot empty the stores in one call. */
+export const MAX_GIFT = 100;
 
 /** Things a human player does with the testing tools or outside the game: never reachable from here. */
 export const FORBIDDEN = ['cheat', 'flatten', 'model_village', 'reset', 'give_resources', 'set_speed', 'delete_save', 'identity'];
@@ -36,6 +43,9 @@ export class Guard {
     if (this.paused) return { error: 'paused by the human' };
     if (spec.aggressive && !this.o.allowAttack) return { error: 'attacking other players is switched off; the human must start the server with --allow-attack and open the game with allow_attack=1' };
     if (spec.aggressive && args.confirm_attack !== true) return { error: 'attack needs confirm_attack: true' };
+    if (spec.costly && args.confirm !== true) return { error: `${tool} needs confirm: true (it costs gold and cannot be undone)` };
+    if (tool === 'gift' && !(Number.isInteger(args.amount) && args.amount >= 1 && args.amount <= MAX_GIFT)) return { error: `a gift carries 1 to ${MAX_GIFT} goods` };
+    if (['envoy', 'gift', 'alliance', 'marriage', 'declare_war'].includes(tool) && (typeof args.key !== 'string' || !args.key || args.key.length > 200)) return { error: `${tool} needs the village's key (see rivals)` };
     if (spec.destructive && args.confirm !== true) return { error: `${tool} needs confirm: true` };
     if (spec.mutating && this.total >= this.o.maxActions) return { error: `this session's budget of ${this.o.maxActions} actions is used up` };
     const wait = (spec.mutating ? this.acts : this.looks).take();
