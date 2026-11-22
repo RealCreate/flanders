@@ -701,7 +701,7 @@ function toggleShowroom() {
   const x0 = 960, z0 = -560, sr = buildShowroom(defs.map(d => ({ id: d.id, name: d.name, maxTier: d.maxTier })), tierName, x0, z0);
   showroom = sr.group; showroom.position.y = Math.max(1, terrain.heightAt(sr.spawn.x, sr.spawn.z)); scene.add(showroom); hide(false); rig.focus(sr.spawn.x, sr.spawn.z, 70);
   ui.hallExit(true, toggleShowroom);
-  ui.toast('Test hall: one row per building, tiers left to right, then tier 2 and the top tier with every design option. Pan along the rows; press the button again to leave.', 'info');
+  ui.toast('Test hall: one row per building, tiers left to right, then tier 2 and the top tier with every design option (the second-tier options and the village roof palettes have their own columns and row). Pan along the rows; press the button again to leave.', 'info');
 }
 
 async function runModelVillage(ask: boolean) {

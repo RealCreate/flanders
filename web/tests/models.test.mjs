@@ -32,7 +32,7 @@ test('batched buildings remain pickable and skip distant detail triangles', asyn
 });
 
 test('every kind, tier and option set builds with materials that take a tint', () => {
-  for (let kind = 0; kind < defs.length; kind++) for (const tier of [0, 1, 2, 3]) for (const opts of [0, 15]) {
+  for (let kind = 0; kind < defs.length; kind++) for (const tier of [0, 1, 2, 3]) for (const opts of [0, 15, 255]) {
     const g = B.buildModel(kind, tier, 0x2f5fa8, 1, opts, undefined, false);
     g.traverse(o => {
       if (!o.isMesh) return;

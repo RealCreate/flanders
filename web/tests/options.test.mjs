@@ -21,7 +21,7 @@ test('every kind and tier: any move between option sets leaves the bare building
     const m = new B.BuildingModel(kind, tier, 0x2f5fa8, 1, undefined, true);
     const keep = m.base.children.filter(c => !c.userData.slot), disposed = new Set();
     for (const c of keep) c.traverse(o => { if (o.isMesh) o.geometry.addEventListener('dispose', () => disposed.add(o)); });
-    const order = [0, 5, 10, 15, 12, 3, 8, 1, 14, 2, 4, 15, 0, 9, 6, 15, 7, 0];   // adds, removes and mixed moves, ending on the full set and the bare building
+    const order = [0, 5, 10, 15, 12, 3, 8, 1, 14, 2, 4, 15, 0, 9, 6, 15, 7, 0, 0xf0, 0x10, 0xa5, 0xff, 0x6c, 0x0f, 0];   // adds, removes and mixed moves, ending on the full set and the bare building
     for (const mask of order) {
       m.setOptions(mask);
       const fresh = B.buildModel(kind, tier, 0x2f5fa8, 1, mask, undefined, true), what = `${defs[kind].name} tier ${tier} options ${mask}`;
@@ -29,7 +29,7 @@ test('every kind and tier: any move between option sets leaves the bare building
       near(box(m.group), box(fresh), what);
       assert.deepEqual(m.base.children.filter(c => !c.userData.slot), keep, `${what}: the base's own parts are the same objects`);
       assert.equal(disposed.size, 0, `${what}: no base mesh was disposed`);
-      assert.equal(m.parts.size, [0, 1, 2, 3].filter(b => (mask >> b) & 1).length, `${what}: one group per option that is on`);
+      assert.equal(m.parts.size, [0, 1, 2, 3, 4, 5, 6, 7].filter(b => (mask >> b) & 1).length, `${what}: one group per option that is on`);
       checked++;
     }
   }
@@ -60,6 +60,21 @@ test('the village view adds only the new item: same base meshes, scaffold only o
     assert.deepEqual(base.children.filter(c => !c.userData.slot), before.filter(c => !c.userData.slot));
     assert.equal(g.userData.model.parts.size, 0);
   }
+});
+
+test('the second tier of options: each of the five most-used buildings draws something new for every bit, and roof palettes recolour the tiles', () => {
+  const tiles = g => { const out = []; g.traverse(o => { if (o.isMesh && o.material.map && o.material.color && !(o.material.color.r === 1 && o.material.color.g === 1 && o.material.color.b === 1)) out.push(o.material.color.getHex()); }); return out; };
+  for (const kind of [0, 1, 28, 17, 19]) {
+    assert.equal(defs[kind].opts.length, 8, `${defs[kind].name} has eight options`);
+    for (let bit = 4; bit < 8; bit++) {
+      const tier = defs[kind].opts[bit].t, bare = B.buildModel(kind, tier, 0x2f5fa8, 3, 0, undefined, false), withIt = B.buildModel(kind, tier, 0x2f5fa8, 3, 1 << bit, undefined, false);
+      assert.ok(tris(withIt) > tris(bare) + 6, `${defs[kind].name} option ${bit} (${defs[kind].opts[bit].n}) adds geometry`);
+      withIt.updateMatrixWorld(true); const bb = box(withIt), b0 = box(bare); assert.ok(bb.max.y < 60 && Number.isFinite(bb.min.x), 'sane bounds');
+      void b0;
+    }
+  }
+  const plain = B.buildModel(0, 1, 0x2f5fa8, 1, 0, undefined, false, [], 0), slate = B.buildModel(0, 1, 0x2f5fa8, 1, 0, undefined, false, [], 1);
+  assert.notDeepEqual(tiles(plain), tiles(slate), 'a different roof palette tints the tile roofs');
 });
 
 test('a tower with a spire: the roof is swapped for a steep spire that stands on the same footing, and nothing floats', () => {

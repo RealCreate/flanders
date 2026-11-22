@@ -1,13 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PALETTE, PATTERNS, EMBLEMS, packFlag, unpackFlag, flagColor, randomFlag, drawFlag, DEFAULT_FLAG } from '../src/flag.ts';
+import { ROOFS, PALETTE, PATTERNS, EMBLEMS, packFlag, unpackFlag, flagColor, randomFlag, drawFlag, DEFAULT_FLAG } from '../src/flag.ts';
 
 test('a flag packs into one number and back, and the number is never 0', () => {
   for (let p = 0; p < PATTERNS.length; p++) for (const e of [0, EMBLEMS.length - 1]) {
-    const f = { pattern: p, c1: 3, c2: 15, c3: 7, emblem: e }, n = packFlag(f);
-    assert.ok(n > 0 && n < 2 ** 25); assert.deepEqual(unpackFlag(n), f);
+    const f = { pattern: p, c1: 3, c2: 15, c3: 7, emblem: e, roof: p % 8 }, n = packFlag(f);
+    assert.ok(n > 0 && n < 2 ** 28); assert.deepEqual(unpackFlag(n), f);
   }
   assert.ok(packFlag({ pattern: 0, c1: 0, c2: 0, c3: 0, emblem: 0 }) > 0, 'even the plainest flag is not 0 (0 means no choice)');
+});
+
+test('the roof palette rides above the flag and defaults to the plain tiles', () => {
+  assert.equal(packFlag({ ...DEFAULT_FLAG }), packFlag({ ...DEFAULT_FLAG, roof: 0 }));
+  for (let r = 0; r < ROOFS.length; r++) { const n = packFlag({ ...DEFAULT_FLAG, roof: r }); assert.equal(unpackFlag(n).roof, r); assert.equal(n & 0x1ffffff, packFlag(DEFAULT_FLAG) & 0x1ffffff, 'the flag part is unchanged'); }
+  assert.equal(ROOFS.length, 8); assert.equal(unpackFlag(2 ** 28), null);
 });
 
 test('bad numbers are not flags', () => {
