@@ -817,7 +817,7 @@ function visitPlace(id: number) {
   if (code < 0) return;
   pendingArmyOrders.delete(id);
   commit({ op: 'visit', idx: id }); afterLocalChange(); updateDets();
-  if (code === 3) return;   // a lair: the fight is on and the banner tells the story (the report says how it ended)
+  if (code === 3 || code === 4) return;   // a lair or the plague doctor's camp: the fight is on and the banner tells the story (the report says how it ended)
   ui.toast(code === 0 ? 'The monks heal your sick.' : code === 1 ? 'The ruin gives up its hoard.' : code === 2 ? 'The bandit camp is cleared and its coin is yours.' : 'The camp was too strong: half your army fell. Try again with more men.', code >= 100 ? 'bad' : 'good');
 }
 

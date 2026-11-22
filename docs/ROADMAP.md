@@ -62,7 +62,7 @@ Done, each in its own pull request on top of the last: 1 families, ages, seasons
 Added after that, each in its own pull request: heroes (a lord who leads the defence), boiling oil from hoardings, toll posts and scouts, and the pen with paths and figures. This last one adds streets of houses (the pen now works for houses, farms and gardens, so a path or a figure of houses is a district) and a village banner colour that every peer sees.
 
 Still not done:
-- 4: siege towers, rams and sapping (new attacker unit types).
+- 4 (done, see below): siege towers and sapping.
 - 6: a second tier of building options (each needs a new drawing), and free-form roads as a separate tool (paths still follow from the buildings).
 - 7: terrain level of detail (needs a real browser), the demo village on the batch command, and an agent scenario test through the MCP server.
 - Graphify's advisory remarks on `main.ts` (hubs `commit`, `updateHud`, `afterLocalChange`): `main.ts` is still one large file.
@@ -93,3 +93,7 @@ Done in this review: save backup/restore, error and unsupported-browser screens,
 - `main.ts` is still about 1 400 lines: the pen tool, trade/diplomacy handlers, selection panel and input still live there and share a lot of mutable state. The next cut would be a small `state.ts` holding that state so these can move out without long parameter lists.
 - The tutorial and replay UIs were checked in a real browser by script, not by a person playing through; the tutorial text is a first draft.
 - Next ideas: soil in the farm tooltip and a winter fallow bonus, replay of a battle from the defender's side, a scripted tutorial village.
+
+## Siege towers and sapping, more bosses (done)
+Attackers' siege towers (a big raid brings one or two against stone walls; they dock, carry infantry over, are wrecked by defenders at the foot, catapults and oil, and are stopped by water) and sapping (infantry stopped by a stone wall with no ladder dig a shaft; the section falls after a delay; defenders sallying fill the shaft in, a moat floods it): `siege.rs`, models in `web/src/render/siegeworks.ts`, rules and numbers in the constants of `siege.rs`. They are battle-level engines like ladders, not trainable kinds, and are in the state hash and in snapshots. Bosses 3 and 4 (Plague Doctor with a plague camp, Ironclad Knight Captain): see "Second batch" in [BOSSES.md](BOSSES.md).
+Not done: players cannot build towers or saps themselves (attackers in player-versus-player wars get them by army size like ladders); no ordered sally for defenders (the counter is automatic, by standing at the shaft); the 3D camp props and a look at all new models in a browser.

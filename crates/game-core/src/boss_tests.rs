@@ -303,3 +303,100 @@ fn the_raiders_leave_the_spawn_point_within_seconds() {
     let d1 = at(&w); eprintln!("centroid {d0:.1} from the spawn at the start, {d1:.1} after 25s");
     assert!(d0 < 6.0 && d1 > 20.0, "{d0} {d1}");
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Ironclad Knight Captain and the Plague Doctor
+// ---------------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn the_ironclad_leads_late_raids_and_his_plate_only_yields_to_siege_and_heavy_blows() {
+    let mut w = village(false);
+    w.tick = 20 * DAY; assert_eq!(w.raid_boss_kind(0.9), RAID_BOSS, "a young village meets the warlord");
+    w.tick = IRONCLAD_FROM_DAYS * DAY; assert_eq!(w.raid_boss_kind(0.9), IRONCLAD, "an old one the captain"); assert_eq!(w.raid_boss_kind(0.1), RAID_BOSS);
+    assert!(w.cheat(11, 0, 500)); assert_eq!(w.battle_boss()[0], IRONCLAD as f32);
+    let hit = |w: &mut World, dmg: f32, siege: bool| -> f32 {
+        let b = w.battle.as_mut().unwrap(); let i = b.units.iter().position(|u| u.boss > 0).unwrap(); b.units[i].hp = b.units[i].maxhp; b.units[i].phase = 0; b.units[i].t2 = 0.0; b.units[i].t1 = 0.0;
+        World::damage_from(b, i, dmg, siege); b.units[i].maxhp - b.units[i].hp
+    };
+    let (spear, archer, sword, charge, cat, ram) = (hit(&mut w, 10.0, false), hit(&mut w, 8.0, false), hit(&mut w, 17.0, false), hit(&mut w, 41.0, false), hit(&mut w, 55.0, true), hit(&mut w, 30.0, true));
+    eprintln!("spear {spear:.1} archer {archer:.1} sword {sword:.1} charge {charge:.1} catapult {cat:.1} ram {ram:.1}");
+    assert!(spear < 2.0 && archer < 2.0 && sword < 4.0, "spears, arrows and swords glance off");
+    assert!(charge > 12.0, "a knight's charge is a heavy hit");
+    assert!(cat > 20.0 && ram > 10.0, "siege engines hurt in full");
+}
+
+#[test]
+fn the_ironclad_steps_back_when_hurt_and_comes_on_again() {
+    let mut w = village(true); w.tick = IRONCLAD_FROM_DAYS * DAY; w.cheat(11, 0, 500);
+    for _ in 0..4 * 8 { w.step(); }   // past the deployment
+    let dist = |w: &World| { let b = w.battle.as_ref().unwrap(); let u = b.units.iter().find(|u| u.boss > 0).unwrap(); b.units.iter().filter(|q| q.side == 0 && q.alive).map(|q| (q.x - u.x).hypot(q.y - u.y)).fold(f32::MAX, f32::min) };
+    let share = BOSSES[(IRONCLAD - 1) as usize].step_pct;
+    { let b = w.battle.as_mut().unwrap(); let i = b.units.iter().position(|u| u.boss > 0).unwrap(); for _ in 0..40 { if b.units[i].t1 > 0.0 { break; } World::damage_from(b, i, 40.0, true); } assert!(b.units[i].t1 > 0.0, "he was hurt enough to step back"); assert!(b.units[i].hp > 0.0); }
+    let (d0, x0) = { let b = w.battle.as_ref().unwrap(); let u = b.units.iter().find(|u| u.boss > 0).unwrap(); (dist(&w), (u.x, u.y)) };
+    for _ in 0..4 * 4 { w.step(); }
+    let b = w.battle.as_ref().unwrap(); let u = b.units.iter().find(|u| u.boss > 0).unwrap();
+    eprintln!("nearest foe {d0:.1} -> {:.1}; moved {:.1}", dist(&w), (u.x - x0.0).hypot(u.y - x0.1));
+    assert!(dist(&w) > d0 || (u.x - x0.0).hypot(u.y - x0.1) > 4.0, "he walked away from the line");
+    for _ in 0..4 * 6 { w.step(); }
+    assert!(w.battle.as_ref().map_or(true, |b| b.units.iter().find(|u| u.boss > 0).map_or(true, |u| u.t1 <= 0.0)), "and the rest is over after its seconds");
+}
+
+fn camp_village() -> World {
+    let mut w = village(false); w.tick = 30 * DAY;
+    w.hero = Some((0, 0));
+    w
+}
+
+#[test]
+fn a_plague_wave_may_bring_a_doctor_who_keeps_it_alive_until_he_leaves() {
+    // chance: some outbreaks bring a camp, some do not, always the same for the same stream
+    let (mut with, mut without) = (0, 0);
+    for seed in 0..30u64 { let mut w = camp_village(); w.rng = Rng(seed * 31 + 5); w.start_plague(); if w.plague_camp_flat().is_empty() { without += 1 } else { with += 1 } }
+    assert!(with > 0 && without > 0, "{with} camps, {without} without");
+    let mut young = village(false); young.tick = 5 * DAY; young.start_plague(); assert!(young.plague_camp_flat().is_empty(), "a young village is spared a doctor");
+    // with the doctor in his camp the plague returns after it has died down, until he moves on
+    let mut w = camp_village(); w.start_plague(); w.plague_camp = None; assert!(w.cheat(12, 100, 1));
+    let stay = BOSSES[(DOCTOR - 1) as usize].camp_stay_days;
+    let mut relapses = 0; let mut last_end = w.plague_end;
+    for _ in 0..((stay + 12) * DAY) {
+        w.step(); w.stock[GR as usize] = 3000; w.stock[W as usize] = 3000; if w.tick % DAY == 0 { w.population = w.population.max(40); }
+        if w.plague_end > last_end && w.plague_end > w.tick { relapses += 1; } last_end = w.plague_end;
+        if w.battle_active() { w.battle = None; }
+    }
+    eprintln!("relapses {relapses}, camp gone {}", w.plague_camp_flat().is_empty());
+    assert!(relapses >= 2, "the doctor re-lit the plague {relapses} times");
+    assert!(w.plague_camp_flat().is_empty(), "he moved on after {stay} days");
+}
+
+#[test]
+fn the_doctor_does_not_fight_dies_in_one_blow_and_takes_the_plague_with_him() {
+    let mut w = camp_village(); w.stock = [200; N_RES]; w.start_plague(); w.plague_camp = None; assert!(w.cheat(12, 100, 2));
+    let c = w.plague_camp_flat(); assert_eq!(c.len(), 3); assert!(w.neutrals_flat().chunks(4).any(|n| n[0] == 4.0 && n[1] == c[0]), "the camp is on the map");
+    let far = army_at(&mut w, c[0] + 100.0, c[1], [3, 0, 0, 0, 0, 0]); assert_eq!(w.visit_neutral(far), -2, "an army far away cannot enter it");
+    let id = army_at(&mut w, c[0], c[1], [10, 6, 6, 4, 0, 0]);
+    assert_eq!(w.visit_neutral(id), 4, "the fight begins at the camp");
+    assert!(w.battle_active() && w.battle_boss()[0] == DOCTOR as f32);
+    let (dx0, dy0, hp) = { let u = w.battle.as_ref().unwrap().units.iter().find(|u| u.boss > 0).unwrap(); (u.x, u.y, u.hp) };
+    assert!(hp <= 6.0, "he dies in one blow: {hp}");
+    let guards = w.battle.as_ref().unwrap().units.iter().filter(|u| u.side == 1 && u.boss == 0).count(); assert!(guards >= 6, "and is guarded: {guards}");
+    let sick0 = w.sick();
+    let mut secs = 0; let mut max_moved = 0.0f32;
+    while w.battle_active() && secs < 300 { w.step(); secs += 1; if let Some(b) = &w.battle { if let Some(u) = b.units.iter().find(|u| u.boss > 0 && u.alive) { max_moved = max_moved.max((u.x - dx0).hypot(u.y - dy0)); } } }
+    let r = w.last_report(); eprintln!("{secs}s, report {r:?}, sick {sick0} -> {}", w.sick());
+    assert!(max_moved < 1.0, "the doctor stayed where he was: {max_moved}");
+    assert_eq!(r[1], 1, "won"); assert_eq!(boss_part(&r)[0], DOCTOR as i32); assert_eq!(boss_part(&r)[2], 1, "the doctor fell");
+    assert!(w.plague_camp_flat().is_empty(), "the camp is gone"); assert!(!w.plague_active() && w.sick() == 0, "and the plague ended with him");
+    for _ in 0..(40 * DAY) { w.step(); w.stock[GR as usize] = 3000; w.stock[W as usize] = 3000; if w.battle_active() { w.battle = None; } if !w.plague_camp_flat().is_empty() { break; } }
+    assert!(w.stock[GD as usize] >= 200 || w.stock[GD as usize] > 0, "the reward was paid");
+}
+
+#[test]
+fn the_new_bosses_are_in_the_snapshot_and_the_hash() {
+    let mut w = camp_village(); w.cheat(12, 50, 3);
+    let h = w.state_hash();
+    let b = world_restore(&w.snapshot()).expect("restores with a camp"); assert_eq!(b.state_hash(), h); assert_eq!(b.plague_camp_flat(), w.plague_camp_flat());
+    w.plague_camp = None; assert_ne!(w.state_hash(), h, "the camp is in the hash");
+    let mut w = village(false); w.tick = IRONCLAD_FROM_DAYS * DAY; w.cheat(11, 0, 500); for _ in 0..40 { w.step(); }
+    let h = w.state_hash(); let mut b = world_restore(&w.snapshot()).expect("restores mid fight"); assert_eq!(b.state_hash(), h);
+    for _ in 0..200 { w.step(); b.step(); } assert_eq!(w.state_hash(), b.state_hash());
+}

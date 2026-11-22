@@ -111,6 +111,9 @@ impl World {
         self.rng.range(one_in) == 0
     }
 
+    /// Which boss leads a boss raid with this roll (0..1): the Ironclad Knight Captain on a late village, otherwise the Warlord.
+    pub(crate) fn raid_boss_kind(&self, rf: f32) -> u8 { if self.tick >= IRONCLAD_FROM_DAYS * DAY && rf >= IRONCLAD_ROLL { IRONCLAD } else { RAID_BOSS } }
+
     /// A raid led by a boss: its escort and engines scale with the same strength as the boss.
     pub(crate) fn begin_boss_raid(&mut self, boss: u8, angle: f32, rf: f32, bname: u8) -> bool {
         let d = &BOSSES[(boss - 1) as usize];
@@ -146,7 +149,7 @@ impl World {
         if boss > 0 {   // the boss rides at the head of the line
             let bd = &BOSSES[(boss - 1) as usize];
             let mut u = Unit::new(1, bd.base, cx + dx * (dist - 3.5), cy + dy * (dist - 3.5), angle + std::f32::consts::PI);
-            u.boss = boss; u.bname = bname % 4; u.hp = boss_hp(boss, scale); u.maxhp = u.hp; u.t1 = (bd.horn_every - bd.horn_first).max(0.0); u.t2 = 3.0;
+            u.boss = boss; u.bname = bname % 4; u.hp = boss_hp(boss, scale); u.maxhp = u.hp; u.t1 = (bd.horn_every - bd.horn_first).max(0.0); u.t2 = if bd.slam_every > 0.0 { 3.0 } else { 0.0 };
             units.push(u);
         }
         // defenders: standing army, tower guards, hall bodyguard, militia
@@ -228,6 +231,10 @@ impl World {
         let d = (dmg * (1.0 - armor * 0.1)).max(1.0) * plate * if b.units[j].elev > 0.0 { 0.8 } else { 1.0 } * if b.units[j].wading { WADE_DAMAGE } else { 1.0 } * stance;
         b.units[j].hp -= d;
         if boss > 0 && b.units[j].phase == 0 && b.units[j].hp > 0.0 && b.units[j].hp < b.units[j].maxhp * BOSSES[(boss - 1) as usize].rage_at { b.units[j].phase = 1; }
+        if boss > 0 && b.units[j].hp > 0.0 {   // a boss that steps back when hurt: t2 counts the damage since the last time, t1 the seconds it still walks away
+            let bd = &BOSSES[(boss - 1) as usize];
+            if bd.step_secs > 0.0 { b.units[j].t2 += d; if b.units[j].t2 >= b.units[j].maxhp * bd.step_pct { b.units[j].t2 = 0.0; b.units[j].t1 = bd.step_secs; } }
+        }
         if b.units[j].hp <= 0.0 && b.units[j].alive {
             b.units[j].alive = false;
             if b.units[j].side == 1 { b.atk_dead += 1; } else { b.def_dead += 1; if b.units[j].kind == MILITIA { b.militia_dead += 1; } }
@@ -453,6 +460,16 @@ impl World {
                     b.units[i].face = u.face;
                 }
                 continue;
+            }
+            if u.boss > 0 {
+                let bd = &BOSSES[(u.boss - 1) as usize];
+                if bd.pacifist && !deploying { continue; }   // the doctor does not fight: his guards do
+                if bd.step_secs > 0.0 && u.t1 > 0.0 && !deploying {   // hurt: it walks away from the nearest foe to recover
+                    let (mut best, mut bd2) = (usize::MAX, f32::MAX);
+                    for j in 0..n { if b.units[j].alive && b.units[j].side != u.side { let d = (b.units[j].x - u.x).powi(2) + (b.units[j].y - u.y).powi(2); if d < bd2 { bd2 = d; best = j; } } }
+                    if best != usize::MAX { let d = bd2.sqrt().max(0.1); let (dx, dy) = ((u.x - b.units[best].x) / d, (u.y - b.units[best].y) / d); self.move_attacker(&mut b, i, (dx, dy), ud.speed * 1.2 * dt, &bars, &wet); b.units[i].face = (-dy).atan2(-dx); }
+                    continue;
+                }
             }
             // nearest enemy
             let tower_guard = tower_guards[i];
@@ -707,6 +724,7 @@ impl World {
             if u.boss == 0 || !u.alive { continue; }
             if b.rout.get(i).copied().unwrap_or(0.0) > 0.0 { continue; }
             let bd = &BOSSES[(u.boss - 1) as usize];
+            if bd.step_secs > 0.0 { b.units[i].t1 = (u.t1 - dt).max(0.0); }
             if bd.horn_every > 0.0 {
                 let mut t = u.t1 + dt;
                 if t >= bd.horn_every { t = 0.0; shots.push([3.0, u.x, u.y, u.x, u.y, 0.0, u.boss as f32]); b.units[i].anim = 0.6; }
@@ -1019,6 +1037,10 @@ impl World {
         let atk = b.units.iter().filter(|u| u.side == 1 && u.alive).count();
         let def = b.units.iter().filter(|u| u.side == 0 && u.alive).count();
         if b.t > DEPLOY_SECS && def == 0 && atk > 0 { b.pillage += SUBSTEP; }
+        if b.boss == DOCTOR && b.lair >= 0 && b.units.iter().any(|u| u.boss > 0 && !u.alive && !u.escaped) {   // the doctor is dead: his guards lose heart and run
+            let n = b.units.len(); if b.rout.len() < n { b.rout.resize(n, 0.0); }
+            for i in 0..n { if b.units[i].side == 1 && b.units[i].alive && b.rout[i] <= 0.0 { b.rout[i] = 7.0; } }
+        }
         let done = atk == 0 || b.pillage > 14.0 || (!b.bought && b.objective.is_some_and(|o| o.held(b.t)))
             || b.t > if b.lair >= 0 { LAIR_SECS } else { 170.0 };
         if done { self.finish_battle(); }
@@ -1067,7 +1089,7 @@ impl World {
             for r in 0..N_RES { let pct = if r == GD as usize { 35 } else { 15 }; let take = self.stock[r] * pct / 100; self.stock[r] -= take; loot[r] = take; }
         }
         let boss_down = !b.bought && b.boss > 0 && b.units.iter().any(|u| u.boss > 0 && !u.alive && !u.escaped);
-        if boss_down { self.boss_rewards(b.boss, b.bname); }
+        if boss_down { self.boss_rewards(b.boss, b.bname); if b.boss == DOCTOR { self.end_plague(); self.plague_camp = None; } }
         if lair && won { if let Some(d) = self.neutral_done.get_mut(b.lair as usize) { *d = true; } self.reveal(b.lair_at[0], b.lair_at[1], 80.0); self.push_event(EV_VISIT, 3, 0); }
         self.report_seq += 1;
         self.report = vec![self.report_seq as i32, won as i32, b.tag, atk_alive as i32, b.def_dead as i32, b.bld_lost as i32];
@@ -1086,15 +1108,15 @@ impl World {
 
     /// The army that stands at a lair goes in: the lair's boss and his escort (stronger for a stronger place, `h` 0..1) against the army's soldiers, in the field round the lair. Needs no village buildings:
     /// the lair's side holds its ground and fights whoever comes near. The army wins by killing every one of them (the boss included).
-    pub(crate) fn begin_lair_battle(&mut self, di: usize, ni: usize, nx: f32, ny: f32, h: f32) -> bool {
+    pub(crate) fn begin_lair_battle(&mut self, di: usize, ni: i32, nx: f32, ny: f32, h: f32, kind: u8) -> bool {
         if self.battle.is_some() || di >= self.dets.len() { return false; }
-        let d = &BOSSES[(LAIR_BOSS - 1) as usize];
+        let d = &BOSSES[(kind - 1) as usize];
         let sc = d.scale_min + (d.scale_max - d.scale_min) * h;
         let esc = |x: u32| (x as f32 * (0.8 + 0.5 * h)).round() as u32;
         let counts = [esc(d.escort[0]), esc(d.escort[1]), esc(d.escort[2]), esc(d.escort[3])];
         let face = (self.dets[di].y - ny).atan2(self.dets[di].x - nx);
         let mut boss = Unit::new(1, d.base, nx, ny, face);
-        boss.boss = LAIR_BOSS; boss.bname = (h * 3.99) as u8; boss.hp = boss_hp(LAIR_BOSS, sc); boss.maxhp = boss.hp; boss.t2 = 3.0;
+        boss.boss = kind; boss.bname = (h * 3.99) as u8; boss.hp = boss_hp(kind, sc); boss.maxhp = boss.hp; boss.t2 = if d.slam_every > 0.0 { 3.0 } else { 0.0 };
         let mut units = vec![boss];
         let mut j = 0u32;
         for (kind, &n) in counts.iter().enumerate() { for _ in 0..n {
@@ -1102,9 +1124,9 @@ impl World {
             units.push(Unit::new(1, kind as u8, nx + a.cos() * r, ny + a.sin() * r, face + std::f32::consts::PI)); j += 1;
         } }
         let n1 = units.len() as u32;
-        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni as i32, lair_at: [nx, ny], boss: LAIR_BOSS, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0, objective: None, siege: Default::default(), tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
+        self.battle = Some(Battle { ladders: 0, ladders_used: 0, spots: vec![], sites: vec![], bridges: vec![], units, t: 0.0, pillage: 0.0, tag: 0, angle: face, spawn: [0.0, 0.0], atk_start: [counts[0], counts[1], counts[2], counts[3], 0, 0], atk_dead: 0, def_dead: 0, militia_dead: 0, bld_lost: 0, rout: vec![], start_side: [0, n1], fled: [0, 0], fled_kinds: [0; NK], fixed: vec![], lair: ni, lair_at: [nx, ny], boss: kind, bname: (h * 3.99) as u8, bought: false, bought_t: 0.0, objective: None, siege: Default::default(), tactics: Tactics { tech: [self.military_tech, 0], ..Tactics::default() } });
         self.det_join(di);
-        self.push_event(EV_LAIR, ni as i32, 0);
+        self.push_event(EV_LAIR, ni, 0);
         true
     }
 

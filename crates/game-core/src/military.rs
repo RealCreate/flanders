@@ -44,7 +44,7 @@ pub fn units_json() -> String {
 // Bosses: named units with a big body, a few rules of their own and an escort. Every number lives in this table. A boss is an ordinary `Unit` (so defenders, ladders, rams, fire and
 // wading all keep working) whose `boss` field is its index + 1 here; `base` is the soldier kind it moves and is drawn as.
 // ---------------------------------------------------------------------------------------------------------------------
-pub const N_BOSSES: usize = 2;
+pub const N_BOSSES: usize = 4;
 /// A bandit raid may be led by a boss once the village has stood `BOSS_FROM_DAYS` days with `BOSS_FROM_POP` people: one raid in `BOSS_ONE_IN`, one more often for every `BOSS_WEALTH_STEP` coin in the stores (at most `BOSS_WEALTH_MAX` times).
 pub const BOSS_FROM_DAYS: u64 = 20;
 pub const BOSS_FROM_POP: u32 = 25;
@@ -58,6 +58,14 @@ pub const LAIR_BOSS: u8 = 2;
 pub const WARLORD: u8 = 1;
 #[allow(dead_code)]
 pub const OGRE: u8 = 2;
+/// The Plague Doctor: stands in a plague camp while an outbreak runs. The Ironclad Knight Captain: leads late raids.
+pub const DOCTOR: u8 = 3;
+pub const IRONCLAD: u8 = 4;
+/// Raids led by the Ironclad Knight Captain (instead of the Warlord, on a roll of at least `IRONCLAD_ROLL` of 0..1) only come to a village this old.
+pub const IRONCLAD_FROM_DAYS: u64 = 40;
+pub const IRONCLAD_ROLL: f32 = 0.5;
+/// The `lair` of a battle at a plague camp (not a place of the map).
+pub const CAMP_LAIR: i32 = 100_000;
 
 pub struct BossDef {
     pub name: &'static str,
@@ -80,6 +88,13 @@ pub struct BossDef {
     pub escort: [u32; 4], pub rams: u32,
     /// Rewards for killing it: gold, iron, hero experience, a lift in happiness (for `mood_days`) and a captured ram.
     pub gold: i32, pub iron: i32, pub xp: u32, pub mood: i32, pub mood_days: u32, pub prize_rams: u32,
+    /// Does not fight at all (the doctor): it stands at its post and only the guards fight.
+    pub pacifist: bool,
+    /// Steps back when hurt: after losing `step_pct` of its hit points since the last time it walks away from the nearest foe for `step_secs` seconds (0 = never).
+    pub step_pct: f32, pub step_secs: f32,
+    /// Plague camp (the doctor): a plague wave that begins in a village `camp_from_days` old sets up a camp one time in `camp_one_in` (0 = never); the doctor stays `camp_stay_days` and, each time the outbreak
+    /// ends, begins it again for `camp_reinfect_days` with `camp_reinfect_pct` of the village ill.
+    pub camp_one_in: u32, pub camp_from_days: u64, pub camp_stay_days: u64, pub camp_reinfect_pct: u32, pub camp_reinfect_days: u64,
     pub desc: &'static str,
 }
 
@@ -88,12 +103,26 @@ pub static BOSSES: [BossDef; N_BOSSES] = [
         heavy: 16.0, soft: 0.3, horn_every: 30.0, horn_secs: 8.0, horn_reach: 32.0, horn_haste: 0.7, horn_first: 4.0,
         slam_every: 0.0, slam_reach: 0.0, slam_dmg: 0.0, boulder: 0.0, rage_at: 0.5, rage_dmg: 1.25, rage_speed: 1.15, scale_min: 0.8, scale_max: 1.3,
         escort: [5, 3, 2, 1], rams: 1, gold: 260, iron: 40, xp: 120, mood: 8, mood_days: 10, prize_rams: 1,
+        pacifist: false, step_pct: 0.0, step_secs: 0.0, camp_one_in: 0, camp_from_days: 0, camp_stay_days: 0, camp_reinfect_pct: 0, camp_reinfect_days: 0,
         desc: "Leads a great raid in heavy plate that only siege engines and heavy blows hurt, and sounds a war horn that spurs his men on. Break the horn's rhythm and kill him." },
     BossDef { name: "Ogre of the Marches", names: ["Grum", "Thokk", "Ulg", "Mor the Wide"], base: 2, hp: 2400.0, dmg: 55.0, range: 3.2, speed: 1.9, cd: 2.0, armor: 2.0,
         heavy: 0.0, soft: 1.0, horn_every: 0.0, horn_secs: 0.0, horn_reach: 0.0, horn_haste: 0.0, horn_first: 0.0,
         slam_every: 5.0, slam_reach: 3.5, slam_dmg: 40.0, boulder: 4.0, rage_at: 0.5, rage_dmg: 1.3, rage_speed: 1.3, scale_min: 0.9, scale_max: 1.2,
         escort: [7, 4, 2, 0], rams: 0, gold: 220, iron: 30, xp: 160, mood: 6, mood_days: 8, prize_rams: 0,
+        pacifist: false, step_pct: 0.0, step_secs: 0.0, camp_one_in: 0, camp_from_days: 0, camp_stay_days: 0, camp_reinfect_pct: 0, camp_reinfect_days: 0,
         desc: "A huge brute who lairs in the hills. Slow, with a great deal of hit points, a slam that hurts everyone around him and boulders for walls. Shoot him from a distance." },
+    BossDef { name: "Plague Doctor", names: ["Mortimer", "Sister Vesper", "Old Gideon", "The Crow"], base: 1, hp: 5.0, dmg: 0.0, range: 0.0, speed: 2.2, cd: 2.0, armor: 0.0,
+        heavy: 0.0, soft: 1.0, horn_every: 0.0, horn_secs: 0.0, horn_reach: 0.0, horn_haste: 0.0, horn_first: 0.0,
+        slam_every: 0.0, slam_reach: 0.0, slam_dmg: 0.0, boulder: 0.0, rage_at: 0.0, rage_dmg: 1.0, rage_speed: 1.0, scale_min: 1.0, scale_max: 1.0,
+        escort: [6, 4, 0, 0], rams: 0, gold: 180, iron: 0, xp: 100, mood: 10, mood_days: 12, prize_rams: 0,
+        pacifist: true, step_pct: 0.0, step_secs: 0.0, camp_one_in: 3, camp_from_days: 20, camp_stay_days: 40, camp_reinfect_pct: 12, camp_reinfect_days: 6,
+        desc: "Does not fight: stands in a camp outside the village and breathes the plague back into it whenever it dies down. A single blow kills him, but his guards stand round him. Send a fast raid and the plague ends with him." },
+    BossDef { name: "Ironclad Knight Captain", names: ["Sir Aldric", "Sir Roland", "Lord Verrin", "Sir Casimir"], base: 3, hp: 950.0, dmg: 34.0, range: 2.9, speed: 4.6, cd: 1.4, armor: 6.0,
+        heavy: 30.0, soft: 0.12, horn_every: 0.0, horn_secs: 0.0, horn_reach: 0.0, horn_haste: 0.0, horn_first: 0.0,
+        slam_every: 0.0, slam_reach: 0.0, slam_dmg: 0.0, boulder: 0.0, rage_at: 0.3, rage_dmg: 1.2, rage_speed: 1.1, scale_min: 0.85, scale_max: 1.25,
+        escort: [3, 2, 4, 3], rams: 1, gold: 320, iron: 60, xp: 180, mood: 6, mood_days: 8, prize_rams: 0,
+        pacifist: false, step_pct: 0.2, step_secs: 5.0, camp_one_in: 0, camp_from_days: 0, camp_stay_days: 0, camp_reinfect_pct: 0, camp_reinfect_days: 0,
+        desc: "A knight in full plate that only catapults, rams and heavy blows can hurt: spears and arrows glance off. He steps back to recover whenever he is badly hurt. Bring siege engines and the lord." },
 ];
 
 /// Hit points a boss starts with at strength `scale`.

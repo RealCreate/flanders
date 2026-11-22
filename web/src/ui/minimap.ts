@@ -78,7 +78,8 @@ export class Minimap {
     if (o.neutrals) for (let i = 0; i + 3 < o.neutrals.length; i += 4) {
       const [x, y] = this.p(o.neutrals[i + 1], o.neutrals[i + 2]), k = o.neutrals[i], sc = big ? 1.6 : 1.05;
       c.save(); c.translate(x, y); c.scale(sc, sc); c.globalAlpha = o.neutrals[i + 3] ? 0.45 : 1; c.fillStyle = '#ffe9a8'; c.strokeStyle = '#000c'; c.lineWidth = 1.6 / sc; c.lineJoin = 'round';
-      if (k === 2) { c.stroke(marks[k]); c.strokeStyle = '#ffe9a8'; c.lineWidth = 0.9 / sc; c.stroke(marks[k]); }
+      if (k === 4) { c.fillStyle = '#6fbf4a'; c.beginPath(); c.arc(0, 0, 3.6, 0, 6.3); c.fill(); c.stroke(); c.strokeStyle = '#102010'; c.lineWidth = 1.1 / sc; c.beginPath(); c.moveTo(-1.8, 0); c.lineTo(1.8, 0); c.moveTo(0, -1.8); c.lineTo(0, 1.8); c.stroke(); }   // the plague doctor's camp: a green sickly disc with a cross
+      else if (k === 2) { c.stroke(marks[k]); c.strokeStyle = '#ffe9a8'; c.lineWidth = 0.9 / sc; c.stroke(marks[k]); }
       else if (k === 3) { c.fillStyle = '#c0392b'; c.stroke(marks[k]); c.fill(marks[k]); c.fillStyle = '#ffe9a8'; c.beginPath(); c.arc(0.3, -1.1, 1.3, 0, 6.3); c.fill(); }   // a lair: a red banner with a pale skull on it
       else { c.stroke(marks[k]); c.fill(marks[k]); }
       c.restore();

@@ -16,7 +16,7 @@ pub const BRIBE_VALUE: [i32; NK] = [14, 16, 40, 80, 120, 90];
 pub const BRIBE_MARKUP_PCT: i32 = 80;
 pub const BRIBE_BOSS_MARKUP_PCT: i32 = 120;
 /// What a boss asks on top (at full strength: scaled to this one's hit points); 0 refuses any price. Warlord, Ogre.
-pub const BRIBE_BOSS_PREMIUM: [i32; N_BOSSES] = [300, 0];
+pub const BRIBE_BOSS_PREMIUM: [i32; N_BOSSES] = [300, 0, 0, 400];
 /// The least that is ever asked.
 pub const BRIBE_MIN: i32 = 40;
 /// Greed a payment adds, and the most it can reach. It shows in the price (+1% per 2 points), in the raiders' strength (+1% per 4 points) and in the raids' chance (`raid_one_in` shrinks by 100 / (100 + greed)).
