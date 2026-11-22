@@ -59,7 +59,8 @@ Sections (`state_hash_part_names()`): `core` (clock, random stream, people, and 
   by anybody else's hash).
 * The history arrives → the copy is rebuilt, the next comparison decides: "Back in sync with <name>." or, if the freshly rebuilt copy still differs, "Could not sync with <name>: their history plays out differently
   here, so they are probably on another version of the game or using testing tools." (No retry: replaying their own log did not help.)
-* Rate limits: at least 6 s between requests, at most 4 in 10 minutes, then it gives up quietly and tries again after 5 minutes.
+* Pace: the pause between requests doubles each time (6 s, 12 s, … at most two minutes) and starts over when the copy is back in step; it never gives up for good (`ResyncPolicy`).
+  Lost commands are normally healed before a hash notices: see `MULTIPLAYER.md` (ordered delivery, acks, resending).
 * Counters per player (desyncs, re-syncs, last diagnosis with tick, sections and commands) in the performance panel (F3, "Multiplayer sync") and in the console: `flandersSync()` and a `console.warn`
   at every new desync.
 
@@ -97,7 +98,7 @@ Both fields are checked in `validate.ts` (`sanitizeBuild`, `sanitizeHash`); the 
 
 A village can be started again from nothing by its owner: a signed `restart` command that begins a new **epoch** of its history. Commands and hash messages carry the epoch (`e`), a copy judges
 hashes only inside the epoch it knows (a newer epoch is a missing command, an older one is stale), commands of an epoch that is over are dropped, and a checkpoint belongs to one epoch. The protocol
-is in `docs/RESTART.md`; `SYNC_PROTOCOL` is 3 for it (the rules fingerprint did not change).
+is in `docs/RESTART.md`; `SYNC_PROTOCOL` was 3 for it (the rules fingerprint did not change); it is 4 since the reliable delivery layer (`MULTIPLAYER.md`).
 
 ## Waterwheel placement
 

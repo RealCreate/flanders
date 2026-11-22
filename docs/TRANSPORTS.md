@@ -1,6 +1,6 @@
 # Serverless transports for multiplayer: comparison
 
-Question: can something replace or supplement the current transport (`web/src/net/p2p.ts`: Trystero 0.27, Nostr relays for signalling, WebRTC data channels for traffic, app id `flanders-medieval-p2p-v7`)?
+Question: can something replace or supplement the current transport (`web/src/net/p2p.ts`, which now holds only the Trystero `Transport`; the room is in `room.ts`, see `MULTIPLAYER.md`: Trystero 0.27, Nostr relays for signalling, WebRTC data channels for traffic, app id `flanders-medieval-p2p-v7`)?
 
 **Recommendation: keep Trystero/WebRTC as the primary transport. Do not add a public-broker relay (MQTT, ntfy, Nostr-as-data) as a fallback. If a fallback or IP hiding is ever needed, run one tiny WebSocket relay of our own (for example a Cloudflare Worker with a Durable Object per world) and let the existing signing and validation sit on top. No prototype was written: none of the free public options is good enough to be worth shipping behind a flag.**
 
@@ -13,7 +13,7 @@ Question: can something replace or supplement the current transport (`web/src/ne
 
 ## Constraints any replacement must meet
 
-1. **Per-sender ordering and reliable delivery** (`Sequence.acceptLive` strikes out-of-order commands).
+1. **Per-sender ordering and reliable delivery** (`Inbox` holds commands that are ahead of a gap (`Sequence` still checks the clock)).
 2. **Messages up to tens of kB** (full log), or chunking.
 3. **A hash every tick**, so about 5 to 10 small messages per second per client, times N clients received.
 4. **CSP:** only `'self'` and `wss:` are allowed. `https:` fetch or EventSource (ntfy publish, Firebase long-polling fallback, PeerJS REST) needs a CSP change in both `index.html` and `public/_headers`. Plain WebSocket works as is.
@@ -41,7 +41,7 @@ Question: can something replace or supplement the current transport (`web/src/ne
 
 ## If a fallback is wanted later
 
-1. Extract a `Transport` interface from `Room` (about 40 lines moved, no behaviour change).
+1. ~~Extract a `Transport` interface from `Room`~~ Done: `Transport` in `net/room.ts`, the Trystero adapter in `net/p2p.ts`, a simulated one in `tests/netsim.mjs`.
 2. Add a WebSocket transport (one connection to `wss://<our relay>/world/<id>`, JSON frames, server-side per-connection rate limit).
 3. Update the CSP `connect-src` to name the relay host.
 4. Make signed hello use `pub` for addressing, and sign the hash.

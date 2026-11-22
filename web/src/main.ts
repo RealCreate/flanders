@@ -71,7 +71,8 @@ import { cleanWorld, hashSeed, inviteLink, withWorld } from './worldname';
 import { VillageWatch, stewardRisks, type StewardAction, type StewardMode } from './steward';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
-import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Verdict } from './net/sync';
+import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, isNewerBuild, type Verdict } from './net/sync';
+import { APP_ID, BUILD_TIME, deployedBuild, isOutdated, mayReload, reloadUrl } from './update';
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
@@ -180,6 +181,8 @@ interface Rival {
   /** Their commands changed the village (and its ground) since its scene was last refreshed: see flushRivals. */
   dirty?: boolean; dirtyTerrain?: boolean; flushedAt?: number; groundAt?: number;
   cacheDue?: boolean;                          // a rebuilt copy that is kept in this browser once a hash confirms it
+  /** The connection to them: the round trip in ms, how it is doing, and (while they are gone) the timer that tells the player they left (a short break is not worth a message). */
+  ping?: number | null; link?: 'good' | 'weak' | 'lost'; leftTimer?: number; leftTold?: boolean;
 }
 const tutorial = new Tutorial();
 tutorial.setKeys(a => { const b = keys.binds[a as Action]; return b && b.length ? b.slice(0, 2).map(k => prettyKey(k)).join(' / ') : a; });
@@ -462,7 +465,7 @@ function failSync(r: Rival, why: string) {
 function syncNotes(): string[] {
   const out = [`You: ${sharedCount} commands shared · build ${SYNC_PROTOCOL}/${myRules || '?'}${usedTools ? ' · testing tools used: others cannot replay those changes' : ''}`];
   for (const r of rivals.values()) {
-    out.push(`${r.name}: ${r.sync} · ${r.desyncs} desync${r.desyncs === 1 ? '' : 's'} · ${r.resyncs} re-sync${r.resyncs === 1 ? '' : 's'} · tick ${Number(r.village.world.tick())} · ${r.track.count} commands`);
+    out.push(`${r.name}: ${r.sync}${r.ping != null ? ` · ${r.ping} ms` : ''}${r.link && r.link !== 'good' ? ` · link ${r.link}` : ''} · ${r.desyncs} desync${r.desyncs === 1 ? '' : 's'} · ${r.resyncs} re-sync${r.resyncs === 1 ? '' : 's'} · tick ${Number(r.village.world.tick())} · ${r.track.count} commands`);
     if (r.lastDiag) out.push(`  last: ${r.lastDiag}`);
   }
   return out;
@@ -480,9 +483,31 @@ function giveWayToOtherTab(otherPeer: string) {
   setTimeout(() => location.replace(u.toString()), 1800);
 }
 
+let updating = false;
+/** A newer build exists (the site says so, or another player runs it): save, tell the player, and load it. A reload that did not help is not repeated (see update.ts). */
+async function updateNow(why: string) {
+  if (updating) return;
+  updating = true;
+  const d = await deployedBuild(fetch);
+  let allowed = false;
+  try { allowed = !!d && isOutdated(APP_ID, d) && mayReload(sessionStorage, d.id, Date.now()); } catch { allowed = !!d && isOutdated(APP_ID, d); }
+  if (!allowed || !d) { updating = false; if (!d || !isOutdated(APP_ID, d)) ui.toast(`${why} Reload the page to get the latest version.`, 'info'); return; }
+  ui.toast(`${why} Updating to the latest version in a few seconds…`, 'info');
+  clearTimeout(saveTimer); try { writeSave(); checkpoint(true); } catch { /* the reload keeps what was saved before */ }
+  setTimeout(() => location.replace(reloadUrl(location.href, d.id)), 4000);
+}
+
+/** Now and then (and whenever the page is shown again) ask the site which build is deployed. */
+function startUpdateWatch() {
+  const check = async () => { if (updating || document.hidden) return; if (isOutdated(APP_ID, await deployedBuild(fetch))) void updateNow('A newer version of the game is out.'); };
+  setInterval(check, 5 * 60_000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void check(); });
+  setTimeout(check, 20_000);
+}
+
 function connect() {
   (window as unknown as { flandersSync: () => string[] }).flandersSync = syncNotes;   // for the console: how every copy of another village stands
-  room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName, v: SYNC_PROTOCOL, rules: myRules }), () => myLog, {
+  room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName, v: SYNC_PROTOCOL, rules: myRules, b: BUILD_TIME }), () => myLog, {
     onStatus: s => ui.netStatus(s),
     onHello: (peerId, h) => {
       if (h.world !== worldName || h.site >= sites.length) return;
@@ -507,9 +532,15 @@ function connect() {
         // (their history is the same, only the ground it stands on moved: replay what we have, and ask for it again to be sure)
         r.site = h.site; loadReplica(r, r.log); terrain.resetPads(); refreshAll(); room?.requestLog(peerId);
       }
+      const wasAway = !r.online;
       r.peerId = peerId; r.online = true; r.name = h.name;
+      if (r.leftTimer) { clearTimeout(r.leftTimer); r.leftTimer = 0; }   // a short break: nobody was told they had left, nobody needs telling they are back
+      else if (r.leftTold) { r.leftTold = false; ui.toast(`${h.name} is back.`, 'good'); }
+      if (wasAway && r.sync === 'away') r.sync = 'syncing…';
       const same = sameBuild({ v: h.v, rules: h.rules }, { v: SYNC_PROTOCOL, rules: myRules });
-      if (!same && r.versionOk) { ui.toast(`${h.name} plays a different version of the game, so their village may not look the same here. Reload the page to get the latest.`, 'info'); console.warn(`${h.name} runs another build (protocol ${h.v ?? 0}, rules ${h.rules || 'unknown'}; ours ${SYNC_PROTOCOL}, ${myRules}).`); }
+      const theirs = { v: h.v, rules: h.rules, b: h.b }, ours = { v: SYNC_PROTOCOL, rules: myRules, b: BUILD_TIME };
+      if (!same && isNewerBuild(theirs, ours)) void updateNow(`${h.name} plays a newer version of the game.`);   // we are the one that is behind: everybody plays the latest
+      if (!same && r.versionOk) { ui.toast(isNewerBuild(theirs, ours) ? `${h.name} plays a newer version of the game.` : `${h.name} plays an older version of the game and has been asked to update; their village may not look the same here until they do.`, 'info'); console.warn(`${h.name} runs another build (protocol ${h.v ?? 0}, rules ${h.rules || 'unknown'}; ours ${SYNC_PROTOCOL}, ${myRules}).`); }
       if (!same) r.sync = 'different game version'; else if (!r.versionOk) { r.sync = 'syncing…'; r.state = 'ok'; r.policy.reset(); }
       r.versionOk = same; updatePeers();
     },
@@ -558,7 +589,25 @@ function connect() {
       if (!r.versionOk || r.forked || r.liar) return;   // these copies differ from theirs for a known reason: there is nothing to judge
       judged(r, r.track.judge(msg, r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));
     },
-    onLeave: peerId => { const r = rivals.get(byPeer.get(peerId) ?? ''); if (r) { r.online = false; r.sync = 'away'; ui.toast(`${r.name} has left the world.`, 'info'); } byPeer.delete(peerId); updatePeers(); },
+    onLeave: peerId => {
+      const r = rivals.get(byPeer.get(peerId) ?? '');
+      // (they may already be back on a new connection: only the connection they are on now counts)
+      if (r && r.peerId === peerId) {
+        r.online = false; r.sync = 'away'; r.ping = null;
+        clearTimeout(r.leftTimer);
+        r.leftTimer = window.setTimeout(() => { r.leftTimer = 0; r.leftTold = true; ui.toast(`${r.name} has left the world.`, 'info'); }, 8000);
+      }
+      byPeer.delete(peerId); updatePeers();
+    },
+    onLinks: links => {
+      let changed = false;
+      for (const l of links) {
+        const r = l.pub ? rivals.get(l.pub) : undefined; if (!r || r.peerId !== l.peerId) continue;
+        const ping = l.rtt === null ? null : Math.round(l.rtt);
+        if (r.link !== l.state || Math.abs((r.ping ?? 0) - (ping ?? 0)) >= 20 || (r.ping == null) !== (ping == null)) { r.link = l.state; r.ping = ping; changed = true; }
+      }
+      if (changed) updatePeers();
+    },
   });
 }
 
@@ -1242,7 +1291,7 @@ function pruneGhosts() {
     list.sort((a, b) => Number(b.online) - Number(a.online) || b.village.world.building_count() - a.village.world.building_count() || b.tick - a.tick);
     for (const r of list.slice(1)) {
       if (r.online) continue;   // never drop somebody who is here
-      r.village.dispose(); rivals.delete(r.key); awayFights.delete(r.key);
+      r.village.dispose(); rivals.delete(r.key); awayFights.delete(r.key); room?.forget(r.key);
       for (const [peer, key] of [...byPeer]) if (key === r.key) byPeer.delete(peer);
     }
   }
@@ -1260,7 +1309,7 @@ function updatePeers() {
   const compass = (dx: number, dz: number) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'][((Math.round(Math.atan2(dz, dx) / (Math.PI / 4)) % 8) + 8) % 8];
   const rows = [...rivals.values()].map(r => {
     const dx = r.village.ox - lv.ox, dz = r.village.oz - lv.oz, dist = Math.hypot(dx, dz);
-    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : r.ai ? ' (computer)' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
+    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : r.ai ? ' (computer)' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync + (r.online && r.link && r.link !== 'good' ? ' · connection unstable' : r.online && r.ping != null ? ` · ${r.ping} ms` : ''), busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
   });
   rows.sort((a, b) => Number(b.row.online) - Number(a.row.online) || a.dist - b.dist);   // villages with somebody at home first, then by distance
   ui.setPeers(rows.map(x => x.row), worldName);
@@ -1468,6 +1517,7 @@ async function startGame(name: string, username: string, pve = false) {
   startVillageWatch();
   if (computerVillages) await setupPve();
   if (!pveMode) connect();
+  startUpdateWatch();
   setupPerf(); applySettings(settings()); onSettings(applySettings);
   const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
   if (Number.isInteger(agentPort) && agentPort >= 1024 && agentPort <= 65535 && /^[A-Za-z0-9_-]{8,128}$/.test(agentToken)) startAgentBridge({

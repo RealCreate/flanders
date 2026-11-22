@@ -30,6 +30,8 @@ export const LIMITS = {
   maxSigChars: 200,
   /** Most commands in a log a peer sends us (a long game is a few thousand). */
   maxLogEntries: 40000,
+  /** Most commands in one piece of history sent to fill a gap. */
+  maxMoreEntries: 600,
   /** The farthest tick a command may carry (about 7 days of play at 0.5 ticks a second). */
   maxTick: 300_000,
   /** How far ahead of what we have already seen from that player a live command may be. Stops "run the simulation 2 billion ticks" messages. */
@@ -150,12 +152,44 @@ export function sanitizeHash(raw: unknown): WireHash | null {
 }
 
 /** The build a peer says it runs: the message protocol and the fingerprint of its simulation rules. Missing (an older build) gives protocol 0 and no fingerprint. */
-export function sanitizeBuild(raw: unknown): { v: number; rules: string } | null {
+export function sanitizeBuild(raw: unknown): { v: number; rules: string; b: number } | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  const v = r.v === undefined ? 0 : r.v, rules = r.rules === undefined ? '' : r.rules;
-  if (!isInt(v) || v < 0 || v > 1_000_000 || typeof rules !== 'string' || !/^[0-9a-f]{0,32}$/.test(rules)) return null;
-  return { v, rules };
+  const v = r.v === undefined ? 0 : r.v, rules = r.rules === undefined ? '' : r.rules, b = r.b === undefined ? 0 : r.b;
+  if (!isInt(v) || v < 0 || v > 1_000_000 || typeof rules !== 'string' || !/^[0-9a-f]{0,32}$/.test(rules) || !isInt(b) || b < 0) return null;
+  return { v, rules, b };
+}
+
+/** The heartbeat: `ts` is the sender's own clock (echoed back so they can time the round trip), `e` and `n` how far we have got with THEIR history (see link.ts). */
+export interface WireHb { ts: number; e: number; n: number }
+export function sanitizeHb(raw: unknown): WireHb | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.ts !== 'number' || !Number.isFinite(r.ts) || !isInt(r.e) || r.e < 0 || r.e > MAX_EPOCH || !isInt(r.n) || r.n < -1) return null;
+  return { ts: r.ts, e: r.e, n: r.n };
+}
+export function sanitizeEcho(raw: unknown): number | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const ts = (raw as Record<string, unknown>).ts;
+  return typeof ts === 'number' && Number.isFinite(ts) ? ts : null;
+}
+
+/** A request for history: `t` 1 is the whole of it, `t` 2 the commands from number `from` of epoch `e` on. */
+export type WireWant = { t: 1 } | { t: 2; e: number; from: number };
+export function sanitizeWant(raw: unknown): WireWant | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.t === 1) return { t: 1 };
+  if (r.t === 2 && isInt(r.e) && r.e >= 0 && r.e <= MAX_EPOCH && isInt(r.from) && r.from >= 0) return { t: 2, e: r.e, from: r.from };
+  return null;
+}
+
+/** A piece of history sent because it was missing: `after` is the number of the sender's command before the first of these (-1: none). */
+export function sanitizeMore(raw: unknown): { after: number; cmds: unknown[] } | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  if (!isInt(r.after) || r.after < -1 || !Array.isArray(r.cmds) || r.cmds.length > LIMITS.maxMoreEntries) return null;
+  return { after: r.after, cmds: r.cmds };
 }
 
 /** What we remember about each player's stream of commands, to refuse replays and absurd jumps.
