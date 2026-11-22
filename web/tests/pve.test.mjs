@@ -18,13 +18,18 @@ test('layouts vary with the world and the player', () => {
   assert.equal(used.size, LAYOUT_COUNT, 'every layout turns up');
 });
 
-test('sites: the nearest ones, never the player\'s own, spread apart', () => {
+test('sites: the nearest far ones, never the player\'s own, spread apart', () => {
   const sites = [{ x: 0, z: 0 }, { x: 200, z: 0 }, { x: 230, z: 20 }, { x: -220, z: 10 }, { x: 0, z: 400 }];
   const s = pickSites(sites, 0);
   assert.equal(s.length, 2);
   assert.ok(!s.includes(0));
-  assert.deepEqual(s, [1, 3]);   // 2 is too close to 1
+  assert.deepEqual(s, [1, 3]);   // none is far enough: the nearest, but 2 is too close to 1
   assert.deepEqual(pickSites([{ x: 0, z: 0 }], 0), []);
+});
+
+test('sites far from the player come first', () => {
+  const sites = [{ x: 0, z: 0 }, { x: 200, z: 0 }, { x: -600, z: 0 }, { x: 0, z: 700 }];
+  assert.deepEqual(pickSites(sites, 0), [2, 3]);
 });
 
 test('computer keys look like keys and are recognised', () => {
