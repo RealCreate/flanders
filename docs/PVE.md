@@ -27,7 +27,7 @@ no barracks) the AI simply waits.
     whatever it has trained, garrisoned and walled.
   * Envoys, treaty offers and caravans from the AI arrive at the player through the existing `onTrade` handlers; the player's own envoys and caravans to the AI are answered by the AI
     (accepts when `treaty_acceptable`, pays for goods).
-* A menu option "Play against the computer (PVE)" on the start screen starts a game with world name chosen as usual, with the two AI villages seeded from the world name.
+* The start screen has "Single player" (PVE: no network, only the computer villages) and "Multiplayer" (the shared world, with the computer villages added locally too); Single player starts a game with world name chosen as usual, with the two AI villages seeded from the world name.
 
 ## Determinism and desync checks
 
