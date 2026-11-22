@@ -2587,8 +2587,8 @@ impl World {
         let cap = self.storage_cap(); let before = self.stock[GD as usize];
         self.stock[GD as usize] = Self::add_capped(before, gold, cap); self.stock[GD as usize] - before
     }
-    /// How much a gift of this size warms the feelings of whoever gets it: a point for every ten coins' worth, at least 2 and at most 12.
-    fn gift_warmth(res: u8, amount: i32) -> i32 { if res as usize >= N_RES { return 0; } (amount.clamp(0, 500) * PRICE[res as usize] / 10).clamp(2, 12) }
+    /// How much a gift of this size warms the feelings of whoever gets it: a point for every ten coins' worth (nothing for a trifle, so it cannot be farmed with crumbs), at most 12.
+    fn gift_warmth(res: u8, amount: i32) -> i32 { if res as usize >= N_RES { return 0; } (amount.clamp(0, 500) * PRICE[res as usize] / 10).min(12) }
     /// Would we let a caravan from this village in? Not when they loathe us, or we them (relation at or below `HOSTILE_REL`, as after a declaration of war).
     pub fn caravan_welcome(&self, from: i32) -> bool { self.relation(from) > HOSTILE_REL }
     /// Goods from the caravan of village `from`, like `receive_goods` but with the sender known: a hostile village's caravan is turned away (-1, nothing taken), and a gift

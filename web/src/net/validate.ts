@@ -3,7 +3,7 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'untrain', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe', 'research', 'armybridge', 'battleorder', 'reserve', 'plant', 'zone'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'untrain', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'turnback', 'carhome', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe', 'research', 'armybridge', 'battleorder', 'reserve', 'plant', 'zone'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {
@@ -89,6 +89,7 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
     if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 100_000) || !(isInt(out.kind) && out.kind >= -1 && out.kind <= WORKERS_MAX)) return null;
   }
   for (const f of ['to', 'from'] as const) if (r[f] !== undefined) { if (!isKey(r[f])) return null; out[f] = r[f] as string; }
+  if ((r.op === 'turnback' || r.op === 'carhome') && !(isInt(out.kind) && out.kind >= 0 && out.kind < 128 && isInt(out.x) && out.x >= 1 && out.x <= 500 && (r.op === 'turnback' ? typeof out.to === 'string' : isInt(out.idx)))) return null;   // a caravan turned back: kind the goods (gift flag included), x the amount
   if (r.op === 'research' && !(isInt(out.kind) && out.kind >= 0 && out.kind < 8)) return null;
   if (r.op === 'armybridge' && out.kind !== 0 && out.kind !== 1) return null;
   if (r.op === 'battleorder') {

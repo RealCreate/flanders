@@ -741,7 +741,7 @@ function onTrade(r: Rival, c: Cmd) {
     if (!r.village.world.is_awaiting(c.kind ?? 0, c.x ?? 0, myTag())) return;
     const kind = c.kind ?? 0, name = RES[kind & ~GIFT]?.name.toLowerCase() ?? 'goods';
     const paid = w.receive_goods_from(kind, c.x ?? 0, their);
-    if (paid < 0) { commit({ op: 'refuse', kind: c.kind, x: c.x, to: r.key }); ui.toast(`${r.name}'s caravan was turned back: we want nothing from a hostile village.`, 'info'); return; }
+    if (paid < 0) { commit({ op: 'turnback', kind: c.kind, x: c.x, to: r.key }); ui.toast(`${r.name}'s caravan was turned back: we want nothing from a hostile village.`, 'info'); return; }
     commit({ op: 'accept', kind: c.kind, x: c.x, idx: their, to: r.key });
     ui.toast(kind & GIFT ? `${r.name} sends us a gift: ${c.x} ${name}.` : `${r.name}'s caravan arrived: ${c.x} ${name}${paid ? `, we paid ${paid} gold` : ''}.`, 'good'); afterLocalChange();
   } else if (c.op === 'accept') {   // they took what our caravan carried
@@ -749,8 +749,8 @@ function onTrade(r: Rival, c: Cmd) {
     const got = w.settle(kind, c.x ?? 0, their);
     if (was) { commit({ op: 'settle', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} accepted your gift.`, 'good'); updateHud(); }
     else if (got > 0) { commit({ op: 'settle', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} paid ${got} gold for the goods.`, 'good'); updateHud(); }
-  } else if (c.op === 'refuse') {   // they turned our caravan back: the goods come home
-    if (w.caravan_returned(c.kind ?? 0, c.x ?? 0, their)) { commit({ op: 'returned', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} turned your caravan back. The goods are home again.`, 'bad'); updateHud(); }
+  } else if (c.op === 'turnback') {   // they turned our caravan back: the goods come home
+    if (w.caravan_returned(c.kind ?? 0, c.x ?? 0, their)) { commit({ op: 'carhome', kind: c.kind, x: c.x, idx: their }); ui.toast(`${r.name} turned your caravan back. The goods are home again.`, 'bad'); updateHud(); }
   } else if (c.op === 'treaty' && (c.y ?? 1) !== 0) {   // an offer: we agree, and tell them with our own signed copy (without `to`, so it is not answered again)
     const what = c.kind === 2 ? 'an alliance' : c.kind === 1 ? 'peace' : 'a trade pact';
     if (w.treaty_acceptable(their, c.kind ?? 0) && w.treaty_set(their, c.kind ?? 0, c.x ?? 10)) { commit({ op: 'treaty', idx: their, kind: c.kind, x: c.x }); ui.toast(`${r.name} offers ${what} for ${c.x} days. Agreed.`, 'good'); }
@@ -2081,7 +2081,7 @@ function stepAis() {
 function aiTakesGoods(r: Rival, res: number, amount: number) {
   const their = tagOf(r.key), gift = (res & GIFT) !== 0;
   if (r.village.world.receive_goods_from(res, amount, myTag()) < 0) {   // it will not have goods from somebody it loathes: they come home
-    if (lv.world.caravan_returned(res, amount, their)) { void commit({ op: 'returned', kind: res, x: amount, idx: their }); ui.toast(`${r.name} turned your caravan back. The goods are home again.`, 'bad'); updateHud(); }
+    if (lv.world.caravan_returned(res, amount, their)) { void commit({ op: 'carhome', kind: res, x: amount, idx: their }); ui.toast(`${r.name} turned your caravan back. The goods are home again.`, 'bad'); updateHud(); }
     return;
   }
   const was = gift && lv.world.is_awaiting(res, amount, their);
