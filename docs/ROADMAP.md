@@ -38,7 +38,7 @@ What is missing is mostly *reasons to care between fights*: people are a number,
 ### 6. Build-your-own-castle depth (what the user asked for)
 - **Free-form roads and districts**: draw a road, get plots along it (Foundation's organic layout).
 - **Wall editor improvements:** towers that snap onto wall corners, gatehouses with a tower either side, battlements that follow terrain, moat that fills from a river.
-- **More option sets per building** (already four each): add a *second tier of options* unlocked by the building's tier, and a visible "style" per village (banner colours, roof tile palette).
+- **More option sets per building**: *done for the house, farm, market, chapel and barracks* (see below). Still to do: second-tier options for the remaining buildings (hospital, graveyard, keep, town hall, tower, gate, port, ...), and more village style (wall stone colour, window shutters).
 
 ### 7. Technical health
 - **Performance:** the demo village takes about 8 s to place in the browser. Batch commands into one signed command, and move the road router to run once per batch.
@@ -63,7 +63,7 @@ Added after that, each in its own pull request: heroes (a lord who leads the def
 
 Still not done:
 - 4: siege towers, rams and sapping (new attacker unit types).
-- 6: a second tier of building options (each needs a new drawing), and free-form roads as a separate tool (paths still follow from the buildings).
+- 6: second-tier options for the buildings not yet done (house, farm, market, chapel and barracks have them), and free-form roads as a separate tool (paths still follow from the buildings).
 - 7: terrain level of detail (needs a real browser), the demo village on the batch command, and an agent scenario test through the MCP server.
 - Graphify's advisory remarks on `main.ts` (hubs `commit`, `updateHud`, `afterLocalChange`): `main.ts` is still one large file.
 
@@ -94,3 +94,8 @@ Done in this review: save backup/restore, error and unsupported-browser screens,
 - The replay UI was checked in a real browser by script, not by a person playing through.
 - Tutorial (2026-11, third pass): 15 steps, one action each, in short sentences; defences (well, watchtower, barracks, archers) now come before the growth step, because raids can start on day 3. A scripted tutorial village: open `?world=tutorial` (fixed map, site 0); `web/src/tutorialvillage.ts` holds a build order, and `tests/tutorialvillage.wasm.test.mjs` (in `npm run test:demo`) replays it on the real core and checks the guide reaches its last step. That check runs the core headless; it is not a click-through in a browser. Soil is covered by one light step only.
 - Next ideas: soil in the farm tooltip and a winter fallow bonus, replay of a battle from the defender's side.
+- The tutorial and replay UIs were checked in a real browser by script, not by a person playing through; the tutorial text is a first draft.
+- Next ideas: soil in the farm tooltip and a winter fallow bonus, replay of a battle from the defender's side, a scripted tutorial village.
+
+**Second tier of building options and village roof style (2026-11):** the house, farm, market, chapel and barracks now have eight options each: bits 0-3 as before, bits 4-7 unlocked by the building's tier (tier 2, one at tier 3; `catalog.rs`, `OPT_BITS`). Each has a new drawing in `render/buildings.ts` (`addOption`) and a small effect in the core: loft room (+1 housing), kitchen garden (a grain a day), carved gable (+1 happiness), cellar (firewood); windmill (+10% speed), granary (+5%), orchard (+1 happiness), bee skeps (+5%); weigh house (+10%), striped canopies and market cross (+1 happiness each), guild sign (+5%); rose window and cloister (+1 happiness), almshouse (+2 housing), relic shrine (+2 happiness); archery butts (+15% training), forge shed (+2% defence), watch post (+2 militia), parade ground (+25% training). Effects live in `perks()` and `tier2_speed()` in `lib.rs`; the option bits were already in the state hash, so replication needed no change. The village's roof tile palette (8 choices, `ROOFS` in `flag.ts`) is chosen in the flag designer and stored in bits 25-27 of the flag number (`style`), so it travels in the signed `style` command, is part of the state hash, survives a restart, and every peer tints the tiled roofs of that village the same way (`roofTile` in `buildings.ts`). The Test hall has a second-tier options column, an all-options column (all eight bits) and a row of the eight roof palettes. Core tests: `option_tests.rs`; web tests: `options.test.mjs`, `flag.test.mjs`.
+

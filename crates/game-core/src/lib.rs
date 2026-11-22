@@ -117,6 +117,11 @@ const FERT_RESTORED: u16 = 9_000;
 /// A moat piece's width: its rotation value (0..7) widens the ditch from 1x to 1.9x, so a moat can be thin in places and broad in others.
 pub(crate) fn moat_scale(b: &Building) -> f32 { 1.0 + 0.13 * (b.rot & 7) as f32 }
 
+/// Extra working speed (in percent) from the second tier of options of a field (windmill, granary, bee skeps) or market (weigh house, guild sign).
+pub(crate) fn tier2_speed(kind: u8, opts: u16) -> u32 {
+    let o = |bit: u8| opts & (1 << bit) != 0;
+    match kind { FARM => (if o(4) { 10 } else { 0 }) + (if o(5) { 5 } else { 0 }) + (if o(7) { 5 } else { 0 }), MARKET => (if o(4) { 10 } else { 0 }) + (if o(7) { 5 } else { 0 }), _ => 0 }
+}
 /// The summed effect of optional design upgrades (see `World::perks`).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct Perks { pub housing: i32, pub happy: i32, pub banner_pct: i32, pub train_pct: u32, pub militia: u32, pub woodsheds: i32, pub doves: i32 }
@@ -1662,8 +1667,11 @@ impl World {
     }
 
     /// Choose the village's flag: 0 for none, otherwise a packed flag number (pattern, three colours, emblem; bit 24 always set). Free, and changeable. Anything else is refused.
-    pub fn set_style(&mut self, style: u32) -> bool { if style != 0 && (style < (1 << 24) || style >= (1 << 25)) { return false; } self.style = style; true }
+    /// Bits 25-27 of the style are the village's roof tile palette (0-7, see `roof()`): part of the same number, so it travels, saves and hashes with the flag.
+    pub fn set_style(&mut self, style: u32) -> bool { if style != 0 && (style < (1 << 24) || style >= (1 << 28) || style & (1 << 24) == 0) { return false; } self.style = style; true }
     pub fn style(&self) -> u32 { self.style }
+    /// The village's roof tile palette (0 = the plain terracotta), drawn on every tiled roof of the village.
+    pub fn roof(&self) -> u8 { ((self.style >> 25) & 7) as u8 }
 
     /// A row of buildings along a street from (ax, ay) to (bx, by), `spacing` apart, `offset` to one side or both: `sides` 0 left, 1 right, 2 both. Placed as one batch (the paths are worked out once).
     /// Returns what `place` returns for each house, left side first. A street of houses is how a district is laid out.
@@ -1785,8 +1793,8 @@ impl World {
             if d.cycle == 0 { continue; }
             let need = d.cycle * 100;
             let ob = self.buildings[i].opts;
-            let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } }
-                else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
+            let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } + tier2_speed(kind, ob) }
+                else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } + tier2_speed(kind, ob) } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
             let mut p = self.buildings[i].progress + self.buildings[i].beff * boost as u32 / 100;
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
@@ -2267,16 +2275,18 @@ impl World {
             if b.opts == 0 || b.hp <= 0.0 { continue; }
             let o = |bit: u8| b.opts & (1 << bit) != 0;
             match b.kind {
-                HOUSE => { if o(0) { p.housing += 1; } if o(1) { flower += 1; } if o(2) { p.woodsheds += 1; } if o(3) { p.doves += 1; } }
-                FARM | HOSPITAL | GRAVEYARD | RIVER | MOAT | RAISE | LOWER | FENCE | ROAD => {}
+                HOUSE => { if o(0) || o(4) { p.housing += 1; } if o(1) { flower += 1; } if o(2) || o(7) { p.woodsheds += 1; } if o(3) || o(5) { p.doves += 1; } if o(6) { pride += 1; } }   // bits 4-7: loft room, kitchen garden, carved gable, cellar
+                FARM => { if o(6) { pride += 1; } }   // the orchard (the field's other options are speed: see tier2_speed)
+                HOSPITAL | GRAVEYARD | RIVER | MOAT | RAISE | LOWER | FENCE | ROAD => {}
                 WALL => { if o(1) { banners += 1; } }
                 TOWER => { if o(0) { banners += 1; } if o(2) { pride += 1; } if o(3) { militia += 2; } }
                 GATE => { if o(0) || o(2) { banners += 1; } if o(1) { pride += 1; } if o(3) { militia += 1; } }
                 DRAWBRIDGE | WELL | BRIDGE => { for bit in 0..2 { if o(bit) { pride += 1; } } }
-                BARRACKS => { if o(0) { banners += 1; } if o(1) { p.train_pct += 25; } if o(2) { armoury += 4; } }
+                BARRACKS => { if o(0) { banners += 1; } if o(1) { p.train_pct += 25; } if o(2) { armoury += 4; } if o(4) { p.train_pct += 15; } if o(5) { armoury += 2; } if o(6) { militia += 2; } if o(7) { p.train_pct += 25; } }
                 KEEP => { if o(0) { banners += 1; } if o(2) || o(3) { militia += 2; } }
                 TOWN_HALL => { if o(0) { banners += 1; } for bit in 1..4 { if o(bit) { pride += 1; } } }
-                CHAPEL => { for bit in [0u8, 1, 3] { if o(bit) { pride += 1; } } }
+                CHAPEL => { for bit in [0u8, 1, 3, 4, 5] { if o(bit) { pride += 1; } } if o(6) { p.housing += 2; } if o(7) { pride += 2; } }
+                MARKET => { if o(0) { banners += 1; } for bit in [1u8, 5, 6] { if o(bit) { pride += 1; } } }
                 _ => { if o(0) { banners += 1; } if o(1) { pride += 1; } }
             }
         }
@@ -3179,6 +3189,8 @@ const FARM_PAD_BLEND: f32 = 4.6;
 /// No field of a farm of any tier lies farther than this from its middle (plus the blend).
 const FARM_PAD_REACH: f32 = 22.0;
 
+#[cfg(test)]
+mod option_tests;
 #[cfg(test)]
 mod bribe_tests;
 #[cfg(test)]

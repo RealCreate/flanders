@@ -3,21 +3,27 @@ export const PALETTE = ['#b03030', '#c4572b', '#d9a21b', '#e8d44d', '#4a8a3a', '
 export const PATTERNS = ['Plain', 'Top and bottom', 'Left and right', 'Cross', 'Saltire', 'Chevron', 'Diagonal band', 'Stripes', 'Quarters', 'Border'];
 export const EMBLEMS = ['None', 'Circle', 'Star', 'Cross', 'Tower', 'Crown', 'Sword', 'Wheat'];
 
-export interface Flag { pattern: number; c1: number; c2: number; c3: number; emblem: number }
+/** The village's roof tile palettes (the colour of the tiled roofs, RGB of the tile texture's mean); 0 is the plain terracotta. Chosen next to the flag and stored with it. */
+export const ROOFS: { name: string; rgb: [number, number, number] }[] = [
+  { name: 'Terracotta', rgb: [170, 85, 54] }, { name: 'Slate blue', rgb: [74, 92, 122] }, { name: 'Moss green', rgb: [86, 118, 72] }, { name: 'Ochre', rgb: [196, 150, 64] },
+  { name: 'Plum', rgb: [118, 70, 104] }, { name: 'Charcoal', rgb: [66, 62, 68] }, { name: 'Rose clay', rgb: [196, 108, 104] }, { name: 'Sea teal', rgb: [52, 112, 120] },
+];
+/** `roof` is the tile palette 0-7 (see ROOFS); absent means 0. */
+export interface Flag { pattern: number; c1: number; c2: number; c3: number; emblem: number; roof?: number }
 export const DEFAULT_FLAG: Flag = { pattern: 2, c1: 6, c2: 9, c3: 2, emblem: 2 };
 
 /** A flag as one whole number (it travels in a signed command and is part of the village's state): never 0, so 0 can mean "no flag chosen". */
-export const packFlag = (f: Flag) => (1 << 24) | f.pattern | (f.c1 << 4) | (f.c2 << 8) | (f.c3 << 12) | (f.emblem << 16);
+export const packFlag = (f: Flag) => (1 << 24) | f.pattern | (f.c1 << 4) | (f.c2 << 8) | (f.c3 << 12) | (f.emblem << 16) | (((f.roof ?? 0) & 7) << 25);
 export function unpackFlag(n: number): Flag | null {
-  if (!Number.isInteger(n) || n < (1 << 24) || n >= (1 << 25)) return null;
-  const f = { pattern: n & 15, c1: (n >> 4) & 15, c2: (n >> 8) & 15, c3: (n >> 12) & 15, emblem: (n >> 16) & 15 };
+  if (!Number.isInteger(n) || n < (1 << 24) || n >= (1 << 28) || !(n & (1 << 24))) return null;
+  const f = { pattern: n & 15, c1: (n >> 4) & 15, c2: (n >> 8) & 15, c3: (n >> 12) & 15, emblem: (n >> 16) & 15, roof: (n >> 25) & 7 };
   return f.pattern < PATTERNS.length && f.emblem < EMBLEMS.length ? f : null;
 }
 /** The flag's main colour as 0xRRGGBB (the village's soldiers and banners use it). */
 export const flagColor = (f: Flag) => parseInt(PALETTE[f.c1].slice(1), 16);
 export function randomFlag(rnd: () => number = Math.random): Flag {
   const c1 = Math.floor(rnd() * 16); let c2 = Math.floor(rnd() * 16); if (c2 === c1) c2 = (c2 + 5) % 16; let c3 = Math.floor(rnd() * 16); if (c3 === c1 || c3 === c2) c3 = (c3 + 3) % 16 === c1 || (c3 + 3) % 16 === c2 ? (c3 + 7) % 16 : (c3 + 3) % 16;
-  return { pattern: Math.floor(rnd() * PATTERNS.length), c1, c2, c3, emblem: Math.floor(rnd() * EMBLEMS.length) };
+  return { pattern: Math.floor(rnd() * PATTERNS.length), c1, c2, c3, emblem: Math.floor(rnd() * EMBLEMS.length), roof: Math.floor(rnd() * ROOFS.length) };
 }
 export const sameFlag = (a: Flag, b: Flag) => packFlag(a) === packFlag(b);
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { packFlag, type Flag } from '../flag';
+import { packFlag, ROOFS, type Flag } from '../flag';
 import { flagTexture } from './flagtex';
 import { drawnUp } from '../defence';
 import { Particles, type EffectView } from './fx';
@@ -168,7 +168,7 @@ class B {
   }
   /** The flags of the other cities (the embassy flies one for each). */
   foreign: Flag[] = [];
-  constructor(public t: number, public banner: number, public flagDesign?: Flag) {}
+  constructor(public t: number, public banner: number, public flagDesign?: Flag, public roof = 0) {}
   /** Bake cheap ambient occlusion into vertex colours: darker near the ground and on undersides (eaves, overhangs), lighter on top. */
   private shade(geo: THREE.BufferGeometry, baseY: number) {
     if (geo.attributes.color || !geo.attributes.position) return;
@@ -181,7 +181,7 @@ class B {
     }
     geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
   }
-  private add<T extends THREE.Object3D>(o: T, x: number, y: number, z: number) { o.position.set(x, y, z); o.traverse(c => { const m = c as THREE.Mesh; m.castShadow = true; m.receiveShadow = true; if (m.isMesh) this.shade(m.geometry, y); }); this.g.add(o); return o; }
+  private add<T extends THREE.Object3D>(o: T, x: number, y: number, z: number) { o.position.set(x, y, z); o.traverse(c => { const m = c as THREE.Mesh; m.castShadow = true; m.receiveShadow = true; if (m.isMesh) { this.shade(m.geometry, y); if (this.roof && m.material === M().tile) m.material = roofTile(this.roof); } }); this.g.add(o); return o; }
   box(w: number, h: number, d: number, mat: THREE.Material, x = 0, y = 0, z = 0, ry = 0) {
     const geo = new THREE.BoxGeometry(w, h, d); uvBox(geo, w, h, d);
     const m = this.add(new THREE.Mesh(geo, mat), x, y + h / 2, z); m.rotation.y = ry; return m;
@@ -284,6 +284,18 @@ class B {
   }
 }
 
+
+// ---------- the village's roof tile palette ----------
+const roofMats = new Map<number, THREE.Material>();
+/** The terracotta tile material tinted to palette `r` of the village's roof style (see ROOFS in flag.ts): the same grain and bump, a different colour. One shared material per palette. */
+export function roofTile(r: number): THREE.Material {
+  let m = roofMats.get(r);
+  if (!m) {
+    const c = (M().tile as THREE.MeshStandardMaterial).clone(), t = ROOFS[r]?.rgb ?? ROOFS[0].rgb, base = ROOFS[0].rgb;
+    c.color.setRGB(t[0] / base[0], t[1] / base[1], t[2] / base[2]); roofMats.set(r, c); m = c;
+  }
+  return m;
+}
 
 // ---------- per-building variation and fire damage ----------
 const variantCache = new Map<string, THREE.Material>();
@@ -1523,8 +1535,8 @@ export class BuildingModel {
   private opts = 0;
   private variant: number;
 
-  constructor(readonly kind: number, readonly tier: number, private banner = 0x2f5fa8, readonly seed = 0, private flag?: Flag, private baked = true, private foreign: Flag[] = []) {
-    const b = new B(tier, banner, flag); b.foreign = foreign;
+  constructor(readonly kind: number, readonly tier: number, private banner = 0x2f5fa8, readonly seed = 0, private flag?: Flag, private baked = true, private foreign: Flag[] = [], private roof = 0) {
+    const b = new B(tier, banner, flag, roof); b.foreign = foreign;
     MODELS[kind](b);
     b.g.updateMatrixWorld(true);
     const solid: THREE.Box3[] = [], all = new THREE.Box3();
@@ -1588,9 +1600,9 @@ export class BuildingModel {
     const added: THREE.Group[] = [], removed: THREE.Group[] = [], changed = this.opts ^ next, deps = DEPENDS[this.kind] ?? {}, repl = REPLACES[this.kind] ?? {};
     if (!changed) return { added, removed };
     let redo = changed;   // an upgrade whose look depends on one that changed is drawn again
-    for (let bit = 0; bit < 4; bit++) if ((next >> bit) & 1 && (deps[bit] ?? []).some(d => (changed >> d) & 1)) redo |= 1 << bit;
+    for (let bit = 0; bit < OPT_BITS; bit++) if ((next >> bit) & 1 && (deps[bit] ?? []).some(d => (changed >> d) & 1)) redo |= 1 << bit;
     this.opts = next; this.ctx.opts = next;
-    for (let bit = 0; bit < 4; bit++) {
+    for (let bit = 0; bit < OPT_BITS; bit++) {
       const g = this.parts.get(bit); if (!g || !((redo >> bit) & 1)) continue;
       this.group.remove(g); g.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); }); this.parts.delete(bit); removed.push(g);
     }
@@ -1599,9 +1611,9 @@ export class BuildingModel {
       if (!on && this.detached.has(slot)) { this.base.add(g); this.detached.delete(slot); }
       void bit;
     }
-    for (let bit = 0; bit < 4; bit++) {
+    for (let bit = 0; bit < OPT_BITS; bit++) {
       if (!((next >> bit) & 1) || !((redo >> bit) & 1)) continue;
-      const b = new B(this.tier, this.banner, this.flag);
+      const b = new B(this.tier, this.banner, this.flag, this.roof);
       addOption(b, this.kind, bit, { ...this.ctx, solid: this.roomFor(bit) });
       const g = b.g; g.userData.part = 'option'; g.userData.option = bit;
       this.seal(g, b);
@@ -1621,7 +1633,7 @@ export class BuildingModel {
     for (let j = 0; j < bit; j++) {
       let boxes = this.reserved.get(j);
       if (!boxes) {
-        const b = new B(this.tier, this.banner, this.flag); b.foreign = this.foreign; addOption(b, this.kind, j, { ...this.ctx, solid: this.roomFor(j) }); b.g.updateMatrixWorld(true);
+        const b = new B(this.tier, this.banner, this.flag, this.roof); b.foreign = this.foreign; addOption(b, this.kind, j, { ...this.ctx, solid: this.roomFor(j) }); b.g.updateMatrixWorld(true);
         boxes = []; b.g.traverse(o => { const me = o as THREE.Mesh; if (me.isMesh) { const bb = new THREE.Box3().setFromObject(me); if (bb.max.y - bb.min.y > 0.3) boxes!.push(bb); } });
         b.g.traverse(o => { (o as THREE.Mesh).geometry?.dispose(); });
         this.reserved.set(j, boxes);
@@ -1635,13 +1647,15 @@ export class BuildingModel {
   dispose() { for (const slot of this.detached) this.slots.get(slot)?.traverse(o => { (o as THREE.Mesh).geometry?.dispose(); }); this.detached.clear(); }
 }
 
-export function buildModel(kind: number, tier: number, banner = 0x2f5fa8, seed = 0, opts = 0, flag?: Flag, baked = true, foreign: Flag[] = []) {
-  const m = new BuildingModel(kind, tier, banner, seed, flag, baked, foreign);
+export function buildModel(kind: number, tier: number, banner = 0x2f5fa8, seed = 0, opts = 0, flag?: Flag, baked = true, foreign: Flag[] = [], roof = 0) {
+  const m = new BuildingModel(kind, tier, banner, seed, flag, baked, foreign, roof);
   m.setOptions(opts);
   return m.group;
 }
 
 // ---------- optional design upgrades ----------
+/** Option bits per building: 0-3 are open early, 4-7 are the second tier that needs a better building tier (see catalog.rs). */
+const OPT_BITS = 8;
 /** Each building can take up to four optional upgrades (see the catalog) that change its look a little: a chimney, a banner, a barn, hoardings, turrets. Every extra is placed
  *  on a spot that is checked against what the building already has, so an addition never grows through a wall, a roof or another addition. */
 /** One optional upgrade of a building, drawn into its own group `b` (see BuildingModel). Where it goes is worked out from the bare building, never from the other upgrades, so each can be
@@ -1754,12 +1768,22 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(1)) { const p = spot(1.6, 0.4, 0.8); if (p) { b.box(1.6, 0.34, 0.4, m.darkwood, p[0], 0, p[1]); for (let i = 0; i < 6; i++) b.sphere(0.12, new THREE.MeshStandardMaterial({ color: [0xe04a5a, 0xf2c14e, 0xf0f0f0, 0xd070d0][i % 4] }), p[0] - 0.65 + i * 0.26, 0.5, p[1]); } }
       if (has(2)) { const p = spot(1.8, 1.2, 1.3); if (p) { for (let r = 0; r < 3; r++) for (let c = 0; c < 4 - r; c++) b.logH(1.5, 0.15, m.log, p[0], 0.18 + r * 0.3, p[1] - 0.4 + c * 0.3 + r * 0.15, 'x'); b.box(1.9, 0.07, 1.3, m.darkwood, p[0], 1.2, p[1]); } }
       if (has(3)) { const x = cx + hw * 0.45, y = surf(x, cz) - 0.1; b.box(0.7, 0.7, 0.7, m.plaster, x, y, cz); b.pyramid(0.95, 0.95, 0.5, m.tile, x, y + 0.7, cz); b.box(0.12, 0.12, 0.05, m.door, x, y + 0.3, cz + 0.36); }
+      // second tier (bits 4-7): loft dormer, kitchen garden, carved gable, cellar hatch
+      if (has(4)) { const y = surf(cx, cz) - 0.1; b.box(1.1, 0.8, 0.9, m.plaster, cx, y, cz); b.window(cx, y + 0.45, cz + 0.47, 0, 0.4, 0.4); b.gable(1.1, 1.0, 0.5, m.tile, cx, y + 0.8, cz, 0.15); }
+      if (has(5)) { const p = spot(2.4, 1.6, 0.7); if (p) for (let i = 0; i < 3; i++) { b.box(0.7, 0.28, 1.4, m.darkwood, p[0] - 0.8 + i * 0.8, 0, p[1]); for (let k = 0; k < 3; k++) b.sphere(0.17, new THREE.MeshStandardMaterial({ color: 0x4f8a3c, roughness: 1 }), p[0] - 0.8 + i * 0.8, 0.42, p[1] - 0.45 + k * 0.45); } }
+      if (has(6)) { const x = cx + hw + 0.1, y = top - 0.4; for (const a of [0.6, -0.6]) { const bar = b.box(0.1, 1.2, 0.1, m.darkwood, x, y, cz); bar.rotation.z = a; } b.sphere(0.13, m.gold, x, y + 1.25, cz); }
+      if (has(7)) { const p = spot(1.8, 1.4, 0.7); if (p) { b.box(1.8, 0.3, 1.4, m.stone, p[0], 0, p[1]); for (const d of [-1, 1]) { const door = b.box(0.85, 0.1, 1.2, m.darkwood, p[0] + d * 0.45, 0.38, p[1]); door.rotation.z = -d * 0.3; } } }
       break;
     case 1: // farm
       if (has(0)) { const p = spot(1.2, 1.2, 2.1, 0); if (p) { b.cyl(0.05, 0.05, 1.9, m.darkwood, p[0], 0, p[1], 6); const arm = b.box(1.2, 0.07, 0.07, m.darkwood, p[0], 1.45, p[1]); arm.rotation.y = 0.4; b.sphere(0.2, m.hay, p[0], 1.95, p[1]); b.pyramid(0.6, 0.6, 0.3, m.darkwood, p[0], 2.1, p[1]); } }
       if (has(1)) for (let i = 0; i < 2; i++) { const p = spot(1.5, 1.5, 1.4); if (p) { b.dome(0.75, m.hay, p[0], 0, p[1], 1.3); b.cone(0.18, 0.5, m.hay, p[0], 0.95, p[1], 6); } }
       if (has(2)) { const n = Math.ceil((hw * 2) / 0.9); for (let i = 0; i <= n; i++) b.box(0.1, 0.9, 0.1, m.darkwood, all.min.x + i * (hw * 2) / n, 0, all.max.z + 0.5); b.box(hw * 2, 0.08, 0.06, m.wood, cx, 0.55, all.max.z + 0.5); b.box(hw * 2, 0.08, 0.06, m.wood, cx, 0.8, all.max.z + 0.5); }
       if (has(3)) { const p = spot(3.4, 2.6, 3.4); if (p) { b.box(3.2, 2.0, 2.4, m.wood, p[0], 0, p[1]); b.gable(3.4, 2.6, 1.4, m.thatch, p[0], 2.0, p[1], 0.3); b.box(1.2, 1.6, 0.1, m.door, p[0], 0, p[1] + 1.22); } }
+      // second tier: windmill, granary, orchard, bee skeps
+      if (has(4)) { const p = spot(2.6, 2.6, 5.4); if (p) { b.cyl(0.9, 1.3, 3.0, m.plaster, p[0], 0, p[1], 10); b.cone(1.1, 1.0, m.thatch, p[0], 3.0, p[1], 10); for (const a of [0.5, 0.5 + Math.PI / 2]) { const bl = b.box(0.22, 3.6, 0.05, m.wood, p[0], 2.6 - 1.8, p[1] + 1.15); bl.rotation.z = a; } b.cyl(0.1, 0.1, 0.4, m.darkwood, p[0], 2.5, p[1] + 1.0, 6).rotation.x = Math.PI / 2; b.box(0.7, 1.1, 0.1, m.door, p[0], 0, p[1] + 1.25); } }
+      if (has(5)) { const p = spot(2.2, 1.8, 2.6); if (p) { for (const dx of [-0.8, 0.8]) for (const dz of [-0.55, 0.55]) b.cyl(0.18, 0.22, 0.45, m.stone, p[0] + dx, 0, p[1] + dz, 8); b.box(2.0, 1.2, 1.6, m.wood, p[0], 0.45, p[1]); b.gable(2.2, 1.8, 0.8, m.thatch, p[0], 1.65, p[1], 0.3); b.box(0.6, 0.8, 0.1, m.door, p[0], 0.45, p[1] + 0.82); } }
+      if (has(6)) for (let i = 0; i < 3; i++) { const p = spot(1.5, 1.5, 2.6); if (p) { b.cyl(0.1, 0.15, 1.1, m.darkwood, p[0], 0, p[1], 6); b.sphere(0.85, new THREE.MeshStandardMaterial({ color: 0x4f8a3c, roughness: 1 }), p[0], 1.35, p[1]); for (let k = 0; k < 4; k++) b.sphere(0.1, new THREE.MeshStandardMaterial({ color: 0xd8402f }), p[0] + Math.cos(k * 1.6) * 0.7, 1.4 + (k % 2) * 0.35, p[1] + Math.sin(k * 1.6) * 0.7); } }
+      if (has(7)) { const p = spot(1.9, 0.9, 1.3); if (p) { b.box(1.8, 0.1, 0.6, m.wood, p[0], 0.55, p[1]); for (const dx of [-0.8, 0.8]) b.box(0.1, 0.55, 0.5, m.darkwood, p[0] + dx, 0, p[1]); for (let k = 0; k < 3; k++) { b.dome(0.28, m.hay, p[0] - 0.55 + k * 0.55, 0.65, p[1], 1.1); b.cyl(0.1, 0.1, 0.1, m.hay, p[0] - 0.55 + k * 0.55, 0.9, p[1], 6); } } }
       break;
     case 3: case 26: { // tower, keep
       const R = Math.max(hw, hd);
@@ -1801,6 +1825,11 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(1)) for (let i = 0; i < 2; i++) { const p = spot(1.2, 1.2, 2.0); if (p) { b.cyl(0.07, 0.07, 1.7, m.darkwood, p[0], 0, p[1], 6); b.box(1.0, 0.1, 0.1, m.darkwood, p[0], 1.35, p[1]); b.sphere(0.22, m.hay, p[0], 1.85, p[1]); } }
       if (has(2)) { const p = spot(2.4, 0.7, 2.0); if (p) { b.box(2.4, 0.08, 0.3, m.darkwood, p[0], 0.35, p[1]); b.box(2.4, 0.08, 0.3, m.darkwood, p[0], 1.2, p[1]); for (let i = 0; i < 6; i++) { b.cyl(0.03, 0.03, 2.0, m.darkwood, p[0] - 1.0 + i * 0.4, 0, p[1], 5); b.cone(0.07, 0.22, m.iron, p[0] - 1.0 + i * 0.4, 2.0, p[1], 5); } } }
       if (has(3)) { const p = spot(3.4, 2.2, 2.4); if (p) { b.box(3.2, 1.5, 2.0, m.wood, p[0], 0, p[1]); b.gable(3.4, 2.2, 1.0, m.thatch, p[0], 1.5, p[1], 0.3); b.box(0.9, 1.1, 0.1, m.darkwood, p[0], 0, p[1] + 1.02); } }
+      // second tier: archery butts, forge shed, watch post, parade ground
+      if (has(4)) { const p = spot(3.2, 1.0, 1.9); if (p) for (const dx of [-1.0, 1.0]) { b.box(0.1, 1.3, 0.1, m.darkwood, p[0] + dx - 0.35, 0, p[1]); b.box(0.1, 1.3, 0.1, m.darkwood, p[0] + dx + 0.35, 0, p[1]); b.cyl(0.62, 0.62, 0.14, m.hay, p[0] + dx, 1.0, p[1], 16).rotation.x = Math.PI / 2; b.cyl(0.3, 0.3, 0.16, new THREE.MeshStandardMaterial({ color: 0xc8302a }), p[0] + dx, 1.0, p[1], 16).rotation.x = Math.PI / 2; } }
+      if (has(5)) { const p = spot(2.8, 2.2, 2.6); if (p) { for (const dx of [-1.2, 1.2]) for (const dz of [-0.9, 0.9]) b.cyl(0.07, 0.07, 2.0, m.darkwood, p[0] + dx, 0, p[1] + dz, 6); b.gable(2.8, 2.2, 0.7, m.tile, p[0], 2.0, p[1], 0.2); b.box(0.7, 0.5, 0.5, m.iron, p[0] - 0.4, 0, p[1]); b.box(0.5, 0.5, 0.5, m.stone, p[0] + 0.7, 0, p[1] - 0.3); b.chimney(p[0] + 1.0, 1.0, p[1] - 0.6, 1.9, m.stone); } }
+      if (has(6)) { const p = spot(1.6, 1.6, 4.4); if (p) { for (const dx of [-0.6, 0.6]) for (const dz of [-0.6, 0.6]) b.cyl(0.07, 0.09, 3.0, m.darkwood, p[0] + dx, 0, p[1] + dz, 6); b.box(1.6, 0.14, 1.6, m.wood, p[0], 3.0, p[1]); b.box(1.6, 0.5, 0.06, m.darkwood, p[0], 3.14, p[1] + 0.77); b.box(1.6, 0.5, 0.06, m.darkwood, p[0], 3.14, p[1] - 0.77); b.pyramid(2.0, 2.0, 0.8, m.tile, p[0], 3.9, p[1]); b.box(0.12, 3.0, 0.4, m.wood, p[0] + 0.5, 0, p[1] + 0.95); } }
+      if (has(7)) { const p = spot(3.6, 2.2, 2.4); if (p) { b.box(3.4, 0.5, 1.8, m.wood, p[0], 0, p[1]); for (const dx of [-1.5, 0, 1.5]) b.flag(p[0] + dx, 0.5, p[1] - 0.7, 2.2, 0.9); b.box(0.9, 0.7, 0.5, m.darkwood, p[0], 0.5, p[1] + 0.3); } }
       break;
     case 15: // town hall
       if (has(0)) b.flag(cx, top, cz, 3.2);
@@ -1813,6 +1842,11 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(1)) for (const z of [-1, 1]) b.box(0.08, 1.1, 0.5, m.stained, cx, Math.min(top * 0.35, 1.4), cz + z * (hd + 0.02));
       if (has(2)) for (let i = 0; i < 5; i++) { const p = spot(0.5, 0.2, 0.8); if (p) b.box(0.45, 0.8, 0.14, m.stone, p[0], 0, p[1]); }
       if (has(3)) { const p = spot(2.2, 1.2, 2.3); if (p) { b.box(0.22, 2.0, 0.22, m.darkwood, p[0] - 1, 0, p[1]); b.box(0.22, 2.0, 0.22, m.darkwood, p[0] + 1, 0, p[1]); b.gable(2.4, 1.4, 0.8, m.tile, p[0], 2.0, p[1], 0.2); } }
+      // second tier: rose window, cloister, almshouse, relic shrine
+      if (has(4)) { const y = Math.min(Math.max(top * 0.7, 3.0), top - 0.9); for (const sd of [-1, 1]) { b.cyl(0.74, 0.74, 0.08, m.stone, cx, y, cz + sd * (hd + 0.02), 20).rotation.x = Math.PI / 2; b.cyl(0.58, 0.58, 0.12, m.stained, cx, y, cz + sd * (hd + 0.04), 20).rotation.x = Math.PI / 2; } }
+      if (has(5)) { const p = spot(3.6, 1.6, 2.4); if (p) { for (const dx of [-1.6, -0.55, 0.55, 1.6]) b.cyl(0.1, 0.12, 1.9, m.stone, p[0] + dx, 0, p[1] + 0.6, 8); b.box(3.6, 0.2, 0.2, m.stone, p[0], 1.9, p[1] + 0.6); b.box(3.6, 0.5, 0.3, m.stone, p[0], 0, p[1] - 0.65); b.gable(3.6, 1.7, 0.6, m.tile, p[0], 2.1, p[1], 0.1); } }
+      if (has(6)) { const p = spot(3.4, 2.2, 2.6); if (p) { b.box(3.2, 1.5, 2.0, m.plaster, p[0], 0, p[1]); b.gable(3.4, 2.2, 1.0, m.tile, p[0], 1.5, p[1], 0.3); b.box(0.7, 1.1, 0.1, m.door, p[0] - 0.8, 0, p[1] + 1.02); b.window(p[0] + 0.7, 0.85, p[1] + 1.03, 0, 0.5, 0.5); } }
+      if (has(7)) { const p = spot(1.3, 1.3, 1.9); if (p) { b.box(1.2, 0.5, 1.2, m.stone, p[0], 0, p[1]); b.box(0.8, 0.45, 0.5, m.gold, p[0], 0.5, p[1]); b.pyramid(0.95, 0.65, 0.4, m.gold, p[0], 0.95, p[1]); b.box(0.12, 0.2, 0.12, m.glow, p[0] + 0.5, 0.5, p[1] + 0.4); } }
       break;
     case 16: // well
       if (has(0)) b.gable(2.6, 2.4, 0.9, b.t >= 1 ? m.tile : m.thatch, cx, 2.4, cz, 0.25);   // the roof over the well (the posts are already there)
@@ -1849,7 +1883,14 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(3)) for (const [x, z] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const s of [-1, 1]) { const px = x ? x * 5.3 : s * 1.5, pz = z ? z * 5.3 : s * 1.5; b.cyl(0.05, 0.06, 1.5, m.darkwood, px, 0.8, pz, 6); b.box(0.24, 0.3, 0.24, m.glow, px, 2.3, pz); b.pyramid(0.34, 0.34, 0.2, m.iron, px, 2.6, pz); }
       break;
     }
-    default: for (let bit = 0; bit < 4; bit++) if (has(bit)) generic(bit);
+    case 28: // market: the four common options, then (second tier) a weigh house, striped canopies, a market cross and a guild sign
+      if (bit < 4) generic(bit);
+      if (has(4)) { const p = spot(2.4, 1.9, 2.8); if (p) { b.box(2.2, 1.5, 1.7, m.plaster, p[0], 0, p[1]); b.gable(2.4, 1.9, 0.9, m.tile, p[0], 1.5, p[1], 0.25); b.cyl(0.05, 0.05, 1.6, m.darkwood, p[0], 0, p[1] + 1.05, 6); b.box(1.2, 0.07, 0.07, m.iron, p[0], 1.6, p[1] + 1.05); for (const dx of [-0.55, 0.55]) b.cyl(0.22, 0.22, 0.05, m.iron, p[0] + dx, 1.1, p[1] + 1.05, 10); } }
+      if (has(5)) for (let i = 0; i < 2; i++) { const p = spot(2.2, 1.6, 2.2); if (p) { for (const dx of [-1.0, 1.0]) for (const dz of [-0.7, 0.7]) b.cyl(0.05, 0.05, 2.0, m.darkwood, p[0] + dx, 0, p[1] + dz, 6); for (let k = 0; k < 6; k++) b.box(0.36, 0.08, 1.6, new THREE.MeshStandardMaterial({ color: k % 2 ? 0xf0ead8 : (i ? 0x2f5fa8 : 0xc8302a), roughness: 0.9 }), p[0] - 0.9 + k * 0.36, 2.0, p[1]); b.box(1.8, 0.6, 0.5, m.wood, p[0], 0, p[1] + 0.3); } }
+      if (has(6)) { const p = spot(1.5, 1.5, 2.8); if (p) { b.box(1.5, 0.25, 1.5, m.stone, p[0], 0, p[1]); b.box(1.1, 0.25, 1.1, m.stone, p[0], 0.25, p[1]); b.box(0.4, 1.8, 0.4, m.stone, p[0], 0.5, p[1]); b.box(1.2, 0.35, 0.35, m.stone, p[0], 1.7, p[1]); b.box(0.35, 0.9, 0.35, m.stone, p[0], 1.9, p[1]); } }
+      if (has(7)) { const p = spot(1.4, 0.6, 3.0); if (p) { b.cyl(0.07, 0.09, 3.0, m.darkwood, p[0] - 0.6, 0, p[1], 6); b.box(1.3, 0.1, 0.1, m.darkwood, p[0], 2.8, p[1]); b.box(0.9, 0.6, 0.06, m.gold, p[0] + 0.1, 2.15, p[1]); b.box(0.1, 0.1, 0.1, m.iron, p[0] - 0.25, 2.75, p[1]); b.box(0.1, 0.1, 0.1, m.iron, p[0] + 0.45, 2.75, p[1]); } }
+      break;
+    default: for (let bit = 0; bit < OPT_BITS; bit++) if (has(bit)) generic(bit);
   }
 }
 
@@ -1911,7 +1952,7 @@ export class VillageView {
   get isBatched() { return this.dirtyCells.size === 0; }
   constructor(private banner: number, private shoreWater?: (x: number, z: number, rot: number) => number,
     private groundAt?: (x: number, z: number) => number) {}
-  private flag: Flag | undefined;
+  private flag: Flag | undefined; private roof = 0;
   private foreign: Flag[] = []; private foreignKey = '';
   private quiet = false;
   /** The flags of the other cities, which the embassy flies on its forecourt. When the set changes, the embassies are drawn again (without their building animation). */
@@ -1928,7 +1969,7 @@ export class VillageView {
   setFlag(f: Flag | null, color: number) {
     const key = f ? packFlag(f) : 0, old = this.flag ? packFlag(this.flag) : 0;
     if (key === old && color === this.banner) return;
-    this.flag = f ?? undefined; this.banner = color;
+    this.flag = f ?? undefined; this.banner = color; this.roof = f?.roof ?? 0;
     for (const c of this.cells.keys()) this.unbatch(c);
     for (const it of this.items.values()) { this.endBuild(it); this.dispose(it.group); }
     this.items.clear(); this.animating.clear(); this.dirtyCells.clear();
@@ -1967,7 +2008,7 @@ export class VillageView {
       } else if (!it || it.sig !== sig) {
         if (it) { this.touch(it.cell); this.endBuild(it); this.dispose(it.group); this.animating.delete(it); }
         // walls are drawn by the Walls renderer as one connected structure; keep an empty placeholder so indices line up
-        const model = PLAIN.has(kind) ? undefined : new BuildingModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), this.flag, true, kind === 49 ? this.foreign : []);
+        const model = PLAIN.has(kind) ? undefined : new BuildingModel(kind, tier, this.banner, Math.floor(Math.abs(x * 7.3 + z * 13.1)), this.flag, true, kind === 49 ? this.foreign : [], this.roof);
         model?.setOptions(opt);
         if (kind === 35 && this.groundAt) model?.fitPortPier(x, z, rot, pad, this.groundAt);
         if (shoreClearance !== undefined) model?.fitShore(shoreClearance);
