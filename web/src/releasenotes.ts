@@ -4,6 +4,26 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.4.0', date: '2026-11-22', title: 'Siege towers, new bosses, gifts and a guided tutorial',
+    added: [
+      'Siege towers and sapping: big raids bring towers against stone walls that dock and carry soldiers over, and infantry stopped by a wall dig a shaft that brings a wall section down. Defenders can wreck towers at the foot, flood shafts with a moat and fill them in by sallying out.',
+      'Two new bosses: the Plague Doctor, who hides in a plague camp and re-infects the village until she is caught, and the Ironclad Knight Captain, whose plate only siege engines and heavy hits can hurt.',
+      'Send a caravan as a gift to raise its opinion of you. Villages that are hostile or at war turn your caravans back at the gate.',
+      'Agents can use diplomacy through the MCP server: envoys, marriage, alliances, war and gifts.',
+      'Second-tier building options for the house, farm, market, chapel and barracks, unlocked by tier, each with its own drawing and a small bonus.',
+      'Choose a roof tile palette for your village in the flag designer. Every player sees your village in those colours.',
+      'A scripted tutorial village gives everyone the same first ten minutes.',
+      'Select armies on the map to see what they are made of and halt them, send them home or split them from a new card.',
+    ],
+    changed: [
+      'The tutorial has been rewritten as 15 short steps with one action each, and teaches defence before growth.',
+      'A fallow field recovers its soil twice as fast in winter. Hover the soil bar to see how much grain the field gives at its current soil.',
+    ],
+    fixed: [
+      'Armies can march out past an embassy and a castle without getting stuck.',
+    ],
+  },
+  {
     version: '0.3.0', date: '2026-11-22', title: 'A new castle, embassies and computer rivals',
     added: [
       'Play against the computer: the start screen has a PVE mode with two computer-run villages that trade, send envoys and raid you through the same rules as other players.',
