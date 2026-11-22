@@ -36,7 +36,7 @@ export function buildDemo(seed = 1337n) {
 export function wallReport(w) {
   const f = w.buildings_flat(), pts = [];
   for (let i = 0; i < f.length / 10; i++) if (f[i * 10] === 2 || f[i * 10] === 22) pts.push({ x: f[i * 10 + 2], y: f[i * 10 + 3], r: Math.hypot(f[i * 10 + 2], f[i * 10 + 3]) });
-  const rings = { inner: pts.filter(p => p.r < 50), outer: pts.filter(p => p.r >= 50) }, out = {};
+  const rings = { inner: pts.filter(p => p.r < 67), outer: pts.filter(p => p.r >= 67) }, out = {};
   for (const [name, ring] of Object.entries(rings)) {
     // go once round the ring by angle: any step bigger than the 8.6 that wall pieces join across is a hole in the wall
     const sorted = [...ring].sort((p, q) => Math.atan2(p.y, p.x) - Math.atan2(q.y, q.x));
@@ -53,7 +53,7 @@ export function wallGraphReport(w) {
   const f = w.buildings_flat(), nodes = [];
   for (let i = 0; i < f.length / 10; i++) if (f[i * 10] === 2 || f[i * 10] === 22) nodes.push({ x: f[i * 10 + 2], z: f[i * 10 + 3], kind: f[i * 10], tier: f[i * 10 + 1] });
   const { adj } = linkWalls(nodes), out = {};
-  for (const [name, test] of [['inner', p => Math.hypot(p.x, p.z) < 50], ['outer', p => Math.hypot(p.x, p.z) >= 50]]) {
+  for (const [name, test] of [['inner', p => Math.hypot(p.x, p.z) < 67], ['outer', p => Math.hypot(p.x, p.z) >= 67]]) {
     const ids = nodes.map((p, i) => i).filter(i => test(nodes[i]));
     const dangling = ids.filter(i => adj[i].size < 2).map(i => `${Math.round(nodes[i].x)},${Math.round(nodes[i].z)}`);
     const seen = new Set(), q = [ids[0]]; seen.add(ids[0]); while (q.length) { const c = q.pop(); for (const j of adj[c]) if (!seen.has(j)) { seen.add(j); q.push(j); } }
