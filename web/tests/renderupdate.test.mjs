@@ -73,6 +73,7 @@ test('villagers and wildlife build and draw their coloured, instanced parts', as
   for (const group of [crowd.group, wildlife.group]) {
     assert.ok(group.children.some(mesh => mesh.count > 0));
     for (const mesh of group.children) {
+      if (!mesh.geometry) continue;   // (the remains' group of stains and ribcages holds its own meshes: see the next test)
       const { position, normal, color } = mesh.geometry.attributes;
       assert.equal(color.count, position.count);
       assert.equal(normal.count, position.count);
@@ -104,7 +105,7 @@ test('villagers and wildlife build and draw their coloured, instanced parts', as
   assert.ok(wildlife.heads.every((head, i) => head.geometry === normal[i]));
   assert.equal(crowd.horseEyes.visible, false);
   wildlife.update(0.1, [], 200, 200, 10);
-  assert.ok(wildlife.group.children.every(mesh => mesh.count === 0));
+  assert.ok(wildlife.group.children.filter(mesh => mesh.geometry).every(mesh => mesh.count === 0));
 });
 
 test('villager names are reproducible and unique across the visible roster', async () => {
