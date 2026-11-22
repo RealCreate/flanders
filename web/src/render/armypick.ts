@@ -7,8 +7,8 @@ const bounds = {
   foot: body(0.48, 1.95, 0.4),
   mounted: body(0.65, 2.75, 0.95, 1.35),
   engine: body(1.03, 2.35, 1.8, 2.25),
-  pole: body(0.2, 4.35, 0.2),
-  flag: new THREE.Box3(new THREE.Vector3(-0.8, -0.53, -0.1), new THREE.Vector3(0.8, 0.53, 0.1)),
+  pole: body(0.2, 4.6, 0.2),
+  flag: new THREE.Box3(new THREE.Vector3(-1.0, -0.65, -0.1), new THREE.Vector3(1.0, 0.65, 0.1)),
 };
 
 /** Pick from the drawn positions of instanced troops without adding a mesh for each soldier. */

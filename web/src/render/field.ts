@@ -4,6 +4,7 @@ import { HAT, TOOL, ARM_REST, buildCatapult, buildRam, setSiegeWheelTravel, type
 import type { ArmyPicker } from './armypick';
 
 import { dotsAlong } from './trail';
+import { buildArmyBanner, paintArmyBanner, waveArmyBanner } from './armybanner';
 import { arrivalSlot, marchPoint, marchSlot } from '../marchfile';
 
 interface Member {
@@ -50,10 +51,7 @@ export class FieldView {
       const units = [flat[o + 3], flat[o + 4], flat[o + 5], flat[o + 6], flat[o + 7], flat[o + 16]];
       const sig = units.join(',');
       if (!d) {
-        const banner = new THREE.Group();
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.2, 6), new THREE.MeshStandardMaterial({ color: 0x4a3420 })); pole.position.y = 2.1; pole.castShadow = true;
-        const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.95), new THREE.MeshStandardMaterial({ color: this.friend, side: THREE.DoubleSide, roughness: 0.8 })); cloth.position.set(0.8, 3.6, 0);
-        banner.add(pole, cloth);
+        const banner = buildArmyBanner(this.friend);
         this.group.add(banner);
         d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null };
         this.dets.set(id, d);
@@ -211,7 +209,7 @@ export class FieldView {
       const fighting = d.state === 8;
       d.banner.visible = !fighting;
       d.banner.position.set(d.x, leader?.mode === 2 ? 0.3 : this.terrain.walkAt(d.x, d.z), d.z);
-      (d.banner.children[1] as THREE.Mesh).rotation.y = Math.sin(this.t * 3 + d.id) * 0.25;
+      paintArmyBanner(d.banner, this.friend); waveArmyBanner(d.banner, this.t, d.id);
       let foot = 0, riders = 0;
       for (const m of d.members) {
         const separate = m.kind === 3 && d.tracks.has(3);
