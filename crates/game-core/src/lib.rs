@@ -700,6 +700,13 @@ impl World {
         if let Some(c) = self.plague_camp { v.extend([4.0, c.x, c.y, 0.0]); }   // the plague camp (kind 4) is always known
         v
     }
+    /// What a cleared bandit camp pays: 120 gold and 15 iron, times a share for the camp's own strength (`h` 0..1: 0.7 for the weakest, 1.5 for the strongest, the same `h` that sets its power check)
+    /// and a share for the village's progress (1.0 for a young village up to 2.0 for a grown one: the same measure as a boss's, see `boss_scale`).
+    pub(crate) fn camp_loot(h: f32, population: u32, tick: u64) -> (i32, i32) {
+        let grown = (population as f32 / 80.0 + tick as f32 / DAY as f32 / 120.0).min(1.0);
+        let m = (0.7 + 0.8 * h) * (1.0 + grown);
+        ((120.0 * m).round() as i32, (15.0 * m).round() as i32)
+    }
     /// Send a field army (that has stopped near one) into a neutral place. Abbey: the sick are healed and spirits rise. Ruined castle: its hoard is carried off. Bandit camp: a fight,
     /// won by strength, whose loser is the army (half of it falls) or the camp (cleared, its coin taken). Lair (kind 3): a real battle starts on the spot (3 is returned at once; the fight, its report and the reward come as for a raid). Returns the kind (0..3) on success, -1 no such army, -2 nothing close enough, -3 already visited, -4 a fight is already on.
     pub fn visit_neutral(&mut self, army_id: u32) -> i32 {
@@ -724,7 +731,7 @@ impl World {
             _ => {
                 let power: f32 = (0..NK).map(|k| units[k] as f32 * UNITS[k].hp * UNITS[k].dmg / UNITS[k].cd.max(0.5)).sum();
                 let camp = 9000.0 + 14000.0 * h;
-                if power >= camp { self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], 120, cap); self.stock[IR as usize] = Self::add_capped(self.stock[IR as usize], 15, cap); }
+                if power >= camp { let (gold, iron) = Self::camp_loot(h, self.population, self.tick); self.stock[GD as usize] = Self::add_capped(self.stock[GD as usize], gold, cap); self.stock[IR as usize] = Self::add_capped(self.stock[IR as usize], iron, cap); }
                 else { self.dets[di].grp.clear(); for k in 0..NK { self.dets[di].units[k] /= 2; } if self.dets[di].units.iter().all(|&u| u == 0) { self.dets.remove(di); } return kind as i32 + 100; }   // beaten: not marked done, it can be tried again
             }
         }
@@ -4721,6 +4728,8 @@ mod neutral_tests {
         assert_eq!(w.visit_neutral(weak), 102, "a weak party is beaten"); assert!(w.dets.iter().all(|d| d.units[0] <= 1), "and loses half its men");
         let mut w = world(); let strong = army_at(&mut w, bx, by, [60, 30, 30, 20, 0, 0]); let gold = w.stock[GD as usize];
         assert_eq!(w.visit_neutral(strong), 2); assert!(w.stock[GD as usize] > gold, "the cleared camp pays");
+        let (g0, i0) = World::camp_loot(0.0, 0, 0); let (g1, _) = World::camp_loot(1.0, 0, 0); let (g2, i2) = World::camp_loot(1.0, 200, 0);
+        assert_eq!((g0, i0), (84, 11), "the weakest camp of a young village"); assert!(g1 > g0, "a stronger camp pays more"); assert!(g2 > g1 && i2 > i0, "a grown village finds more in it");
         let mut w = world(); let far = army_at(&mut w, 0.0, 0.0, [5, 0, 0, 0, 0, 0]);
         assert_eq!(w.visit_neutral(far), -2, "nothing near the village"); assert_eq!(w.visit_neutral(999), -1);
     }

@@ -37,6 +37,7 @@ import { CameraRig } from './render/camera';
 import { Forest } from './render/trees';
 import { buildModel, Effects, type BuildingModel } from './render/buildings';
 import { Deposits } from './render/deposits';
+import { Camps } from './render/camps';
 import { depositLabel, depositPanel, parseBuildingDeposit } from './depositinfo';
 import { Crowd } from './render/crowd';
 import { Travellers, type TVillage } from './render/travellers';
@@ -160,7 +161,7 @@ let roadPts: P[] = [], roadLastClick = 0;                  // the road tool: the
 let penPath: P[] = [];                                   // the corners clicked so far in path mode
 let penLastClick = 0;                                    // when the last corner was clicked (a quick second click finishes the path)
 let tunnels!: Tunnels;
-let deposits!: Deposits, minimap!: Minimap, effects!: Effects, crowd!: Crowd, fx!: Effects2, wildlife!: Wildlife, shared!: Shared;
+let camps!: Camps, deposits!: Deposits, minimap!: Minimap, effects!: Effects, crowd!: Crowd, fx!: Effects2, wildlife!: Wildlife, shared!: Shared;
 let lv!: Village;                           // your village
 interface Rival {
   key: string; peerId: string; name: string; site: number; village: Village; online: boolean; sync: string; tick: number; broken?: boolean; log: Cmd[];
@@ -824,7 +825,7 @@ function visitPlace(id: number) {
   pendingArmyOrders.delete(id);
   commit({ op: 'visit', idx: id }); afterLocalChange(); updateDets();
   if (code === 3 || code === 4) return;   // a lair or the plague doctor's camp: the fight is on and the banner tells the story (the report says how it ended)
-  ui.toast(code === 0 ? 'The monks heal your sick.' : code === 1 ? 'The ruin gives up its hoard.' : code === 2 ? 'The bandit camp is cleared and its coin is yours.' : 'The camp was too strong: half your army fell. Try again with more men.', code >= 100 ? 'bad' : 'good');
+  ui.toast(code === 0 ? 'The monks heal your sick.' : code === 1 ? 'The ruin gives up its hoard.' : code === 2 ? 'The bandit camp is cleared and its coin is yours (stronger camps and bigger villages pay more).' : 'The camp was too strong: half your army fell. Try again with more men.', code >= 100 ? 'bad' : 'good');
 }
 
 // ---------- war between players ----------
@@ -1446,6 +1447,7 @@ async function startGame(name: string, username: string, pve = false) {
   lv.onReport = onLocalReport;
   Village.onBossFx = (k, x, z) => { if (Math.hypot(x - rig.target.x, z - rig.target.z) < 200) { if (k === 3) sound.warhorn(); else sound.slam(); } };   // a horn or a slam near the camera is heard
   deposits = new Deposits(w.deposits_flat(), terrain); scene.add(deposits.group); deposits.refit();
+  camps = new Camps(terrain); scene.add(camps.group); camps.sync(w.neutrals_flat());
   buildDepositLabels();
   refreshTerrain(w); lv.syncFull(); lv.markCaughtUp();
   const ev = w.take_events();
@@ -2138,7 +2140,7 @@ function stepLocal() {
   if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools, e: myEpoch });
   if (t % 15 === 0) { if (covOn) covOverlay(); if (covB !== null || covG) covRefocus(); }
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
-  if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) deposits.attach(w.buildings_flat()); }
+  if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) { deposits.attach(w.buildings_flat()); camps.sync(w.neutrals_flat()); } }
   tickShown = false;   // the scene and the HUD follow once all of this frame's ticks are done (see showTicks)
   if (touchPlacement) { const e = touchPlacementEvent(); if (e) updateGhost(e); showTouchTools(); }
   if (ui.stewardOpen() || watch.review) renderWatch();
@@ -3720,6 +3722,7 @@ function frame(now: number) {
   const crowdView = Math.max(90, rig.dist * 1.7 + 50) + 60;
   perf.start('villages (people, army)'); all.forEach(v => v.frame(v === replay?.target ? replayDt : worldDt, v === lv ? speed : 1, rig.cam.position, detailRange, drawCrowd, Math.hypot(v.ox - rig.target.x, v.oz - rig.target.z) - v.radius < crowdView)); perf.stop('villages (people, army)');
   perf.start('animals');
+  camps.update(now / 1000, rig.target.x, rig.target.z);
   deposits.cull(rig.target.x, rig.target.z, Math.max(160, rig.dist * 1.7 + 120));   // deposits far from the camera are not drawn or traversed
   if (now - scareT > 250) { scareT = now; scares = all.flatMap(v => [...v.people.positions(), ...v.army.positions()]); }
   const view = Math.max(90, rig.dist * 1.7 + 50);        // simulate and draw crowds and animals only around the camera
