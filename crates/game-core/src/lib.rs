@@ -416,12 +416,14 @@ pub struct World {
     #[serde(skip)] plague_camp: Option<plague::Camp>,   // the Plague Doctor's camp while an outbreak is kept alive (see plague.rs); stored beside the world in a snapshot, part of the state hash
     #[serde(skip)] military_tech: u16,
     #[serde(skip)] auto_bridge: bool,
+    #[serde(skip)] rally: [Option<(f32, f32)>; 2],   // where new armies stand: the barracks' and the castle's rally point, when the player moved it off the default (saved in snapshot layout D, part of the state hash)
     #[serde(skip)] vets: [u32; NK],       // veterans among the standing army, by kind (they came through a battle: see tactics::is_veteran); saved with the extras of snapshot layout 9
     #[serde(skip)] train_acc: [u32; NK],  // drill progress of each kind in the queue (the barracks train every queued kind at once)
     #[serde(skip)] last_battle_frame: Vec<f32>,
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
+const RALLY_SNAP_MAGIC: &[u8; 8] = b"FLWORLDD";
 const GUESTS_SNAP_MAGIC: &[u8; 8] = b"FLWORLDC";
 const SNAP_MAGIC: &[u8; 8] = b"FLWORLDB";
 const SIEGE_SNAP_MAGIC: &[u8; 8] = b"FLWORLDA";
@@ -448,13 +450,14 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     let mut siege: Option<Option<siege::Siege>> = None;
     let mut camp: Option<plague::Camp> = None;
     let mut allies: Vec<i32> = vec![];
-    let (mut w, marches) = if magic == GUESTS_SNAP_MAGIC || magic == SNAP_MAGIC || magic == SIEGE_SNAP_MAGIC || magic == EXTRAS_SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let mut rally: [Option<(f32, f32)>; 2] = [None; 2];
+    let (mut w, marches) = if magic == RALLY_SNAP_MAGIC || magic == GUESTS_SNAP_MAGIC || magic == SNAP_MAGIC || magic == SIEGE_SNAP_MAGIC || magic == EXTRAS_SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
         type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
         let (((state, estate), tools), planted): (((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>) =
-            if magic == SNAP_MAGIC || magic == GUESTS_SNAP_MAGIC {
+            if magic == SNAP_MAGIC || magic == GUESTS_SNAP_MAGIC || magic == RALLY_SNAP_MAGIC {
                 type Body = (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), (Option<siege::Siege>, Option<plague::Camp>));
-                let ((inner, ex), (sg, cp)): Body = if magic == GUESTS_SNAP_MAGIC { let (body, a): (Body, Vec<i32>) = bincode::deserialize(payload).ok()?; allies = a; body } else { bincode::deserialize(payload).ok()? };
+                let ((inner, ex), (sg, cp)): Body = if magic == RALLY_SNAP_MAGIC { let ((body, a), r): ((Body, Vec<i32>), [Option<(f32, f32)>; 2]) = bincode::deserialize(payload).ok()?; allies = a; rally = r; body } else if magic == GUESTS_SNAP_MAGIC { let (body, a): (Body, Vec<i32>) = bincode::deserialize(payload).ok()?; allies = a; body } else { bincode::deserialize(payload).ok()? };
                 extras = ex; siege = Some(sg); camp = cp; inner }
             else if magic == SIEGE_SNAP_MAGIC { let ((inner, ex), sg): (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), Option<siege::Siege>) = bincode::deserialize(payload).ok()?; extras = ex; siege = Some(sg); inner }
             else if magic == EXTRAS_SNAP_MAGIC { let (inner, ex): ((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])) = bincode::deserialize(payload).ok()?; extras = ex; inner }
@@ -497,6 +500,8 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     } else if magic == MARCH_SNAP_MAGIC { bincode::deserialize(payload).ok()? } else { return None; };
     if w.dets.len() != marches.len() { return None; }
     for (det, saved) in w.dets.iter_mut().zip(marches) { det.restore_march(saved)?; }
+    if rally.iter().flatten().any(|r| !r.0.is_finite() || !r.1.is_finite() || r.0.abs() > MAP_LIMIT || r.1.abs() > MAP_LIMIT) { return None; }
+    w.rally = rally;
     if !allies.is_empty() { if allies.len() != w.dets.len() { return None; } for (det, a) in w.dets.iter_mut().zip(allies) { det.ally = a; } }
     w.ledger.ensure_kinds(DEFS.len());
     Some(w)
@@ -614,13 +619,13 @@ fn demolition_refund(kind: u8) -> impl Iterator<Item = Amount> {
 impl World {
     /// The whole state of the village as bytes (the caches are not in it: they are rebuilt on demand). `world_restore` turns it back into the same world, to the last bit.
     pub fn snapshot(&self) -> Vec<u8> {
-        let mut v = GUESTS_SNAP_MAGIC.to_vec();
+        let mut v = RALLY_SNAP_MAGIC.to_vec();
         let marches: Vec<_> = self.dets.iter().map(march::Det::save_march).collect();
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
         let objective_state = (tactical_state, battle.and_then(|b| b.objective));
         let allies: Vec<i32> = self.dets.iter().map(|d| d.ally).collect();   // (whose soldiers each field army is: 0 ours; see `host_guests`)
-        v.extend(bincode::serialize(&((((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc)), (battle.map(|b| &b.siege), self.plague_camp)), allies)).expect("a world can be written"));
+        v.extend(bincode::serialize(&(((((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc)), (battle.map(|b| &b.siege), self.plague_camp)), allies), self.rally)).expect("a world can be written"));
         v
     }
 
@@ -629,7 +634,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, plague_camp: None, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, vets: [0; NK], train_acc: [0; NK], last_battle_frame: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, rally: [None; 2], vets: [0; NK], train_acc: [0; NK], last_battle_frame: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], planted: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), link_stamp: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -2834,6 +2839,26 @@ impl World {
     // ---------- field armies ----------
     /// Take soldiers out of the barracks into a field army (units = [spear, archer, sword, knight, catapult]). Returns its id, 0 on failure.
     pub fn det_form(&mut self, units: &[u32]) -> u32 { let Some(u) = kinds(units) else { return 0 }; self.det_form_inner(u) }
+    /// Set (or, with `reset`, clear) the rally point of the barracks (`which` 0) or the castle (1): where new armies stand. 0 ok, -1 no such building, -2 not somewhere an army can stand.
+    pub fn set_rally(&mut self, which: u32, x: f32, y: f32, reset: bool) -> i32 {
+        let w = which as usize;
+        if w > 1 || self.buildings.is_empty() { return -1; }
+        if w == 0 && !self.buildings.iter().any(|b| b.kind == BARRACKS) { return -1; }
+        if w == 1 && !(self.buildings[0].kind == TOWN_HALL && self.buildings[0].tier >= 3) { return -1; }
+        if reset { self.rally[w] = None; return 0; }
+        let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
+        if !x.is_finite() || !y.is_finite() || (x - hx).hypot(y - hy) > 300.0 { return -2; }
+        let Some((cx, cy)) = self.free_spot(x, y) else { return -2 };
+        if (cx - x).hypot(cy - y) > 6.0 { return -2; }
+        self.rally[w] = Some((x, y));
+        0
+    }
+
+    /// Where the barracks (0) or the castle (1) muster their armies now: [x, y, 1 when the player chose it].
+    pub fn rally_flat(&self, which: u32) -> Vec<f32> {
+        let w = which as usize; if w > 1 || self.buildings.is_empty() { return vec![]; }
+        match self.rally[w] { Some((x, y)) => vec![x, y, 1.0], None => { let (x, y) = self.default_rally(w); vec![x, y, 0.0] } }
+    }
     /// March to (tx, ty). 0 ok, -1 no such army, -2 unreachable, -3 siege engines need soldiers to cut the forest, -5 water too wide.
     pub fn det_march(&mut self, id: u32, tx: f32, ty: f32, attack: bool, ax: f32, ay: f32) -> i32 {
         // a peer chooses these numbers: NaN, infinity or a point far off the map would make the router search forever
@@ -3227,7 +3252,7 @@ impl World {
             }),
             part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); mix(d.asleep as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
-            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } mix(self.military_tech as u64); mix(self.auto_bridge as u64); for k in 0..NK { mix(self.vets[k] as u64); mix(self.train_acc[k] as u64); } }),
+            part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } mix(self.military_tech as u64); mix(self.auto_bridge as u64); for r in &self.rally { match r { Some((x, y)) => { mix(1); mix(x.to_bits() as u64); mix(y.to_bits() as u64); } None => mix(0) } } for k in 0..NK { mix(self.vets[k] as u64); mix(self.train_acc[k] as u64); } }),
             part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); mix(d.ally as i64 as u64); mix(d.file.dispatch.to_bits() as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); mix(g.file.dispatch.to_bits() as u64); } } }),
             part(&|mix| {   // trade and diplomacy
                 for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }

@@ -10,7 +10,7 @@ test('a normal command passes and comes back with only known fields', () => {
   assert.deepEqual(c, { op: 'place', tick: 5, n: 1, kind: 3, x: -12, y: 40, rot: 2 });
 });
 test('every op the client sends is accepted', () => {
-  const required = { turnback: { kind: 1, x: 5, to: KEY }, carhome: { kind: 1, x: 5, idx: 3 }, level: { x: 0, y: 0, kind: 8 }, restart: { e: 1, tick: 0, n: 0 }, workers: { idx: 3, kind: 2 }, research: { kind: 2 }, armybridge: { kind: 1 }, battleorder: { kind: 2, idx: 1, x: 15, y: -21 }, reserve: { x: 25, y: 50 }, plant: { x: 5, y: -5, kind: 4 }, zone: { idx: 3, x: 10, y: -10 }, sendaid: { idx: 4, to: KEY, units: [5, 0, 0, 0, 0, 0] }, host: { from: KEY, tag: 9, units: [5, 0, 0, 0, 0, 0] }, unhost: { to: KEY, tag: 9, units: [5, 0, 0, 0, 0, 0] }, recallaid: { to: KEY }, ask: { to: KEY, kind: 1 } };
+  const required = { turnback: { kind: 1, x: 5, to: KEY }, carhome: { kind: 1, x: 5, idx: 3 }, level: { x: 0, y: 0, kind: 8 }, restart: { e: 1, tick: 0, n: 0 }, workers: { idx: 3, kind: 2 }, research: { kind: 2 }, armybridge: { kind: 1 }, battleorder: { kind: 2, idx: 1, x: 15, y: -21 }, reserve: { x: 25, y: 50 }, plant: { x: 5, y: -5, kind: 4 }, zone: { idx: 3, x: 10, y: -10 }, rally: { kind: 0, x: 12.5, y: -30 }, sendaid: { idx: 4, to: KEY, units: [5, 0, 0, 0, 0, 0] }, host: { from: KEY, tag: 9, units: [5, 0, 0, 0, 0, 0] }, unhost: { to: KEY, tag: 9, units: [5, 0, 0, 0, 0, 0] }, recallaid: { to: KEY }, ask: { to: KEY, kind: 1 } };
   for (const op of PEER_OPS) assert.ok(ok({ op, ...required[op] }), op);
 });
 

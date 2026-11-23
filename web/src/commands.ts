@@ -25,6 +25,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'option': if (c.y === 1) w.set_road_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); else w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;   // y 1: along the whole stretch of road
     case 'level': w.level_ground(c.x!, c.y!, c.kind ?? 0, c.h ?? -1); break;   // x, y the middle, kind the radius, h the height (absent in older logs: Auto, the land round it)
     case 'plant': w.plant_trees(c.x!, c.y!, c.kind ?? 4); break;   // x, y the middle, kind the brush radius
+    case 'rally': w.set_rally((c.kind ?? 0) & 1, c.x ?? 0, c.y ?? 0, (c.kind ?? 0) >= 2); break;   // kind 0 the barracks, 1 the castle; 2 and 3 clear the point the player chose
     case 'zone': w.set_plant_zone(c.idx!, c.x ?? 0, c.y ?? 0); break;   // idx a forester, x, y where it plants, from the forester itself
     case 'flatten': w.flatten(c.x ?? 60, c.y === undefined ? -1 : c.y / 10); break;
     case 'batch':

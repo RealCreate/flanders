@@ -1048,24 +1048,35 @@ impl World {
         self.det_muster(units, 0)
     }
 
+    /// Where a new field army is mustered: (0 the barracks, 1 the castle, the point the player set for it or else the default outside it). A castle takes over from a barracks that stands within
+    /// its walls (or in the shadow of them), so an army never forms beside a wall it cannot get through.
+    pub(crate) fn muster_target(&self) -> (usize, (f32, f32)) {
+        let hall = &self.buildings[0];
+        let castle = hall.kind == TOWN_HALL && hall.tier >= 3;
+        let (hx, hy) = (hall.x, hall.y);
+        let slot = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hx + 10.0, hy + 10.0), |b| (b.x, b.y + 8.0));
+        let inside = |p: (f32, f32)| (p.0 - hx).hypot(p.1 - hy) < crate::compound::extent(TOWN_HALL, hall.tier);
+        if castle && inside(slot) { return (1, self.rally[1].unwrap_or_else(|| self.default_rally(1))); }
+        (0, self.rally[0].unwrap_or(slot))
+    }
+
+    /// The nearest place to (x, y) where foot soldiers can stand.
+    pub(crate) fn free_spot(&self, x: f32, y: f32) -> Option<(f32, f32)> { let (ns, ov) = (nav_static(self.seed), self.ov()); self.near_free(&ns, &ov, x, y, 0).map(cell_xy) }
+
+    /// The rally point a building has when the player has not chosen one: the barracks' own doorstep, the castle's front gate.
+    pub(crate) fn default_rally(&self, which: usize) -> (f32, f32) {
+        let hall = &self.buildings[0];
+        if which == 1 { return crate::compound::at(hall, (0.0, 31.0)); }
+        self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hall.x + 10.0, hall.y + 10.0), |b| (b.x, b.y + 8.0))
+    }
+
     /// Put a field army on the ground at the barracks (or the castle gate). `ally` 0: our own soldiers, taken from the standing army. Otherwise guests of that allied village, who come from elsewhere.
     pub(crate) fn det_muster(&mut self, units: [u32; NK], ally: i32) -> u32 {
-        let (hx, hy) = (self.buildings[0].x, self.buildings[0].y);
-        let (bx, by) = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((hx + 10.0, hy + 10.0), |b| (b.x, b.y + 8.0));
         let ns = nav_static(self.seed); let ov = self.ov();
         let siege = if units[4] + units[5] > 0 { 1 } else { 0 };
-        let Some(mut cell) = self.near_free(&ns, &ov, bx, by, siege) else { return 0; };
-        // a castle: an army mustered within its walls (or in the shadow of them) comes out at the front gate, in front of the bridge, never beside a wall it cannot get through
-        let hall = &self.buildings[0];
-        if hall.kind == TOWN_HALL && hall.tier >= 3 {
-            let reach = crate::compound::extent(TOWN_HALL, hall.tier);
-            let (sx, sy) = cell_xy(cell);
-            if (bx - hx).hypot(by - hy) < reach || (sx - hx).hypot(sy - hy) < reach {
-                let gate = crate::compound::at(hall, (0.0, 31.0));
-                let Some(c) = self.near_free(&ns, &ov, gate.0, gate.1, siege) else { return 0; };
-                cell = c;
-            }
-        }
+        let (which, target) = self.muster_target();
+        let Some(cell) = self.near_free(&ns, &ov, target.0, target.1, siege) else { return 0; };
+        let custom = self.rally[which].is_some();
         let spawn = cell_xy(cell);
         let net = self.net(); let obst = self.obst();
         let distance = |p: (f32, f32)| (p.0 - spawn.0).hypot(p.1 - spawn.1);
@@ -1079,7 +1090,8 @@ impl World {
         let entry = nodes.iter().find(|&&(_, p)| walk(spawn, p)).or_else(|| {
             nodes.iter().take(5).find(|&&(_, p)| walk(p, p) && self.route_in_window(&[1, 0, 0, 0, 0, 0], spawn.0, spawn.1, p.0, p.1, 12.0, WaterTravel::Dry, 0).is_ok())
         });
-        let (x, y) = entry.map_or(spawn, |&(_, p)| p);
+        let (x, y) = if custom { spawn } else { entry.map_or(spawn, |&(_, p)| p) };   // (a rally point the player chose is where the army stands; the default is the road node outside)
+        let (x, y) = if self.member_blocked_inner(x, y, siege) { spawn } else { (x, y) };
         let mut file = MarchFile::default();
         file.record(x, y, 0);
         file.assign_approaches(self.muster_approaches(&ns, (x, y), &units, 0.0, &[]), &units);
@@ -1215,6 +1227,12 @@ impl World {
         let mut dets = std::mem::take(&mut self.dets);
         dets.retain_mut(|mut d| {
             let mut remove = false;
+            // An army (or some of its riders and engines) standing where nobody can stand, because a castle, a wall or a house was raised over it, can never walk out: every step it tries is blocked.
+            // It is set down on the nearest free ground and finds its way again from there.
+            if d.state != S_FIGHT && (d.state == S_BLOCKED || self.tick % 4 == 0)
+                && (self.member_blocked_inner(d.x, d.y, 0) || d.grp.iter().any(|g| self.member_blocked_inner(g.x, g.y, 0))) {
+                self.unstick(&ns, &mut d);
+            }
             if matches!(d.state, S_IDLE | S_ARRIVED | S_FORMATION) && d.file.mustered()
                 && !d.file.check_formation(stamp, |a, b| walk(self, (a.x, a.y), (b.x, b.y), false))
             {
@@ -1229,6 +1247,7 @@ impl World {
                 return true;
             }
             if d.state == S_BLOCKED && self.tick >= d.retry_at {   // (it tries again when its wait is over, whether or not the village changed: a stuck army must never stay stuck for good)
+                d.blocked_stamp = 0;   // ...and plans its way afresh when it does (`recover_march` only re-plans when the village is not the one it last failed in)
                 d.state = if d.home { S_HOME } else { S_MARCH };
             }
             let travelling = matches!(d.state, S_MARCH | S_FELL | S_BRIDGE | S_FERRY | S_WAIT | S_HOME);
@@ -1357,6 +1376,22 @@ impl World {
         for b in &self.bridges { for v in b { stamp = stamp.rotate_left(9) ^ v.to_bits() as u64; } }
         for b in self.buildings.iter().filter(|b| b.kind == DRAWBRIDGE) { stamp = stamp.rotate_left(9) ^ (b.progress > 0) as u64; }
         stamp
+    }
+
+    /// Set an army (and the groups of it that are stuck) down on the nearest free ground and give it a way again from there.
+    fn unstick(&self, ns: &NavStatic, d: &mut Det) {
+        let Some((x, y)) = self.free_spot(d.x, d.y) else { return };
+        let head_blocked = self.member_blocked_inner(d.x, d.y, 0);
+        if head_blocked { d.x = x; d.y = y; d.sx = x; d.sy = y; d.speed = 0.0; d.file = Default::default(); d.file.record(x, y, 0); }
+        let (hx, hy) = (d.x, d.y);
+        for g in d.grp.iter_mut() { if self.member_blocked_inner(g.x, g.y, 0) { g.x = hx; g.y = hy; g.speed = 0.0; g.file = Default::default(); g.file.record(hx, hy, 0); } }
+        d.retry_at = 0; d.retry_n = 0; d.blocked_stamp = 0;
+        if matches!(d.state, S_IDLE | S_ARRIVED | S_FORMATION) {
+            d.file = self.arrival_formation(ns, (hx, hy), d.heading, &d.units);
+            if d.state != S_FORMATION { let approaches = std::mem::take(&mut d.file.approaches); d.file.assign_approaches(approaches, &d.units); }
+        } else if let Some((tx, ty)) = d.destination {
+            if self.set_march_route(d, tx, ty, false).is_ok() { d.state = if d.home { S_HOME } else { S_MARCH }; }
+        }
     }
 
     fn recover_march(&self, d: &mut Det, destination: Option<(f32, f32)>, stamp: u64) {

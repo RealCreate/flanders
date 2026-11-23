@@ -199,6 +199,8 @@ let mySite = 0, myName = 'Traveller';
 let perf!: Perf;
 /** The planting brush: its radius (the R key cycles it); and the forester whose planting zone is being picked on the map. */
 let plantR = 4, zoneIdx: number | null = null;
+/** The building whose rally point is being picked on the map: 0 the barracks, 1 the castle. */
+let rallyPick: number | null = null;
 let levelR = DEFAULT_LEVEL_SIZE, levelCode = 99, levelH = LEVEL_AUTO, earthworkH = LEVEL_AUTO, levelHintKey = '', levelDisc!: THREE.Mesh;
 let selectedKind: number | null = null, rot = 0, ghost: THREE.Group | null = null, ghostCode = 99;
 let selectedIdx: number | null = null;
@@ -2341,7 +2343,7 @@ function selectKind(k: number | null) {
   placedPointer = null;
   if (k !== null) cancelMarchPreview();
   if (k !== null && pendingBattleOrder) setPendingBattleOrder(null);
-  zoneIdx = null; selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
+  zoneIdx = null; rallyPick = null; selectedKind = k; ui.markSelected(k); penReset(); roadReset(); drawPenBar(); drawLevelBar(); lv?.nodes.setActive(k === 37); levelCode = 99;
   showTouchTools();
   if (ghost) { scene.remove(ghost); ghost.traverse(o => { const m = o as THREE.Mesh; m.geometry?.dispose(); const mat = m.material as THREE.Material | undefined; if (mat && m.userData.ghostMat) mat.dispose(); }); ghost = null; }
   terrain.clearPreview(); previewKey = ''; if (ghostRing) ghostRing.visible = false; if (levelDisc) levelDisc.visible = false; anchorGhost?.hide(); anchorKey = ''; covGhost(null); if (builderRangeRing) builderRangeRing.visible = false;
@@ -2805,6 +2807,8 @@ function updateSelection() {
   if (d.cycle && (w.road_access_flat()[selectedIdx] ?? 1) === 0) html += `<p class="muted road-warn">${icon('road', 16)} No road to the castle: this workplace works at half pace. Lay a road from its ring to the castle.</p>`;
   if (tier < defs[kind].maxTier) {
     const uc = upgrade_cost_flat(kind, tier + 1), cost: [number, number][] = []; for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1]]);
+  if (kind === 19) html += rallyHtml(0);
+  if (kind === 15 && tier >= 3) html += rallyHtml(1);
     const ok = cost.every(([r, n]) => stocks[r] >= n);
     html += `<div><h3>Upgrade to ${tierName(kind, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div><button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button>`;
   } else html += `<p><b>Fully upgraded.</b></p>`;
@@ -3014,6 +3018,12 @@ function onAct(a: string) {
     const road = w.buildings_flat()[selectedIdx * 10] === 37, code = road ? w.upgrade_road(selectedIdx) : w.upgrade(selectedIdx);
     if (code === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit(road ? { op: 'upgrade', idx: selectedIdx, kind: 1 } : { op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
     else if (code === -3) { ui.toast('Not enough room to grow: demolish the buildings in the way (hover Upgrade to see them).', 'bad'); sound.error(); }
+  if (a === 'rally:0' || a === 'rally:1') { rallyPick = Number(a.slice(6)); ui.hint('Click the ground where new armies should gather.'); return; }
+  if (a === 'rally:reset0' || a === 'rally:reset1') {
+    const which = Number(a.slice(11));
+    if (lv.world.set_rally(which, 0, 0, true) === 0) { commit({ op: 'rally', kind: 2 + which }); sound.click(); ui.toast('New armies gather at the default spot again.', 'good'); updateSelection(); }
+    return;
+  }
     afterLocalChange(selectedIdx ?? undefined);
   } else if (a === 'demolish') {
     if (w.demolish(selectedIdx)) { const f = w.buildings_flat(); void f; commit({ op: 'demolish', idx: selectedIdx }); sound.demolish(); selectedIdx = null; afterLocalChange(); rig.shake(0.25); }
@@ -3292,6 +3302,20 @@ function hidePlacementGhost() {
 
 function updateGhost(e: { clientX: number; clientY: number }) {
   lastGhostE = e;
+/** The rally point of the barracks (0) or the castle (1): where a new army stands. By default it is outside, at the road node in front of the building. */
+function rallyHtml(which: number) {
+  const r = lv.world.rally_flat(which), mine = r[2] === 1, name = which === 0 ? 'barracks' : 'castle';
+  return `<div><h3>Rally point</h3><p class="muted">New armies from the ${name} gather ${mine ? 'at the spot you chose' : 'outside, at the road in front of it'} (${Math.round(r[0])}, ${Math.round(r[1])}).</p><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="rally:${which}">Set rally point…</button>${mine ? `<button class="pbtn" data-act="rally:reset${which}">Back to the default</button>` : ''}</div></div>`;
+}
+/** A click on the ground while a rally point is being chosen. */
+function rallyClick(e: { clientX: number; clientY: number }) {
+  const which = rallyPick; rallyPick = null; if (which === null) return;
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
+  const x = Math.round(hit.x), y = Math.round(hit.z);
+  if (lv.world.set_rally(which, x, y, false) === 0) { commit({ op: 'rally', kind: which, x, y }); sound.click(); ui.toast('New armies will gather there.', 'good'); updateSelection(); }
+  else ui.toast('Armies cannot gather there: pick open ground within the village.', 'bad');
+  ui.hint('');
+}
   if (selectedKind === PLANT_TOOL) { plantHover(e); return; }
   if (selectedKind === LEVEL_TOOL) { levelHover(e); return; }
   if (selectedKind === 37) { roadHover(e); return; }
@@ -3565,6 +3589,7 @@ function bindInput() {
       const order = pendingBattleOrder;
       setPendingBattleOrder(null);
       if (!sendBattleOrder(order, hit.x, hit.z)) ui.toast('The order could not be issued.', 'bad');
+    if (rallyPick !== null && tap) { rallyClick(e); return; }
       return;
     }
     if (selectedKind === 37 && roadPts.length) { roadPts.pop(); if (roadPts.length === 0) roadSnapped = [false, false]; roadHover(e); return; }   // right-click takes the last road point back

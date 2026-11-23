@@ -3,7 +3,7 @@
 // This file has no imports so it can be tested under plain node (tests/validate.test.mjs).
 
 /** Commands a peer may send. `cheat`, `flatten` and `demo` are testing tools: they exist in your own game on localhost but are never accepted from the network. */
-export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'untrain', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'turnback', 'carhome', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe', 'research', 'armybridge', 'battleorder', 'reserve', 'plant', 'zone', 'sendaid', 'host', 'unhost', 'recallaid', 'ask'] as const;
+export const PEER_OPS = ['place', 'upgrade', 'demolish', 'train', 'untrain', 'attack', 'raid', 'refuse', 'return', 'form', 'march', 'recall', 'split', 'merge', 'halt', 'sendatk', 'repair', 'rebuild', 'garrison', 'bridge', 'option', 'treaty', 'caravan', 'choose', 'visit', 'batch', 'road', 'goods', 'accept', 'settle', 'turnback', 'carhome', 'hero', 'style', 'gate', 'field', 'envoy', 'marriage', 'war', 'clear', 'link', 'journey', 'arrive', 'defend', 'retreat', 'reinforce', 'buy', 'level', 'restart', 'workers', 'bribe', 'research', 'armybridge', 'battleorder', 'reserve', 'plant', 'zone', 'rally', 'sendaid', 'host', 'unhost', 'recallaid', 'ask'] as const;
 export type PeerOp = typeof PEER_OPS[number];
 
 export interface WireCmd {
@@ -86,6 +86,10 @@ export function sanitizeCmd(raw: unknown, allowTesting = false): WireCmd | null 
   }
   if (r.op === 'zone') {   // a forester's planting zone: idx the building, x and y how far from it (each within 60)
     if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 100_000) || !(isInt(out.x) && isInt(out.y)) || Math.abs(out.x) > 60 || Math.abs(out.y) > 60) return null;
+  }
+  if (r.op === 'rally') {   // where new armies stand: kind 0 the barracks, 1 the castle (x, y the spot); 2 and 3 put it back where it was
+    if (!(isInt(out.kind) && out.kind >= 0 && out.kind <= 3)) return null;
+    if (out.kind < 2 && !(isNum(out.x) && isNum(out.y) && Math.abs(out.x) <= 1200 && Math.abs(out.y) <= 1200)) return null;
   }
   if (r.op === 'workers') {   // idx the building, kind how many workers it should have: -1 auto, 0 paused, up to what its jobs allow (the core bounds-checks it too)
     if (!(isInt(out.idx) && out.idx >= 0 && out.idx <= 100_000) || !(isInt(out.kind) && out.kind >= -1 && out.kind <= WORKERS_MAX)) return null;
