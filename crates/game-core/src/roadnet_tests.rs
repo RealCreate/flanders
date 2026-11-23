@@ -157,3 +157,38 @@ fn the_surface_and_design_survive_a_save_and_are_part_of_the_hash() {
     assert_eq!(back.road_access_flat(), w.road_access_flat());
     assert_eq!(back.state_hash(), w.state_hash());
 }
+
+#[test]
+fn every_road_of_the_kingdom_can_be_resurfaced_at_once_and_pays_for_each_step() {
+    let mut w = rich(); let (_f, road) = sawmill_far_from_the_hall(&mut w);
+    assert_eq!(w.lay_road(&road), 0);
+    let n = w.road_summary_flat()[9] as i32; assert!(n >= 2);
+    assert_eq!(&w.road_summary_flat()[..4], &[n as u32, 0, 0, 0], "all dirt at first");
+    assert_eq!(w.road_summary_flat()[8] as i32, n, "and all joined to the castle");
+    let (st, pl, br) = (w.stocks()[ST as usize], w.stocks()[PL as usize], w.stocks()[BR as usize]);
+    assert_eq!(w.upgrade_all_roads(3), 0, "straight to flagstones");
+    assert_eq!(&w.road_summary_flat()[..4], &[0, 0, 0, n as u32]);
+    assert_eq!((st - w.stocks()[ST as usize], pl - w.stocks()[PL as usize], br - w.stocks()[BR as usize]), (n * 9, n * 3, n), "gravel + cobbles + flagstones for each piece");
+    assert_eq!(w.upgrade_all_roads(3), -10, "nothing left to do");
+    assert_eq!(w.upgrade_all_roads(0), -1); assert_eq!(w.upgrade_all_roads(4), -1);
+    // the designs: only where the surface allows
+    assert_eq!(w.set_all_road_options(3, true), 0); assert_eq!(w.road_summary_flat()[7] as i32, n);
+    assert_eq!(w.set_all_road_options(3, true), -10, "already everywhere");
+    assert_eq!(w.set_all_road_options(3, false), 0); assert_eq!(w.road_summary_flat()[7], 0);
+    let mut poor = rich(); let (_g, r2) = sawmill_far_from_the_hall(&mut poor); poor.lay_road(&r2); poor.stock = [0; N_RES];
+    assert_eq!(poor.upgrade_all_roads(1), -6); assert_eq!(poor.set_all_road_options(0, true), -6);
+    let mut young = rich(); let (_h, r3) = sawmill_far_from_the_hall(&mut young); young.lay_road(&r3);
+    assert_eq!(young.set_all_road_options(3, true), -10, "lanterns need cobbles: no dirt road is good enough");
+}
+
+#[test]
+fn a_better_surface_is_walked_faster_and_the_segments_carry_it() {
+    let mut w = rich(); let (_f, road) = sawmill_far_from_the_hall(&mut w);
+    assert_eq!(w.lay_road(&road), 0);
+    let p = (0..w.buildings.len()).find(|&i| w.buildings[i].kind == ROAD).unwrap();
+    let (x, y) = (w.buildings[p].x, w.buildings[p].y);
+    assert_eq!(w.road_level(x, y), Some(0)); assert_eq!(w.road_level(x + 40.0, y + 40.0), None);
+    for want in 1..=3u8 { assert_eq!(w.upgrade_all_roads(want), 0); assert_eq!(w.road_level(x, y), Some(want)); assert_eq!(w.road_tiers_flat().len(), w.roads_flat().len() / 6, "a surface for every segment"); }
+    assert!(pathnet::tier_speed(3) > pathnet::tier_speed(0) && pathnet::tier_speed(0) == 1.0);
+    assert!(w.road_tiers_flat().iter().any(|&t| t == 3) && w.road_tiers_flat().iter().any(|&t| t == 0), "a stub of a building stays a footpath");
+}

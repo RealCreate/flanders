@@ -11,7 +11,7 @@ import { ArmyCamp } from './armycamp';
 
 interface Member {
   kind: number; x: number; z: number; y: number; yaw: number; gait: number; spd: number; seed: number;
-  visible: boolean; drawn: boolean; mode: number; boat?: THREE.Group; guard?: boolean;
+  visible: boolean; drawn: boolean; mode: number; boat?: THREE.Group; guard?: boolean; there?: boolean;
 }
 interface Track { points: Float32Array; gap: number; from: number; to: number; time: number; duration: number }
 interface Det {
@@ -21,8 +21,9 @@ interface Det {
   approaches: Map<number, Float32Array[]>;
   dest: [number, number] | null; wps: number[];
   dots: THREE.InstancedMesh | null; flag: THREE.Group | null;
-  /** The camp it makes when it stops after a march: tents and guards (see camplayout.ts), rising over a couple of seconds. */
-  camp: ArmyCamp | null; lay: Camp | null; laySig: string; travelled: boolean; campT: number;
+  /** The camp it makes as its soldiers arrive (see camplayout.ts): tents, a fence, a trough with the horses, guards on patrol, the siege engines in rows. `layAt` is what the layout was made for. */
+  camp: ArmyCamp | null; lay: Camp | null; layAt: { x: number; z: number; yaw: number; key: string } | null; travelled: boolean;
+  horses: { x: number; z: number; yaw: number; hex: number }[]; inCamp: number;
 }
 
 export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle', 'Route blocked', 'Taking position'];
@@ -58,7 +59,7 @@ export class FieldView {
       if (!d) {
         const banner = buildArmyBanner(this.friend);
         this.group.add(banner);
-        d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null, camp: null, lay: null, laySig: '', travelled: false, campT: 0 };
+        d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null, camp: null, lay: null, layAt: null, travelled: false, horses: [], inCamp: 0 };
         this.dets.set(id, d);
       }
       d.tx = flat[o + 1]; d.tz = flat[o + 2]; d.state = flat[o + 8]; d.heading = flat[o + 14];
@@ -102,7 +103,7 @@ export class FieldView {
       if (!seen.has(id)) {
         this.dropMarks(d);
         this.dropModel(d.banner);
-        if (d.camp) this.group.remove(d.camp.group);
+        if (d.camp) { this.group.remove(d.camp.group); d.camp.dispose(); }
         for (const model of [...d.siege, ...d.rams]) this.group.remove(model);
         for (const m of d.members) if (m.boat) this.dropModel(m.boat);
         this.dets.delete(id);

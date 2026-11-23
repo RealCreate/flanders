@@ -107,6 +107,10 @@ export class ArmyCamp {
     this.group.visible = true;
   }
 
-  hide() { this.group.visible = false; }
+  /** The camp is struck: everything goes, and rises again from nothing the next time. */
+  hide() {
+    if (!this.group.visible) return;
+    this.group.visible = false; this.tents.forEach(g => { g.visible = false; g.userData.born = undefined; }); this.logBorn.fill(-1); this.troughBorn = -1;
+  }
   dispose() { this.logs.dispose(); }
 }

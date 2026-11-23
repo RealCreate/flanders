@@ -955,9 +955,9 @@ impl World {
         if m == f32::MAX { 3.0 } else { m * 1.65 }
     }
 
-    fn army_walk_speed(&self, base: f32, x: f32, y: f32, forest: f32, road: bool) -> f32 {
+    fn army_walk_speed(&self, base: f32, x: f32, y: f32, forest: f32, road: Option<u8>) -> f32 {
         let familiarity = if self.in_territory_by(x, y, false) { HOME_MARCH_SPEED } else { 1.0 };
-        base * familiarity * if road { ARMY_ROAD_SPEED } else { 1.0 / (1.0 + 0.06 * forest) }
+        base * familiarity * match road { Some(level) => ARMY_ROAD_SPEED * pathnet::tier_speed(level), None => 1.0 / (1.0 + 0.06 * forest) }
     }
 
     /// Who marches as the army proper and who apart from it. With foot soldiers along, knights and siege engines each make a group of their own; an army of riders or engines alone is one body.
@@ -1289,7 +1289,7 @@ impl World {
                             }
                             if cut { self.map_ver += 1; }
                         }
-                        d.speed = self.army_walk_speed(base, d.x, d.y, dens, on_road) * if cut { 0.8 } else { 1.0 };
+                        d.speed = self.army_walk_speed(base, d.x, d.y, dens, self.road_level(d.x, d.y)) * if cut { 0.8 } else { 1.0 };
                         blocked = Self::advance_path(&mut d, |a, b| leg(self, a, b)) == Leg::Blocked;
                     }
                     1 => {
@@ -1411,7 +1411,7 @@ impl World {
         if !g.file.release(self.march_speed(&g.units)) { return Leg::Clear; }
         g.file.record(g.x, g.y, 0);
         let dens = ns.dens_at(g.x, g.y) as f32;
-        g.speed = self.army_walk_speed(self.march_speed(&g.units), g.x, g.y, dens, self.on_road(g.x, g.y));
+        g.speed = self.army_walk_speed(self.march_speed(&g.units), g.x, g.y, dens, self.road_level(g.x, g.y));
         let mut left = g.speed; let mut moved = false;
         while left > 1e-4 && g.wi < g.path.len() {
             let wp = g.path[g.wi];
@@ -1473,7 +1473,7 @@ impl World {
                     match w.mode {
                         0 if len > 0.0 => {
                             let (x, y) = ((prev.0 + w.x) * 0.5, (prev.1 + w.y) * 0.5);
-                            t += len / self.army_walk_speed(base, x, y, ns.dens_at(x, y) as f32, self.on_road(x, y));
+                            t += len / self.army_walk_speed(base, x, y, ns.dens_at(x, y) as f32, self.road_level(x, y));
                         }
                         0 => {}
                         1 => t += len / (0.35 * workers.max(1.0).powf(0.7)).clamp(0.45, base),

@@ -82,12 +82,53 @@ impl World {
         let target = self.buildings[idx as usize].tier + 1;
         if target > max_tier(ROAD) { return -10; }
         let pieces: Vec<usize> = stretch.iter().map(|&i| i as usize).filter(|&i| self.buildings[i].tier < target).collect();
+        self.resurface(&pieces, target)
+    }
+
+    /// Resurface every road of the kingdom (every piece below `target` is brought up to it). 0 ok, -1 no such surface or no road, -6 cannot afford, -10 nothing to do (every road is as good already).
+    pub fn upgrade_all_roads(&mut self, target: u8) -> i32 {
+        if target == 0 || target > max_tier(ROAD) { return -1; }
+        let pieces: Vec<usize> = (0..self.buildings.len()).filter(|&i| self.buildings[i].kind == ROAD && self.buildings[i].tier < target).collect();
+        if pieces.is_empty() { return if self.buildings.iter().any(|b| b.kind == ROAD) { -10 } else { -1 }; }
+        self.resurface(&pieces, target)
+    }
+
+    /// Bring these road pieces up to `target`, paying for every step each of them climbs, all or nothing.
+    fn resurface(&mut self, pieces: &[usize], target: u8) -> i32 {
         let mut cost: BTreeMap<u8, i32> = BTreeMap::new();
-        for &i in &pieces { for (r, n) in road_upgrade_cost(target) { let _ = i; *cost.entry(r).or_insert(0) += n; } }
+        for &i in pieces { for (r, n) in road_resurface_cost(self.buildings[i].tier, target) { *cost.entry(r).or_insert(0) += n; } }
         if cost.iter().any(|(&r, &n)| self.stock[r as usize] < n) { return -6; }
         for (&r, &n) in &cost { self.stock[r as usize] -= n; }
-        for &i in &pieces { let hp = battle::max_hp(ROAD, target); let b = &mut self.buildings[i]; b.tier = target; b.hp = hp; b.burning = 0.0; }
+        for &i in pieces { let hp = battle::max_hp(ROAD, target); let b = &mut self.buildings[i]; b.tier = target; b.hp = hp; b.burning = 0.0; }
+        self.rebuild_roads();   // (the surface is the speed of the road: the segments carry it)
         0
+    }
+
+    /// Switch a design option on or off on every road of the kingdom that is good enough for it. 0 ok, -1 invalid or no road, -6 cannot afford, -10 no road is good enough (or nothing to change).
+    pub fn set_all_road_options(&mut self, bit: u8, on: bool) -> i32 {
+        let Some(o) = options(ROAD).get(bit as usize) else { return -1 };
+        if !self.buildings.iter().any(|b| b.kind == ROAD) { return -1; }
+        let pieces: Vec<usize> = (0..self.buildings.len()).filter(|&i| { let b = &self.buildings[i]; b.kind == ROAD && (b.opts & (1 << bit) != 0) != on && (!on || b.tier >= o.2) }).collect();
+        if pieces.is_empty() { return -10; }
+        if on {
+            let mut cost: BTreeMap<u8, i32> = BTreeMap::new();
+            for _ in &pieces { for (r, n) in road_option_cost() { *cost.entry(r).or_insert(0) += n; } }
+            if cost.iter().any(|(&r, &n)| self.stock[r as usize] < n) { return -6; }
+            for (&r, &n) in &cost { self.stock[r as usize] -= n; }
+            for &i in &pieces { self.buildings[i].opts |= 1 << bit; }
+        } else { for &i in &pieces { self.buildings[i].opts &= !(1 << bit); } }
+        0
+    }
+
+    /// The roads of the kingdom in numbers: [pieces of dirt, gravel, cobbles, flagstones, pieces with trees, hedges, benches, lanterns, pieces joined to the castle, all pieces].
+    pub fn road_summary_flat(&self) -> Vec<u32> {
+        let reach = self.road_reach(); let mut v = vec![0u32; 10];
+        for (i, b) in self.buildings.iter().enumerate() {
+            if b.kind != ROAD { continue; }
+            v[b.tier.min(3) as usize] += 1; for k in 0..4 { if b.opts & (1 << k) != 0 { v[4 + k] += 1; } }
+            if reach[i] { v[8] += 1; } v[9] += 1;
+        }
+        v
     }
 
     /// Switch a design option of the road (bit 0 trees, 1 hedges, 2 benches, 3 lanterns) on or off along the whole stretch `idx` belongs to. 0 ok, -1 invalid, -6 cannot afford, -10 the surface

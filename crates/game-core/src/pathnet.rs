@@ -16,6 +16,10 @@ const RC: f32 = 1.0;
 pub const ROAD_COST: f32 = 0.55;
 /// How fast one walks a road compared to open ground.
 pub const ROAD_SPEED: f32 = 1.35;
+/// How much faster each better surface is (gravel, cobbles, flagstones: +8% of the road speed each).
+pub const ROAD_TIER_SPEED: f32 = 0.08;
+/// The speed factor of a road of this surface over a dirt one.
+pub fn tier_speed(level: u8) -> f32 { 1.0 + ROAD_TIER_SPEED * level.min(3) as f32 }
 const LINK_RANGE: f32 = 12.0;
 const MAX_CELLS: i32 = 100_000;
 
@@ -532,13 +536,19 @@ impl World {
         net
     }
 
-    /// Is somebody at this spot on a road (a dirt road piece or a bridge deck, which are made to be walked)?
-    pub(crate) fn on_road(&self, x: f32, y: f32) -> bool {
-        self.roads.iter().any(|s| {
-            if x < s[0].min(s[3]) - 1.6 || x > s[0].max(s[3]) + 1.6 || y < s[1].min(s[4]) - 1.6 || y > s[1].max(s[4]) + 1.6 { return false; }
+    /// Is somebody at this spot on a road (a road piece or a bridge deck, which are made to be walked)?
+    pub(crate) fn on_road(&self, x: f32, y: f32) -> bool { self.road_level(x, y).is_some() }
+
+    /// The surface of the road at this spot (0 dirt .. 3 flagstones; a bridge deck counts as dirt), the best of the segments within reach, or none off the roads.
+    pub(crate) fn road_level(&self, x: f32, y: f32) -> Option<u8> {
+        let mut best: Option<u8> = None;
+        for (k, s) in self.roads.iter().enumerate() {
+            if x < s[0].min(s[3]) - 1.6 || x > s[0].max(s[3]) + 1.6 || y < s[1].min(s[4]) - 1.6 || y > s[1].max(s[4]) + 1.6 { continue; }
             let (dx, dy) = (s[3] - s[0], s[4] - s[1]); let l2 = (dx * dx + dy * dy).max(1e-6); let t = (((x - s[0]) * dx + (y - s[1]) * dy) / l2).clamp(0.0, 1.0);
-            (x - (s[0] + dx * t)).hypot(y - (s[1] + dy * t)) <= 1.5
-        }) || self.on_deck(x, y)
+            if (x - (s[0] + dx * t)).hypot(y - (s[1] + dy * t)) <= 1.5 { best = Some(best.unwrap_or(0).max(self.road_tier.get(k).copied().unwrap_or(0))); }
+        }
+        if best.is_none() && self.on_deck(x, y) { best = Some(0); }
+        best
     }
 
     /// The network as flat numbers: [n, e, x, y (n times), a, b, road (e times)], for drawing it while debugging and for tests.
