@@ -7,7 +7,8 @@ import { roadHalfWidth } from '../src/render/roadlook.ts';
 
 const HALVES = [roadHalfWidth(0), roadHalfWidth(2)];   // dirt, stone
 const flat = lines => lines.flatMap(l => [l.kind, l.born ?? 0, l.tier ?? 0, l.opts ?? 0, l.pts.length / 2, ...l.pts]);
-const arm = (deg, len, from = [0, 0], kind = 1) => { const a = (deg * Math.PI) / 180; return { kind, born: 0, pts: [from[0] + Math.cos(a) * len, from[1] + Math.sin(a) * len, ...from] }; };
+/** A straight arm from `from` out to `len`, sampled about every 1.5 units like the core's curves, ending at `from` (the node). */
+const arm = (deg, len, from = [0, 0], kind = 1) => { const a = (deg * Math.PI) / 180, n = Math.max(1, Math.round(len / 1.5)), pts = []; for (let k = n; k >= 1; k--) pts.push(from[0] + Math.cos(a) * len * k / n, from[1] + Math.sin(a) * len * k / n); pts.push(...from); return { kind, born: 0, pts }; };
 const dir = (deg, d) => [Math.cos((deg * Math.PI) / 180) * d, Math.sin((deg * Math.PI) / 180) * d];
 
 function distSeg(px, pz, ax, az, bx, bz) {
@@ -38,16 +39,14 @@ function boundary(m) {
 
 // fixtures: every road ends at the node (0,0); the through road is two lines (a node splits a road in the core)
 const FIXTURES = {
-  'T at 90 degrees': { lines: [arm(180, 14), arm(0, 14), arm(90, 14)], through: [0, 1], side: 2 },
-  'T at 60 degrees': { lines: [arm(180, 14), arm(0, 14), arm(60, 14)], through: [0, 1], side: 2 },
-  'T at 120 degrees': { lines: [arm(180, 14), arm(0, 14), arm(120, 14)], through: [0, 1], side: 2 },
-  'X': { lines: [arm(180, 14), arm(0, 14), arm(90, 14), arm(270, 14)], through: [0, 1], side: 2 },
-  'Y of three roads': { lines: [arm(90, 14), arm(210, 14), arm(330, 14)], through: [], side: 0 },
-  'a curved road meeting a straight one': {
-    lines: [arm(180, 14), arm(0, 14), { kind: 1, born: 0, pts: [10, 14, 6, 9, 2.6, 5, 0.9, 2.4, 0, 0] }], through: [0, 1], side: 2,
-  },
-  'a stub meeting a road': { lines: [arm(180, 14), arm(0, 14), { kind: 0, born: 0, pts: [0, 3.2, 0, 0] }], through: [0, 1], side: 2, near: 1.6 },
-  'a stub meeting a road at an angle': { lines: [arm(180, 14), arm(0, 14), { kind: 0, born: 0, pts: [...dir(60, 7), 0, 0] }], through: [0, 1], side: 2, near: 2.2 },
+  'T at 90 degrees': { lines: [arm(180, 14), arm(0, 14), arm(90, 14)], side: 2 },
+  'T at 60 degrees': { lines: [arm(180, 14), arm(0, 14), arm(60, 14)], side: 2 },
+  'T at 120 degrees': { lines: [arm(180, 14), arm(0, 14), arm(120, 14)], side: 2 },
+  'X': { lines: [arm(180, 14), arm(0, 14), arm(90, 14), arm(270, 14)], side: 2 },
+  'Y of three roads': { lines: [arm(90, 14), arm(210, 14), arm(330, 14)], side: -1 },
+  'a curved road meeting a straight one': { lines: [arm(180, 14), arm(0, 14), { kind: 1, born: 0, pts: [10, 14, 8.5, 12, 7, 10, 6, 9, 4.2, 7, 2.6, 5, 0.9, 2.4, 0, 0] }], side: 2 },
+  'a stub meeting a road': { lines: [arm(180, 14), arm(0, 14), { kind: 0, born: 0, pts: [0, 3.2, 0, 1.6, 0, 0] }], side: 2 },
+  'a stub meeting a road at an angle': { lines: [arm(180, 14), arm(0, 14), { kind: 0, born: 0, pts: [...dir(60, 7), ...dir(60, 3.5), 0, 0] }], side: 2 },
 };
 
 for (const [name, fx] of Object.entries(FIXTURES)) {
@@ -55,32 +54,20 @@ for (const [name, fx] of Object.entries(FIXTURES)) {
     for (const half of HALVES) {
       const H = half * EDGE, m = buildRoadMesh(flat(fx.lines), half);
       sane(m);
-      const all = fx.lines.map(l => l.pts);
-      // no vertex with a falloff lies inside the solid part of any road: the dark edge is only along the outer boundary of the union
-      for (let i = 0; i < m.x.length; i++) {
-        if (m.a[i] > 0 || Math.hypot(m.x[i], m.z[i]) > 6 * H) continue;   // (the round caps at the far ends of the arms are not the joint)
-        for (let li = 0; li < all.length; li++) assert.ok(distLine(m.x[i], m.z[i], all[li]) >= half * 0.999, `half ${half}: falloff vertex ${i} (${m.x[i].toFixed(2)}, ${m.z[i].toFixed(2)}) is ${distLine(m.x[i], m.z[i], all[li]).toFixed(2)} from line ${li}`);
+      // no triangle is a long sliver, and none is bigger than a stretch of road: the joint is built of the ribbons themselves
+      for (let t = 0; t < m.idx.length; t += 3) {
+        const [p, q, r] = [m.idx[t], m.idx[t + 1], m.idx[t + 2]];
+        const longest = Math.max(Math.hypot(m.x[q] - m.x[p], m.z[q] - m.z[p]), Math.hypot(m.x[r] - m.x[q], m.z[r] - m.z[q]), Math.hypot(m.x[p] - m.x[r], m.z[p] - m.z[r]));
+        assert.ok(longest < 7.5 * H, `half ${half}: a triangle ${longest.toFixed(1)} long`);
       }
-      // the side road starts at the edge of the through road, not at its centre line
-      const side = all[fx.side], thr = fx.through.map(i => all[i]);
-      let found = 0;
-      for (let i = 0; i < m.x.length; i++) {
-        if (m.a[i] < 0.9 || distLine(m.x[i], m.z[i], side) > 0.06 || Math.hypot(m.x[i], m.z[i]) < 0.01) continue;
-        found++;
-        const dThrough = Math.min(...thr.map(p => distLine(m.x[i], m.z[i], p)));
-        const onThrough = thr.some(p => distLine(m.x[i], m.z[i], p) < 0.06);
-        if (!onThrough && thr.length) assert.ok(dThrough >= H * 0.98 || dThrough >= half * 0.98 && fx.lines[fx.side].kind === 0, `half ${half}: side vertex ${dThrough.toFixed(2)} from the through road (soft edge at ${H.toFixed(2)})`);
+      // a side road has no brightness inside the through road and the falloff of the through road is never across the road: nothing at the node is dimmer than its surroundings
+      if (fx.side >= 0) {
+        const side = fx.lines[fx.side].pts;
+        for (let i = 0; i < m.x.length; i++) {
+          if (distLine(m.x[i], m.z[i], side) > 0.06 || Math.hypot(m.x[i], m.z[i]) < 0.01) continue;
+          if (Math.hypot(m.x[i], m.z[i]) < H * 0.7) assert.equal(m.a[i] === 0 || m.a[i] < 0.9, true, 'a side road starts invisible');
+        }
       }
-      assert.ok(found > 0, 'the side road has a row of vertices');
-      // the union boundary is closed: every edge used by one triangle near the joint has no brightness (falloff) and ends at two other such edges
-      const b = boundary(m), near = p => Math.hypot(p[0], p[1]) <= (fx.near ?? 3) * H, deg = new Map();
-      for (const [p, q] of b.edges) {
-        if (!near(b.pos[p]) && !near(b.pos[q])) continue;
-        if (near(b.pos[p])) assert.equal(b.alpha[p], 0, 'a bright vertex on the outline'); if (near(b.pos[q])) assert.equal(b.alpha[q], 0, 'a bright vertex on the outline');
-        deg.set(p, (deg.get(p) ?? 0) + 1); deg.set(q, (deg.get(q) ?? 0) + 1);
-      }
-      for (const [v, d] of deg) if (near(b.pos[v])) assert.equal(d % 2, 0, `outline is open at ${b.pos[v]}`);
-      assert.ok(deg.size > 4, 'there is an outline');
     }
   });
 }

@@ -371,6 +371,7 @@ pub struct World {
     levels: Vec<[f32; 4]>,        // [x, y, radius, height] ground levelled flat (a village site, the banks of a drawbridge)
     flats: Vec<[f32; 4]>,         // [x, y, radius, height] patches the player levelled (see flatten.rs): applied after ditches and earthworks, so nothing dug there shows
     roads: Vec<[f32; 6]>,         // [ax, ay, ah, bx, by, bh] graded path segments
+    #[serde(skip)] road_tier: Vec<u8>,   // the surface of each segment of `roads` (0 dirt .. 3 flagstones; a stub is 0): derived with them, see `road_level`
     road_links: Vec<(u32, u32)>,  // what each segment belongs to: (i, i) the stub of building i, (piece, target) a stretch of a road the player laid (derived)
     road_conn: Vec<roadline::RoadConn>,   // how each road piece the player laid is joined to what it runs to (see roadline.rs; part of the state)
     road_sig: u64,                // a fingerprint of the roads as they stand (derived: the network with the roads marked on it, and the overlays, are rebuilt when it changes)
@@ -603,6 +604,10 @@ pub fn upgrade_cost_flat(kind: u8, new_tier: u8) -> Vec<i32> {
     }
 }
 
+#[wasm_bindgen]
+/// What it costs to bring one road piece from surface `from` up to `to`, as [resource, amount, ...] (every step in between is paid).
+pub fn road_resurface_cost_flat(from: u8, to: u8) -> Vec<i32> { road_resurface_cost(from.min(3), to.min(3)).into_iter().flat_map(|(r, n)| [r as i32, n]).collect() }
+
 fn demolition_refund(kind: u8) -> impl Iterator<Item = Amount> {
     DEFS[kind as usize].cost.iter().filter_map(move |&(r, n)| {
         let half = n / 2;
@@ -629,7 +634,7 @@ impl World {
         let mut w = World {
             seed, ox, oy, tick: 0, rng: Rng(seed ^ 0x9E3779B97F4A7C15 ^ ((ox as i64 as u64) << 20) ^ (oy as i64 as u64)),
             buildings: vec![], deposits: terrain::deposits(seed), stock: [0; N_RES], population: 10, sick: 0, children: 3, elders: 0, born: 0, arrived: 0, enlisted: 0, left: 0, died: [0; 5], unburied: 0, buried: 0, graves_used: 0, devotion: 0, relations: vec![], married: vec![], last_envoy: vec![], market_sold: [0; market::MARKET_GOODS.len()], style: 0, hero: None, defer_roads: false, neutral_done: vec![], explored: vec![0; (FOG_N * FOG_N) as usize], choice: None, mood: 0, mood_until: 0, quarantine_until: 0, plague_start: 0, plague_end: 0, plague_camp: None, share_until: 0, caravans: vec![], journeys: vec![], arrivals: vec![], awaiting: vec![], delivered: vec![], treaties: vec![], warm: true, cold_days: 0, eff: 100, eff_first: 100, eff_rest: 100, jobs: 0,
-            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, vets: [0; NK], train_acc: [0; NK], last_battle_frame: vec![],
+            events: vec![], sites: terrain::sites(seed), flow: [0; N_RES], meal_credit: 0, emergency_tools: [0; 2], estate: estate::Estate { active: true, ..Default::default() }, ledger: ledger::Ledger::new(DEFS.len()), levels: vec![], flats: vec![], roads: vec![], road_links: vec![], road_tier: vec![], road_conn: vec![], military_tech: 0, auto_bridge: false, vets: [0; NK], train_acc: [0; NK], last_battle_frame: vec![],
             army: [0; NK], queue: [0; NK], train_prog: 0, away: [0; NK], battle: None, raid_warning_ticks: 0, raid_warning_angle: 0.0, raid_warning_rf: 0.0, raid_warning_boss: false, raid_warning_name: 0, wildfires: vec![], craters: vec![], scorch: vec![], ruins: vec![], shots: vec![], terrain_ver: 0, report: vec![], report_seq: 0, report_bought: false, greed: 0, dets: vec![], next_det: 0, felled: vec![], planted: vec![], groves: vec![], ov_cache: Default::default(), march_heights: Default::default(), march_routes: Default::default(), mem_cache: Default::default(), deposit_layout: Default::default(), links: vec![], moat_water: vec![], bridges: vec![], db_want: vec![], map_ver: 0, road_sig: 0, net_base: Default::default(), link_stamp: Default::default(), ground_cache: Default::default(), height_cache: Default::default(),
         };
         w.stock[W as usize] = 160;
@@ -758,13 +763,13 @@ impl World {
     /// (chains of road pieces, see roadline.rs). Nothing is laid automatically: a building with no road to it still has its stub, and people walk over open ground to it.
     fn rebuild_roads(&mut self) {
         self.roads.clear();
-        self.road_links.clear();
+        self.road_links.clear(); self.road_tier.clear();
         self.sync_road_conn();
         for i in 0..self.buildings.len() {
             let b = &self.buildings[i];
             if !roadline::has_stub(b.kind) { continue; }
             let (door, exit) = doors::door_world(b);
-            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 && self.leg_is_dry(door, exit) { self.roads.push([door.0, door.1, b.pad_h, exit.0, exit.1, b.pad_h]); self.road_links.push((i as u32, i as u32)); }
+            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 && self.leg_is_dry(door, exit) { self.roads.push([door.0, door.1, b.pad_h, exit.0, exit.1, b.pad_h]); self.road_links.push((i as u32, i as u32)); self.road_tier.push(0); }
         }
         for e in self.road_edges() {
             let (ha, hb) = (self.buildings[e.a].pad_h, self.buildings[e.b].pad_h);
@@ -772,7 +777,7 @@ impl World {
             for (k, w) in e.pts.windows(2).enumerate() {
                 if self.leg_is_dry(w[0], w[1]) {
                     self.roads.push([w[0].0, w[0].1, hs[k], w[1].0, w[1].1, hs[k + 1]]);
-                    self.road_links.push((e.a as u32, e.b as u32));
+                    self.road_links.push((e.a as u32, e.b as u32)); self.road_tier.push(self.edge_style(e.a, e.b).0);
                 }
             }
         }
@@ -2362,6 +2367,9 @@ impl World {
         let id = |v: u32| if v == u32::MAX { -1.0 } else { v as f32 };
         self.roads.iter().zip(&self.road_links).flat_map(|(s, l)| [s[0], s[1], s[3], s[4], id(l.0), id(l.1)]).collect()
     }
+
+    /// The surface of every segment of `roads_flat` (0 dirt .. 3 flagstones), in the same order.
+    pub fn road_tiers_flat(&self) -> Vec<u8> { self.road_tier.clone() }
 
     /// The path network as [n, e, x, y (n times), a, b, road (e times)] (see pathnet.rs).
     pub fn net_flat(&self) -> Vec<f32> { self.net_flat_inner() }

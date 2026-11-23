@@ -152,7 +152,7 @@ export class Village {
       this.props.update(f, roads, this.sh.radii, { props: planned, laid, sig: lines.filter(l => l.kind === 1 && l.opts).map(l => `${l.opts}:${l.pts.length}:${l.pts[0].toFixed(1)}:${l.pts[1].toFixed(1)}:${l.pts[l.pts.length - 1].toFixed(1)}`).join(',') });
     }
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
-    this.people.setRoads(roads); this.people.sync(f, NO_PATHS, this.sh.radii, w.population(), w.terrain_version());
+    this.people.setRoads(roads, w.road_tiers_flat()); this.people.sync(f, NO_PATHS, this.sh.radii, w.population(), w.terrain_version());
     this.boats.sync(f, w.terrain_version());
     this.army.syncPeace(f, Array.from(w.army()), w.guards(), Array.from(w.garrison_flat()));
     this.army.syncWalls(this.walls.walks);

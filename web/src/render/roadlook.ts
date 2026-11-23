@@ -76,14 +76,14 @@ function dot(px: Uint8ClampedArray, size: number, cx: number, cy: number, r: num
 /** Pixels (RGBA, size x size) of packed earth: a dark warm brown with shallow cart ruts along the road (v), a paler crown, damp patches, grit, pebbles and dark clods. Seamless. */
 export function dirtPixels(size = 128): Uint8ClampedArray {
   const px = new Uint8ClampedArray(size * size * 4), rand = rng(4711), wx = weather(size, 91), grain = tileNoise(size, 32, 17);
-  const base = [112, 82, 52];
+  const base = [128, 96, 62];
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     const u = x / size, v = y / size, i = y * size + x;
     const rut = Math.exp(-Math.pow((u - 0.3) / 0.07, 2)) + Math.exp(-Math.pow((u - 0.7) / 0.07, 2));   // darker, damp wheel tracks
     const crown = 1 + 0.1 * Math.cos((u - 0.5) * Math.PI * 2);   // a little paler along the middle of the way
     const wave = 1 + 0.05 * Math.sin(v * Math.PI * 4 + u * 3);
     const damp = 1 - 0.16 * Math.max(0, wx[i] - 0.5) * 2;   // patches that stayed wet
-    const k = (1 - 0.3 * rut) * crown * wave * damp * (0.88 + grain[i] * 0.24) * (0.94 + rand() * 0.12);
+    const k = (1 - 0.22 * rut) * crown * wave * damp * (0.88 + grain[i] * 0.24) * (0.94 + rand() * 0.12);
     const o = i * 4;
     px[o] = base[0] * k; px[o + 1] = base[1] * k; px[o + 2] = base[2] * k; px[o + 3] = 255;
   }
@@ -111,8 +111,8 @@ export function gravelPixels(size = 128): Uint8ClampedArray {
   return px;
 }
 
-/** Pixels (RGBA) of cobbles: rounded stones of different greys and warm tints in staggered rows with dark joints and a little moss in them; a darker, mossier row of kerb stones runs down
- *  each side (the first and last eighth of the width). Seamless along v. */
+/** Pixels (RGBA) of cobbles: rounded stones of different greys and warm tints in staggered rows with dark joints and a little moss in them. Seamless in both directions (and mirrored
+ *  across the road at a joint, so it has no edge of its own: the verge is made in the shader). */
 export function cobblePixels(size = 128): Uint8ClampedArray {
   const px = new Uint8ClampedArray(size * size * 4), rand = rng(1313), wx = weather(size, 7), moss = tileNoise(size, 14, 29);
   const rows = 8, cols = 8, rh = size / rows, cw = size / cols;
@@ -127,15 +127,13 @@ export function cobblePixels(size = 128): Uint8ClampedArray {
     let rr = (176 + 10 * w) * k, gg = (170 + 4 * w) * k, bb = (160 - 8 * w) * k;
     const joint = Math.min(1, Math.max(0, (edge - 0.55) / 0.45)), mossy = joint * Math.max(0, moss[i] - 0.4) * 1.6;
     rr = rr * (1 - mossy * 0.6) + 70 * mossy * 0.6; gg = gg * (1 - mossy * 0.6) + 96 * mossy * 0.6; bb = bb * (1 - mossy * 0.6) + 48 * mossy * 0.6;
-    const side = Math.min(u, 1 - u), kerb = side < 0.125 ? 1 - side / 0.125 : 0;   // the kerb stones
-    const kk = 1 - kerb * 0.22; rr *= kk; gg *= kk * 0.98; bb *= kk * 0.94;
     const o = i * 4; px[o] = rr; px[o + 1] = gg; px[o + 2] = bb; px[o + 3] = 255;
   }
   return px;
 }
 
-/** Pixels (RGBA) of flagstones: big flat slabs, two across and three along, laid with tight joints in a running bond, pale and warm with veining and weathering, and a raised, slightly darker
- *  kerb at either edge of the road (the first and last tenth of the width). Seamless along v. */
+/** Pixels (RGBA) of flagstones: big flat slabs, two across and three along, laid with tight joints in a running bond, pale and warm with veining and weathering.
+ *  Seamless in both directions, and no edge of its own (the verge is made in the shader). */
 export function flagstonePixels(size = 128): Uint8ClampedArray {
   const px = new Uint8ClampedArray(size * size * 4), rand = rng(9090), wx = weather(size, 123), vein = tileNoise(size, 6, 41), fine = tileNoise(size, 40, 8);
   const rows = 3, rh = size / rows, slabs = 2, sw = size / slabs;
@@ -149,8 +147,6 @@ export function flagstonePixels(size = 128): Uint8ClampedArray {
     let k = slabTone[s] * joint * v1 * (0.9 + fine[i] * 0.2) * (0.9 + wx[i] * 0.2) * (0.97 + rand() * 0.06);
     const w = slabWarm[s];
     let rr = (204 + 8 * w) * k, gg = (198 + 2 * w) * k, bb = (184 - 8 * w) * k;
-    const side = Math.min(u, 1 - u);
-    if (side < 0.1) { const kk = 0.8 + 0.2 * (side / 0.1); rr *= kk; gg *= kk; bb *= kk * 0.97; if (side > 0.085) { rr *= 0.8; gg *= 0.8; bb *= 0.8; } }   // the kerb and its inner joint
     const o = i * 4; px[o] = rr; px[o + 1] = gg; px[o + 2] = bb; px[o + 3] = 255;
   }
   return px;

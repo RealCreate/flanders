@@ -12,7 +12,7 @@ function roadTextures(): THREE.DataArrayTexture {
   ROAD_MATERIALS.forEach((m, i) => data.set(roadPixels(m, TEX), i * layer));
   const t = new THREE.DataArrayTexture(data, TEX, TEX, ROAD_MATERIALS.length);
   t.format = THREE.RGBAFormat; t.type = THREE.UnsignedByteType;
-  t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.RepeatWrapping;   // (across the road the edge is the edge; along it the pattern repeats)
+  t.wrapS = THREE.MirroredRepeatWrapping; t.wrapT = THREE.RepeatWrapping;   // (a joint carries the main road's mapping over the mouths of the side roads, past 0..1 across: mirrored, the paving runs on without a seam)
   t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true;
   t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true; return t;
 }
@@ -54,10 +54,14 @@ export class Paths {
           diffuseColor.rgb *= mix(t0, t1, f > 0.001 ? w : 0.0);
         }`)
         .replace('#include <color_fragment>', `#include <color_fragment>
-        {   // the verge is ragged: the grass overlaps the road's soft edge unevenly, and the road is solid from there inwards
+        {   // the verge: a damp, darker fringe where the road meets the grass, ragged at two scales (broad lumps and fine blades), and a little grass creeping in over the edge
           float ea = clamp(diffuseColor.a / 0.95, 0.0, 1.0);
-          float en = rnoise(vWP * 1.7 + 11.0);
-          diffuseColor.a = 0.95 * smoothstep(0.10, 0.55, ea + (en - 0.5) * 0.55) * step(0.001, ea);
+          float broad = rnoise(vWP * 0.9 + 11.0), fine = rvn(vWP * 7.0 + 3.0);
+          float e = ea + (broad - 0.5) * 0.6 + (fine - 0.5) * 0.22;
+          float fringe = 1.0 - smoothstep(0.22, 0.62, e);
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.78, 0.74, 0.55) + vec3(0.015, 0.02, 0.0), fringe * 0.45);
+          diffuseColor.rgb *= 0.9 + 0.2 * rnoise(vWP * 0.33 + 5.0);   // (broad weathering: no two places of a long road look the same)
+          diffuseColor.a = 0.97 * smoothstep(0.04, 0.46, e) * smoothstep(0.0, 0.12, ea);   // (a vertex with no brightness at all stays invisible: the noise only roughens an edge, it does not make a road out of nothing)
         }
         float grow = clamp((uTick - vRoad.x) / 240.0, 0.0, 1.0);
         diffuseColor.a *= 1.0 - smoothstep(grow * 1.2 - 0.2, grow * 1.2, vRoad.y);

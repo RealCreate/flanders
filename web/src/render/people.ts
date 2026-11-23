@@ -60,6 +60,9 @@ interface Agent {
 }
 
 /** Villagers who live in houses, walk the village paths to their workplace and back. Hunters leave the lodge to stalk game. */
+/** How much faster than open ground one walks a road of this surface (-1 is no road). */
+export const roadSpeed = (level: number) => (level < 0 ? 1 : 1.25 * (1 + 0.08 * Math.min(3, level)));
+
 export class People {
   private agents: Agent[] = [];
   private nextId = NAMED_VILLAGERS.length;
@@ -86,21 +89,23 @@ export class People {
   private commuteBudget = 0;
   private stores: number[] = [];
   /** Dirt roads as [ax, az, bx, bz, ...] segments (World.roads_flat() without the buildings): people walk them faster. */
-  setRoads(flat: ArrayLike<number>) {
+  setRoads(flat: ArrayLike<number>, tiers: ArrayLike<number> = []) {
     this.roadGrid.clear();
     this.routes.clear();
     for (let i = 0; i + 5 < flat.length; i += 6) {
       const x0 = Math.floor((Math.min(flat[i], flat[i + 2]) - 2) / 8), x1 = Math.floor((Math.max(flat[i], flat[i + 2]) + 2) / 8), z0 = Math.floor((Math.min(flat[i + 1], flat[i + 3]) - 2) / 8), z1 = Math.floor((Math.max(flat[i + 1], flat[i + 3]) + 2) / 8);
-      for (let a = x0; a <= x1; a++) for (let b = z0; b <= z1; b++) { const k = a + ':' + b; let l = this.roadGrid.get(k); if (!l) this.roadGrid.set(k, l = []); l.push(flat[i], flat[i + 1], flat[i + 2], flat[i + 3]); }
+      for (let a = x0; a <= x1; a++) for (let b = z0; b <= z1; b++) { const k = a + ':' + b; let l = this.roadGrid.get(k); if (!l) this.roadGrid.set(k, l = []); l.push(flat[i], flat[i + 1], flat[i + 2], flat[i + 3], tiers[i / 6] ?? 0); }
     }
   }
-  private onRoad(x: number, z: number): boolean {
-    const l = this.roadGrid.get(Math.floor(x / 8) + ':' + Math.floor(z / 8)); if (!l) return false;
-    for (let i = 0; i < l.length; i += 4) {
+  /** The surface of the road at this spot (0 dirt .. 3 flagstones), or -1 off the roads: the better the surface the faster they walk (the same +8% a step as the core's armies). */
+  private roadLevel(x: number, z: number): number {
+    const l = this.roadGrid.get(Math.floor(x / 8) + ':' + Math.floor(z / 8)); if (!l) return -1;
+    let best = -1;
+    for (let i = 0; i < l.length; i += 5) {
       const dx = l[i + 2] - l[i], dz = l[i + 3] - l[i + 1], t = Math.max(0, Math.min(1, ((x - l[i]) * dx + (z - l[i + 1]) * dz) / (dx * dx + dz * dz || 1)));
-      if (Math.hypot(x - (l[i] + dx * t), z - (l[i + 1] + dz * t)) <= 1.5) return true;
+      if (Math.hypot(x - (l[i] + dx * t), z - (l[i + 1] + dz * t)) <= 1.5) best = Math.max(best, l[i + 4]);
     }
-    return false;
+    return best;
   }
   /** Hand carts that carry goods from workplaces to the storehouse (or the hall). */
   group = new THREE.Group();
@@ -379,7 +384,7 @@ export class People {
     // the village clock runs slowly now; people move a little faster when the clock is sped up, but never absurdly
     const vs = Math.min(2.5, 0.8 + 0.35 * Math.max(0.5, speed || 1)), step = Math.min(dt, 0.1);
     for (const a of this.agents) {
-      const mvSp = a.base * vs * (this.onRoad(a.x, a.z) ? 1.25 : 1) * (a.hunter && a.stage >= 1 ? 1.35 : 1) * (a.carry ? 0.85 : 1) * (a.fight ? 1.7 : 1);
+      const mvSp = a.base * vs * roadSpeed(this.roadLevel(a.x, a.z)) * (a.hunter && a.stage >= 1 ? 1.35 : 1) * (a.carry ? 0.85 : 1) * (a.fight ? 1.7 : 1);
       if (a.fight) this.duty(a, step); else if (a.crew) this.crewDuty(a, step);
       a.pace = 0;
       if (a.route.length && a.at < a.route.length) {
