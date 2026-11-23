@@ -69,7 +69,7 @@ fn every_building_has_a_stub_and_nothing_is_laid_by_itself() {
     let placed = [(HOUSE, 16, 0), (FARM, -30, 10), (WELL, 4, -14), (MARKET, 20, 24), (HOUSE, -14, -8)].iter().filter(|&&(k, x, y)| w.place(k, x, y, 0) >= 0).count();
     assert!(placed >= 3, "{placed} buildings placed");
     let lines = w.road_lines_flat(); let mut i = 0; let (mut stubs, mut roads) = (0, 0);
-    while i < lines.len() { if lines[i] == 0.0 { stubs += 1; } else { roads += 1; } i += 3 + 2 * lines[i + 2] as usize; }
+    while i < lines.len() { if lines[i] == 0.0 { stubs += 1; } else { roads += 1; } i += 5 + 2 * lines[i + 4] as usize; }
     assert_eq!(roads, 0, "no road laid by itself");
     assert_eq!(stubs, w.buildings.iter().filter(|b| has_stub(b.kind)).count(), "a stub for every building");
     // the stub ends where the node is
@@ -370,7 +370,7 @@ fn grading_does_not_fill_in_water() {
 }
 
 /// Number of drawn lines of the client list (stride varies: counted by walking it).
-fn line_count(w: &World) -> usize { let f = w.road_lines_flat(); let (mut o, mut n) = (0, 0); while o + 2 < f.len() { o += 3 + 2 * f[o + 2] as usize; n += 1; } n }
+fn line_count(w: &World) -> usize { let f = w.road_lines_flat(); let (mut o, mut n) = (0, 0); while o + 4 < f.len() { o += 5 + 2 * f[o + 4] as usize; n += 1; } n }
 
 /// A road that runs over a river is drawn (and graded) only on the dry banks: no drawn line has a leg through water, so no ribbon lies across the water or under a bridge.
 #[test]
@@ -382,11 +382,11 @@ fn a_road_is_not_drawn_across_water() {
     assert!(w.height_at(w.ox as f32 + 22.0, w.oy as f32) < 0.0, "water there");
     assert_eq!(w.lay_road(&[12, 0, 18, 0, 26, 0, 32, 0]), 0, "a road laid over the river");
     let f = w.road_lines_flat(); let (mut o, mut kind1) = (0, 0);
-    while o + 2 < f.len() {
-        let n = f[o + 2] as usize; let pts: Vec<(f32, f32)> = (0..n).map(|k| (f[o + 3 + 2 * k], f[o + 4 + 2 * k])).collect();
+    while o + 4 < f.len() {
+        let n = f[o + 4] as usize; let pts: Vec<(f32, f32)> = (0..n).map(|k| (f[o + 5 + 2 * k], f[o + 6 + 2 * k])).collect();
         if f[o] == 1.0 { kind1 += 1; }
         for p in pts.windows(2) { assert!(w.leg_is_dry(p[0], p[1]), "a drawn leg {p:?} is not dry"); }
-        o += 3 + 2 * n;
+        o += 5 + 2 * n;
     }
     assert!(kind1 >= 2, "the road is in two parts, one on each bank ({kind1})");
     for (s, _) in w.roads.iter().zip(&w.road_links) { for t in 0..=4 { let f = t as f32 / 4.0; assert!(w.height_at(s[0] + (s[3] - s[0]) * f, s[1] + (s[4] - s[1]) * f) > 0.0, "graded over water"); } }
@@ -510,7 +510,7 @@ fn a_gate_and_a_toll_house_have_a_road_under_them_but_bridges_do_not() {
     let mut w = rich();
     for x in [-8, 8] { w.place(WALL, x, 14, 0); }
     let gate = w.place(GATE, 0, 14, 0) as usize; let toll = w.place(TOLL, 34, -30, 2) as usize;
-    let lines = |w: &World| { let f = w.road_lines_flat(); let mut v = vec![]; let mut i = 0; while i < f.len() { let n = f[i + 2] as usize; v.push((f[i] as u8, f[i + 3..i + 3 + 2 * n].to_vec())); i += 3 + 2 * n; } v };
+    let lines = |w: &World| { let f = w.road_lines_flat(); let mut v = vec![]; let mut i = 0; while i < f.len() { let n = f[i + 4] as usize; v.push((f[i] as u8, f[i + 5..i + 5 + 2 * n].to_vec())); i += 5 + 2 * n; } v };
     let under: Vec<_> = lines(&w).into_iter().filter(|l| l.0 == 2).collect();
     assert_eq!(under.len(), 2, "a road under the gate and the toll house");
     let ns = w.nodes_all();

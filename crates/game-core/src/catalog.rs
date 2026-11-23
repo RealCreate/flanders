@@ -84,7 +84,7 @@ pub const FORESTER: u8 = 48;
 pub const EMBASSY: u8 = 49;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
-pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | ROAD | PLAZA | STABLE => 0, PASTURE | PIGSTY => 2, _ => 3 } }
+pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | PLAZA | STABLE => 0, PASTURE | PIGSTY => 2, _ => 3 } }   // (a road has its four surfaces: dirt, gravel, cobbles, flagstones)
 
 /// Pieces that reshape the ground instead of standing on it.
 pub fn is_edit(kind: u8) -> bool { matches!(kind, MOAT | RIVER | RAISE | LOWER) }
@@ -127,7 +127,7 @@ pub static DEFS: [Def; 50] = [
     Def { name: "Lower Ground", cat: 6, r: 1.9, weight: 1, cost: &[(W, 2)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Digs the ground away. Dig deep enough and it fills with water." },
     Def { name: "Port", cat: 5, r: 5.5, weight: 3, cost: &[(PL, 40), (ST, 20), (W, 30)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 3, req_arg: 0, housing: 0, max_slope: 0.5, pad: true, desc: "Merchant ships call here. Stock you have plenty of is sold for gold, and grain is bought when you run short. Must stand on the shore. Better tiers trade more." },
     Def { name: "Toll Post", cat: 5, r: 3.0, weight: 2, cost: &[(W, 20), (PL, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.5, pad: true, desc: "A keeper and a barrier on the road: travellers pay a toll. The busier the roads round it, the more it earns. Place it beside a path." },
-    Def { name: "Road", cat: 6, r: 1.0, weight: 0, cost: &[(W, 1)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 1.2, pad: false, desc: "A dirt road you lay yourself: click the points of the road and it runs in a smooth curve through them. A road end near the node at the end of a building's own path, a square's node or another road snaps onto it. People and soldiers prefer roads, they level the ground and are paved in time. A road joined to your village also widens the land you can build on, and may lead out beyond its edge." },
+    Def { name: "Road", cat: 6, r: 1.0, weight: 0, cost: &[(W, 1)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 1.2, pad: false, desc: "A dirt road you lay yourself: click the points of the road and it runs in a smooth curve through them. A road end near the node at the end of a building's own path, a square's node or another road snaps onto it. Workplaces need a road to the castle to work at full pace; people and soldiers prefer roads, they level the ground. Upgrade a stretch to gravel, cobbles and flagstones, and line it with trees, hedges, benches and lanterns. A road joined to your village also widens the land you can build on, and may lead out beyond its edge." },
     Def { name: "Bridge", cat: 4, r: 2.0, weight: 2, cost: &[(PL, 10), (W, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 9.0, pad: false, desc: "Spans a moat, river or narrow water. Click near the water: it snaps to the banks, finds the shortest way over and puts supports in the middle where the span needs them. Costs more planks the longer it is. Starts as a wooden footbridge; upgrade it to timber, stone and a great stone bridge, which span wider." },
     Def { name: "Infirmary", cat: 5, r: 4.2, weight: 3, cost: &[(ST, 40), (PL, 25), (W, 20)], jobs: 3, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "Monks and nurses tend the sick in a ward of beds with a herb garden. Every bed cures people during a plague and fewer die; it needs its staff. Upgrade it into a hospital, a great hospital and a royal hospital for more beds." },
     Def { name: "Graveyard", cat: 5, r: 3.6, weight: 2, cost: &[(ST, 20), (W, 10)], jobs: 1, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.4, pad: true, desc: "Consecrated ground where the dead are laid to rest. A gravedigger buries them; when plots run out, or there is no one to bury, bodies lie unburied and sickness and misery follow. Upgrade it for more plots." },
@@ -154,11 +154,20 @@ pub fn upgrade_cost(weight: u32, new_tier: u8) -> Vec<Amount> {
 
 /// Upgrade cost for a particular building: the weight-based cost, plus tools for the Iron Mine (its first level needs none, so a village can start on iron without tools).
 pub fn upgrade_cost_for(kind: u8, new_tier: u8) -> Vec<Amount> {
+    if kind == ROAD { return road_upgrade_cost(new_tier); }
     let d = &DEFS[kind as usize];
     let mut v = upgrade_cost(d.weight, new_tier);
     if d.name == "Iron Mine" { v.push((TL, 1 + new_tier as i32)); }
     v
 }
+
+/// What it costs to resurface one road piece (the stretch between it and its neighbours) with the surface of `new_tier`: gravel, cobbles, flagstones.
+pub fn road_upgrade_cost(new_tier: u8) -> Vec<Amount> {
+    match new_tier { 0 => vec![], 1 => vec![(ST, 1)], 2 => vec![(ST, 3), (PL, 1)], _ => vec![(ST, 5), (PL, 2), (BR, 1)] }
+}
+
+/// What one design option costs on one road piece (a road has a piece every few paces, so each is far cheaper than a building's).
+pub fn road_option_cost() -> Vec<Amount> { vec![(PL, 1), (ST, 1)] }
 
 /// Option bits 0-3 are open from the start of the game; bits 4-7 are the second tier, unlocked by the building's own tier (the `Opt` third field, 2 or 3).
 pub const OPT_BITS: usize = 8;
@@ -189,7 +198,8 @@ pub fn options(kind: u8) -> &'static [Opt] {
         STABLE => &[("Caravan horses", "Packhorses make newly dispatched caravans travel twice as fast. One equipped stable supplies the village. A burning stable cannot supply horses.", 0), ("Swift horses", "Better feed and shoeing: every horse in the village is 30% faster: caravans, envoys, treaty riders, heralds, wedding carriages and knights.", 0), ("Courier horses", "Fast riding horses: envoys, treaty riders and war heralds travel twice as fast.", 0), ("Warhorses", "Bred and trained for the charge: knights march 40% faster.", 0)],
         EMBASSY => &[("Merchants' hall", "A hall for the merchants' guild: newly dispatched caravans travel 75% faster.", 0), ("Herald's tower", "A tall tower where heralds are trained: envoys and war heralds travel twice as fast.", 0), ("Chancery", "Scribes ready every treaty in advance: treaty riders (trade pact, peace, alliance) travel twice as fast.", 0), ("Carriage house", "Fine carriages for royal weddings: wedding parties travel twice as fast.", 0)],
         MARKET => &[("Banner", "A pennant on a pole. Defenders fight 1% harder (up to +15% in all).", 0), ("Lanterns", "Lanterns at the door. +1 happiness (up to +10 from such pride).", 0), ("Awning", "A cloth awning. Shade for the workers: this building works 10% faster.", 0), ("Stone footing", "A stone plinth. A dry, solid floor: this building works 5% faster.", 1), ("Weigh house", "A public scale and a clerk keep the trading honest. This market works 10% faster.", 2), ("Striped canopies", "Rows of striped stall canopies. +1 happiness (up to +10 from such pride).", 2), ("Market cross", "A carved stone cross in the square. +1 happiness (up to +10 from such pride).", 2), ("Guild sign", "The traders' guild hangs its sign over the square. This market works 5% faster.", 3)],
-        MOAT | RIVER | RAISE | LOWER | FENCE | ROAD | PASTURE | PIGSTY => &[],
+        ROAD => &[("Trees", "Lime and oak trees along both verges of this stretch of road. Purely for looks.", 0), ("Hedges & flowers", "A low hedge and flower beds along the verge. Purely for looks.", 0), ("Benches", "Stone benches beside the road to rest on (needs a gravel road or better). Purely for looks.", 1), ("Lanterns", "Lamp posts that light the road at night (needs cobbles or better). Purely for looks.", 2)],
+        MOAT | RIVER | RAISE | LOWER | FENCE | PASTURE | PIGSTY => &[],
         _ => &[("Banner", "A pennant on a pole. Defenders fight 1% harder (up to +15% in all).", 0), ("Lanterns", "Lanterns at the door. +1 happiness (up to +10 from such pride).", 0), ("Awning", "A cloth awning. Shade for the workers: this building works 10% faster.", 0), ("Stone footing", "A stone plinth. A dry, solid floor: this building works 5% faster.", 1)],
     }
 }

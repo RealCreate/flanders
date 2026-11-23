@@ -225,33 +225,33 @@ impl World {
     /// Can a road piece stand at (dx, dy)? Returns the `can_place` code.
     pub fn road_can(&self, dx: i32, dy: i32) -> i32 { self.can_place(ROAD, dx, dy) }
 
-    fn push_run(v: &mut Vec<f32>, born: u32, run: &[(f32, f32)]) {
-        v.extend_from_slice(&[1.0, born as f32, run.len() as f32]);
+    fn push_run(v: &mut Vec<f32>, born: u32, style: (u8, u8), run: &[(f32, f32)]) {
+        v.extend_from_slice(&[1.0, born as f32, style.0 as f32, style.1 as f32, run.len() as f32]);
         for p in run { v.extend_from_slice(&[p.0, p.1]); }
     }
 
-    /// The drawn lines of the roads for the client: for each, [kind, born tick, n, x, y, x, y, ...]; kind 0 a building's stub (door to node), 1 a stretch of a road the player laid, 2 the road under a gate or a toll house (node to node).
+    /// The drawn lines of the roads for the client: for each, [kind, born tick, surface (tier), design (option bits), n, x, y, x, y, ...]; kind 0 a building's stub (door to node), 1 a stretch of a road the player laid, 2 the road under a gate or a toll house (node to node).
     pub fn road_lines_flat(&self) -> Vec<f32> {
         let mut v = vec![];
         for (i, b) in self.buildings.iter().enumerate() {
             if !has_stub(b.kind) { continue; }
             let _ = i;
             let (door, exit) = doors::door_world(b);
-            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 && self.leg_is_dry(door, exit) { v.extend_from_slice(&[0.0, b.born as f32, 2.0, door.0, door.1, exit.0, exit.1]); }
+            if (door.0 - exit.0).hypot(door.1 - exit.1) > 0.3 && self.leg_is_dry(door, exit) { v.extend_from_slice(&[0.0, b.born as f32, 0.0, 0.0, 2.0, door.0, door.1, exit.0, exit.1]); }
         }
         // the road under a gate and a toll house: a ribbon between their two nodes (kind 2). A bridge and a drawbridge show no road: their deck is their own.
         for (b, ns) in self.buildings.iter().zip(self.nodes_all()) {
-            if matches!(b.kind, GATE | TOLL) && ns.len() == 2 && self.leg_is_dry(ns[0], ns[1]) { v.extend_from_slice(&[2.0, b.born as f32, 2.0, ns[0].0, ns[0].1, ns[1].0, ns[1].1]); }
+            if matches!(b.kind, GATE | TOLL) && ns.len() == 2 && self.leg_is_dry(ns[0], ns[1]) { v.extend_from_slice(&[2.0, b.born as f32, 0.0, 0.0, 2.0, ns[0].0, ns[0].1, ns[1].0, ns[1].1]); }
         }
         for e in self.road_edges() {
-            let born = self.buildings[e.a].born.max(self.buildings[e.b].born);
+            let born = self.buildings[e.a].born.max(self.buildings[e.b].born); let style = self.edge_style(e.a, e.b);
             // only the dry stretches are drawn: a road stops at the bank and starts again on the far bank (a bridge or a drawbridge carries it over, with its own deck)
             let mut run: Vec<(f32, f32)> = vec![];
             for k in 0..e.pts.len() {
-                if k > 0 && !self.leg_is_dry(e.pts[k - 1], e.pts[k]) { if run.len() >= 2 { Self::push_run(&mut v, born, &run); } run.clear(); }
+                if k > 0 && !self.leg_is_dry(e.pts[k - 1], e.pts[k]) { if run.len() >= 2 { Self::push_run(&mut v, born, style, &run); } run.clear(); }
                 run.push(e.pts[k]);
             }
-            if run.len() >= 2 { Self::push_run(&mut v, born, &run); }
+            if run.len() >= 2 { Self::push_run(&mut v, born, style, &run); }
         }
         v
     }

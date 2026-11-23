@@ -25,6 +25,7 @@ export function productionProblemText(p: ProductionProblem, resource = ''): stri
     case 6: return 'This field is resting to restore its soil. Choose Always sow to resume immediately.';
     case 7: return 'No usable deposit nearby. Check the deposit or build beside another vein.';
     case 8: return 'The deposit is dormant. Production resumes when it has regrown.';
+    case 9: return 'No road to the castle: it works at half pace. Lay a road from this building\'s node to the castle (or to a road that reaches it).';
     default: return '';
   }
 }

@@ -2368,7 +2368,7 @@ function placeHint(k: number) {
   if (k === 24) return `Moat ${(1 + 0.13 * moatWidth).toFixed(1)}× wide — press R to make it thinner or broader · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Alt = any angle · Esc cancels`;
   if (isEarthwork(k)) return `${defs[k].name} · ${earthworkH < 0 ? 'Auto (' + (k === 33 ? '+2.2' : '−2.2') + ')' : 'target height ' + levelHeightLabel(earthworkH)} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · Esc cancels`;
   if (PEN_SPACING[k]) return `${defs[k].name} · ${SHAPES.find(x => x.id === penShape)?.hint ?? ''} · hold Alt for any angle · Esc cancels`;
-  if (k === 37) return 'Road — click the points of the road: it runs in a smooth curve through them · its ends snap onto nodes (the rings at the edge of a building, the four sides of a plaza) and onto other roads · double-click or Enter to build · right-click takes the last point back · Esc cancels';
+  if (k === 37) return 'Road — click the points of the road: it runs in a smooth curve through them · lay it from the ring of a building to the castle: workplaces need a road to the castle (or stand in its yard) to work at full pace · its ends snap onto nodes (the rings at the edge of a building, the four sides of a plaza) and onto other roads · double-click or Enter to build · right-click takes the last point back · Esc cancels';
   if (k === 22) return 'Gate — click a wall piece to turn it into a gate · Esc cancels';
   if (k === 23) return 'Drawbridge — place it across a moat · R rotates · Esc cancels';
   return `${defs[k].name} — click to place · R rotates · Esc cancels`;
@@ -2801,6 +2801,8 @@ function updateSelection() {
   }
   if (kind === 19) html += `<p class="muted">Tier ${tier + 1}: ${['spearmen and archers', '+ swordsmen', '+ knights', '+ catapults'][tier]}. Open the Army tab to recruit.</p>`;
   if (kind === 2 || kind === 21 || kind === 22) html += `<div class="btnrow"><button class="pbtn" data-act="selwalls">Select connected walls</button></div>`;
+  if (kind === 37) { html += roadPanelHtml(selectedIdx, tier, stocks); ui.setSelectedPane(html, demolitionTip(w, selectedIdx)); return; }
+  if (d.cycle && (w.road_access_flat()[selectedIdx] ?? 1) === 0) html += `<p class="muted road-warn">${icon('road', 16)} No road to the castle: this workplace works at half pace. Lay a road from its ring to the castle.</p>`;
   if (tier < defs[kind].maxTier) {
     const uc = upgrade_cost_flat(kind, tier + 1), cost: [number, number][] = []; for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1]]);
     const ok = cost.every(([r, n]) => stocks[r] >= n);
@@ -2808,6 +2810,29 @@ function updateSelection() {
   } else html += `<p><b>Fully upgraded.</b></p>`;
   html += optionsHtml(selectedIdx, kind, tier, stocks, kind === 47 ? 'Upgrades' : 'Design options');
   ui.setSelectedPane(html, kind !== 15 ? demolitionTip(w, selectedIdx) : '');
+}
+
+/** The panel of a road piece: the stretch it belongs to, whether it reaches the castle, its surface (upgraded along the whole stretch) and its design (trees, hedges, benches, lanterns). */
+function roadPanelHtml(idx: number, tier: number, stocks: number[]): string {
+  const w = lv.world, stretch = Array.from(w.road_stretch(idx)), n = Math.max(1, stretch.length), bf = w.buildings_flat();
+  const tiers = stretch.map(i => bf[i * 10 + 1]), low = Math.min(...tiers), joined = (w.road_joined_flat()[idx] ?? 0) === 1;
+  let html = `<div class="stats"><div class="stat"><b>${n}</b><span>pieces in this stretch</span></div><div class="stat"><b>${joined ? 'Yes' : 'No'}</b><span>reaches the castle</span></div></div>`;
+  if (!joined) html += `<p class="muted road-warn">${icon('road', 16)} This road is not joined to the castle. Workplaces on it work at half pace until a road runs on to the castle's own node.</p>`;
+  if (low !== tier) html += `<p class="muted">Part of this stretch is still ${esc(tierName(37, low).toLowerCase())}.</p>`;
+  if (tier < defs[37].maxTier) {
+    const uc = upgrade_cost_flat(37, tier + 1), cost: [number, number][] = [];
+    for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1] * n]);
+    const ok = cost.every(([r, c]) => stocks[r] >= c);
+    html += `<div><h3>Resurface as ${esc(tierName(37, tier + 1).toLowerCase())}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div><button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Resurface the stretch' : 'Not enough resources'}</button>`;
+  } else html += `<p><b>Flagstones: the finest road there is.</b></p>`;
+  const opts = defs[37].opts ?? [], have = w.options_flat()[idx] ?? 0, oc = World.option_cost_flat(37), ocost: [number, number][] = [];
+  for (let i = 0; i < oc.length; i += 2) ocost.push([oc[i], oc[i + 1] * n]);
+  const afford = ocost.every(([r, c]) => stocks[r] >= c);
+  html += `<div><h3>Design</h3><div class="optlist">` + opts.map((op, i) => {
+    const on = (have & (1 << i)) !== 0, locked = low < op.t;
+    return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${esc(tierName(37, op.t).toLowerCase())}` : on ? 'along the stretch — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
+  }).join('') + `</div></div><p class="muted">Upgrades and design cover the whole stretch up to the next junction.</p>`;
+  return html;
 }
 
 /** The optional designs of a building: small changes to its look and use, each with what it does, what it costs, and a click to build or remove it. */
@@ -2977,17 +3002,17 @@ function onAct(a: string) {
   if (a === 'embassy:open') { openEmbassy(); return; }
   if (a.startsWith('etab:')) { embassyTab = a.slice(5) === 'dip' ? 'dip' : 'building'; updateSelection(); return; }
   if (a.startsWith('opt:')) {
-    const bit = Number(a.slice(4)), on = ((lv.world.options_flat()[selectedIdx] ?? 0) & (1 << bit)) === 0;
-    const code = lv.world.set_option(selectedIdx, bit, on);
-    if (code === 0) { commit({ op: 'option', idx: selectedIdx, kind: bit, x: on ? 1 : 0 }); sound.upgrade(); afterLocalChange(); } else ui.toast(code === -6 ? 'Not enough resources.' : code === -10 ? 'This building needs a better tier first.' : 'Cannot do that.', 'bad');
+    const bit = Number(a.slice(4)), on = ((lv.world.options_flat()[selectedIdx] ?? 0) & (1 << bit)) === 0, isRoad = lv.world.buildings_flat()[selectedIdx * 10] === 37;
+    const code = isRoad ? lv.world.set_road_option(selectedIdx, bit, on) : lv.world.set_option(selectedIdx, bit, on);
+    if (code === 0) { commit(isRoad ? { op: 'option', idx: selectedIdx, kind: bit, x: on ? 1 : 0, y: 1 } : { op: 'option', idx: selectedIdx, kind: bit, x: on ? 1 : 0 }); sound.upgrade(); afterLocalChange(); } else ui.toast(code === -6 ? 'Not enough resources.' : code === -10 ? 'This building needs a better tier first.' : 'Cannot do that.', 'bad');
     return;
   }
   if (a === 'hero') { const code = lv.world.hero_hire(); if (code === 0) { commit({ op: 'hero' }); sound.upgrade(); afterLocalChange(); } else ui.toast(code === -6 ? 'Not enough coin (150).' : code === -4 ? 'You already have a lord.' : 'Cannot do that.', 'bad'); return; }
   if (a === 'deselect') { selectBuilding(null); return; }
   const w = lv.world;
   if (a === 'upgrade') {
-    const code = w.upgrade(selectedIdx);
-    if (code === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit({ op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
+    const road = w.buildings_flat()[selectedIdx * 10] === 37, code = road ? w.upgrade_road(selectedIdx) : w.upgrade(selectedIdx);
+    if (code === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit(road ? { op: 'upgrade', idx: selectedIdx, kind: 1 } : { op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
     else if (code === -3) { ui.toast('Not enough room to grow: demolish the buildings in the way (hover Upgrade to see them).', 'bad'); sound.error(); }
     afterLocalChange(selectedIdx ?? undefined);
   } else if (a === 'demolish') {
@@ -3122,7 +3147,8 @@ function roadCommit() {
   const pts = subdivide(picked); if (pts.length > 64) { ui.toast('That road is too long for one go: lay it in stretches.', 'bad'); roadReset(); return; }
   const flat = pts.flatMap(q => [Math.round(q.x - lv.ox), Math.round(q.z - lv.oz)]), before = lv.world.building_count();
   const code = lv.world.lay_road(Int32Array.from(flat)), made = lv.world.building_count() - before;
-  if (made > 0) { commit({ op: 'road', units: flat }); afterLocalChange(); sound.place(2); updateHud(); ui.toast(code < 0 ? `${made} points of the road laid — ${PLACE_ERRORS[code] ?? 'then something was in the way'}.` : 'Road laid.', code < 0 ? 'info' : 'good'); }
+  if (made > 0) { commit({ op: 'road', units: flat }); afterLocalChange(); sound.place(2); updateHud(); const reaches = (lv.world.road_joined_flat()[lv.world.building_count() - 1] ?? 0) === 1;
+    ui.toast(code < 0 ? `${made} points of the road laid — ${PLACE_ERRORS[code] ?? 'then something was in the way'}.` : reaches ? 'Road laid — it reaches the castle.' : 'Road laid — it does not reach the castle yet: workplaces on it still work at half pace.', code < 0 || !reaches ? 'info' : 'good'); }
   else { ui.toast(PLACE_ERRORS[code] ?? 'Nothing could be laid there.', 'bad'); sound.error(); }
   roadReset(); lv.nodes.setActive(selectedKind === 37);
 }

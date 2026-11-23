@@ -6,7 +6,7 @@ import { buildRoadMesh, cutPts, pointAt, EDGE } from '../src/render/roadmesh.ts'
 import { roadHalfWidth } from '../src/render/roadlook.ts';
 
 const HALVES = [roadHalfWidth(0), roadHalfWidth(2)];   // dirt, stone
-const flat = lines => lines.flatMap(l => [l.kind, l.born ?? 0, l.pts.length / 2, ...l.pts]);
+const flat = lines => lines.flatMap(l => [l.kind, l.born ?? 0, l.tier ?? 0, l.opts ?? 0, l.pts.length / 2, ...l.pts]);
 const arm = (deg, len, from = [0, 0], kind = 1) => { const a = (deg * Math.PI) / 180; return { kind, born: 0, pts: [from[0] + Math.cos(a) * len, from[1] + Math.sin(a) * len, ...from] }; };
 const dir = (deg, d) => [Math.cos((deg * Math.PI) / 180) * d, Math.sin((deg * Math.PI) / 180) * d];
 
@@ -18,7 +18,7 @@ const distLine = (px, pz, pts) => { let d = Infinity; for (let k = 2; k < pts.le
 
 function sane(m) {
   const n = m.x.length;
-  for (const a of [m.x, m.z, m.a, m.u, m.v, m.born, m.along, m.pave]) { assert.equal(a.length, n); for (const v of a) assert.ok(Number.isFinite(v), 'finite'); }
+  for (const a of [m.x, m.z, m.a, m.u, m.v, m.born, m.along, m.mat]) { assert.equal(a.length, n); for (const v of a) assert.ok(Number.isFinite(v), 'finite'); }
   assert.ok(m.idx.length % 3 === 0);
   for (const i of m.idx) assert.ok(Number.isInteger(i) && i >= 0 && i < n, 'index in range');
 }

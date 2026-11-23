@@ -35,7 +35,7 @@ test('turning the building moves its ring and stub consistently', () => {
 });
 
 test('the road mesh draws a road under a gate or a toll house (kind 2) and nothing where a bridge stands', () => {
-  const flat = lines => lines.flatMap(l => [l.kind, 0, l.pts.length / 2, ...l.pts]);
+  const flat = lines => lines.flatMap(l => [l.kind, 0, 0, 0, l.pts.length / 2, ...l.pts]);
   const gate = buildRoadMesh(flat([{ kind: 2, pts: [0, -3.8, 0, 3.8] }]), 1.15);
   assert.ok(gate.idx.length >= 12 && gate.x.length > 6, 'a ribbon under the gate');
   assert.ok(gate.z.every(z => z > -3.8 - 2 && z < 3.8 + 2) && Math.max(...gate.x) - Math.min(...gate.x) < 4, 'between its two nodes and narrower than the building');
