@@ -420,6 +420,14 @@ export class UI {
     </div>
     <p class="muted" id="reserve-stock"></p>
     <div class="btnrow"><button type="button" class="pbtn" data-close="reserves">Close</button><button id="reserve-save" class="pbtn primary">Save reserves</button></div>
+  </form></div>
+<div class="overlay clear" id="split" hidden>
+  <form class="sheet" id="split-form" aria-labelledby="split-title" role="dialog" aria-modal="true">
+    <h2 id="split-title">${icon('split', 26)} Split the army</h2>
+    <p class="muted">Choose how many of each troop leave to form a new army. The rest stay behind.</p>
+    <div id="split-rows"></div>
+    <p class="muted" id="split-sum"></p>
+    <div class="btnrow"><button type="button" class="pbtn" data-close="split">Cancel</button><button id="split-go" class="pbtn primary">Split off</button></div>
   </form>
 </div>
 <div class="overlay clear" id="villagers" hidden>
@@ -564,7 +572,14 @@ export class UI {
       const grain = $<HTMLInputElement>('reserve-grain').valueAsNumber, wood = $<HTMLInputElement>('reserve-wood').valueAsNumber;
       if (this.h.setReserves(grain, wood)) this.modal('reserves', false);
     };
-    for (const id of ['reserves', 'villagers']) $(id).onkeydown = e => {
+    $<HTMLFormElement>('split-form').onsubmit = e => {
+      e.preventDefault();
+      const take = [...document.querySelectorAll<HTMLInputElement>('#split-rows input')].map(i => i.valueAsNumber || 0);
+      const go = this.splitDone; if (!go) return;
+      if (go(take)) { this.splitDone = null; this.modal('split', false); }
+    };
+    $('split-rows').oninput = () => this.splitSum();
+    for (const id of ['reserves', 'villagers', 'split']) $(id).onkeydown = e => {
       if (e.key === 'Escape') { e.stopPropagation(); this.modal(id, false); }
     };
     $('work-body').onclick = e => this.workClick(e); $('work-body').onchange = e => this.workChange(e);
@@ -1037,6 +1052,27 @@ export class UI {
     if (visible) { marker.style.left = x + 'px'; marker.style.top = y + 'px'; }
   }
 
+  private splitDone: ((take: number[]) => boolean) | null = null;
+  /** Ask which troops leave an army. `done` gets the counts per kind and returns true to close the card. */
+  openSplit(have: readonly number[], done: (take: number[]) => boolean) {
+    this.splitDone = done;
+    $('split-rows').innerHTML = have.map((n, i) => n > 0
+      ? `<div class="mrow"><span class="mi">${unitIcon(i, 24)}</span><span class="mn">${units[i].name}<small>${n} in the army</small></span>
+        <input type="number" min="0" max="${n}" step="1" value="${Math.floor(n / 2)}" data-have="${n}" aria-label="${units[i].name} to split off"></div>`
+      : `<input type="number" value="0" data-have="0" hidden>`).join('');
+    this.splitSum(); this.modal('split', true);
+    $('split-rows').querySelector<HTMLInputElement>('input:not([hidden])')?.focus();
+  }
+  private splitSum() {
+    const ins = [...document.querySelectorAll<HTMLInputElement>('#split-rows input')];
+    let take = 0, have = 0, ok = true;
+    for (const i of ins) {
+      const n = i.valueAsNumber || 0, max = Number(i.dataset.have);
+      take += n; have += max; if (n < 0 || n > max || !Number.isInteger(n)) ok = false;
+    }
+    $('split-sum').textContent = `${take} leave · ${have - take} stay`;
+    $<HTMLButtonElement>('split-go').disabled = !ok || take === 0 || take === have;
+  }
   openReserves() {
     const h = this.lastHud;
     if (!h) return;

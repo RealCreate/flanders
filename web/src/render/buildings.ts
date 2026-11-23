@@ -12,7 +12,7 @@ import { tileableNoise } from './water';
 const TILE = 2; // one texture repeat covers 2 world units
 function tex(paint: (g: CanvasRenderingContext2D, s: number) => void, s = 256) {
   const c = document.createElement('canvas'); c.width = c.height = s;
-  paint(c.getContext('2d')!, s);
+  paint(c.getContext('2d', { willReadFrequently: true })!, s);
   const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
   t.userData.canvas = c;
   return t;
@@ -77,7 +77,7 @@ function rows(g: CanvasRenderingContext2D, s: number, base: string, lines: strin
 }
 /** Derive a tangent-space normal map from a painted texture: dark mortar, grooves and gaps become recesses, light parts stand proud. */
 function normalFrom(c: HTMLCanvasElement, strength: number) {
-  const s = c.width, src = c.getContext('2d')!.getImageData(0, 0, s, s).data, h = new Float32Array(s * s);
+  const s = c.width, src = c.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, s, s).data, h = new Float32Array(s * s);
   for (let i = 0; i < s * s; i++) h[i] = (src[i * 4] * 0.3 + src[i * 4 + 1] * 0.59 + src[i * 4 + 2] * 0.11) / 255;
   const out = new Uint8Array(s * s * 4);
   for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) {

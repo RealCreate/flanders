@@ -570,3 +570,12 @@ body.cmd-mode #cs-sel { display: none; }
 #battle-close { position: absolute; top: 4px; right: 6px; pointer-events: auto; background: none; border: 0; color: #ffd8cf; font-size: 20px; line-height: 1; cursor: pointer; opacity: .7; padding: 2px 6px; }
 #battle-close:hover { opacity: 1; }
 #btn-bell.alert { color: #ff9a88; animation: pulse 1.6s ease-in-out infinite; }
+
+/* what an Upgrade would change: "what · now → after" */
+.upgain { margin-top: 6px; }
+.gains { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; width: 100%; }
+.gains td { padding: 2px 6px 2px 0; vertical-align: top; }
+.gains td:first-child { color: var(--muted, #8a8a8a); }
+.gains td:nth-child(3) { opacity: .6; padding: 2px 6px; }
+.gains td:last-child { color: #6bbf6b; }
+#split-rows .mrow input { width: 84px; margin-left: auto; }

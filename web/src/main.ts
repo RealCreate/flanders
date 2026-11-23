@@ -1245,10 +1245,16 @@ function detAction(a: string, id: number) {
   if (a === 'halt') { w.det_halt(id); attackTargets.delete(id); commit({ op: 'halt', idx: id }); }
   else if (a === 'recall') { void orderArmies([id], orderRecall); return; }
   else if (a === 'split') {
-    const take = u.map(n => Math.floor(n / 2));
-    if (take.every(n => n === 0)) { ui.toast('This army is too small to split.', 'info'); return; }
-    const nid = w.det_split(id, Uint32Array.from(take)); if (!nid) { ui.toast('This army cannot be split like that.', 'bad'); return; }
-    commit({ op: 'split', idx: id, units: take }); ui.toast('The army split in two. Select either half and give it its own orders.', 'good');
+    if (u.reduce((s, n) => s + n, 0) < 2) { ui.toast('This army is too small to split.', 'info'); return; }
+    ui.openSplit(u, take => {
+      const world = lv.world;
+      if (world !== w || !detUnits(id)) return true;
+      const nid = world.det_split(id, Uint32Array.from(take)); if (!nid) { ui.toast('This army cannot be split like that.', 'bad'); return false; }
+      commit({ op: 'split', idx: id, units: take }); ui.toast('The army split in two. Select either half and give it its own orders.', 'good');
+      lv.afterTick(); showRoute(); updateDets(); updateHud();
+      return true;
+    });
+    return;
   } else if (a === 'merge') {
     const pos = lv.field.position(id); let best = 0, bd = 12;
     if (pos) for (const o of lv.field.ids()) { if (o === id) continue; const p = lv.field.position(o)!; const d = Math.hypot(p.x - pos.x, p.z - pos.z); if (d < bd) { bd = d; best = o; } }
@@ -2801,19 +2807,51 @@ function updateSelection() {
     html += h.length ? `<div><h3>${w.hero_name()}</h3><div class="stats"><div class="stat"><b>Level ${h[1]}</b><span>lord</span></div><div class="stat"><b>${h[2]}${h[3] ? ' / ' + h[3] : ''}</b><span>experience</span></div></div><p class="muted">Defenders hit harder and break less easily under a lord. He learns with every defence won, and may fall in a defeat.</p></div>`
       : `<div><h3>A lord to lead you</h3><p class="muted">A lord or lady in command makes every defender hit harder and keeps them from breaking. 150 coins.</p></div><button class="pbtn primary" data-act="hero" ${stocks[8] >= 150 ? '' : 'disabled'}>Take a lord into service</button>`;
   }
+  if (kind === 19) html += rallyHtml(0);
+  if (kind === 15 && tier >= 3) html += rallyHtml(1);
   if (kind === 19) html += `<p class="muted">Tier ${tier + 1}: ${['spearmen and archers', '+ swordsmen', '+ knights', '+ catapults'][tier]}. Open the Army tab to recruit.</p>`;
   if (kind === 2 || kind === 21 || kind === 22) html += `<div class="btnrow"><button class="pbtn" data-act="selwalls">Select connected walls</button></div>`;
   if (kind === 37) { html += roadPanelHtml(selectedIdx, tier, stocks); ui.setSelectedPane(html, demolitionTip(w, selectedIdx)); return; }
   if (d.cycle && (w.road_access_flat()[selectedIdx] ?? 1) === 0) html += `<p class="muted road-warn">${icon('road', 16)} No road to the castle: this workplace works at half pace. Lay a road from its ring to the castle.</p>`;
   if (tier < defs[kind].maxTier) {
     const uc = upgrade_cost_flat(kind, tier + 1), cost: [number, number][] = []; for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1]]);
-  if (kind === 19) html += rallyHtml(0);
-  if (kind === 15 && tier >= 3) html += rallyHtml(1);
     const ok = cost.every(([r, n]) => stocks[r] >= n);
-    html += `<div><h3>Upgrade to ${tierName(kind, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div><button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button>`;
+    html += `<div><h3>Upgrade to ${tierName(kind, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div>${upgradeGainsHtml(kind, tier, hp[selectedIdx * 3 + 1], recipe)}<button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button>`;
   } else html += `<p><b>Fully upgraded.</b></p>`;
   html += optionsHtml(selectedIdx, kind, tier, stocks, kind === 47 ? 'Upgrades' : 'Design options');
   ui.setSelectedPane(html, kind !== 15 ? demolitionTip(w, selectedIdx) : '');
+}
+
+/** What pressing Upgrade on a building would change: each line is "what: now → after", so the player knows exactly what the cost buys. Mirrors the tier rules of the core (see `staffing`, `max_hp`, `storage_cap`). */
+function upgradeGainsHtml(kind: number, tier: number, maxHp: number, recipe: { inputs: [number, number][]; outputs: [number, number][] }): string {
+  const d = defs[kind], t1 = tier + 1;
+  const rows: [string, string, string][] = [];
+  const io = (a: [number, number][]) => a.map(([r, n]) => `${resIcon(r)} ${n}`).join(' ');
+  const hp1 = maxHp * (1 + 0.8 * t1) / (1 + 0.8 * tier);
+  rows.push(['Health', `${Math.round(maxHp)}`, `${Math.round(hp1)} hp (and fully repaired)`]);
+  if (d.cycle && recipe.outputs.length) {
+    rows.push(['Makes each cycle', io(scaled(recipe.outputs, tier)), io(scaled(recipe.outputs, t1))]);
+    if (recipe.inputs.length) rows.push(['Uses each cycle', io(scaled(recipe.inputs, tier)), io(scaled(recipe.inputs, t1))]);
+  }
+  if (d.jobs > 0) rows.push(['Workers needed', `${d.jobs * (tier + 1)}`, `${d.jobs * (tier + 2)}`]);
+  if (d.housing > 0) rows.push(['Housing', `${d.housing * (tier + 1)} people`, `${d.housing * (tier + 2)} people`]);
+  if (kind === 15) {
+    rows.push(['Storage per resource', `${600 + 200 * tier}`, `${600 + 200 * t1}`]);
+    rows.push(['Guards', `${2 * (tier + 1)}`, `${2 * (tier + 2)}`]);
+  }
+  if (d.name === 'Storehouse') rows.push(['Storage per resource', `+${250 * (tier + 1)}`, `+${250 * (tier + 2)}`]);
+  if (kind === 3) rows.push(['Garrison', `${2 * (tier + 1) + 2}`, `${2 * (tier + 2) + 2}`]);
+  if (kind === 26) rows.push(['Garrison', `${4 * (tier + 1) + 4}`, `${4 * (tier + 2) + 4}`]);
+  if (d.name === 'Chapel') rows.push(['Burial plots', `${6 * (tier + 1)}`, `${6 * (tier + 2)}`]);
+  if (d.name === 'Graveyard') rows.push(['Burial plots', `${20 * (tier + 1)}`, `${20 * (tier + 2)}`]);
+  if (d.name === 'Infirmary') rows.push(['Beds', `${4 * (tier + 1)}`, `${4 * (tier + 2)}`]);
+  if (kind === 19) rows.push(['Trains', ['spearmen, archers', '+ swordsmen', '+ knights', '+ catapults'][tier], ['+ swordsmen', '+ knights', '+ catapults', ''][tier]]);
+  if (d.name === 'Gate' && tier === 1) rows.push(['Gate', 'open', 'can be shut against raiders']);
+  const fp0 = footprint(kind, tier), fp1 = footprint(kind, t1);
+  if (fp1 > fp0 + 0.05) rows.push(['Room it takes', `${fp0.toFixed(1)}`, `${fp1.toFixed(1)} (neighbours may need to make way)`]);
+  const fl0 = flammability_of(kind, tier), fl1 = flammability_of(kind, t1);
+  if (fl1 < fl0 - 0.005) rows.push(['Fire risk', `${Math.round(fl0 * 100)}%`, `${Math.round(fl1 * 100)}%`]);
+  return `<div class="upgain"><div class="eyebrow">What you get</div><table class="gains">${rows.map(([k, a, b]) => `<tr><td>${k}</td><td>${a}</td><td>→</td><td><b>${b}</b></td></tr>`).join('')}</table></div>`;
 }
 
 /** The panel of a road piece: the stretch it belongs to, whether it reaches the castle, its surface (upgraded along the whole stretch) and its design (trees, hedges, benches, lanterns). */
@@ -2980,6 +3018,12 @@ function onAct(a: string) {
     else ui.toast(code === -2 ? 'The stalls have not that much left.' : code === -6 ? 'You cannot pay for that.' : code === -7 ? 'The stores have no room for that.' : 'That is not for sale.', 'bad');
     return;
   }
+  if (a === 'rally:0' || a === 'rally:1') { rallyPick = Number(a.slice(6)); ui.hint('Click the ground where new armies should gather.'); return; }
+  if (a === 'rally:reset0' || a === 'rally:reset1') {
+    const which = Number(a.slice(11));
+    if (lv.world.set_rally(which, 0, 0, true) === 0) { commit({ op: 'rally', kind: 2 + which }); sound.click(); ui.toast('New armies gather at the default spot again.', 'good'); updateSelection(); }
+    return;
+  }
   if (a === 'zone' || a === 'zone:reset') {
     if (a === 'zone') { zoneIdx = selectedIdx; ui.hint('Click the ground where the forester should plant (within 60 of it).'); return; }
     if (lv.world.set_plant_zone(selectedIdx, -2147483648, 0) === 0) { commit({ op: 'zone', idx: selectedIdx, x: 0, y: 0 }); sound.click(); }
@@ -3018,12 +3062,6 @@ function onAct(a: string) {
     const road = w.buildings_flat()[selectedIdx * 10] === 37, code = road ? w.upgrade_road(selectedIdx) : w.upgrade(selectedIdx);
     if (code === 0) { const f = w.buildings_flat(), o = selectedIdx * 10; commit(road ? { op: 'upgrade', idx: selectedIdx, kind: 1 } : { op: 'upgrade', idx: selectedIdx }); ui.toast('Building upgraded.', 'good'); sound.upgrade(); placedFx(f[o], f[o + 2], f[o + 3], true); }
     else if (code === -3) { ui.toast('Not enough room to grow: demolish the buildings in the way (hover Upgrade to see them).', 'bad'); sound.error(); }
-  if (a === 'rally:0' || a === 'rally:1') { rallyPick = Number(a.slice(6)); ui.hint('Click the ground where new armies should gather.'); return; }
-  if (a === 'rally:reset0' || a === 'rally:reset1') {
-    const which = Number(a.slice(11));
-    if (lv.world.set_rally(which, 0, 0, true) === 0) { commit({ op: 'rally', kind: 2 + which }); sound.click(); ui.toast('New armies gather at the default spot again.', 'good'); updateSelection(); }
-    return;
-  }
     afterLocalChange(selectedIdx ?? undefined);
   } else if (a === 'demolish') {
     if (w.demolish(selectedIdx)) { const f = w.buildings_flat(); void f; commit({ op: 'demolish', idx: selectedIdx }); sound.demolish(); selectedIdx = null; afterLocalChange(); rig.shake(0.25); }
@@ -3264,6 +3302,20 @@ function plantClick(e: { clientX: number; clientY: number }) {
   if (n > 0) { commit({ op: 'plant', x: dx, y: dy, kind: plantR }); afterLocalChange(); sound.place(3); updateHud(); ui.hint(`Planted ${n} tree${n === 1 ? '' : 's'}. ${placeHint(PLANT_TOOL)}`); }
   else { const msg = lv.world.stocks()[0] < 1 ? 'No wood to plant with.' : 'No room to plant here: trees need free ground inside your land.'; ui.hint(msg, true); ui.toast(msg, 'bad'); sound.error(); }
 }
+/** The rally point of the barracks (0) or the castle (1): where a new army stands. By default it is outside, at the road node in front of the building. */
+function rallyHtml(which: number) {
+  const r = lv.world.rally_flat(which), mine = r[2] === 1, name = which === 0 ? 'barracks' : 'castle';
+  return `<div><h3>Rally point</h3><p class="muted">New armies from the ${name} gather ${mine ? 'at the spot you chose' : 'outside, at the road in front of it'} (${Math.round(r[0])}, ${Math.round(r[1])}).</p><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="rally:${which}">Set rally point…</button>${mine ? `<button class="pbtn" data-act="rally:reset${which}">Back to the default</button>` : ''}</div></div>`;
+}
+/** A click on the ground while a rally point is being chosen. */
+function rallyClick(e: { clientX: number; clientY: number }) {
+  const which = rallyPick; rallyPick = null; if (which === null) return;
+  const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
+  const x = Math.round(hit.x), y = Math.round(hit.z);
+  if (lv.world.set_rally(which, x, y, false) === 0) { commit({ op: 'rally', kind: which, x, y }); sound.click(); ui.toast('New armies will gather there.', 'good'); updateSelection(); }
+  else ui.toast('Armies cannot gather there: pick open ground within the village.', 'bad');
+  ui.hint('');
+}
 /** A click on the ground while a forester's zone is being chosen: it plants round that spot from now on. */
 function zoneClick(e: { clientX: number; clientY: number }) {
   const idx = zoneIdx; zoneIdx = null; if (idx === null) return;
@@ -3302,20 +3354,6 @@ function hidePlacementGhost() {
 
 function updateGhost(e: { clientX: number; clientY: number }) {
   lastGhostE = e;
-/** The rally point of the barracks (0) or the castle (1): where a new army stands. By default it is outside, at the road node in front of the building. */
-function rallyHtml(which: number) {
-  const r = lv.world.rally_flat(which), mine = r[2] === 1, name = which === 0 ? 'barracks' : 'castle';
-  return `<div><h3>Rally point</h3><p class="muted">New armies from the ${name} gather ${mine ? 'at the spot you chose' : 'outside, at the road in front of it'} (${Math.round(r[0])}, ${Math.round(r[1])}).</p><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-act="rally:${which}">Set rally point…</button>${mine ? `<button class="pbtn" data-act="rally:reset${which}">Back to the default</button>` : ''}</div></div>`;
-}
-/** A click on the ground while a rally point is being chosen. */
-function rallyClick(e: { clientX: number; clientY: number }) {
-  const which = rallyPick; rallyPick = null; if (which === null) return;
-  const hit = terrain.pick(pointerRay(e).ray); if (!hit) return;
-  const x = Math.round(hit.x), y = Math.round(hit.z);
-  if (lv.world.set_rally(which, x, y, false) === 0) { commit({ op: 'rally', kind: which, x, y }); sound.click(); ui.toast('New armies will gather there.', 'good'); updateSelection(); }
-  else ui.toast('Armies cannot gather there: pick open ground within the village.', 'bad');
-  ui.hint('');
-}
   if (selectedKind === PLANT_TOOL) { plantHover(e); return; }
   if (selectedKind === LEVEL_TOOL) { levelHover(e); return; }
   if (selectedKind === 37) { roadHover(e); return; }
@@ -3551,6 +3589,7 @@ function bindInput() {
       if (isFigure(penShape)) { ui.hint('Press and drag to draw the figure', true); return; }
     }
     if (zoneIdx !== null && tap) { zoneClick(e); return; }
+    if (rallyPick !== null && tap) { rallyClick(e); return; }
     if (selectedKind === PLANT_TOOL && tap) { if (touch) previewTouchPlacement(e); else plantClick(e); return; }
     if (selectedKind === LEVEL_TOOL && tap) { if (touch) previewTouchPlacement(e); else levelClick(e); return; }
     if (selectedKind === 37 && tap) { const h = terrain.pick(pointerRay(e).ray); if (h) roadClick(h.x, h.z); return; }
@@ -3589,7 +3628,6 @@ function bindInput() {
       const order = pendingBattleOrder;
       setPendingBattleOrder(null);
       if (!sendBattleOrder(order, hit.x, hit.z)) ui.toast('The order could not be issued.', 'bad');
-    if (rallyPick !== null && tap) { rallyClick(e); return; }
       return;
     }
     if (selectedKind === 37 && roadPts.length) { roadPts.pop(); if (roadPts.length === 0) roadSnapped = [false, false]; roadHover(e); return; }   // right-click takes the last road point back
