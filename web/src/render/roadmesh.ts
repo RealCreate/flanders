@@ -73,7 +73,7 @@ export function thin(pts: number[], min = 0.35): number[] {
 }
 
 /** A ribbon along the line: three vertices across at every point (soft edge, solid middle, soft edge), turned smoothly at corners. `half` is the solid half width. */
-export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0, ends?: [number, number]): { first: number[]; last: number[] } | null {
+export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0, ends?: [number, number], fade?: [boolean, boolean]): { first: number[]; last: number[] } | null {
   const P = thin(line.pts); const n = P.length / 2;
   if (n < 2) return null;
   const cum = [0]; for (let k = 1; k < n; k++) cum.push(cum[k - 1] + Math.hypot(P[2 * k] - P[2 * k - 2], P[2 * k + 1] - P[2 * k - 1]));
@@ -81,6 +81,9 @@ export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0, ends?
   // the surface along the ribbon: its own, run into the surface of what it meets at either end over BLEND_LEN (`ends`: the surface to reach at the start and at the end)
   const own = Math.max(0, line.tier || 0), ramp = (d: number) => { const f = Math.max(0, 1 - d / BLEND_LEN); return f * f * (3 - 2 * f); };
   const matAt = (d: number, len: number) => ends ? own + (ends[0] - own) * ramp(d) + (ends[1] - own) * ramp(len - d) : own;
+  // a side road's end at a through road: it fades in over its first stretch from the node (so it grows out of the through road), and from there on fills the wedge between the two, however sharp
+  const grow = (d: number) => { const f = Math.max(0, Math.min(1, d / (half * EDGE * 0.9))); return f * f * (3 - 2 * f); };
+  const alphaAt = (d: number, len: number) => (fade ? Math.min(fade[0] ? grow(d) : 1, fade[1] ? grow(len - d) : 1) : 1);
   let prev: number[] | null = null, first: number[] | null = null;
   for (let i = 0; i < n; i++) {
     const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
@@ -96,7 +99,7 @@ export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0, ends?
     const cx = P[2 * i] + nx * wob, cz = P[2 * i + 1] + nz * wob, t = cum[i] / total, v = cum[i] * 0.25;
     const row: number[] = [];
     for (const [s, al, uu] of [[1, 0, 0], [0, 0.95, 0.5], [-1, 0, 1]] as const) {
-      const k = m.x.length; m.x.push(cx + nx * hw * EDGE * s); m.z.push(cz + nz * hw * EDGE * s); m.a.push(al); m.u.push(uu); m.v.push(v);
+      const k = m.x.length; m.x.push(cx + nx * hw * EDGE * s); m.z.push(cz + nz * hw * EDGE * s); m.a.push(al * alphaAt(cum[i], total)); m.u.push(uu); m.v.push(v);
       m.born.push(line.born); m.along.push(t); m.mat.push(matAt(cum[i], total)); row.push(k);
     }
     if (prev) for (let k = 0; k < 2; k++) m.idx.push(prev[k], row[k], prev[k + 1], prev[k + 1], row[k], row[k + 1]);
@@ -169,25 +172,34 @@ function addJunction(m: Mesh, ox: number, oz: number, arms: Arm[], H: number, bo
       return [0.5 + sU * (px * nx + pz * nz) / (2 * H), a.v0 + sV * (px * dx + pz * dz) * 0.25];
     };
   };
+  // one mapping for the whole joint, that of the longest arm (the main road) carried straight on over the fan: wedges that each carried the mapping of their own ribbon showed hard seams and
+  // strangely turned patterns where they met, and a joint mapped flat on the ground sat turned against every road; this way the main road runs through the joint unbroken
+  const main = arms.reduce((best, q) => (q.len > best.len ? q : best), arms[0]), mMain = mapOf(main);
   const vert = (map: (x: number, z: number) => [number, number], x: number, z: number, al: number) => {
     const k = m.x.length, [u, v] = map(x, z);
     m.x.push(x); m.z.push(z); m.a.push(al); m.u.push(u); m.v.push(v); m.born.push(born); m.along.push(0.5); m.mat.push(mat); return k;
   };
+  // the brightness of the middle of the fan: the falloff must stay along the outer edge (the width of a road's soft edge), however wide the fan is, so the middle is brighter the wider the fan
+  const reach = Math.max(...arms.flatMap(q => [Math.hypot(q.L[0] - ox, q.L[1] - oz), Math.hypot(q.R[0] - ox, q.R[1] - oz)])), kc = 0.95 * Math.max(1, Math.min(3, reach / H));
   for (let i = 0; i < n; i++) {
-    const a = arms[i], b = arms[(i + 1) % n], mi = mapOf(a), mj = mapOf(b);
-    const o = vert(mi, ox, oz, 0.95), r = vert(mi, a.R[0], a.R[1], 0), mm = vert(mi, a.M[0], a.M[1], 0.95), l = vert(mi, a.L[0], a.L[1], 0);
+    const a = arms[i], b = arms[(i + 1) % n], mi = mMain, mj = mMain;
+    const o = vert(mi, ox, oz, kc), r = vert(mi, a.R[0], a.R[1], 0), mm = vert(mi, a.M[0], a.M[1], 0.95), l = vert(mi, a.L[0], a.L[1], 0);
     m.idx.push(o, r, mm, o, mm, l);
     let gap = b.ang - a.ang; if (gap <= 1e-9) gap += Math.PI * 2;
     const need = cutFor(gap, H) - 1e-6;
     if (gap < Math.PI - 0.02 && a.cut >= need && b.cut >= need) {
       const mid = a.ang + gap / 2, d = H / Math.sin(gap / 2), cx = ox + Math.cos(mid) * d, cz = oz + Math.sin(mid) * d;
       // the corner: half hangs on this arm, half on the next
-      const o1 = vert(mi, ox, oz, 0.95), l1 = vert(mi, a.L[0], a.L[1], 0), c1 = vert(mi, cx, cz, 0);
-      const o2 = vert(mj, ox, oz, 0.95), c2 = vert(mj, cx, cz, 0), r2 = vert(mj, b.R[0], b.R[1], 0);
+      const o1 = vert(mi, ox, oz, kc), l1 = vert(mi, a.L[0], a.L[1], 0), c1 = vert(mi, cx, cz, 0);
+      const o2 = vert(mj, ox, oz, kc), c2 = vert(mj, cx, cz, 0), r2 = vert(mj, b.R[0], b.R[1], 0);
       m.idx.push(o1, l1, c1, o2, c2, r2);
     } else {   // a straight or reflex stretch, or a corner too sharp to mitre: the outline goes straight across
-      const o1 = vert(mi, ox, oz, 0.95), l1 = vert(mi, a.L[0], a.L[1], 0), r1 = vert(mi, b.R[0], b.R[1], 0);
-      m.idx.push(o1, l1, r1);
+      // (when the two edges are on one line through the middle the triangle is a sliver: it adds nothing but a thin dark streak, so it is left out)
+      const area = Math.abs((a.L[0] - ox) * (b.R[1] - oz) - (b.R[0] - ox) * (a.L[1] - oz)) / 2;
+      if (area > 0.12 * H * H) {
+        const o1 = vert(mi, ox, oz, kc), l1 = vert(mi, a.L[0], a.L[1], 0), r1 = vert(mi, b.R[0], b.R[1], 0);
+        m.idx.push(o1, l1, r1);
+      }
     }
   }
 }
@@ -207,27 +219,43 @@ export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
     }
   });
   // the direction of every arm, and how far it is cut back
-  const cutOf = lines.map(() => [0, 0]);
+  const cutOf = lines.map(() => [0, 0]), fadeOf = new Map<number, [boolean, boolean]>();   // (fadeOf: the ends of lines that grow out of a through road)
   const joints: { x: number; z: number; arms: Arm[]; born: number }[] = [];
   for (const nd of nodes.values()) {
     const arms = nd.arms.filter(a => a.len >= 0.05);
     if (arms.length < 2) continue;
     for (const a of arms) { const q = pointAt(a.pts, Math.min(H, a.len)); a.ang = Math.atan2(q[1] - nd.z, q[0] - nd.x); }
     arms.sort((p, q) => p.ang - q.ang);
-    arms.forEach((a, i) => {
-      const prev = arms[(i + arms.length - 1) % arms.length], next = arms[(i + 1) % arms.length];
+    // Where three or more roads meet, the two that run most nearly straight on through the place are the through road: they are joined as an ordinary bend. Every other arm (a side road, a stub) is
+    // not cut back and not joined with a fan at all: it runs on to the middle of the through road and fades in from the edge of it, so it grows out of the road it leaves with no hard outline and
+    // no sliver wedge, however sharp the angle between them.
+    let jarms = arms;
+    if (arms.length >= 3) {
+      const roadArms = arms.filter(a => lines[a.li].kind === 1), cand = roadArms.length >= 2 ? roadArms : arms;   // (a stub or the road under a gate is never the through road of a joint of roads)
+      let best: [Arm, Arm] = [cand[0], cand[1]], bestScore = -1;
+      for (let i = 0; i < cand.length; i++) for (let j = i + 1; j < cand.length; j++) {
+        let sep = Math.abs(cand[i].ang - cand[j].ang); if (sep > Math.PI) sep = Math.PI * 2 - sep;
+        // the straightest pair; of equal ones (the arms of a cross) the better surface, then the longer roads
+        const score = Math.round(sep * 1e3) * 1e6 + (lines[cand[i].li].tier + lines[cand[j].li].tier) * 1e4 + Math.min(9999, cand[i].len + cand[j].len);
+        if (score > bestScore) { bestScore = score; best = [cand[i], cand[j]]; }
+      }
+      jarms = arms.filter(a => a === best[0] || a === best[1]);
+      for (const a of arms) if (!jarms.includes(a)) { const f = fadeOf.get(a.li) ?? [false, false]; f[a.end] = true; fadeOf.set(a.li, f); }
+    }
+    jarms.forEach((a, i) => {
+      const prev = jarms[(i + jarms.length - 1) % jarms.length], next = jarms[(i + 1) % jarms.length];
       let g1 = next.ang - a.ang; if (g1 <= 1e-9) g1 += Math.PI * 2;
       let g0 = a.ang - prev.ang; if (g0 <= 1e-9) g0 += Math.PI * 2;
       a.cut = Math.max(cutFor(g1, H), cutFor(g0, H));
       cutOf[a.li][a.end] = a.cut;
     });
-    joints.push({ ...nd, arms });
+    joints.push({ ...nd, arms: jarms });
   }
-  // the surface at every place where lines meet: the mean of the roads that meet there (a stub or the road under a gate takes the surface of the road it runs into); each ribbon runs into it over BLEND_LEN
+  // the surface at every place where lines meet: the best of the roads that meet there (a stub or the road under a gate takes the surface of the road it runs into); each ribbon runs into it over BLEND_LEN
   const key = (x: number, z: number) => x + ':' + z, nodeMat = new Map<string, number>();
   for (const j of joints) {
     const roads = j.arms.filter(a => lines[a.li].kind === 1), set = roads.length ? roads : j.arms;
-    nodeMat.set(key(j.x, j.z), set.reduce((t, a) => t + lines[a.li].tier, 0) / set.length);
+    nodeMat.set(key(j.x, j.z), set.reduce((t, a) => Math.max(t, lines[a.li].tier), 0));   // (the best of them: a joint is never the poorest road's dirt in the middle of a paved crossing)
   }
   const lineEnds = (l: RoadLine): [number, number] => [nodeMat.get(key(l.pts[0], l.pts[1])) ?? l.tier, nodeMat.get(key(l.pts[l.pts.length - 2], l.pts[l.pts.length - 1])) ?? l.tier];
   lines.forEach(l => { if (l.kind !== 1) { const e = lineEnds(l); l.tier = l.kind === 0 ? e[1] : (e[0] + e[1]) / 2; } });
@@ -238,7 +266,7 @@ export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
   });
   for (const j of joints) for (const a of j.arms) a.cut = cutOf[a.li][a.end];
   // the ribbons
-  const rowsOf = lines.map((l, li) => addRibbon(m, { ...l, pts: cutPts(l.pts, cutOf[li][0], cutOf[li][1]) }, half, li, lineEnds(l)));
+  const rowsOf = lines.map((l, li) => addRibbon(m, { ...l, pts: cutPts(l.pts, cutOf[li][0], cutOf[li][1]) }, half, li, lineEnds(l), fadeOf.get(li)));
   // the joints
   for (const j of joints) {
     for (const a of j.arms) {

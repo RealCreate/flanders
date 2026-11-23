@@ -1,3 +1,4 @@
+import { joinLines, parseRoadLines } from './render/roadmesh';
 import './boot';
 import '@fontsource/im-fell-english-sc';
 import '@fontsource/im-fell-english';
@@ -7,7 +8,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import * as THREE from 'three';
-import init, { World, Ai, effect_radii, flammability_of, upgrade_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_land_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names, military_upgrades } from './wasm/game_core.js';
+import init, { World, Ai, effect_radii, flammability_of, upgrade_cost_flat, road_resurface_cost_flat, village_sites, tunnels_flat, footprint_of, door_info, warm_navigation_step, world_restore, terrain_land_rows, trees_in_rows, trees_in_row_count, state_hash_part_names, rules_fingerprint, ledger_extra_names, military_upgrades } from './wasm/game_core.js';
 import { icon, unitIcon, type IconName } from './ui/icons';
 import { CommandScreen } from './ui/commandscreen';
 import { parseLedger, steadyRate, EXTRA_INFO, fmtRate } from './flowrate';
@@ -2789,6 +2790,7 @@ function updateSelection() {
       <p class="muted">${recipe.inputs.length ? `Uses ${io(scaled(recipe.inputs, tier))}<br>` : ''}Makes ${io(scaled(recipe.outputs, tier))} every ${d.cycle}s at full staffing. Needs ${d.jobs * (tier + 1)} workers (village workforce ${w.efficiency()}%).${tier < defs[kind].maxTier ? ` Upgrading needs ${d.jobs * (tier + 2)} workers and makes ${io(scaled(recipe.outputs, tier + 1))}.` : ''}</p>`;
   } else if (d.housing) html += `<div class="stats"><div class="stat"><b>${icon('house', 20)} ${f[o + 9]} / ${d.housing * (tier + 1)}</b><span>Residents</span></div></div><p class="muted">Residents walk the village paths to their workplaces each day.</p>`;
   if (kind === 15) html += `<p class="muted">Raises storage to ${600 + 200 * tier} per resource and expands your border.</p><h3>Diplomacy</h3><p class="muted">Envoys, treaties, trade and war are handled from the town hall.</p><button class="pbtn primary" data-act="diplomacy">Open diplomacy</button>`;
+  if (kind === 15) html += kingdomRoadsHtml(stocks);
   if (kind === 47) {
     const equipped = ((w.options_flat()[selectedIdx] ?? 0) & 1) !== 0;
     html += `<p>${burning ? 'The stable is burning: its horses give no bonus until the fire is out.' : 'Its upgrades are the village\'s horses: each counts once, however many stables you build.'}${equipped && !burning ? ' Caravan horses ready: newly dispatched caravans travel twice as fast.' : ''} Loading a caravan takes 60 seconds.</p>
@@ -2812,6 +2814,31 @@ function updateSelection() {
   ui.setSelectedPane(html, kind !== 15 ? demolitionTip(w, selectedIdx) : '');
 }
 
+/** The castle's road works: every road of the kingdom at once. The surfaces and designs of all the village's roads in numbers, and what it costs to resurface or style them all. */
+function kingdomRoadsHtml(stocks: number[]): string {
+  const sum = Array.from(lv.world.road_summary_flat()), total = sum[9];
+  if (!total) return `<div><h3>Roads</h3><p class="muted">No roads yet. Lay roads from the castle to your workplaces: a workplace with no road to the castle works at half pace, and roads can be resurfaced here, all at once.</p></div>`;
+  const names = ['dirt', 'gravel', 'cobbles', 'flagstones'], stat = (n: number | string, label: string) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`;
+  let html = `<div><h3>Roads of the kingdom</h3><div class="stats">${stat(total, 'road pieces')}${stat(sum[8] === total ? 'all' : `${sum[8]} / ${total}`, 'reach the castle')}</div>`;
+  html += `<p class="muted">${names.map((nm, t) => sum[t] ? `${sum[t]} ${nm}` : '').filter(Boolean).join(' · ')}. Each better surface is walked 8% faster, by villagers and armies alike.</p>`;
+  const bf = lv.world.buildings_flat(), tiers: number[] = []; for (let i = 0; i < bf.length; i += 10) if (bf[i] === 37) tiers.push(bf[i + 1]);
+  const low = Math.min(...tiers);
+  for (let target = low + 1; target <= 3; target++) {
+    const cost = new Map<number, number>();
+    for (const t of tiers) if (t < target) { const c = road_resurface_cost_flat(t, target); for (let i = 0; i < c.length; i += 2) cost.set(c[i], (cost.get(c[i]) ?? 0) + c[i + 1]); }
+    const list: [number, number][] = [...cost.entries()], ok = list.every(([r, n]) => stocks[r] >= n);
+    html += `<div class="roadrow"><div class="cost">${ui.costHtml(list, stocks)}</div><button class="pbtn primary" data-act="roads:up:${target}" ${ok ? '' : 'disabled'}>Resurface every road as ${names[target]}</button></div>`;
+  }
+  const opts = defs[37].opts ?? [], oc = World.option_cost_flat(37);
+  html += `<h3>Design, along every road</h3><div class="optlist">` + opts.map((op, i) => {
+    const have = sum[4 + i], all = have >= total, eligible = tiers.filter(t => t >= op.t).length;
+    const cost: [number, number][] = []; for (let k = 0; k < oc.length; k += 2) cost.push([oc[k], oc[k + 1] * Math.max(1, eligible - have)]);
+    const afford = cost.every(([r, n]) => stocks[r] >= n), locked = eligible === 0;
+    return `<button class="pbtn opt ${all ? 'on' : ''}" data-act="roads:opt:${i}" ${locked || (!all && !afford && have === 0) ? 'disabled' : ''} title="${op.d}"><span>${icon(have ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${esc(tierName(37, op.t).toLowerCase())}` : all ? `on every road — click to remove` : `${have}/${total} roads · ${ui.costHtml(cost, stocks)}`}</small></button>`;
+  }).join('') + `</div></div>`;
+  return html;
+}
+
 /** The panel of a road piece: the stretch it belongs to, whether it reaches the castle, its surface (upgraded along the whole stretch) and its design (trees, hedges, benches, lanterns). */
 function roadPanelHtml(idx: number, tier: number, stocks: number[]): string {
   const w = lv.world, stretch = Array.from(w.road_stretch(idx)), n = Math.max(1, stretch.length), bf = w.buildings_flat();
@@ -2820,8 +2847,9 @@ function roadPanelHtml(idx: number, tier: number, stocks: number[]): string {
   if (!joined) html += `<p class="muted road-warn">${icon('road', 16)} This road is not joined to the castle. Workplaces on it work at half pace until a road runs on to the castle's own node.</p>`;
   if (low !== tier) html += `<p class="muted">Part of this stretch is still ${esc(tierName(37, low).toLowerCase())}.</p>`;
   if (tier < defs[37].maxTier) {
-    const uc = upgrade_cost_flat(37, tier + 1), cost: [number, number][] = [];
-    for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1] * n]);
+    const sum = new Map<number, number>(), cost: [number, number][] = [];
+    for (const t of tiers) if (t < tier + 1) { const c = road_resurface_cost_flat(t, tier + 1); for (let i = 0; i < c.length; i += 2) sum.set(c[i], (sum.get(c[i]) ?? 0) + c[i + 1]); }
+    for (const e of sum) cost.push(e);
     const ok = cost.every(([r, c]) => stocks[r] >= c);
     html += `<div><h3>Resurface as ${esc(tierName(37, tier + 1).toLowerCase())}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div><button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Resurface the stretch' : 'Not enough resources'}</button>`;
   } else html += `<p><b>Flagstones: the finest road there is.</b></p>`;
@@ -2831,7 +2859,7 @@ function roadPanelHtml(idx: number, tier: number, stocks: number[]): string {
   html += `<div><h3>Design</h3><div class="optlist">` + opts.map((op, i) => {
     const on = (have & (1 << i)) !== 0, locked = low < op.t;
     return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${esc(tierName(37, op.t).toLowerCase())}` : on ? 'along the stretch — click to remove' : ui.costHtml(ocost, stocks)}</small></button>`;
-  }).join('') + `</div></div><p class="muted">Upgrades and design cover the whole stretch up to the next junction.</p>`;
+  }).join('') + `</div></div><p class="muted">Upgrades and design cover the whole stretch up to the next junction. To change every road of the kingdom at once, use the castle.</p><button class="pbtn" data-act="roads:castle">Go to the castle</button>`;
   return html;
 }
 
@@ -2944,6 +2972,19 @@ function onAct(a: string) {
     return;
   }
   if (a === 'multi:upgrade') { multiUpgrade(); return; }
+  if (a === 'roads:castle') { selectBuilding(0); return; }
+  if (a.startsWith('roads:up:')) {
+    const target = Number(a.slice(9)), code = lv.world.upgrade_all_roads(target);
+    if (code === 0) { commit({ op: 'upgrade', idx: target, kind: 2 }); sound.upgrade(); ui.toast(`Every road is now ${tierName(37, target).toLowerCase()} or better.`, 'good'); afterLocalChange(); }
+    else ui.toast(code === -6 ? 'Not enough resources.' : 'Nothing to resurface.', 'bad');
+    return;
+  }
+  if (a.startsWith('roads:opt:')) {
+    const bit = Number(a.slice(10)), s0 = Array.from(lv.world.road_summary_flat()), on = s0[4 + bit] < s0[9], code = lv.world.set_all_road_options(bit, on);
+    if (code === 0) { commit({ op: 'option', idx: 0, kind: bit, x: on ? 1 : 0, y: 2 }); sound.upgrade(); afterLocalChange(); }
+    else ui.toast(code === -6 ? 'Not enough resources.' : code === -10 ? 'No road is good enough for that yet: resurface them first.' : 'Cannot do that.', 'bad');
+    return;
+  }
   if (a === 'embassy:open') { openEmbassy(); return; }   // from the Army tab, where no building is selected
   if (selectedIdx === null) return;
   if (a === 'selwalls') { selectWallRun(selectedIdx); return; }
@@ -3062,12 +3103,30 @@ function openContext(e: PointerEvent) {
 }
 
 /** The building under the pointer. A hand-drawn road piece has no model to hit, so it is found by the ground under the pointer: that way it can be selected and taken away again. */
+/** The road piece nearest to a spot on the ground if the spot is on or beside a road (within the road's width and a bit more): the roads are long thin strips, so a click anywhere on one picks the
+ *  piece of that stretch nearest to the click, not only a click right on a piece (they stand up to nine units apart). */
+let roadLinesCache: { w: World; key: string; lines: ReturnType<typeof parseRoadLines> } | null = null;
+function roadAt(x: number, z: number): number | null {
+  const w = lv.world, f = w.buildings_flat(), key = `${w.building_count()}:${w.terrain_version()}`;
+  if (roadLinesCache?.w !== w || roadLinesCache.key !== key) roadLinesCache = { w, key, lines: joinLines(parseRoadLines(w.road_lines_flat())) };
+  const lines = roadLinesCache.lines;
+  let near = false;
+  for (const l of lines) {
+    if (l.kind !== 1) continue;
+    for (let k = 2; k + 1 < l.pts.length && !near; k += 2) {
+      const ax = l.pts[k - 2], az = l.pts[k - 1], dx = l.pts[k] - ax, dz = l.pts[k + 1] - az, t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+      if (Math.hypot(x - (ax + dx * t), z - (az + dz * t)) <= 2.6) near = true;
+    }
+    if (near) break;
+  }
+  let best = -1, bd = near ? 12 : 3.2;
+  for (let k = 0; k < f.length; k += 10) if (f[k] === 37) { const d = Math.hypot(f[k + 2] - x, f[k + 3] - z); if (d < bd) { bd = d; best = k / 10; } }
+  return best >= 0 ? best : null;
+}
 function pickBuilding(r: THREE.Raycaster): number | null {
   const i = lv.pick(r); if (i !== null) return i;
   const hit = terrain.pick(r.ray); if (!hit) return null;
-  const f = lv.world.buildings_flat(); let best = -1, bd = 3.2;
-  for (let k = 0; k < f.length; k += 10) if (f[k] === 37) { const d = Math.hypot(f[k + 2] - hit.x, f[k + 3] - hit.z); if (d < bd) { bd = d; best = k / 10; } }
-  return best >= 0 ? best : null;
+  return roadAt(hit.x, hit.z);
 }
 function pointerRay(e: { clientX: number; clientY: number }) {
   const rect = ui.canvas.getBoundingClientRect();

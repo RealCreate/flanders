@@ -166,6 +166,13 @@ pub fn road_upgrade_cost(new_tier: u8) -> Vec<Amount> {
     match new_tier { 0 => vec![], 1 => vec![(ST, 1)], 2 => vec![(ST, 3), (PL, 1)], _ => vec![(ST, 5), (PL, 2), (BR, 1)] }
 }
 
+/// What it costs to bring one road piece from surface `from` up to surface `to`: every step in between is paid for.
+pub fn road_resurface_cost(from: u8, to: u8) -> Vec<Amount> {
+    let mut v: Vec<Amount> = vec![];
+    for t in (from + 1)..=to { for (r, n) in road_upgrade_cost(t) { match v.iter_mut().find(|a| a.0 == r) { Some(a) => a.1 += n, None => v.push((r, n)) } } }
+    v
+}
+
 /// What one design option costs on one road piece (a road has a piece every few paces, so each is far cheaper than a building's).
 pub fn road_option_cost() -> Vec<Amount> { vec![(PL, 1), (ST, 1)] }
 

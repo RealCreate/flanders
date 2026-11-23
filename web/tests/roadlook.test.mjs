@@ -31,7 +31,7 @@ test('the better the surface, the lighter it is', () => {
   assert.ok(l[0] < l[1] && l[1] < l[3] && l[0] < l[2], `luminances ${l.map(v => v.toFixed(3))}`);
 });
 
-test('every surface tiles without a seam along the road, and its two edges are both a verge', () => {
+test('every surface tiles without a seam along the road', () => {
   for (const m of ROAD_MATERIALS) {
     const size = 128, px = roadPixels(m, size), row = y => { let s = 0; for (let x = 0; x < size; x++) { const o = (y * size + x) * 4; s += luminance(px[o], px[o + 1], px[o + 2]); } return s / size; };
     const seam = Math.abs(row(0) - row(size - 1)), inner = Math.abs(row(60) - row(61));
@@ -47,10 +47,13 @@ test('the stone surfaces have joints: dark lines between lighter stones', () => 
   }
 });
 
-test('flagstones have a kerb: darker at the two edges than in the middle', () => {
-  const size = 128, px = flagstonePixels(size), col = x => { let s = 0; for (let y = 0; y < size; y++) { const o = (y * size + x) * 4; s += luminance(px[o], px[o + 1], px[o + 2]); } return s / size; };
-  const mid = (col(40) + col(90)) / 2;   // (the middle of a slab each: not at a joint)
-  assert.ok(col(5) < mid * 0.9 && col(size - 4) < mid * 0.9, 'kerb stones');
+test('the stone surfaces have no edge of their own: the edge columns are like the middle, so a joint can mirror the paving across a side road\'s mouth without a band', () => {
+  for (const m of ['cobble', 'flagstone']) {
+    const size = 128, px = roadPixels(m, size), col = x => { let s = 0; for (let y = 0; y < size; y++) { const o = (y * size + x) * 4; s += luminance(px[o], px[o + 1], px[o + 2]); } return s / size; };
+    let mid = 0; for (let x = 30; x < 100; x++) mid += col(x); mid /= 70;
+    let edge = 0; for (let x = 4; x < 12; x++) edge += col(x) + col(size - 1 - x); edge /= 16;
+    assert.ok(edge > mid * 0.85 && edge < mid * 1.15, `${m}: edge ${edge.toFixed(3)} against middle ${mid.toFixed(3)}`);
+  }
 });
 
 test('a dirt road is clearly darker and warmer than the grass, however the light falls', () => {

@@ -117,21 +117,21 @@ test('where a dirt road meets a cobbled one the surface runs from one to the oth
   sane(m);
   const at = x => { let best = null; for (let i = 0; i < m.x.length; i++) if (Math.abs(m.z[i]) < 0.2 && (best === null || Math.abs(m.x[i] - x) < Math.abs(m.x[best] - x))) best = i; return m.mat[best]; };
   assert.equal(at(1), 0, 'the far end is dirt'); assert.equal(at(47), 2, 'the far end is cobbles');
-  assert.ok(Math.abs(at(24) - 1) < 0.05, `at the meeting it is half way (${at(24)})`);
+  assert.ok(Math.abs(at(24) - 2) < 0.05, `at the meeting it is the better surface, not a dark patch of the poorer (${at(24)})`);
   const xs = []; for (let x = 1; x <= 47; x += 0.5) xs.push(at(x));
-  for (let i = 1; i < xs.length; i++) { assert.ok(xs[i] >= xs[i - 1] - 1e-6, 'never goes back'); assert.ok(xs[i] - xs[i - 1] < 0.7, `no jump (${xs[i - 1]} to ${xs[i]})`); }
+  for (let i = 1; i < xs.length; i++) { assert.ok(xs[i] >= xs[i - 1] - 1e-6, 'never goes back'); assert.ok(xs[i] - xs[i - 1] < 1.0, `no jump (${xs[i - 1]} to ${xs[i]})`); }
   assert.ok(at(24 - BLEND_LEN - 3) === 0 && at(24 + BLEND_LEN + 3) === 2, 'the blend is local');
 });
 
-test('a junction takes the mean surface of the roads that meet there, and a stub takes the surface of the road it runs into', () => {
+test('a junction takes the best surface of the roads that meet there, and a stub takes the surface of the road it runs into', () => {
   const m = buildRoadMesh(flat([
     { kind: 1, tier: 3, pts: [-20, 0, -10, 0, 0, 0] }, { kind: 1, tier: 3, pts: [0, 0, 10, 0, 20, 0] }, { kind: 1, tier: 1, pts: [0, 0, 0, 10, 0, 20] }, { kind: 0, tier: 0, pts: [0, -12, 0, -6, 0, 0] },
   ]), 1.3);
   sane(m);
   const near = []; for (let i = 0; i < m.x.length; i++) if (Math.hypot(m.x[i], m.z[i]) < 0.1) near.push(m.mat[i]);
-  assert.ok(near.length > 0 && near.every(v => Math.abs(v - (3 + 3 + 1) / 3) < 1e-6), `the centre of the joint: ${near}`);
+  assert.ok(near.length > 0 && near.every(v => v === 3), `the centre of the joint: ${near}`);
   const stubFar = []; for (let i = 0; i < m.x.length; i++) if (Math.abs(m.x[i]) < 2 && m.z[i] < -9) stubFar.push(m.mat[i]);
-  assert.ok(stubFar.every(v => v > 2 && v < 3), 'the stub is on its way to the surface of the road');
+  assert.ok(stubFar.length > 0 && stubFar.every(v => v === 3), 'the stub has the surface of the road it runs into');
 });
 
 test('a dead end is capped in the surface of its road, and a stub with nothing to join stays dirt', () => {
@@ -139,4 +139,46 @@ test('a dead end is capped in the surface of its road, and a stub with nothing t
   sane(m);
   assert.ok(m.mat.every(v => v === 0 || v === 2));
   assert.ok(m.mat.some(v => v === 2) && m.mat.some(v => v === 0));
+});
+
+test('a bend is one continuous surface: the middle of its fan has the one mapping in every wedge', () => {
+  const run = (pts) => ({ kind: 1, born: 0, tier: 1, opts: 0, pts });
+  const m = buildRoadMesh(flat([run([-20, 0, -10, 0, 0, 0]), { ...run([0, 0, 6, 8, 12, 16]), tier: 2 }]), 1.3);   // (two surfaces: otherwise the two lines are one ribbon)
+  const centre = []; for (let i = 0; i < m.x.length; i++) if (Math.hypot(m.x[i], m.z[i]) < 1e-6) centre.push([m.u[i], m.v[i]]);
+  assert.ok(centre.length >= 2, 'the centre of the fan is a vertex of several wedges');
+  for (const c of centre) assert.deepEqual(c, centre[0], 'with the same mapping in each');
+});
+
+test('a side road that meets a through road is not cut back and has no fan: it grows out of the through road and fills the wedge between the two', () => {
+  const run = (a, b, tier = 1) => { const p = [a[0], a[1]], L = Math.hypot(b[0] - a[0], b[1] - a[1]), n = Math.round(L / 1.5); for (let k = 1; k < n; k++) p.push(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n); p.push(b[0], b[1]); return { kind: 1, born: 0, tier, opts: 0, pts: p }; };
+  // even a very sharp one (the side road leaves 25 degrees off the through road), where the old fan made long slivers
+  for (const deg of [90, 60, 25]) {
+    const a = deg * Math.PI / 180, m = buildRoadMesh(flat([run([-20, 0], [0, 0]), run([0, 0], [20, 0]), run([0, 0], [Math.cos(a) * 20, Math.sin(a) * 20])]), 1.3);
+    sane(m);
+    const H = 1.3 * EDGE;
+    // the side road's own vertices: invisible at the node and in the through road, fully there beyond 2.6 H from the node
+    let inside = 0, beyond = 0;
+    for (let i = 0; i < m.x.length; i++) {
+      const d = Math.hypot(m.x[i], m.z[i]), along = m.x[i] * Math.cos(a) + m.z[i] * Math.sin(a), across = Math.abs(-m.x[i] * Math.sin(a) + m.z[i] * Math.cos(a));
+      if (across > 0.12 || along < -0.001) continue;   // (the middle row of the side road only)
+      if (d > 1e-6 && d < H * 0.4) { assert.ok(m.a[i] < 0.3, `deg ${deg}: faint at the node (${m.a[i]})`); inside++; }
+      if (d > H * 1.5 && d < H * 3) assert.ok(m.a[i] > 0.9, `deg ${deg}: already there beyond one width (${d.toFixed(2)}: ${m.a[i]})`);
+      if (d > H * 3 && d < 18) { assert.ok(m.a[i] > 0.9, `deg ${deg}: full brightness at ${d.toFixed(1)}`); beyond++; }
+    }
+    assert.ok(beyond > 0, `deg ${deg}: has rows beyond the node`); void inside;
+    // no triangle is a long sliver: the area is never tiny against its longest side (the old fan made such wedges at sharp angles)
+    for (let t = 0; t < m.idx.length; t += 3) {
+      const [p, q, r] = [m.idx[t], m.idx[t + 1], m.idx[t + 2]], A = Math.abs((m.x[q] - m.x[p]) * (m.z[r] - m.z[p]) - (m.x[r] - m.x[p]) * (m.z[q] - m.z[p])) / 2;
+      const longest = Math.max(Math.hypot(m.x[q] - m.x[p], m.z[q] - m.z[p]), Math.hypot(m.x[r] - m.x[q], m.z[r] - m.z[q]), Math.hypot(m.x[p] - m.x[r], m.z[p] - m.z[r]));
+      assert.ok(longest < 6.5, `deg ${deg}: a triangle ${longest.toFixed(1)} long`); void A;
+    }
+  }
+});
+
+test('a cross has one through road and two side roads, a stub is never the through road', () => {
+  const run = (a, b, kind = 1) => { const p = [a[0], a[1]], L = Math.hypot(b[0] - a[0], b[1] - a[1]), n = Math.round(L / 1.5); for (let k = 1; k < n; k++) p.push(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n); p.push(b[0], b[1]); return { kind, born: 0, tier: 0, opts: 0, pts: p }; };
+  const m = buildRoadMesh(flat([run([-20, 0], [0, 0]), run([0, 0], [20, 0]), run([0, -12], [0, 0], 0), run([0, 0], [0, 20])]), 1.3);
+  sane(m);
+  const mid = []; for (let i = 0; i < m.x.length; i++) if (Math.abs(m.z[i]) < 0.12 && Math.abs(m.x[i]) > 2.6 && Math.abs(m.x[i]) < 5) mid.push(m.a[i]);
+  assert.ok(mid.length > 0 && mid.every(a => a > 0.9), 'the through road is solid up to the node on both sides');
 });
