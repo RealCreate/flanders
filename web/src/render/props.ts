@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Terrain } from './terrain';
+import type { RoadProp } from './roadplan.ts';
 
 const S = 10;
 const rnd = (a: number, b: number) => { const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return x - Math.floor(x); };
@@ -33,6 +34,23 @@ function barrel(k: Kit, x = 0, z = 0) { k.cyl(0.34, 0.8, 0x7a5a38, x, 0, z, 10, 
 function crate(k: Kit, x = 0, z = 0, s = 0.7) { return k.box(s, s, s, 0x9a7a4e, x, 0, z).box(s + 0.04, 0.07, s + 0.04, DARK, x, s * 0.5 - 0.03, z); }
 function bale(k: Kit, x = 0, z = 0) { return k.cyl(0.42, 0.7, HAY, x, 0, z, 10); }
 function lantern(k: Kit) { k.cyl(0.07, 2.5, DARK, 0, 0, 0, 6); k.box(0.7, 0.07, 0.07, DARK, 0.3, 2.2, 0); k.box(0.05, 0.3, 0.05, IRON, 0.62, 1.95, 0); k.lamp(0xffc860, 0.62, 1.68, 0); return k; }
+/** A tree along a road: a trunk and a crown of three lumps. `v` (0..1) picks which of the two kinds it is and how big: a round lime and a darker, broader oak. */
+function roadTree(k: Kit, v: number) {
+  const oak = v > 0.5, s = 0.85 + 0.35 * ((v * 7.3) % 1), trunk = oak ? 0x5a4630 : 0x7a6a52, crown = oak ? [0x3f6e2e, 0x4c7e36, 0x37602a] : [0x6f9a3a, 0x80ab45, 0x5f8a34];
+  k.cyl(0.13 * s, 1.9 * s, trunk, 0, 0, 0, 6, 0.2 * s);
+  k.ball(1.25 * s, crown[0], 0, 2.6 * s, 0); k.ball(0.9 * s, crown[1], 0.55 * s, 3.1 * s, 0.3 * s); k.ball(0.8 * s, crown[2], -0.5 * s, 2.9 * s, -0.35 * s);
+  if (oak) k.ball(0.75 * s, crown[1], 0.1 * s, 3.6 * s, -0.2 * s);
+  return k;
+}
+/** A clipped hedge, a long low box with a rounded top (its long side along the road). */
+function hedgeBox(k: Kit, v: number) { const c = v > 0.5 ? 0x4a7a35 : 0x547f3a; k.box(2.15, 0.55, 0.6, c, 0, 0, 0); k.box(1.95, 0.2, 0.5, 0x5f8d43, 0, 0.55, 0); return k; }
+/** A bed of flowers with a low border stone, in front of the hedge. */
+function roadFlowers(k: Kit, seed: number) {
+  k.box(1.7, 0.16, 0.7, 0x4a3a28, 0, 0, 0);
+  const cols = [0xe8546a, 0xf2c94c, 0xf4f0ff, 0xb070e0, 0xff9a3c];
+  for (let i = 0; i < 11; i++) k.ball(0.1 + rnd(seed, i) * 0.04, cols[Math.floor(rnd(seed + 1, i) * cols.length)], -0.72 + (i % 6) * 0.29, 0.28 + rnd(seed, i + 9) * 0.1, -0.18 + Math.floor(i / 6) * 0.34 + rnd(seed, i + 3) * 0.08);
+  return k;
+}
 function signpost(k: Kit) { k.cyl(0.09, 2.2, DARK, 0, 0, 0, 6); k.box(1.0, 0.28, 0.06, WOOD, 0.4, 1.6, 0.05, 0, 0, 0.05); k.box(0.9, 0.26, 0.06, WOOD, -0.35, 1.2, -0.05, 0, 0, -0.06); return k; }
 function flowerbed(k: Kit, seed: number) {
   k.box(1.8, 0.18, 0.7, 0x5a4630, 0, 0, 0);
@@ -76,8 +94,10 @@ export class Props {
     this.group.add(this.mesh, this.glow);
   }
 
-  update(buildings: Float32Array, roads: Float32Array, radii: number[]) {
-    const n = buildings.length / S, sig = Array.from({ length: n }, (_, i) => `${buildings[i * S]}:${buildings[i * S + 1]}:${buildings[i * S + 2]}:${buildings[i * S + 3]}`).join('|');
+  /** `road`: what the design options of the roads the player laid put beside them (roadplan.ts), and the stretches of those roads as flat [ax, az, bx, bz] segments (the village's own bench and
+   *  lantern rules leave them alone: on a road they are the road's own upgrades). `sig` changes whenever either does. */
+  update(buildings: Float32Array, roads: Float32Array, radii: number[], road: { props: RoadProp[]; laid: ArrayLike<number>; sig: string } = { props: [], laid: [], sig: '' }) {
+    const n = buildings.length / S, sig = road.sig + '#' + Array.from({ length: n }, (_, i) => `${buildings[i * S]}:${buildings[i * S + 1]}:${buildings[i * S + 2]}:${buildings[i * S + 3]}`).join('|');
     if (sig === this.sig) return; this.sig = sig;
     const kits: Kit[] = []; this.lamps = [];
     const lamp = (x: number, z: number, yaw: number) => { kits.push(lantern(at(x, z, yaw))); this.lamps.push([x, z]); };
@@ -86,6 +106,13 @@ export class Props {
       for (let s = 0; s < roads.length; s += 6) {
         const ax = roads[s], az = roads[s + 1], dx = roads[s + 2] - ax, dz = roads[s + 3] - az, l2 = dx * dx + dz * dz || 1;
         const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)); if (Math.hypot(x - (ax + dx * t), z - (az + dz * t)) < margin) return true;
+      }
+      return false;
+    };
+    const nearLaid = (x: number, z: number) => {
+      for (let q = 0; q + 3 < road.laid.length; q += 4) {
+        const ax = road.laid[q], az = road.laid[q + 1], dx = road.laid[q + 2] - ax, dz = road.laid[q + 3] - az, l2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)); if (Math.hypot(x - (ax + dx * t), z - (az + dz * t)) < 4.2) return true;
       }
       return false;
     };
@@ -107,12 +134,21 @@ export class Props {
       const ux = (bx - ax) / L, uz = (bz - az) / L, nx = -uz, nz = ux, yaw = Math.atan2(nx, nz);
       for (let d = 6.5, k = 0; d < L - 5; d += 9, k++) {
         const side = (Math.floor(rnd(s, k) * 2) ? 1 : -1), px = ax + ux * d + nx * 2.3 * side, pz = az + uz * d + nz * 2.3 * side;
-        if (!free(px, pz, 1.2, 1.6) || !roomFor(px, pz)) continue;
+        if (!free(px, pz, 1.2, 1.6) || nearLaid(px, pz) || !roomFor(px, pz)) continue;
         const near = Math.hypot(px - hx, pz - hz) < 24;
         // a bench's seat faces its local +z, which must point at the road: back along -side * normal, i.e. the normal's yaw (turned half a circle on the +normal side)
         if (k % 2 === 0 || !near) kits.push(bench(at(px, pz, yaw + (side > 0 ? Math.PI : 0))));
         else lamp(px, pz, yaw);
       }
+    }
+    // what the design options of the roads put along them
+    for (const p of road.props) {
+      const k = at(p.x, p.z, p.yaw);
+      if (p.kind === 'tree') kits.push(roadTree(k, p.v));
+      else if (p.kind === 'hedge') kits.push(hedgeBox(k, p.v));
+      else if (p.kind === 'flowers') kits.push(roadFlowers(k, Math.floor(p.v * 1000)));
+      else if (p.kind === 'bench') kits.push(bench(k));
+      else lamp(p.x, p.z, p.yaw - Math.PI / 2);   // (its arm reaches over the road: the model's +x points at it)
     }
     // around buildings
     for (let i = 1; i < n; i++) {

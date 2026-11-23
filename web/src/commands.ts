@@ -9,7 +9,7 @@ export function applyCmd(w: World, c: Cmd) {
       if (c.h === undefined) w.place(c.kind!, c.x!, c.y!, c.rot ?? 0);
       else w.place_earthwork(c.kind!, c.x!, c.y!, c.rot ?? 0, c.h);
       break;
-    case 'upgrade': w.upgrade(c.idx!); break;
+    case 'upgrade': if (c.kind === 1) w.upgrade_road(c.idx!); else w.upgrade(c.idx!); break;   // kind 1: the whole stretch of road the piece is part of (roadnet.rs)
     case 'demolish': w.demolish(c.idx!); break;
     case 'train': w.train(c.kind!, c.x!); break;
     case 'untrain': w.train_cancel(c.kind!, c.x!); break;
@@ -22,7 +22,7 @@ export function applyCmd(w: World, c: Cmd) {
     case 'repair': w.repair(c.idx!); break;
     case 'garrison': w.garrison_set(c.idx!, c.kind ?? 0); break;
     case 'bridge': w.drawbridge_set(c.idx!, (c.kind ?? 0) === 1); break;
-    case 'option': w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;
+    case 'option': if (c.y === 1) w.set_road_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); else w.set_option(c.idx!, c.kind ?? 0, (c.x ?? 1) === 1); break;   // y 1: along the whole stretch of road
     case 'level': w.level_ground(c.x!, c.y!, c.kind ?? 0, c.h ?? -1); break;   // x, y the middle, kind the radius, h the height (absent in older logs: Auto, the land round it)
     case 'plant': w.plant_trees(c.x!, c.y!, c.kind ?? 4); break;   // x, y the middle, kind the brush radius
     case 'zone': w.set_plant_zone(c.idx!, c.x ?? 0, c.y ?? 0); break;   // idx a forester, x, y where it plants, from the forester itself

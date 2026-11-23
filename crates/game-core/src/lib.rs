@@ -23,6 +23,9 @@ mod compound_tests;
 mod repro_tests;
 pub mod doors;
 mod roadline;
+mod roadnet;
+#[cfg(test)]
+mod roadnet_tests;
 mod flatten;
 mod forestry;
 mod plague;
@@ -1785,7 +1788,7 @@ impl World {
         if have == on { return 0; }
         if on {
             if b.tier < o.2 { return -10; }
-            let cost = option_cost(DEFS[b.kind as usize].weight);
+            let cost = if b.kind == ROAD { road_option_cost() } else { option_cost(DEFS[b.kind as usize].weight) };
             if cost.iter().any(|&(r, n)| self.stock[r as usize] < n) { return -6; }
             for &(r, n) in &cost { self.stock[r as usize] -= n; }
             self.buildings[idx as usize].opts |= 1 << bit;
@@ -1795,7 +1798,7 @@ impl World {
     /// Chosen optional upgrades per building (a bit mask each), in building order.
     pub fn options_flat(&self) -> Vec<u32> { self.buildings.iter().map(|b| b.opts as u32).collect() }
     /// Flat [resource, amount, ...] cost of one optional upgrade of this kind of building.
-    pub fn option_cost_flat(kind: u8) -> Vec<i32> { match DEFS.get(kind as usize) { Some(d) => option_cost(d.weight).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(), None => vec![] } }
+    pub fn option_cost_flat(kind: u8) -> Vec<i32> { match DEFS.get(kind as usize) { Some(d) => (if kind == ROAD { road_option_cost() } else { option_cost(d.weight) }).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(), None => vec![] } }
 
     /// Materials recovered by demolishing a building, as [resource, amount, ...].
     pub fn demolition_refund_flat(&self, idx: u32) -> Vec<i32> {
@@ -1832,15 +1835,17 @@ impl World {
         self.staffing();
 
         // production
+        let reach = self.road_reach();   // which buildings the roads join to the castle: a workplace with no road to it works at half pace (see roadnet.rs)
         for i in 0..self.buildings.len() {
             let (kind, tier) = (self.buildings[i].kind, self.buildings[i].tier);
             let d = &DEFS[kind as usize];
             if d.cycle == 0 { continue; }
             let need = d.cycle * 100;
             let ob = self.buildings[i].opts;
+            let road_pace = if self.road_served(i, &reach) { 100 } else { roadnet::UNROADED_PACE };
             let boost = if kind == FARM { 100 + if ob & 1 != 0 { 10 } else { 0 } + if ob & 4 != 0 { 5 } else { 0 } + if ob & 8 != 0 { 10 } else { 0 } + tier2_speed(kind, ob) }
                 else if ob != 0 && !matches!(kind, HOUSE | WALL | TOWER | GATE | DRAWBRIDGE | BARRACKS | KEEP | TOWN_HALL | CHAPEL | WELL | BRIDGE | HOSPITAL | GRAVEYARD) { 100 + if ob & 4 != 0 { 10 } else { 0 } + if ob & 8 != 0 { 5 } else { 0 } + tier2_speed(kind, ob) } else { 100 };   // scarecrow, fence and barn; awning and stone footing: the building works that much faster
-            let mut p = self.buildings[i].progress + self.buildings[i].beff * boost as u32 / 100;
+            let mut p = self.buildings[i].progress + self.buildings[i].beff * boost as u32 / 100 * road_pace / 100;
             let mult = 4 + 5 * tier as i32;   // better buildings employ more people and make more: x1, x2.25, x3.5, x4.75
             let scale = |n: i32| ((n * mult + 2) / 4).max(n);
             let season = self.season();
@@ -3074,7 +3079,7 @@ impl World {
     }
 
     /// Current production blockers as [reason, resource, needed, available] records.
-    /// Reasons: 1 input, 2 reserve, 3 storage, 4 paused, 5 workers, 6 fallow, 7 deposit, 8 dormant.
+    /// Reasons: 1 input, 2 reserve, 3 storage, 4 paused, 5 workers, 6 fallow, 7 deposit, 8 dormant, 9 no road to the castle (works at half pace).
     pub fn production_problems_flat(&self, idx: u32) -> Vec<i32> {
         let Some(b) = self.buildings.get(idx as usize) else { return vec![] };
         let d = &DEFS[b.kind as usize];
@@ -3103,11 +3108,13 @@ impl World {
         let cap = self.storage_cap();
         let seasonal = if b.kind == FARM && season == 3 && b.opts & 2 != 0 { WINTER_GRAIN_HAYSTACKS } else { GRAIN_BY_SEASON[season as usize] };
         let soil = if b.kind == FARM { 500 + b.fert as i32 / 20 } else { 1000 };
-        outputs.iter().filter_map(|&(r, n)| {
+        let full: Vec<i32> = outputs.iter().filter_map(|&(r, n)| {
             let amount = if r == GR { (scale(n) * seasonal * soil / 100_000).max(1) } else { scale(n) };
             let room = cap - self.stock[r as usize];
             (amount > room).then_some([3, r as i32, amount, room])
-        }).flatten().collect()
+        }).flatten().collect();
+        if full.is_empty() && !self.road_served(idx as usize, &self.road_reach()) { return vec![9, -1, 0, 0]; }   // (not a stop: it works at half pace, see roadnet.rs)
+        full
     }
     /// The workforce in numbers: adults, workers (70% of the healthy adults, fewer in quarantine), children, elders, sick, jobs, workers placed, workers idle (placed nowhere), efficiency, workers promised by hand.
     pub fn staffing_totals(&self) -> Vec<u32> {
@@ -3780,7 +3787,7 @@ mod tests {
     fn better_buildings_need_more_workers_and_make_more() {
         let mut w = World::new(1337, 0, 0);
         w.stock = [500; N_RES]; w.population = 40; w.sick = 0;
-        put(&mut w, 1, 20.0, 20.0, 0);                         // a farm
+        put(&mut w, 1, 14.0, 10.0, 0);                         // a farm (in the castle's yard: it needs no road)
         w.staffing(); assert_eq!(w.buildings[1].staff, 2);
         w.buildings[1].tier = 3; w.staffing(); assert_eq!(w.buildings[1].staff, 8, "tier 4 farm employs four times as many");
         w.stock[GR as usize] = 0; w.buildings[1].progress = 0;
@@ -4099,7 +4106,7 @@ mod tests {
         };
         for k in [6u8, 9, 11, 12, 13] { assert!(place_near(&mut w, k), "could not place kind {k}"); }
         w.stock[IO as usize] = 0; w.stock[IR as usize] = 0; w.stock[TL as usize] = 0; w.stock[CH as usize] = 0;
-        for _ in 0..400 { w.step(); w.stock[W as usize] = 2000; w.stock[GR as usize] = 2000; }
+        for _ in 0..900 { w.step(); w.stock[W as usize] = 2000; w.stock[GR as usize] = 2000; }   // (the chain stands far from the castle with no roads: it works at half pace)
         assert!(w.stock[IO as usize] > 0 || w.stock[IR as usize] > 0, "ore flows");
         assert!(w.stock[TL as usize] > 0, "tools forged");
     }

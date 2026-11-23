@@ -29,17 +29,17 @@ const village = tier => Float32Array.from([
   44, 0, 8, -16, 0, 1, 4, 0, 0, 0,   24, 0, 30, 30, 0, 1, 4, 0, 0, 0,   2, 0, 34, 30, 0, 1, 4, 0, 0, 0,
 ]);
 // lines of the core: kind 0 a stub (door to node), kind 1 a stretch of a road laid by hand
-const lines = Float32Array.from([0, 0, 2, 0, 4, 0, 7,   0, 5000, 2, 14, 7, 14, 9,   1, 900, 5, 0, 7, 4, 9, 8, 9, 11, 8, 14, 9]);
+// [kind, born, surface, design, n, x, z, ...]: a stub, a stub that is born later, and a road
+const linesOf = tier => Float32Array.from([0, 0, 0, 0, 2, 0, 4, 0, 7,   0, 5000, 0, 0, 2, 14, 7, 14, 9,   1, 900, tier, 0, 5, 0, 7, 4, 9, 8, 9, 11, 8, 14, 9,   1, 900, tier, 0, 2, 14, 9, 17, 9]);
 
 for (const minify of [false, true]) {
-  test(`Paths.update runs on a village at every castle tier (${minify ? 'minified' : 'unminified'} bundle)`, async () => {
+  test(`Paths.update runs on a village at every castle tier and every road surface (${minify ? 'minified' : 'unminified'} bundle)`, async () => {
     const { Paths } = await load('src/render/paths.ts', minify);
     for (let tier = 0; tier <= 3; tier++) {
       const p = new Paths(terrain);
-      p.update(village(tier), lines, radii, []);
+      p.update(village(tier), linesOf(tier), radii, []);
       const g = p.tracks?.geometry ?? p.group.children[0].geometry;
       assert.ok(g.getAttribute('position').count > 0, `tier ${tier}`);
-      assert.equal(p.material, tier >= 2 ? 'stone' : 'dirt');
       for (const v of g.getAttribute('position').array) assert.ok(Number.isFinite(v));
       p.update(village(tier), new Float32Array(0), radii, []);   // no roads at all
     }

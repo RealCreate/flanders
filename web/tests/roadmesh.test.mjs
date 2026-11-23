@@ -4,13 +4,13 @@ import assert from 'node:assert/strict';
 import { INSTANT, buildRoadMesh, joinLines, parseRoadLines, addRibbon, newMesh, EDGE } from '../src/render/roadmesh.ts';
 import { curve, subdivide, length } from '../src/roadtool.ts';
 
-const flat = lines => lines.flatMap(l => [l.kind, l.born ?? 0, l.pts.length / 2, ...l.pts]);
+const flat = lines => lines.flatMap(l => [l.kind, l.born ?? 0, l.tier ?? 0, l.opts ?? 0, l.pts.length / 2, ...l.pts]);
 /** A curve of points through a quarter circle of radius r. */
 const arc = (r, n = 24, cx = 0, cz = 0) => { const p = []; for (let i = 0; i <= n; i++) { const a = (i / n) * Math.PI / 2; p.push(cx + Math.cos(a) * r, cz + Math.sin(a) * r); } return p; };
 
 function sane(m) {
   const n = m.x.length;
-  for (const a of [m.x, m.z, m.a, m.u, m.v, m.born, m.along, m.pave]) { assert.equal(a.length, n); for (const v of a) assert.ok(Number.isFinite(v), 'finite'); }
+  for (const a of [m.x, m.z, m.a, m.u, m.v, m.born, m.along, m.mat]) { assert.equal(a.length, n); for (const v of a) assert.ok(Number.isFinite(v), 'finite'); }
   assert.ok(m.idx.length % 3 === 0);
   for (const i of m.idx) assert.ok(Number.isInteger(i) && i >= 0 && i < n, 'index in range');
 }
@@ -85,4 +85,58 @@ test('a building\'s stub is a narrow ribbon along the door-to-node segment: no w
     for (let i = 0; i < m.idx.length; i += 3) { const [a, b, c] = [m.idx[i], m.idx[i + 1], m.idx[i + 2]]; area += Math.abs((m.x[b] - m.x[a]) * (m.z[c] - m.z[a]) - (m.x[c] - m.x[a]) * (m.z[b] - m.z[a])) / 2; }
     assert.ok(area <= len * 2 * half * EDGE * 1.6 + Math.PI * (half * EDGE) ** 2, `area ${area} for a stub ${len} long`);
   }
+});
+
+// ---- surfaces: every vertex carries the surface it is on, and one surface runs into the next ------------------------------------------------------------------------------------------
+
+import { BLEND_LEN } from '../src/render/roadmesh.ts';
+
+test('a parsed line carries its surface and design', () => {
+  const [l] = parseRoadLines(flat([{ kind: 1, born: 3, tier: 2, opts: 5, pts: [0, 0, 5, 0, 9, 1] }]));
+  assert.equal(l.tier, 2); assert.equal(l.opts, 5); assert.deepEqual(l.pts, [0, 0, 5, 0, 9, 1]); assert.equal(l.born, 3);
+});
+
+test('two stretches of one surface are one ribbon, two of different surfaces are not', () => {
+  const same = joinLines(parseRoadLines(flat([{ kind: 1, tier: 1, pts: [0, 0, 5, 0, 10, 0] }, { kind: 1, tier: 1, pts: [10, 0, 15, 0, 20, 0] }])));
+  assert.equal(same.length, 1); assert.equal(same[0].tier, 1);
+  const diff = joinLines(parseRoadLines(flat([{ kind: 1, tier: 0, pts: [0, 0, 5, 0, 10, 0] }, { kind: 1, tier: 2, pts: [10, 0, 15, 0, 20, 0] }])));
+  assert.equal(diff.length, 2);
+});
+
+test('a road keeps its own surface along its length and every vertex has one', () => {
+  for (const tier of [0, 1, 2, 3]) {
+    const m = buildRoadMesh(flat([{ kind: 1, tier, pts: [0, 0, 10, 0, 20, 0, 30, 0] }]), 1.3);
+    sane(m);
+    assert.ok(m.mat.every(v => v === tier), `tier ${tier}: ${[...new Set(m.mat)]}`);
+  }
+});
+
+test('where a dirt road meets a cobbled one the surface runs from one to the other over a stretch, never jumping', () => {
+  const run = (a, b) => { const p = []; for (let x = a; x <= b + 1e-9; x += 1.5) p.push(x, 0); if (p[p.length - 2] !== b) p.push(b, 0); return p; };   // (the core samples a curve about every 1.5 units)
+  const m = buildRoadMesh(flat([{ kind: 1, tier: 0, pts: run(0, 24) }, { kind: 1, tier: 2, pts: run(24, 48) }]), 1.3);
+  sane(m);
+  const at = x => { let best = null; for (let i = 0; i < m.x.length; i++) if (Math.abs(m.z[i]) < 0.2 && (best === null || Math.abs(m.x[i] - x) < Math.abs(m.x[best] - x))) best = i; return m.mat[best]; };
+  assert.equal(at(1), 0, 'the far end is dirt'); assert.equal(at(47), 2, 'the far end is cobbles');
+  assert.ok(Math.abs(at(24) - 1) < 0.05, `at the meeting it is half way (${at(24)})`);
+  const xs = []; for (let x = 1; x <= 47; x += 0.5) xs.push(at(x));
+  for (let i = 1; i < xs.length; i++) { assert.ok(xs[i] >= xs[i - 1] - 1e-6, 'never goes back'); assert.ok(xs[i] - xs[i - 1] < 0.7, `no jump (${xs[i - 1]} to ${xs[i]})`); }
+  assert.ok(at(24 - BLEND_LEN - 3) === 0 && at(24 + BLEND_LEN + 3) === 2, 'the blend is local');
+});
+
+test('a junction takes the mean surface of the roads that meet there, and a stub takes the surface of the road it runs into', () => {
+  const m = buildRoadMesh(flat([
+    { kind: 1, tier: 3, pts: [-20, 0, -10, 0, 0, 0] }, { kind: 1, tier: 3, pts: [0, 0, 10, 0, 20, 0] }, { kind: 1, tier: 1, pts: [0, 0, 0, 10, 0, 20] }, { kind: 0, tier: 0, pts: [0, -12, 0, -6, 0, 0] },
+  ]), 1.3);
+  sane(m);
+  const near = []; for (let i = 0; i < m.x.length; i++) if (Math.hypot(m.x[i], m.z[i]) < 0.1) near.push(m.mat[i]);
+  assert.ok(near.length > 0 && near.every(v => Math.abs(v - (3 + 3 + 1) / 3) < 1e-6), `the centre of the joint: ${near}`);
+  const stubFar = []; for (let i = 0; i < m.x.length; i++) if (Math.abs(m.x[i]) < 2 && m.z[i] < -9) stubFar.push(m.mat[i]);
+  assert.ok(stubFar.every(v => v > 2 && v < 3), 'the stub is on its way to the surface of the road');
+});
+
+test('a dead end is capped in the surface of its road, and a stub with nothing to join stays dirt', () => {
+  const m = buildRoadMesh(flat([{ kind: 1, tier: 2, pts: [0, 0, 8, 0, 16, 0] }, { kind: 0, tier: 0, pts: [0, 30, 0, 36] }]), 1.3);
+  sane(m);
+  assert.ok(m.mat.every(v => v === 0 || v === 2));
+  assert.ok(m.mat.some(v => v === 2) && m.mat.some(v => v === 0));
 });

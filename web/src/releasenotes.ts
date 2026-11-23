@@ -4,6 +4,20 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.6.0', date: '2026-11-23', title: 'Better roads',
+    added: [
+      'Roads have four surfaces: dirt, gravel, cobbles and flagstones. Select a road and resurface the whole stretch up to the next junction; a road with a better surface looks different, and one surface runs softly into the next.',
+      'Design options for roads: lime and oak trees along the verge, hedges and flower beds, stone benches and lanterns that light the road at night. They cover the whole stretch.',
+      'Workplaces need a road to the castle: a building outside the castle\'s yard that no road joins to the castle works at half pace until one does. The panel and the road tool say whether a road reaches the castle.',
+      'New textures for every road surface, with kerb stones, ruts, moss in the joints and a ragged verge where the grass meets the road.',
+    ],
+    changed: [
+      'Roads are no longer paved all at once when the castle grows: you choose the surface of each stretch yourself.',
+      'Textures blend where roads meet at corners and junctions, and where one surface runs into another.',
+    ],
+    fixed: [],
+  },
+  {
     version: '0.5.0', date: '2026-11-22', title: 'Steadier multiplayer',
     added: [
       'Commands no longer get lost: every command a player gives reaches everybody, complete and in order, even over a bad connection. Anything missing is noticed at once and sent again.',

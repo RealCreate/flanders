@@ -1,22 +1,27 @@
 // The flat mesh of the roads: ribbons along the curves the player laid, the short stubs of the buildings, and round patches where roads end or meet.
 // Pure geometry on plain arrays (no three.js), so it can be tested under node (tests/roadmesh.test.mjs); paths.ts puts the ground's height under every vertex.
 
-/** One line of road from the core (World.road_lines_flat): kind 0 a building's stub, kind 1 a stretch of a road the player laid. */
-export interface RoadLine { kind: number; born: number; pts: number[] }
+/** One line of road from the core (World.road_lines_flat): kind 0 a building's stub, kind 1 a stretch of a road the player laid, kind 2 the road under a gate or a toll house. `tier` is its surface
+ *  (0 dirt, 1 gravel, 2 cobbles, 3 flagstones) and `opts` the design along it (bits: trees, hedges, benches, lanterns, see roadlook.ts). */
+export interface RoadLine { kind: number; born: number; tier: number; opts: number; pts: number[] }
 
 export function parseRoadLines(flat: ArrayLike<number>): RoadLine[] {
   const out: RoadLine[] = [];
-  for (let o = 0; o + 2 < flat.length;) {
-    const n = flat[o + 2], pts: number[] = [];
-    for (let k = 0; k < n * 2; k++) pts.push(flat[o + 3 + k]);
-    out.push({ kind: flat[o], born: flat[o + 1], pts }); o += 3 + 2 * n;
+  for (let o = 0; o + 4 < flat.length;) {
+    const n = flat[o + 4], pts: number[] = [];
+    for (let k = 0; k < n * 2; k++) pts.push(flat[o + 5 + k]);
+    out.push({ kind: flat[o], born: flat[o + 1], tier: flat[o + 2], opts: flat[o + 3], pts }); o += 5 + 2 * n;
   }
   return out;
 }
 
-/** Vertices as parallel arrays: position (x, z), alpha, uv, and what the shader grows the road by (birth tick, distance from the start 0..1, paveable). */
-export interface Mesh { x: number[]; z: number[]; a: number[]; u: number[]; v: number[]; born: number[]; along: number[]; pave: number[]; idx: number[] }
-export const newMesh = (): Mesh => ({ x: [], z: [], a: [], u: [], v: [], born: [], along: [], pave: [], idx: [] });
+/** Vertices as parallel arrays: position (x, z), alpha, uv, what the shader grows the road by (birth tick, distance from the start 0..1) and the surface (`mat`: 0 dirt .. 3 flagstones, a fraction
+ *  between two where one surface runs into the next: the shader blends the two layers there). */
+export interface Mesh { x: number[]; z: number[]; a: number[]; u: number[]; v: number[]; born: number[]; along: number[]; mat: number[]; idx: number[] }
+export const newMesh = (): Mesh => ({ x: [], z: [], a: [], u: [], v: [], born: [], along: [], mat: [], idx: [] });
+
+/** How far along a road (in world units) a surface takes to run into the next one at a place where they meet. */
+export const BLEND_LEN = 4.5;
 
 /** The birth tick of a road that is there from the first frame. */
 export const INSTANT = -1e6;
@@ -37,7 +42,7 @@ export function joinLines(lines: RoadLine[]): RoadLine[] {
   const used = new Array(roads.length).fill(false), out: RoadLine[] = lines.filter(l => l.kind !== 1);
   const at = new Map<string, number[]>();
   roads.forEach((l, i) => { for (const e of [0, 1]) { const k = e ? key(l.pts[l.pts.length - 2], l.pts[l.pts.length - 1]) : key(l.pts[0], l.pts[1]); if (!at.has(k)) at.set(k, []); at.get(k)!.push(i); } });
-  const joinable = (k: string) => ends.get(k) === 2 && (at.get(k)?.length ?? 0) === 2 && at.get(k)![0] !== at.get(k)![1];
+  const joinable = (k: string) => ends.get(k) === 2 && (at.get(k)?.length ?? 0) === 2 && at.get(k)![0] !== at.get(k)![1] && roads[at.get(k)![0]].tier === roads[at.get(k)![1]].tier;   // (a change of surface is a joint of its own: the two blend there)
   for (let i = 0; i < roads.length; i++) {
     if (used[i]) continue;
     used[i] = true; let cur = roads[i];
@@ -49,7 +54,7 @@ export function joinLines(lines: RoadLine[]): RoadLine[] {
         const j = at.get(k)!.find(q => q !== i && !used[q]); if (j === undefined) break;
         used[j] = true; let nx = roads[j].pts;
         if (key(nx[0], nx[1]) !== k) { const r: number[] = []; for (let q = nx.length - 2; q >= 0; q -= 2) r.push(nx[q], nx[q + 1]); nx = r; }
-        cur = { kind: 1, born: Math.max(cur.born, roads[j].born), pts: cur.pts.concat(nx.slice(2)) };
+        cur = { kind: 1, born: Math.max(cur.born, roads[j].born), tier: cur.tier, opts: cur.opts & roads[j].opts, pts: cur.pts.concat(nx.slice(2)) };
       }
       // turn the chain round and grow the other end
       const r: number[] = []; for (let q = cur.pts.length - 2; q >= 0; q -= 2) r.push(cur.pts[q], cur.pts[q + 1]); cur = { ...cur, pts: r };
@@ -68,11 +73,14 @@ export function thin(pts: number[], min = 0.35): number[] {
 }
 
 /** A ribbon along the line: three vertices across at every point (soft edge, solid middle, soft edge), turned smoothly at corners. `half` is the solid half width. */
-export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0): { first: number[]; last: number[] } | null {
+export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0, ends?: [number, number]): { first: number[]; last: number[] } | null {
   const P = thin(line.pts); const n = P.length / 2;
   if (n < 2) return null;
   const cum = [0]; for (let k = 1; k < n; k++) cum.push(cum[k - 1] + Math.hypot(P[2 * k] - P[2 * k - 2], P[2 * k + 1] - P[2 * k - 1]));
   const total = cum[n - 1]; if (total < 0.3) return null;
+  // the surface along the ribbon: its own, run into the surface of what it meets at either end over BLEND_LEN (`ends`: the surface to reach at the start and at the end)
+  const own = Math.max(0, line.tier || 0), ramp = (d: number) => { const f = Math.max(0, 1 - d / BLEND_LEN); return f * f * (3 - 2 * f); };
+  const matAt = (d: number, len: number) => ends ? own + (ends[0] - own) * ramp(d) + (ends[1] - own) * ramp(len - d) : own;
   let prev: number[] | null = null, first: number[] | null = null;
   for (let i = 0; i < n; i++) {
     const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
@@ -89,7 +97,7 @@ export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0): { fi
     const row: number[] = [];
     for (const [s, al, uu] of [[1, 0, 0], [0, 0.95, 0.5], [-1, 0, 1]] as const) {
       const k = m.x.length; m.x.push(cx + nx * hw * EDGE * s); m.z.push(cz + nz * hw * EDGE * s); m.a.push(al); m.u.push(uu); m.v.push(v);
-      m.born.push(line.born); m.along.push(t); m.pave.push(1); row.push(k);
+      m.born.push(line.born); m.along.push(t); m.mat.push(matAt(cum[i], total)); row.push(k);
     }
     if (prev) for (let k = 0; k < 2; k++) m.idx.push(prev[k], row[k], prev[k + 1], prev[k + 1], row[k], row[k + 1]);
     prev = row; if (!first) first = row;
@@ -98,9 +106,9 @@ export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0): { fi
 }
 
 /** A round patch (a fan) at a place where roads end or meet: it fills the wedge the square-cut ends of the ribbons leave. */
-export function addDisc(m: Mesh, x: number, z: number, half: number, born = -1e6) {
+export function addDisc(m: Mesh, x: number, z: number, half: number, born = -1e6, mat = 0) {
   const c = m.x.length, R = half * EDGE, seg = 16;
-  const push = (px: number, pz: number, a: number, u: number, v: number) => { m.x.push(px); m.z.push(pz); m.a.push(a); m.u.push(u); m.v.push(v); m.born.push(born); m.along.push(0.5); m.pave.push(1); };
+  const push = (px: number, pz: number, a: number, u: number, v: number) => { m.x.push(px); m.z.push(pz); m.a.push(a); m.u.push(u); m.v.push(v); m.born.push(born); m.along.push(0.5); m.mat.push(mat); };
   push(x, z, 0.95, 0.5, 0.5);
   for (let k = 0; k < seg; k++) { const a = (k / seg) * Math.PI * 2; push(x + Math.cos(a) * R, z + Math.sin(a) * R, 0, 0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5); }
   for (let k = 0; k < seg; k++) m.idx.push(c, c + 1 + k, c + 1 + ((k + 1) % seg));
@@ -150,7 +158,7 @@ const cutFor = (gap: number, H: number) => (gap < Math.PI - 0.02 ? Math.min(H / 
 
 /** The fan of a junction. `arms` are sorted counter-clockwise by angle and carry their cut row (L, M, R as seen leaving the node).
  *  Every wedge of the fan takes the texture mapping of the ribbon it hangs on, so the paving and the ruts run on from the ribbon into the joint without a jump. */
-function addJunction(m: Mesh, ox: number, oz: number, arms: Arm[], H: number, born: number) {
+function addJunction(m: Mesh, ox: number, oz: number, arms: Arm[], H: number, born: number, mat = 0) {
   const n = arms.length;
   // the mapping of an arm: across the road from the left/right of its ribbon, along from the v of its cut row
   const mapOf = (a: Arm) => {
@@ -163,7 +171,7 @@ function addJunction(m: Mesh, ox: number, oz: number, arms: Arm[], H: number, bo
   };
   const vert = (map: (x: number, z: number) => [number, number], x: number, z: number, al: number) => {
     const k = m.x.length, [u, v] = map(x, z);
-    m.x.push(x); m.z.push(z); m.a.push(al); m.u.push(u); m.v.push(v); m.born.push(born); m.along.push(0.5); m.pave.push(1); return k;
+    m.x.push(x); m.z.push(z); m.a.push(al); m.u.push(u); m.v.push(v); m.born.push(born); m.along.push(0.5); m.mat.push(mat); return k;
   };
   for (let i = 0; i < n; i++) {
     const a = arms[i], b = arms[(i + 1) % n], mi = mapOf(a), mj = mapOf(b);
@@ -215,6 +223,14 @@ export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
     });
     joints.push({ ...nd, arms });
   }
+  // the surface at every place where lines meet: the mean of the roads that meet there (a stub or the road under a gate takes the surface of the road it runs into); each ribbon runs into it over BLEND_LEN
+  const key = (x: number, z: number) => x + ':' + z, nodeMat = new Map<string, number>();
+  for (const j of joints) {
+    const roads = j.arms.filter(a => lines[a.li].kind === 1), set = roads.length ? roads : j.arms;
+    nodeMat.set(key(j.x, j.z), set.reduce((t, a) => t + lines[a.li].tier, 0) / set.length);
+  }
+  const lineEnds = (l: RoadLine): [number, number] => [nodeMat.get(key(l.pts[0], l.pts[1])) ?? l.tier, nodeMat.get(key(l.pts[l.pts.length - 2], l.pts[l.pts.length - 1])) ?? l.tier];
+  lines.forEach(l => { if (l.kind !== 1) { const e = lineEnds(l); l.tier = l.kind === 0 ? e[1] : (e[0] + e[1]) / 2; } });
   // never cut a line to nothing from both ends
   lines.forEach((l, li) => {
     const len = arcLength(l.pts), s = cutOf[li][0], e = cutOf[li][1];
@@ -222,7 +238,7 @@ export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
   });
   for (const j of joints) for (const a of j.arms) a.cut = cutOf[a.li][a.end];
   // the ribbons
-  const rowsOf = lines.map((l, li) => addRibbon(m, { ...l, pts: cutPts(l.pts, cutOf[li][0], cutOf[li][1]) }, half, li));
+  const rowsOf = lines.map((l, li) => addRibbon(m, { ...l, pts: cutPts(l.pts, cutOf[li][0], cutOf[li][1]) }, half, li, lineEnds(l)));
   // the joints
   for (const j of joints) {
     for (const a of j.arms) {
@@ -237,9 +253,9 @@ export function buildRoadMesh(flat: ArrayLike<number>, half: number): Mesh {
         a.M = q; a.L = [q[0] - uz * H, q[1] + ux * H]; a.R = [q[0] + uz * H, q[1] - ux * H];
       }
     }
-    addJunction(m, j.x, j.z, j.arms, H, j.born);
+    addJunction(m, j.x, j.z, j.arms, H, j.born, nodeMat.get(key(j.x, j.z)) ?? 0);
   }
   // a dead end (one line ends here alone) is capped with a round patch
-  for (const nd of nodes.values()) if (nd.arms.length === 1) addDisc(m, nd.x, nd.z, half, nd.born);
+  for (const nd of nodes.values()) if (nd.arms.length === 1) addDisc(m, nd.x, nd.z, half, nd.born, lines[nd.arms[0].li].tier);
   return m;
 }

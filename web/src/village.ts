@@ -11,6 +11,8 @@ import type { Terrain } from './render/terrain';
 import { VillageView } from './render/buildings';
 import { unpackFlag, flagColor } from './flag';
 import { Paths } from './render/paths';
+import { parseRoadLines, joinLines } from './render/roadmesh';
+import { planRoadProps } from './render/roadplan';
 import { RoadNodes } from './render/roadnodes';
 import { Walls } from './render/walls';
 import { Spans } from './render/spans';
@@ -143,7 +145,12 @@ export class Village {
     this.walls.update(f, w.terrain_version(), w.options_flat(), w.gates_shut_flat());
     const water = w.moat_water_flat();
     this.spans.update(this.allSpans(w)); this.updateDecks(w, f); this.moats.update(water, f);
-    this.props.update(f, roads, this.sh.radii);
+    { // what the design options of the roads put along them (trees, hedges, benches, lanterns)
+      const lines = joinLines(parseRoadLines(w.road_lines_flat())), laid: number[] = [];   // (the stretches between the pieces joined into the roads they make: a road is as long as it runs from end to end)
+      for (const l of lines) if (l.kind === 1) for (let k = 2; k + 1 < l.pts.length; k += 2) laid.push(l.pts[k - 2], l.pts[k - 1], l.pts[k], l.pts[k + 1]);
+      const planned = planRoadProps(lines, (x, z) => this.sh.terrain.heightAt(x, z) > 0.5);
+      this.props.update(f, roads, this.sh.radii, { props: planned, laid, sig: lines.filter(l => l.kind === 1 && l.opts).map(l => `${l.opts}:${l.pts.length}:${l.pts[0].toFixed(1)}:${l.pts[1].toFixed(1)}:${l.pts[l.pts.length - 1].toFixed(1)}`).join(',') });
+    }
     this.clearLines = []; for (let i = 0; i < roads.length; i += 6) this.clearLines.push({ ax: roads[i], az: roads[i + 1], bx: roads[i + 2], bz: roads[i + 3], r: 2.4 });
     this.people.setRoads(roads); this.people.sync(f, NO_PATHS, this.sh.radii, w.population(), w.terrain_version());
     this.boats.sync(f, w.terrain_version());
