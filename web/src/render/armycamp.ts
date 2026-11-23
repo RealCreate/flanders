@@ -8,8 +8,14 @@ const GEO = {
   door: new THREE.PlaneGeometry(0.7, 1.05), pole: new THREE.CylinderGeometry(0.035, 0.035, 1.1, 4).translate(0, 0.55, 0), pennant: new THREE.PlaneGeometry(0.55, 0.3).translate(0.28, 0, 0),
   log: new THREE.CylinderGeometry(0.03, 0.17, 1.9, 6).translate(0, 0.95, 0),
   stones: new THREE.CylinderGeometry(0.55, 0.65, 0.16, 8).translate(0, 0.08, 0), flame: new THREE.ConeGeometry(0.24, 0.7, 5).translate(0, 0.45, 0),
-  trough: new THREE.BoxGeometry(4.2, 0.55, 0.8).translate(0, 0.275, 0), water: new THREE.PlaneGeometry(3.9, 0.52).rotateX(-Math.PI / 2).translate(0, 0.5, 0),
+  trough: new THREE.BoxGeometry(4.2, 0.55, 0.8).translate(0, 0.275, 0), water: new THREE.PlaneGeometry(3.9, 0.5).rotateX(-Math.PI / 2).translate(0, 0.57, 0),
   leg: new THREE.BoxGeometry(0.2, 0.3, 0.7).translate(0, 0.1, 0),
+  barrel: new THREE.CylinderGeometry(0.38, 0.34, 0.85, 8).translate(0, 0.42, 0), crate: new THREE.BoxGeometry(0.8, 0.7, 0.8).translate(0, 0.35, 0),
+  rail: new THREE.BoxGeometry(2.0, 0.08, 0.08).translate(0, 1.0, 0), rackLeg: new THREE.CylinderGeometry(0.05, 0.05, 1.2, 4).translate(0, 0.6, 0), spear: new THREE.CylinderGeometry(0.025, 0.025, 2.3, 4).translate(0, 1.15, 0),
+  hay: new THREE.BoxGeometry(1.1, 0.6, 0.7).translate(0, 0.3, 0), bench: new THREE.CylinderGeometry(0.15, 0.15, 1.4, 6).rotateZ(Math.PI / 2).translate(0, 0.15, 0),
+  bed: new THREE.BoxGeometry(3.0, 0.3, 1.5).translate(0, 0.8, 0), hump: new THREE.BoxGeometry(2.6, 0.9, 1.3).translate(0, 1.4, 0), wheel: new THREE.CylinderGeometry(0.5, 0.5, 0.12, 10).rotateX(Math.PI / 2).translate(0, 0.5, 0),
+  tLeg: new THREE.CylinderGeometry(0.1, 0.13, 3.6, 5).translate(0, 1.8, 0), deck: new THREE.BoxGeometry(2.0, 0.12, 2.0).translate(0, 3.1, 0), roof: new THREE.ConeGeometry(1.8, 1.1, 4).rotateY(Math.PI / 4).translate(0, 4.2, 0),
+  post: new THREE.CylinderGeometry(0.16, 0.2, 3.4, 6).translate(0, 1.7, 0), beam: new THREE.BoxGeometry(0.2, 0.22, 5.4).translate(0, 3.2, 0),
 };
 const MAT = {
   canvas: new THREE.MeshStandardMaterial({ color: 0xe6dcc0, roughness: 0.95, flatShading: true }),
@@ -17,17 +23,26 @@ const MAT = {
   wood: new THREE.MeshStandardMaterial({ color: 0x4a3420, roughness: 0.9 }),
   log: new THREE.MeshStandardMaterial({ color: 0x6e4e30, roughness: 0.95, flatShading: true }),
   pennant: new THREE.MeshStandardMaterial({ color: 0x2f5fa8, roughness: 0.8, side: THREE.DoubleSide }),
+  gold: new THREE.MeshStandardMaterial({ color: 0xc9a227, roughness: 0.6, side: THREE.DoubleSide }),
+  barrel: new THREE.MeshStandardMaterial({ color: 0x7a5530, roughness: 0.9 }),
+  crate: new THREE.MeshStandardMaterial({ color: 0x9a7a4c, roughness: 0.95 }),
+  steel: new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.5 }),
   stone: new THREE.MeshStandardMaterial({ color: 0x55524c, roughness: 1, flatShading: true }),
   flame: new THREE.MeshBasicMaterial({ color: 0xff9a2e }),
-  water: new THREE.MeshStandardMaterial({ color: 0x4f86b0, roughness: 0.2, metalness: 0.1 }),
+  water: new THREE.MeshStandardMaterial({ color: 0x3f8fd0, emissive: 0x0e3454, roughness: 0.15, metalness: 0.1 }),
+  hay: new THREE.MeshStandardMaterial({ color: 0xc9b25a, roughness: 1, flatShading: true }),
 };
-const MAX_LOGS = 110;
+const MAX_LOGS = 170;
 const RISE = 0.7;   // seconds a part takes to come up
 
 export class ArmyCamp {
   group = new THREE.Group();
   tents: THREE.Group[] = [];
   trough = new THREE.Group();
+  private gate = new THREE.Group();
+  private gateFlames: THREE.Mesh[] = [];
+  private commander: THREE.Group | null = null;
+  private props = new THREE.Group();
   private fires: THREE.Group[] = [];
   private logs: THREE.InstancedMesh;
   private logBorn = new Float32Array(MAX_LOGS).fill(-1);
@@ -43,7 +58,15 @@ export class ArmyCamp {
     this.trough.add(box, water);
     for (const x of [-1.7, 1.7]) { const leg = new THREE.Mesh(GEO.leg, MAT.wood); leg.position.set(x, 0, 0); this.trough.add(leg); }
     this.trough.visible = false;
-    this.group.add(this.logs, this.trough);
+    for (const z of [-2.7, 2.7]) { const post = new THREE.Mesh(GEO.post, MAT.log); post.position.z = z; post.castShadow = true; this.gate.add(post); }
+    this.gate.add(new THREE.Mesh(GEO.beam, MAT.wood));
+    for (const z of [-2.7, 2.7]) {   // a torch and a pennant on each post
+      const flame = new THREE.Mesh(GEO.flame, MAT.flame); flame.position.set(0, 3.45, z); flame.scale.setScalar(0.8); this.gate.add(flame); this.gateFlames.push(flame);
+      const flag = new THREE.Mesh(GEO.pennant, MAT.pennant); flag.position.set(0, 3.0, z); flag.rotation.y = Math.PI / 2; this.gate.add(flag);
+    }
+    this.props.visible = false;
+    this.gate.visible = false;
+    this.group.add(this.logs, this.trough, this.gate, this.props);
   }
 
   private tent(): THREE.Group {
@@ -60,8 +83,32 @@ export class ArmyCamp {
     this.group.add(g); return g;
   }
 
+  /** The stores, the rack of spears and the commander's pavilion, made once for a layout. */
+  private furnish(camp: Camp) {
+    this.props.clear();
+    if (this.commander) { this.group.remove(this.commander); this.commander = null; }
+    for (const p of camp.props) {
+      const g = new THREE.Group();
+      if (p.kind === 2) {
+        for (const x of [-0.9, 0.9]) { const leg = new THREE.Mesh(GEO.rackLeg, MAT.wood); leg.position.x = x; g.add(leg); }
+        g.add(new THREE.Mesh(GEO.rail, MAT.wood));
+        for (let i = 0; i < 5; i++) { const sp = new THREE.Mesh(GEO.spear, MAT.steel); sp.position.set(-0.7 + i * 0.35, 0, 0.1); sp.rotation.z = (i - 2) * 0.05; sp.rotation.x = -0.12; g.add(sp); }
+      } else if (p.kind === 3) { g.add(new THREE.Mesh(GEO.hay, MAT.hay)); }
+      else if (p.kind === 5) { g.add(new THREE.Mesh(GEO.bench, MAT.log)); }
+      else if (p.kind === 4) {
+        g.add(new THREE.Mesh(GEO.bed, MAT.wood), new THREE.Mesh(GEO.hump, MAT.canvas));
+        for (const x of [-1, 1]) for (const z of [-0.85, 0.85]) { const w = new THREE.Mesh(GEO.wheel, MAT.wood); w.position.set(x, 0, z); g.add(w); }
+      } else if (p.kind === 6) {
+        for (const x of [-0.85, 0.85]) for (const z of [-0.85, 0.85]) { const leg = new THREE.Mesh(GEO.tLeg, MAT.log); leg.position.set(x, 0, z); leg.rotation.set(-z * 0.06, 0, x * 0.06); g.add(leg); }
+        g.add(new THREE.Mesh(GEO.deck, MAT.wood), new THREE.Mesh(GEO.roof, MAT.canvas));
+      } else { const m = new THREE.Mesh(p.kind === 0 ? GEO.barrel : GEO.crate, p.kind === 0 ? MAT.barrel : MAT.crate); m.castShadow = true; g.add(m); }
+      g.position.set(p.x, 0, p.z); g.rotation.y = p.yaw; g.userData.base = p; this.props.add(g);
+    }
+    if (camp.commander) { const t = this.tent(); (t.children[3] as THREE.Mesh).material = MAT.gold; t.children[2].scale.y = 1.6; t.children[3].position.y = 4.1; this.commander = t; }
+  }
+
   /** Show the first `shown.tents` tents (and the fires lit by them), the first `shown.logs` logs of the fence and, with `shown.trough`, the trough, as `camp` lays them out; pennants in `color`, fluttering with `t`. */
-  show(camp: Camp, ground: (x: number, z: number) => number, color: number, t: number, shown: { tents: number; logs: number; trough: boolean }) {
+  show(camp: Camp, ground: (x: number, z: number) => number, color: number, t: number, shown: { tents: number; logs: number; trough: boolean; stores: boolean }) {
     MAT.pennant.color.setHex(color);
     while (this.tents.length < camp.tents.length) this.tents.push(this.tent());
     while (this.fires.length < camp.fires.length) this.fires.push(this.fire());
@@ -83,6 +130,7 @@ export class ArmyCamp {
 
     if (this.baseOf !== camp) {   // a new layout: the ground under each log is read once
       this.baseOf = camp;
+      this.furnish(camp);
       camp.stakes.forEach((s, i) => { if (i < MAX_LOGS) this.logBase[i] = ground(s.x, s.z); });
     }
     const n = Math.min(MAX_LOGS, camp.stakes.length, shown.logs);
@@ -97,6 +145,17 @@ export class ArmyCamp {
     for (let i = n; i < MAX_LOGS && this.logBorn[i] >= 0; i++) this.logBorn[i] = -1;
     this.logs.count = n; this.logs.instanceMatrix.needsUpdate = true;
 
+    this.props.visible = shown.stores;
+    if (shown.stores) this.props.children.forEach(g => { const b = g.userData.base as Camp['props'][number]; g.position.y = ground(b.x, b.z); });
+    if (this.commander) {
+      const c = camp.commander!;
+      this.commander.visible = shown.stores; this.commander.position.set(c.x, ground(c.x, c.z), c.z); this.commander.rotation.y = c.yaw; this.commander.scale.setScalar(1.6);
+      this.commander.children[3].rotation.y = Math.sin(t * 2.4) * 0.35;
+    }
+    this.gateFlames.forEach((f, i) => f.scale.set(0.8, 0.7 + 0.35 * Math.sin(t * 12 + i * 2) * Math.sin(t * 7.1 + i), 0.8));
+    const g0 = camp.gate[0], g1 = camp.gate[1];
+    this.gate.visible = !!g0 && n > 0;   // the gate stands once the fence is started
+    if (g0 && g1) { const mx = (g0.x + g1.x) / 2, mz = (g0.z + g1.z) / 2; this.gate.position.set(mx, ground(mx, mz), mz); this.gate.rotation.y = g0.yaw + Math.PI / 2; }
     const tr = camp.trough, on = !!tr && shown.trough;
     this.trough.visible = on;
     if (on) {
@@ -110,7 +169,7 @@ export class ArmyCamp {
   /** The camp is struck: everything goes, and rises again from nothing the next time. */
   hide() {
     if (!this.group.visible) return;
-    this.group.visible = false; this.tents.forEach(g => { g.visible = false; g.userData.born = undefined; }); this.logBorn.fill(-1); this.troughBorn = -1;
+    this.group.visible = false; this.props.visible = false; if (this.commander) this.commander.visible = false; this.tents.forEach(g => { g.visible = false; g.userData.born = undefined; }); this.logBorn.fill(-1); this.troughBorn = -1;
   }
   dispose() { this.logs.dispose(); }
 }

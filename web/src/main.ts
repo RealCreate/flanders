@@ -1031,13 +1031,28 @@ function pickArmy(e: { clientX: number; clientY: number }, r = pointerRay(e), gr
   const troops = settings().crowds && crowd.group.visible && !showroom;
   lv.field.pick(picker, troops);
   if (troops) lv.army.pick(picker);
+  pickedPart = '';
   if (picker.hit) {
     const land = ground === undefined ? terrain.pick(r.ray) : ground;
-    return !land || r.ray.origin.distanceTo(land) + 0.2 >= picker.hit.distance ? picker.hit.id : null;
+    if (!land || r.ray.origin.distanceTo(land) + 0.2 >= picker.hit.distance) { pickedPart = picker.hit.part; return picker.hit.id; }
+    return null;
   }
   return nearestWithin(armiesOnScreen(), e.clientX, e.clientY, 34)?.id ?? null;
 }
 let lastArmyClick = { t: 0, id: -1 };
+let pickedPart = '';   // what pickArmy last hit of the army: 'tent' and 'trough' are the camp itself
+
+const CAMP_UNITS = ['spearmen', 'archers', 'swordsmen', 'knights', 'catapults', 'rams'];
+/** "8 spearmen, 4 archers": what is in an army (the siege engines are left out when `soldiersOnly`). */
+function unitsText(units: number[], soldiersOnly = false) { return units.map((n, k) => n > 0 && (!soldiersOnly || k < 4) ? `${n} ${CAMP_UNITS[k]}` : '').filter(Boolean).join(', '); }
+/** What a camp tells the player: how many troops are in it (of the whole army if some are still on the road), what kinds, and the engines beside it; null if the army has no camp up. */
+function campText(id: number): string | null {
+  const c = lv.field.campTroops(id), u = detUnits(id);
+  if (!c || !u) return null;
+  const kinds = unitsText(u, true), engines = unitsText(u.map((n, k) => k >= 4 ? n : 0));
+  const head = c.here >= c.of ? `${c.of} troops in camp` : `${c.here} of ${c.of} troops in camp (the rest are on the way)`;
+  return `${head}${kinds ? ` · ${kinds}` : ''}${engines ? ` · ${engines} parked outside` : ''}`;
+}
 
 /** Draw the selected army's remaining route. */
 function showRoute() {
@@ -3627,7 +3642,9 @@ function bindInput() {
       const idx = armyId === null ? pickBuilding(r) : null; covHover(idx);
       let hit: { r: Rival; i: number } | null = null;
       if (idx === null && armyId === null) for (const rival of rivals.values()) { const i = rival.village.pick(r); if (i !== null) { hit = { r: rival, i }; break; } }
-      if (armyId !== null) { const u = detUnits(armyId), n = u ? u.reduce((a, b) => a + b, 0) : 0; ui.tip(`<b>Army ${armyId}</b><small>${n} soldiers · click to select · Shift+click adds · double-click selects every army in view</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
+      const campInfo = armyId !== null ? campText(armyId) : null;
+      if (armyId !== null && campInfo) { ui.tip(`<b>Camp of Army ${armyId}</b><small>${campInfo} · click to select the army</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
+      else if (armyId !== null) { const u = detUnits(armyId), n = u ? u.reduce((a, b) => a + b, 0) : 0; ui.tip(`<b>Army ${armyId}</b><small>${n} soldiers · click to select · Shift+click adds · double-click selects every army in view</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
       else if (idx !== null) { const f = lv.world.buildings_flat(), o = idx * 10; ui.tip(`<b>${tierName(f[o], f[o + 1])}</b><small>${defs[f[o]].name} · ${STATUS[f[o + 6]]}</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
       else if (hit) { const f = hit.r.village.world.buildings_flat(), o = hit.i * 10; ui.tip(`<b>${esc(hit.r.name)}: ${tierName(f[o], f[o + 1])}</b><small>${defs[f[o]].name} · click to open the Army tab</small>`, e.clientX, e.clientY); cv.style.cursor = 'pointer'; }
       else { ui.tip(null); cv.style.cursor = multiDets.length ? 'crosshair' : 'default'; }   // with armies selected the ground is where they are sent
@@ -3670,7 +3687,9 @@ function bindInput() {
         const now = performance.now();
         if (now - lastArmyClick.t < 350 && lastArmyClick.id === det) { const all = [...new Set([det, ...armiesOnScreen().map(a => a.id)])]; selectDets(all); ui.toast(`${all.length} armies selected.`, 'info'); lastArmyClick = { t: 0, id: -1 }; return; }   // double-click: every army on the screen
         lastArmyClick = { t: now, id: det };
+        const camp = pickedPart === 'tent' || pickedPart === 'trough' ? campText(det) : null;
         if (e.shiftKey || e.ctrlKey) selectDets(multiDets.includes(det) ? multiDets.filter(i => i !== det) : [...multiDets, det]); else selectDet(det);   // Shift or Ctrl: add to the selection, or take out
+        if (camp) ui.toast(`Camp of Army ${det}: ${camp}.`, 'info');
         return;
       }
       const idx = pickBuilding(pointerRay(e));

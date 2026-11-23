@@ -1,3 +1,4 @@
+import { campSite } from './campsite';
 import { NetView } from './render/netview';
 import { drawnUp } from './defence';
 import { settings } from './settings';
@@ -62,7 +63,7 @@ export class Village {
     this.moats = new MoatWater(sh.terrain, STEP); sh.scene.add(this.moats.group);
     this.planted = new PlantedTrees(sh.terrain); sh.scene.add(this.planted.group);
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
-    this.field = new FieldView(sh.terrain); this.field.friend = color; this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
+    this.field = new FieldView(sh.terrain); this.field.friend = color; this.field.site = campSite(() => this.world, sh.terrain, () => sh.forest); this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain);
     const channel = (x: number, z: number) => this.moats.levelAt(x, z);
     this.army.channelLevelAt = this.field.channelLevelAt = channel;

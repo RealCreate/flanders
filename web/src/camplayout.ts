@@ -6,12 +6,19 @@ export interface Pt { x: number; z: number }
 export interface Spot { x: number; z: number; yaw: number }
 export interface Camp {
   cx: number; cz: number; yaw: number;
+  /** The middle of the fenced yard and how far it reaches from there (the engines outside the gate not counted): what another camp has to keep clear of. */
+  mx: number; mz: number; radius: number;
   tents: Spot[];
   /** A fire in the middle of each cluster of tents; it is lit once `after` tents are up. */
   fires: (Pt & { after: number })[];
   /** The spiked logs of the fence, ordered from the gate outward so that it is built from there; they lean away from the camp (`yaw` points outward). */
   stakes: Spot[];
+  /** The two tall posts either side of the gate, and the way the gate faces. */
+  gate: Spot[];
   trough: Spot | null;
+  /** The commander's big pavilion at the back, and the stores round the camp: kind 0 barrel, 1 crate, 2 rack of spears, 3 hay bale, 4 supply wagon, 5 log bench by a fire, 6 watch tower. */
+  commander: Spot | null;
+  props: (Spot & { kind: number })[];
   horses: Spot[];
   engines: Spot[];
   /** The path the guards walk, a closed loop just inside the fence, and its length. */
@@ -24,7 +31,8 @@ const SU = 8.2, SV = 7.6; // distance between the fires
 const BLOB = 4.0;         // a cluster reaches this far from its fire
 const MARGIN = 2.2;       // the fence stands this far outside the tents
 const YARD = 6.4;         // the depth of the horse yard
-const STAKE_GAP = 1.35;
+const STAKE_GAP = 0.8;
+const BACK = 6.5;         // the extra depth behind the tents: the commander's pavilion and the stores
 const GATE = 2.4;         // half the width of the gate
 
 export function tentsFor(troops: number) { return troops < 1 ? 0 : Math.min(12, Math.ceil(troops / 5)); }
@@ -51,11 +59,11 @@ export function campLayout(cx: number, cz: number, yaw: number, troops: number, 
 
   const hx = want ? (cols - 1) * SU / 2 + BLOB : 3, hz = want ? (rows - 1) * SV / 2 + BLOB : 3;
   const yard = horses > 0 ? YARD : 0;
-  const A = Math.max(hx + MARGIN, yard ? 6.4 : 4), vmin = -hz - MARGIN, vmax = hz + MARGIN + yard, vc = (vmin + vmax) / 2;
+  const A = Math.max(hx + MARGIN, yard ? 6.4 : 4), vmin = -hz - MARGIN, vmax = hz + MARGIN + yard, vc = (vmin + vmax) / 2, B = A + (want ? BACK : 0);
 
   // the fence: the four sides in turn, starting with the front (where the gate is), keeping the logs that are not in the gate
-  const corners: [number, number][] = [[A, vmin], [A, vmax], [-A, vmax], [-A, vmin]], normals: [number, number][] = [[1, 0], [0, 1], [-1, 0], [0, -1]];
-  const perimeter = 4 * A + 2 * (vmax - vmin);
+  const corners: [number, number][] = [[A, vmin], [A, vmax], [-B, vmax], [-B, vmin]], normals: [number, number][] = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  const perimeter = 2 * (A + B) + 2 * (vmax - vmin);
   const logs: { s: number; spot: Spot }[] = [];
   let s0 = 0;
   corners.forEach(([u0, v0], i) => {
@@ -87,9 +95,22 @@ export function campLayout(cx: number, cz: number, yaw: number, troops: number, 
     engineSpots.push({ ...at(A + 4.6 + row * 5.2, vc + (col - (inRow - 1) / 2) * 3.8), yaw });   // rows outside the gate, all facing out
   }
 
-  const inset = 1.2, loopPts = want ? [at(A - inset, vmin + inset), at(A - inset, vmax - inset), at(-A + inset, vmax - inset), at(-A + inset, vmin + inset)] : [];
-  const loopLen = want ? 4 * (A - inset) + 2 * (vmax - vmin - 2 * inset) : 0;
-  return { cx, cz, yaw, tents, fires, stakes, trough, horses: horseSpots, engines: engineSpots, loop: loopPts, loopLen, guards: want ? guardsFor(troops) : 0 };
+  const inset = 1.2, loopPts = want ? [at(A - inset, vmin + inset), at(A - inset, vmax - inset), at(-B + inset, vmax - inset), at(-B + inset, vmin + inset)] : [];
+  const loopLen = want ? 2 * (A + B - 2 * inset) + 2 * (vmax - vmin - 2 * inset) : 0;
+  const gate = want ? [-1, 1].map(side => ({ ...at(A, vc + side * (GATE + 0.3)), yaw })) : [];
+  const u0 = -(hx + 4.2), props: Camp['props'] = [];
+  let commander: Spot | null = null;
+  if (want) {
+    commander = { ...at(u0, 0), yaw: face(1, 0) };
+    for (const [du, v, kind, turn] of [[0.3, -3.9, 0, 0], [-0.7, -4.6, 0, 1], [0.8, -4.7, 0, 2], [0.2, 3.9, 1, 0.3], [-0.5, 4.7, 1, 0.9], [0.9, 4.5, 1, 0.1]]) props.push({ ...at(u0 + du, v), yaw: yaw + turn, kind });
+    props.push({ ...at(A - 2.6, vc + GATE + 1.6), yaw: face(1, 0), kind: 2 });   // spears in a rack by the gate
+    fires.forEach((f, k) => { for (const a of [0.4 + k * 0.9 + Math.PI / 3, 0.4 + k * 0.9 + Math.PI * 4 / 3]) props.push({ x: f.x + Math.cos(a) * 0 + (at(Math.cos(a) * 1.2, Math.sin(a) * 1.2).x - cx), z: f.z + (at(Math.cos(a) * 1.2, Math.sin(a) * 1.2).z - cz), yaw: face(Math.cos(a), Math.sin(a)), kind: 5 }); });   // logs to sit on round each fire
+    if (trough) for (const side of [-1, 1]) props.push({ ...at(side * 4.5, hz + MARGIN + yard / 2), yaw: yaw + side, kind: 3 });   // hay for the horses
+    props.push({ ...at(-B - 3.6, vc - 2.5), yaw: face(1, 0.3), kind: 4 });   // the supply wagon, parked behind the fence
+    for (const v of [vmin, vmax]) props.push({ ...at(A + 0.6, v), yaw, kind: 6 });   // a watch tower at each front corner
+  }
+  const mid = at((A - B) / 2, vc), radius = want ? Math.hypot((A + B) / 2, (vmax - vmin) / 2) + 3 : 6;
+  return { cx, cz, yaw, mx: mid.x, mz: mid.z, radius, tents, fires, stakes, gate, trough, commander, props, horses: horseSpots, engines: engineSpots, loop: loopPts, loopLen, guards: want ? guardsFor(troops) : 0 };
 }
 
 /** Where a guard is `s` metres along the patrol loop, and which way he is walking. */

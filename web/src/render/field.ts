@@ -6,12 +6,13 @@ import type { ArmyPicker } from './armypick';
 import { dotsAlong } from './trail';
 import { buildArmyBanner, paintArmyBanner, waveArmyBanner } from './armybanner';
 import { arrivalSlot, marchPoint, marchSlot } from '../marchfile';
-import { campLayout, type Camp } from '../camplayout';
+import { campLayout, patrolAt, type Camp } from '../camplayout';
 import { ArmyCamp } from './armycamp';
+import type { CampSite } from '../campsite';
 
 interface Member {
   kind: number; x: number; z: number; y: number; yaw: number; gait: number; spd: number; seed: number;
-  visible: boolean; drawn: boolean; mode: number; boat?: THREE.Group; guard?: boolean; there?: boolean;
+  visible: boolean; drawn: boolean; mode: number; boat?: THREE.Group; guard?: boolean; there?: boolean; onPost?: boolean;
 }
 interface Track { points: Float32Array; gap: number; from: number; to: number; time: number; duration: number }
 interface Det {
@@ -23,7 +24,7 @@ interface Det {
   dots: THREE.InstancedMesh | null; flag: THREE.Group | null;
   /** The camp it makes as its soldiers arrive (see camplayout.ts): tents, a fence, a trough with the horses, guards on patrol, the siege engines in rows. `layAt` is what the layout was made for. */
   camp: ArmyCamp | null; lay: Camp | null; layAt: { x: number; z: number; yaw: number; key: string } | null; travelled: boolean;
-  horses: { x: number; z: number; yaw: number; hex: number }[]; inCamp: number;
+  horses: { x: number; z: number; yaw: number; hex: number }[]; inCamp: number; clashT: number;
 }
 
 export const STATE_TEXT = ['Waiting for orders', 'Marching', 'Felling trees', 'Building a bridge', 'Crossing by boat', 'Arrived — ready to attack', 'Waiting for materials', 'Returning home', 'Fighting in the battle', 'Route blocked', 'Taking position'];
@@ -31,6 +32,8 @@ const FORMING = 10;
 const MOVING = new Set([1, 2, 3, 4, 6, 7]);
 
 const SIEGE_LEN = 3.2;
+const PATROL_SPEED = 1.15;   // metres a second
+const HORSE_COATS = [0x896044, 0x4a3426, 0x2e2622, 0xa89478, 0x6b4a30, 0x9b9488];
 
 /** Draw the army on the waypoints actually traversed by the simulation, in dispatch order. */
 export class FieldView {
@@ -41,6 +44,8 @@ export class FieldView {
   private t = 0;
   private rings: THREE.Mesh[] = [this.ring];
   friend = 0x2f5fa8;
+  /** What a camp keeps off (water, steep ground, rocks, buildings, trees); without it camps go anywhere. */
+  site: CampSite | null = null;
   channelLevelAt: (x: number, z: number) => number = () => -Infinity;
 
   constructor(private terrain: Terrain) { this.ring.renderOrder = 11; this.ring.visible = false; this.group.add(this.ring); }
@@ -59,7 +64,7 @@ export class FieldView {
       if (!d) {
         const banner = buildArmyBanner(this.friend);
         this.group.add(banner);
-        d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null, camp: null, lay: null, layAt: null, travelled: false, horses: [], inCamp: 0 };
+        d = { id, x: flat[o + 1], z: flat[o + 2], tx: flat[o + 1], tz: flat[o + 2], heading: 0, state: 0, members: [], sig: '', siege: [], rams: [], banner, tracks: new Map(), approaches: new Map(), dest: null, wps: [], dots: null, flag: null, camp: null, lay: null, layAt: null, travelled: false, horses: [], inCamp: 0, clashT: -9 };
         this.dets.set(id, d);
       }
       d.tx = flat[o + 1]; d.tz = flat[o + 2]; d.state = flat[o + 8]; d.heading = flat[o + 14];
@@ -208,30 +213,89 @@ export class FieldView {
     }
   }
 
-  /** The camp of an army that has stopped, built up as its soldiers get there: each soldier that reaches the destination adds to it (a tent now and then, a guard on watch), so it grows while the rest are
-   *  still on the road, and is struck when the army moves on. Laid out from where the soldiers stand once they have been given places, before that from a loose heap at the destination. `ratio` is the share
-   *  of the foot soldiers that are there. Null while nobody has arrived, while fighting, or when there is nobody to camp. */
-  private pitchCamp(d: Det, dt: number): { lay: Camp; ratio: number } | null {
-    const n = d.members.length + d.siege.length + d.rams.length;
-    const standing = d.state === 0 || d.state === 5 || d.state === FORMING;
-    let ratio = standing ? 1 : 0, ax = d.tx, az = d.tz;
-    const track = d.tracks.get(0);
-    if (!standing && MOVING.has(d.state) && track && track.points.length >= 8) {
-      const pts = track.points, end = pts[pts.length - 1], footN = d.members.filter(m => !(m.kind === 3 && d.tracks.has(3))).length;
-      const there = this.dispatch(track) >= end ? Math.min(footN, Math.floor((this.dispatch(track) - end) / Math.max(0.1, track.gap)) + 1) : 0;
-      ratio = footN > 0 ? there / footN : 0; ax = pts[pts.length - 4]; az = pts[pts.length - 3];
+  /** Has the soldier of this rank on this track got where the army is going? A standing army has all arrived. */
+  private arrived(d: Det, kind: number, rank: number) {
+    if (d.state === 0 || d.state === 5 || d.state === FORMING) return true;   // taking position is still the camp: it must not come down and go up again
+    const track = d.tracks.get(kind);
+    if (!track || !MOVING.has(d.state) || track.points.length < 8) return false;
+    const p = track.points, n = p.length;
+    if (d.dest && Math.hypot(p[n - 4] - d.dest[0], p[n - 3] - d.dest[1]) > 3) return false;   // the track only reaches as far as the army has got: it is there when that is the destination
+    return this.dispatch(track) - rank * track.gap >= p[n - 1];
+  }
+
+  /** The camp of an army, built up as its soldiers get there: the first one to arrive starts it and each one after adds to it (tents, then the fence), whichever kind of soldier or engine it is, so it grows
+   *  while the rest are still on the road, and is struck when the army moves on. It stands where the march ends, facing the way the army came. Null while nobody has arrived or while fighting. */
+  private pitchCamp(d: Det, got: number, total: number, troops: number, horses: number, engines: number): Camp | null {
+    if (d.state === 8 || got < 1 || total < 1) { d.camp?.hide(); return null; }
+    let x = d.tx, z = d.tz, yaw = Math.PI / 2 - d.heading;
+    const track = d.tracks.get(0) ?? d.tracks.get(3) ?? d.tracks.get(4);
+    if (MOVING.has(d.state) && track && track.points.length >= 8) {
+      const p = track.points, n = p.length;
+      x = d.dest ? d.dest[0] : p[n - 4]; z = d.dest ? d.dest[1] : p[n - 3];
+      const bx = d.wps.length >= 4 ? d.wps[d.wps.length - 4] : p[n - 8], bz = d.wps.length >= 4 ? d.wps[d.wps.length - 3] : p[n - 7];
+      yaw = Math.atan2(x - bx, z - bz);
     }
-    if (ratio <= 0 || n < 2) { d.camp?.hide(); d.campT = 0; return null; }
-    const slots: { x: number; z: number }[] = [];
-    if (standing) for (const lanes of d.approaches.values()) for (const lane of lanes) if (lane && lane.length >= 2) slots.push({ x: lane[0], z: lane[1] });
-    if (slots.length < 2) for (let i = 0; i < n; i++) { const r = 1.3 * Math.sqrt(i + 0.5), a = i * 2.4; slots.push({ x: ax + Math.sin(a) * r, z: az + Math.cos(a) * r }); }   // not given places yet: a loose heap on the spot
-    const sig = `${slots.length}:${slots.reduce((a, q) => a + q.x * 3 + q.z, 0).toFixed(1)}`;
-    if (sig !== d.laySig) { d.laySig = sig; d.lay = campLayout(slots, n); }
-    if (!d.lay) { d.camp?.hide(); return null; }
-    d.campT = Math.min(1, d.campT + dt / 2.5);
-    if (!d.camp) { d.camp = new ArmyCamp(); this.group.add(d.camp.group); }
-    d.camp.show(d.lay, (x, z) => this.terrain.walkAt(x, z), d.campT, this.friend, this.t, Math.ceil(d.lay.tents.length * ratio - 1e-6));
-    return { lay: d.lay, ratio };
+    const key = `${troops}:${horses}:${engines}`, at = d.layAt;
+    const clash = !!d.lay && this.t - d.clashT > 0.5 && !!this.overlap(d, d.lay);   // another army's camp has come up where this one stands
+    if (clash) d.clashT = this.t;
+    if (!d.lay || !at || at.key !== key || Math.hypot(at.x - x, at.z - z) > 2 || Math.abs(Math.atan2(Math.sin(at.yaw - yaw), Math.cos(at.yaw - yaw))) > 0.7 || clash) {
+      d.lay = this.chooseSite(d, x, z, yaw, troops, Math.min(6, horses), engines); d.layAt = { x, z, yaw, key };   // camps keep off obstacles and off each other: the army with the higher number gives way
+    }
+    return d.lay;
+  }
+
+  /** How badly the ground under a camp is in its way: each tent, the pavilion, the trough, the stores, the engines, the fence and the yard inside it that stands on water, a slope, a rock, a building or
+   *  a tree counts. 0 is a clear site. */
+  private siteCost(lay: Camp): number {
+    const s = this.site; if (!s) return 0;
+    let c = 0;
+    const hit = (x: number, z: number, r: number, w: number) => { if (s.blocked(x, z, r)) c += w; };
+    for (const t of lay.tents) hit(t.x, t.z, 2.1, 3);
+    for (const f of lay.fires) hit(f.x, f.z, 1.2, 2);
+    if (lay.commander) hit(lay.commander.x, lay.commander.z, 3, 3);
+    if (lay.trough) hit(lay.trough.x, lay.trough.z, 2.4, 2);
+    for (const e of lay.engines) hit(e.x, e.z, 2.2, 1);
+    for (const p of lay.props) hit(p.x, p.z, p.kind === 4 ? 2 : p.kind === 6 ? 1.4 : 0.8, 1);
+    lay.stakes.forEach((q, i) => { if (i % 2 === 0) hit(q.x, q.z, 0.35, 0.5); });
+    if (lay.loop.length === 4) {   // the open ground inside the fence
+      const [a, b, , e] = lay.loop, ns = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 3.2)), nt = Math.max(1, Math.ceil(Math.hypot(e.x - a.x, e.z - a.z) / 3.2));
+      for (let i = 0; i <= ns; i++) for (let j = 0; j <= nt; j++) {
+        const u = i / ns, v = j / nt;
+        hit(a.x + (b.x - a.x) * u + (e.x - a.x) * v, a.z + (b.z - a.z) * u + (e.z - a.z) * v, 1.5, 1);
+      }
+    }
+    return c;
+  }
+
+  /** The camp for an army that stops at (x, z): there if the ground is clear, otherwise at the nearest clear place found by looking round in widening rings (and away from the camps of the armies
+   *  with lower numbers); if nowhere is clear, the least bad place. */
+  private chooseSite(d: Det, x: number, z: number, yaw: number, troops: number, horses: number, engines: number): Camp | null {
+    this.site?.begin();
+    let best: Camp | null = null, bestCost = Infinity;
+    const tryAt = (px: number, pz: number) => {
+      const lay = campLayout(px, pz, yaw, troops, horses, engines); if (!lay) return true;
+      const cost = this.siteCost(lay) + (this.overlap(d, lay) ? 50 : 0);
+      if (cost < bestCost) { best = lay; bestCost = cost; }
+      return cost === 0;
+    };
+    if (tryAt(x, z)) return best;
+    for (let k = 1; k <= 12; k++) {
+      const n = Math.min(16, 6 + k * 2);
+      for (let i = 0; i < n; i++) { const a = yaw + (i / n) * Math.PI * 2 + k * 0.5; if (tryAt(x + Math.sin(a) * k * 4, z + Math.cos(a) * k * 4)) return best; }
+    }
+    return best;
+  }
+
+  /** How far `lay` has to move to clear the camp of an army with a lower number, or null if it already does. */
+  private overlap(d: Det, lay: Camp) {
+    for (const o of this.dets.values()) {
+      if (o === d || o.id > d.id || !o.lay || !o.camp?.group.visible) continue;
+      const dx = lay.mx - o.lay.mx, dz = lay.mz - o.lay.mz, dist = Math.hypot(dx, dz), need = lay.radius + o.lay.radius + 2;
+      if (dist >= need) continue;
+      const ux = dist > 0.01 ? dx / dist : Math.cos(lay.yaw), uz = dist > 0.01 ? dz / dist : -Math.sin(lay.yaw);
+      return { dx: ux * (need - dist), dz: uz * (need - dist) };
+    }
+    return null;
   }
 
   update(dt: number) {
@@ -244,14 +308,41 @@ export class FieldView {
       d.banner.visible = !fighting;
       d.banner.position.set(d.x, leader?.mode === 2 ? 0.3 : this.terrain.walkAt(d.x, d.z), d.z);
       paintArmyBanner(d.banner, this.friend); waveArmyBanner(d.banner, this.t, d.id);
-      const camp = this.pitchCamp(d, dt), lay = camp?.lay, watch = camp && lay ? Math.ceil(lay.guards.length * camp.ratio - 1e-6) : 0, there = camp ? Math.round(camp.ratio * d.members.length) : 0;
-      let foot = 0, riders = 0, posted = 0;
+      const engines = [...d.siege, ...d.rams], apart = d.tracks.has(4);
+      // who has got there: every kind counts, and the first one starts the camp
+      let foot = 0, riders = 0, got = 0, cavGot = 0, memGot = 0;
+      for (const m of d.members) {
+        const separate = m.kind === 3 && d.tracks.has(3);
+        m.there = !fighting && this.arrived(d, separate ? 3 : 0, separate ? riders++ : foot++);
+        if (m.there) { got++; memGot++; if (m.kind === 3) cavGot++; }
+      }
+      engines.forEach((engine, i) => { engine.userData.there = !fighting && this.arrived(d, apart ? 4 : 0, apart ? i : foot + i); if (engine.userData.there) got++; });
+      const lay = this.pitchCamp(d, got, d.members.length + engines.length, d.members.length, d.members.filter(m => m.kind === 3).length, engines.length);
+      const ratio = got / Math.max(1, d.members.length + engines.length);
+      const watch = lay ? Math.min(lay.guards, Math.ceil(lay.guards * ratio - 1e-6)) : 0;
+      d.inCamp = lay ? memGot : 0;
+      if (lay) {
+        if (!d.camp) { d.camp = new ArmyCamp(); this.group.add(d.camp.group); }
+        d.camp.show(lay, (x, z) => this.terrain.walkAt(x, z), this.friend, this.t, { tents: Math.ceil(lay.tents.length * ratio - 1e-6), logs: Math.ceil(lay.stakes.length * ratio - 1e-6), trough: cavGot > 0, stores: ratio >= 0.5 });
+      }
+      d.horses.length = 0;
+      if (lay) for (let j = 0; j < Math.min(cavGot, lay.horses.length); j++) d.horses.push({ ...lay.horses[j], hex: HORSE_COATS[j % HORSE_COATS.length] });
+      foot = 0; riders = 0;
+      let posted = 0;
       for (const m of d.members) {
         const separate = m.kind === 3 && d.tracks.has(3);
         const rank = separate ? riders++ : foot++;
-        const post = lay && m.kind === 0 && !separate && rank < there && posted < watch ? lay.guards[posted++] : null;   // a few foot soldiers stand watch at the edge of the camp
+        const guardNo = lay && m.there && m.kind !== 3 && posted < watch ? posted++ : -1;   // the first foot soldiers there stand watch: they patrol inside the fence
+        const post = guardNo >= 0 ? patrolAt(lay!, this.t * PATROL_SPEED + (guardNo * lay!.loopLen) / lay!.guards) : null;
         m.guard = !!post;
-        const p = fighting ? null : post ? { x: post.x, z: post.z, mode: 0, yaw: post.yaw } : this.slot(d, separate ? 3 : 0, rank);
+        if (!post) m.onPost = false;
+        const gone = !!lay && !!m.there && !post;   // the others are in their tents; a rider's horse stands at the trough
+        let p = fighting || gone ? null : post ? { x: post.x, z: post.z, mode: 0, yaw: post.yaw } : this.slot(d, separate ? 3 : 0, rank);
+        if (p && post && !m.onPost && m.visible) {   // on the way to his post he walks there
+          const dx = post.x - m.x, dz = post.z - m.z, dist = Math.hypot(dx, dz), step = Math.min(dist, 5 * dt);
+          if (dist < 0.3) m.onPost = true;
+          else p = { x: m.x + (dx / dist) * step, z: m.z + (dz / dist) * step, mode: 0, yaw: Math.atan2(dx, dz) };
+        }
         if (!p) {
           m.visible = false;
           if (m.boat) m.boat.visible = false;
@@ -264,9 +355,14 @@ export class FieldView {
         if (m.mode !== 2) m.gait += Math.PI * moved / (0.55 + 0.13 * m.spd);
         this.updateBoat(m, m.x, m.z, m.yaw, m.mode === 2, 0.25);
       }
-      [...d.siege, ...d.rams].forEach((engine, i) => {
-        const separate = d.tracks.has(4);
-        const p = fighting ? null : this.slot(d, separate ? 4 : 0, separate ? i : foot + i);
+      engines.forEach((engine, i) => {
+        let p = fighting ? null : this.slot(d, apart ? 4 : 0, apart ? i : foot + i);
+        const spot = lay && engine.userData.there ? lay.engines[i] : null;
+        if (p && spot) {   // an engine that has got there drives into its place in the rows outside the gate
+          const ex = engine.visible ? engine.position.x : p.x, ez = engine.visible ? engine.position.z : p.z, dx = spot.x - ex, dz = spot.z - ez, dist = Math.hypot(dx, dz), step = Math.min(dist, 5 * dt);
+          const turn = Math.atan2(Math.sin(spot.yaw - engine.rotation.y), Math.cos(spot.yaw - engine.rotation.y));
+          p = { x: dist > 1e-4 ? ex + (dx / dist) * step : spot.x, z: dist > 1e-4 ? ez + (dz / dist) * step : spot.z, mode: 0, yaw: engine.rotation.y + Math.max(-3 * dt, Math.min(3 * dt, turn)) };
+        }
         if (!p) { engine.visible = false; return; }
         const yaw = p.yaw ?? engine.rotation.y, hx = Math.sin(yaw), hz = Math.cos(yaw), half = SIEGE_LEN / 2;
         const afloat = p.mode === 2;
@@ -306,8 +402,16 @@ export class FieldView {
         m.y = m.mode === 2 ? this.waterline(m.x, m.z) - 0.21 : this.terrain.walkAt(m.x, m.z);
         crowd.add({ x: m.x, y: m.y, z: m.z, yaw: m.yaw, pose: m.mode === 2 ? 5 : working ? 2 : walking ? 1 : 0, phase: walking ? m.gait : this.t + m.seed, speed: m.spd, skin: 0xd9a877, ...lookOf(m.kind, this.friend), ...(m.guard ? { hat: HAT.HELM, armor: true, tool: TOOL.SPEAR, shield: 0, shieldCol: this.friend } : {}), ...(working ? { tool: TOOL.AXE, shield: undefined, mounted: false } : {}), ...(m.mode === 2 ? { mounted: false, tool: undefined, shield: undefined, scale: 0.9 } : {}) } as Draw);
       }
+      for (const h of d.horses) if ((h.x - cx) ** 2 + (h.z - cz) ** 2 <= r2) crowd.addHorse(h.x, this.terrain.walkAt(h.x, h.z), h.z, h.yaw, 0, 0, h.hex);   // the horses at the trough
     }
   }
+
+  /** How many of the army's soldiers are in its camp now, of how many, and how many siege engines are parked beside it; null when it has no camp up. */
+  campTroops(id: number) {
+    const d = this.dets.get(id);
+    return d?.lay && d.camp?.group.visible ? { here: d.inCamp, of: d.members.length, engines: d.siege.length + d.rams.length } : null;
+  }
+
   pick(picker: ArmyPicker, crowds: boolean) {
     if (!this.group.visible) return;
     for (const d of this.dets.values()) {
@@ -320,6 +424,11 @@ export class FieldView {
       }
       if (crowds) for (const m of d.members) if (m.drawn && m.visible) {
         picker.test(d.id, m.x, m.y, m.z, m.yaw, m.kind === 3 ? 'mounted' : 'foot');
+      }
+      if (d.camp?.group.visible) {
+        for (const t of d.camp.tents) if (t.visible) picker.test(d.id, t.position.x, t.position.y, t.position.z, t.rotation.y, 'tent');
+        if (d.camp.trough.visible) picker.test(d.id, d.camp.trough.position.x, d.camp.trough.position.y, d.camp.trough.position.z, d.camp.trough.rotation.y, 'trough');
+        if (crowds) for (const h of d.horses) picker.test(d.id, h.x, this.terrain.walkAt(h.x, h.z), h.z, h.yaw, 'horse');
       }
       for (const engines of [d.siege, d.rams]) for (const g of engines) if (g.visible) {
         picker.test(d.id, g.position.x, g.position.y, g.position.z, g.rotation.y, 'engine');

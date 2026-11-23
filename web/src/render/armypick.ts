@@ -8,6 +8,9 @@ const bounds = {
   mounted: body(0.65, 2.75, 0.95, 1.35),
   engine: body(1.03, 2.35, 1.8, 2.25),
   pole: body(0.2, 4.6, 0.2),
+  tent: body(1.5, 2.2, 1.5),
+  trough: new THREE.Box3(new THREE.Vector3(-2.2, -0.08, -0.5), new THREE.Vector3(2.2, 0.8, 0.5)),
+  horse: body(0.45, 1.9, 1.0),
   flag: new THREE.Box3(new THREE.Vector3(-1.0, -0.65, -0.1), new THREE.Vector3(1.0, 0.65, 0.1)),
 };
 
@@ -15,7 +18,7 @@ const bounds = {
 export class ArmyPicker {
   private local = new THREE.Ray();
   private point = new THREE.Vector3();
-  hit: { id: number; distance: number } | null = null;
+  hit: { id: number; distance: number; part: keyof typeof bounds } | null = null;
 
   constructor(private ray: THREE.Ray) {}
 
@@ -27,6 +30,6 @@ export class ArmyPicker {
     const hit = this.local.intersectBox(bounds[kind], this.point);
     if (!hit) return;
     const distance = this.local.origin.distanceTo(hit);
-    if (!this.hit || distance < this.hit.distance) this.hit = { id, distance };
+    if (!this.hit || distance < this.hit.distance) this.hit = { id, distance, part: kind };
   }
 }
