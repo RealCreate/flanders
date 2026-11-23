@@ -64,10 +64,14 @@ interface Conn {
   hbAt: number; lastState: 'good' | 'weak' | 'lost';
   /** When our hello last went to them, and whether they have answered it (a heartbeat from them proves they accepted it). */
   helloAt: number; hbSeen: boolean;
+  /** When the connection appeared: one that has not been introduced yet still counts as working for a while (a slow handshake must not make the room give up and start again). */
+  joinedAt: number;
 }
 type Chans = Record<'hello' | 'cmd' | 'log' | 'more' | 'hash' | 'want' | 'hb' | 'hbr', Channel<unknown>>;
 type Checked = Cmd | { skip: true; n: number; e: number } | null;
 
+/** How long a new connection may take to be introduced before it stops counting as a working one. */
+const INTRODUCE_WITHIN = 20_000;
 const HELLO_AGAIN = 3000, HB_EVERY = 2000, PRE_MAX = 400, FULL_ABOVE = 1500, FORGET_AFTER = 600_000;
 /** How long after the connections went quiet (or after nobody came) the room is opened again, and the ceiling that pause grows to with every try. */
 const LOST_REJOIN = [3000, 60_000], ALONE_REJOIN = [20_000, 120_000];
@@ -156,7 +160,7 @@ export class RoomCore {
     if (this.conns.has(id)) return;
     const now = this.env.now();
     const conn: Conn = { id, pub: null, chain: Promise.resolve(), cmds: new Bucket(100, 600, now), logs: new Bucket(0.5, 4, now), hashes: new Bucket(8, 60, now), wants: new Bucket(0.5, 4, now), mores: new Bucket(5, 40, now),
-      strikes: new Strikes(now), pre: [], mon: new LinkMonitor(now), retx: new Retx(), ack: null, hbAt: -Infinity, lastState: 'good', helloAt: now, hbSeen: false };
+      strikes: new Strikes(now), pre: [], mon: new LinkMonitor(now), retx: new Retx(), ack: null, hbAt: -Infinity, lastState: 'good', helloAt: now, hbSeen: false, joinedAt: now };
     this.conns.set(id, conn); this.peers.add(id);
     this.stopLonely(); this.emptySince = now; this.resetWaits();
     this.status();
@@ -370,7 +374,7 @@ export class RoomCore {
   private supervise(now: number) {
     if (this.rejoining) return;
     if (!this.env.online()) { this.status('Offline — waiting for the network to come back…'); return; }
-    const healthy = this.t !== null && [...this.conns.values()].some(c => c.pub && c.mon.state(now) !== 'lost');
+    const healthy = this.t !== null && [...this.conns.values()].some(c => c.mon.state(now) !== 'lost' && (c.pub || now - c.joinedAt < INTRODUCE_WITHIN));
     if (healthy) { this.emptySince = now; this.resetWaits(); return; }
     // (a hidden page's timers cannot be trusted: wait until it is looked at)
     if (this.env.hidden()) { this.emptySince = now; return; }

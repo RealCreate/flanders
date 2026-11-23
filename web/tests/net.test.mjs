@@ -203,3 +203,13 @@ test('chaos: loss, repeats, reordering, silent partitions and dropped connection
     for (const p of w.players) assert.equal(p.outOfOrder, 0, `seed ${seed}: ${p.name} saw a command out of order`);
   }
 });
+
+test('a slow introduction does not make the room give up and start again', async () => {
+  const w = await world(['a', 'b']);
+  const [a, b] = w.players;
+  for (const p of [a, b]) { const orig = p.room.helloTo.bind(p.room); p.room.helloTo = conn => new Promise(res => w.clock.after(() => res(orig(conn)), 8000)); }
+  for (let i = 0; i < 5; i++) await a.say();
+  await w.clock.advance(15_000);
+  assert.equal(a.room.rejoins + b.room.rejoins, 0, 'the connection was working, only its hello was slow');
+  assert.ok(await converge(w, 60_000) >= 0);
+});
