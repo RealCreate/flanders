@@ -71,7 +71,8 @@ import { cleanWorld, hashSeed, inviteLink, withWorld } from './worldname';
 import { VillageWatch, stewardRisks, type StewardAction, type StewardMode } from './steward';
 import { Tutorial } from './tutorial';
 import { Replay } from './replay';
-import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, type Verdict } from './net/sync';
+import { ReplicaTrack, ResyncPolicy, SYNC_PROTOCOL, describe, sameBuild, isNewerBuild, type Verdict } from './net/sync';
+import { APP_ID, BUILD_TIME, deployedBuild, isOutdated, mayReload, reloadUrl } from './update';
 import { showReplayBar, type ReplayBar } from './replayui';
 import { runModelVillageIn } from './modelrunner';
 import { compassWord } from './ui/compass';
@@ -134,6 +135,10 @@ const ui: UI = new UI({
   bridgeShortcuts: on => { if (replay?.target === lv) { updateHud(); return; } lv.world.army_set_bridge_shortcuts(on); void commit({ op: 'armybridge', kind: Number(on) }); },
   attack: (key, u) => doAttack(key, u),
   attackSelected: key => doAttackSelected(key),
+  assistSelected: key => void doAssistSelected(key),
+  askHelp: key => askForHelp(key),
+  recallAid: key => recallAid(key),
+  guestsHome: key => { const r = rivals.get(key); if (r) sendGuestsHome(r, false); },
   trade: (key, action, res, amount, escort) => doTrade(key, action, res, amount, escort),
   watch: key => startReplay(key),
   focusPeer: key => { const r = rivals.get(key); if (r) rig.focus(r.village.ox, r.village.oz, 80); },
@@ -180,6 +185,8 @@ interface Rival {
   /** Their commands changed the village (and its ground) since its scene was last refreshed: see flushRivals. */
   dirty?: boolean; dirtyTerrain?: boolean; flushedAt?: number; groundAt?: number;
   cacheDue?: boolean;                          // a rebuilt copy that is kept in this browser once a hash confirms it
+  /** The connection to them: the round trip in ms, how it is doing, and (while they are gone) the timer that tells the player they left (a short break is not worth a message). */
+  ping?: number | null; link?: 'good' | 'weak' | 'lost'; leftTimer?: number; leftTold?: boolean;
 }
 const tutorial = new Tutorial();
 tutorial.setKeys(a => { const b = keys.binds[a as Action]; return b && b.length ? b.slice(0, 2).map(k => prettyKey(k)).join(' / ') : a; });
@@ -462,7 +469,7 @@ function failSync(r: Rival, why: string) {
 function syncNotes(): string[] {
   const out = [`You: ${sharedCount} commands shared · build ${SYNC_PROTOCOL}/${myRules || '?'}${usedTools ? ' · testing tools used: others cannot replay those changes' : ''}`];
   for (const r of rivals.values()) {
-    out.push(`${r.name}: ${r.sync} · ${r.desyncs} desync${r.desyncs === 1 ? '' : 's'} · ${r.resyncs} re-sync${r.resyncs === 1 ? '' : 's'} · tick ${Number(r.village.world.tick())} · ${r.track.count} commands`);
+    out.push(`${r.name}: ${r.sync}${r.ping != null ? ` · ${r.ping} ms` : ''}${r.link && r.link !== 'good' ? ` · link ${r.link}` : ''} · ${r.desyncs} desync${r.desyncs === 1 ? '' : 's'} · ${r.resyncs} re-sync${r.resyncs === 1 ? '' : 's'} · tick ${Number(r.village.world.tick())} · ${r.track.count} commands`);
     if (r.lastDiag) out.push(`  last: ${r.lastDiag}`);
   }
   return out;
@@ -480,9 +487,31 @@ function giveWayToOtherTab(otherPeer: string) {
   setTimeout(() => location.replace(u.toString()), 1800);
 }
 
+let updating = false;
+/** A newer build exists (the site says so, or another player runs it): save, tell the player, and load it. A reload that did not help is not repeated (see update.ts). */
+async function updateNow(why: string) {
+  if (updating) return;
+  updating = true;
+  const d = await deployedBuild(fetch);
+  let allowed = false;
+  try { allowed = !!d && isOutdated(APP_ID, d) && mayReload(sessionStorage, d.id, Date.now()); } catch { allowed = !!d && isOutdated(APP_ID, d); }
+  if (!allowed || !d) { updating = false; if (!d || !isOutdated(APP_ID, d)) ui.toast(`${why} Reload the page to get the latest version.`, 'info'); return; }
+  ui.toast(`${why} Updating to the latest version in a few seconds…`, 'info');
+  clearTimeout(saveTimer); try { writeSave(); checkpoint(true); } catch { /* the reload keeps what was saved before */ }
+  setTimeout(() => location.replace(reloadUrl(location.href, d.id)), 4000);
+}
+
+/** Now and then (and whenever the page is shown again) ask the site which build is deployed. */
+function startUpdateWatch() {
+  const check = async () => { if (updating || document.hidden) return; if (isOutdated(APP_ID, await deployedBuild(fetch))) void updateNow('A newer version of the game is out.'); };
+  setInterval(check, 5 * 60_000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void check(); });
+  setTimeout(check, 20_000);
+}
+
 function connect() {
   (window as unknown as { flandersSync: () => string[] }).flandersSync = syncNotes;   // for the console: how every copy of another village stands
-  room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName, v: SYNC_PROTOCOL, rules: myRules }), () => myLog, {
+  room = new Room(worldName, identity, (): Hello => ({ pub: identity.pub, site: mySite, name: myName, tick: Number(lv.world.tick()), world: worldName, v: SYNC_PROTOCOL, rules: myRules, b: BUILD_TIME }), () => myLog, {
     onStatus: s => ui.netStatus(s),
     onHello: (peerId, h) => {
       if (h.world !== worldName || h.site >= sites.length) return;
@@ -507,9 +536,15 @@ function connect() {
         // (their history is the same, only the ground it stands on moved: replay what we have, and ask for it again to be sure)
         r.site = h.site; loadReplica(r, r.log); terrain.resetPads(); refreshAll(); room?.requestLog(peerId);
       }
+      const wasAway = !r.online;
       r.peerId = peerId; r.online = true; r.name = h.name;
+      if (r.leftTimer) { clearTimeout(r.leftTimer); r.leftTimer = 0; }   // a short break: nobody was told they had left, nobody needs telling they are back
+      else if (r.leftTold) { r.leftTold = false; ui.toast(`${h.name} is back.`, 'good'); }
+      if (wasAway && r.sync === 'away') r.sync = 'syncing…';
       const same = sameBuild({ v: h.v, rules: h.rules }, { v: SYNC_PROTOCOL, rules: myRules });
-      if (!same && r.versionOk) { ui.toast(`${h.name} plays a different version of the game, so their village may not look the same here. Reload the page to get the latest.`, 'info'); console.warn(`${h.name} runs another build (protocol ${h.v ?? 0}, rules ${h.rules || 'unknown'}; ours ${SYNC_PROTOCOL}, ${myRules}).`); }
+      const theirs = { v: h.v, rules: h.rules, b: h.b }, ours = { v: SYNC_PROTOCOL, rules: myRules, b: BUILD_TIME };
+      if (!same && isNewerBuild(theirs, ours)) void updateNow(`${h.name} plays a newer version of the game.`);   // we are the one that is behind: everybody plays the latest
+      if (!same && r.versionOk) { ui.toast(isNewerBuild(theirs, ours) ? `${h.name} plays a newer version of the game.` : `${h.name} plays an older version of the game and has been asked to update; their village may not look the same here until they do.`, 'info'); console.warn(`${h.name} runs another build (protocol ${h.v ?? 0}, rules ${h.rules || 'unknown'}; ours ${SYNC_PROTOCOL}, ${myRules}).`); }
       if (!same) r.sync = 'different game version'; else if (!r.versionOk) { r.sync = 'syncing…'; r.state = 'ok'; r.policy.reset(); }
       r.versionOk = same; updatePeers();
     },
@@ -550,6 +585,11 @@ function connect() {
         const tag = tagOf(r.key);
         if (lv.world.battle_order(tag, c.idx!, c.kind!, c.x ?? 0, c.y ?? 0)) void commit({ op: 'battleorder', from: r.key, tag, idx: c.idx, kind: c.kind, x: c.x, y: c.y });
       }
+      if (c.op === 'sendaid' && c.to === identity.pub) void receiveAid(r, c);
+      else if (c.op === 'recallaid' && c.to === identity.pub) sendGuestsHome(r, true);
+      else if (c.op === 'ask' && c.to === identity.pub) { ui.toast(`${r.name} asks you for help. Send soldiers to their village from the village list.`, 'info'); sound.alert(); }
+      else if (c.op === 'host' && c.from === identity.pub) ui.toast(`${r.name} let your soldiers in. They fight beside the defenders there.`, 'good');
+      else if (c.op === 'unhost' && c.to === identity.pub) { if (returnRefusedArmy(c.units ?? [])) ui.toast(`Your soldiers are home from ${r.name}.`, 'good'); }
       if (c.op === 'raid') ui.toast(`${r.name}'s village is under attack!`, 'info');
       if (c.to === identity.pub) onTrade(r, c);
     },
@@ -558,7 +598,25 @@ function connect() {
       if (!r.versionOk || r.forked || r.liar) return;   // these copies differ from theirs for a known reason: there is nothing to judge
       judged(r, r.track.judge(msg, r.village.world, PART_NAMES, t => advanceReplica(r, t), performance.now()));
     },
-    onLeave: peerId => { const r = rivals.get(byPeer.get(peerId) ?? ''); if (r) { r.online = false; r.sync = 'away'; ui.toast(`${r.name} has left the world.`, 'info'); } byPeer.delete(peerId); updatePeers(); },
+    onLeave: peerId => {
+      const r = rivals.get(byPeer.get(peerId) ?? '');
+      // (they may already be back on a new connection: only the connection they are on now counts)
+      if (r && r.peerId === peerId) {
+        r.online = false; r.sync = 'away'; r.ping = null;
+        clearTimeout(r.leftTimer);
+        r.leftTimer = window.setTimeout(() => { r.leftTimer = 0; r.leftTold = true; ui.toast(`${r.name} has left the world.`, 'info'); }, 8000);
+      }
+      byPeer.delete(peerId); updatePeers();
+    },
+    onLinks: links => {
+      let changed = false;
+      for (const l of links) {
+        const r = l.pub ? rivals.get(l.pub) : undefined; if (!r || r.peerId !== l.peerId) continue;
+        const ping = l.rtt === null ? null : Math.round(l.rtt);
+        if (r.link !== l.state || Math.abs((r.ping ?? 0) - (ping ?? 0)) >= 20 || (r.ping == null) !== (ping == null)) { r.link = l.state; r.ping = ping; changed = true; }
+      }
+      if (changed) updatePeers();
+    },
   });
 }
 
@@ -873,6 +931,52 @@ async function doAttack(key: string, u: number[]) {
   if (await orderArmies([id], () => marchOn(id, key, r))) ui.toast(`Your army sets out for ${r.name}. It attacks when it arrives.`, 'good');
 }
 
+/** The armies you have selected march to an ally's village to help: when they arrive the ally is asked to let them in. */
+async function doAssistSelected(key: string) {
+  const r = rivals.get(key); if (!r || r.ai) { ui.toast('That village is not in this world.', 'bad'); return; }
+  if (!isAlly(key)) { ui.toast(`You are not allied with ${r.name}.`, 'bad'); return; }
+  if (!r.online) { ui.toast(`${r.name} is away: only a player who is here can let soldiers in.`, 'info'); return; }
+  if (lv.world.battle_active()) { ui.toast('You cannot march while your own village is under attack.', 'bad'); return; }
+  const ids = multiDets.length ? multiDets : selectedDet !== null ? [selectedDet] : [];
+  if (!ids.length) { ui.toast('Select an army first.', 'info'); return; }
+  const sent = await orderArmies(ids, id => marchOn(id, key, r));
+  if (sent) ui.toast(sent > 1 ? `${sent} armies set out to help ${r.name}.` : `Your army sets out to help ${r.name}. ${r.name} is asked to let it in when it arrives.`, 'good');
+}
+
+/** An ally's soldiers have reached our village: let them in (they fight beside our defenders until they are sent home) or send them back. */
+async function receiveAid(from: Rival, c: Cmd) {
+  const soldiers = c.units ?? [], tag = tagOf(from.key), n = soldiers.reduce((a, b) => a + b, 0);
+  const refuse = () => { void commit({ op: 'refuse', to: from.key, units: soldiers }); };
+  if (!isAlly(from.key) || watch.away || replay?.target === lv) { refuse(); return; }
+  const names = soldiers.map((k, i) => k > 0 ? `${k} ${(units[i]?.name ?? 'soldiers').toLowerCase()}` : '').filter(Boolean).join(', ');
+  const yes = await Promise.race([ui.confirm(`${from.name} sends ${n} soldiers (${names}) to stand with your defenders. They eat from your stores and fight beside your soldiers whenever you are attacked, until you send them home.`, 'Let them in', `${from.name} offers help`, 'Send them back'), new Promise<boolean>(res => setTimeout(() => res(false), 90_000))]);
+  if (yes && lv.world.host_guests(tag, Uint32Array.from(soldiers))) {
+    void commit({ op: 'host', from: from.key, tag, units: soldiers });
+    ui.toast(`${from.name}'s soldiers are in your village. They fight beside your defenders.`, 'good'); lv.afterTick(); updateHud(); return;
+  }
+  if (yes) ui.toast(`${from.name}'s soldiers cannot be taken in just now (too many guests, or the alliance has ended).`, 'info');
+  refuse();
+}
+
+/** Send an ally's soldiers who are guests here home (`asked`: they asked to go). Those still in a fight stay until it is over. */
+function sendGuestsHome(r: Rival, asked: boolean) {
+  const tag = tagOf(r.key), back = Array.from(lv.world.release_guests(tag));
+  if (back.reduce((a, b) => a + b, 0) > 0) { void commit({ op: 'unhost', to: r.key, tag, units: back }); ui.toast(`${r.name}'s soldiers are on their way home.`, 'info'); lv.afterTick(); updateHud(); }
+  else if (!asked || lv.world.battle_active()) ui.toast(lv.world.battle_active() ? `${r.name}'s soldiers are fighting: they can leave when it is over.` : `${r.name} has no soldiers in your village.`, 'info');
+}
+
+/** Ask an ally for help: a message, nothing more (they decide what to send). */
+function askForHelp(key: string) {
+  const r = rivals.get(key); if (!r || !isAlly(key)) { ui.toast('Only an ally can be asked for help.', 'info'); return; }
+  void commit({ op: 'ask', to: key, kind: 1 }); ui.toast(`You ask ${r.name} for help.`, 'good');
+}
+
+/** Ask an ally to send our soldiers, who are guests in their village, home. */
+function recallAid(key: string) {
+  const r = rivals.get(key); if (!r) return;
+  void commit({ op: 'recallaid', to: key }); ui.toast(`You ask ${r.name} to send your soldiers home.`, 'info');
+}
+
 /** The armies you have selected march on the village. */
 async function doAttackSelected(key: string) {
   const r = rivals.get(key); if (!r) { ui.toast('That village is not in this world.', 'bad'); return; }
@@ -897,6 +1001,7 @@ let multiDets: number[] = [];   // every selected army; selectedDet is the first
 function selectDet(id: number | null) { selectDets(id === null ? [] : [id]); }
 function selectDets(ids: number[]) {
   cancelMarchPreview();
+  if (ids.length) { const guests = guestIds(); if (ids.some(id => guests.has(id))) { ids = ids.filter(id => !guests.has(id)); if (!ids.length) ui.toast('Soldiers sent by an ally are not yours to command: they fight beside your defenders by themselves. Send them home from the village list.', 'info'); } }
   multiDets = ids; selectedDet = ids[0] ?? null; lv.field.select(ids); ui.setSelectedArmies(ids.length);
   if (ids.length) { selectKind(null); selectBuilding(null); selectRuin(null); ui.setTab('army'); ui.hint(`${ids.length > 1 ? ids.length + ' armies' : 'Army ' + ids[0]} selected · right-click the ground to march · Shift+click adds or removes one · drag a box to select several · ${keyNames('haltArmy')} halt · ${keyNames('recallArmy')} send home · ${keyNames('cancel')} deselect`); }
   else if (selectedKind === null) ui.hint(null);
@@ -1169,7 +1274,11 @@ function checkArrivals() {
     if (pendingArmyOrders.has(id)) continue;
     if (!key || !r) { lv.world.det_halt(id); commit({ op: 'halt', idx: id }); attackTargets.delete(id); ui.toast('The village you marched on is no longer in this world.', 'info'); continue; }
     const u = detUnits(id)!, sent = lv.world.det_send(id);
-    if (sent.length) {
+    if (sent.length && isAlly(key)) {   // an army that marched to an ally comes to help, not to attack: the ally decides whether to let it in (see receiveAid)
+      attackTargets.delete(id);
+      if (!r.online || r.ai) { returnRefusedArmy(u); ui.toast(`${r.name} is away and cannot take your soldiers in. They come home.`, 'info'); continue; }
+      commit({ op: 'sendaid', idx: id, to: key, units: u }); ui.toast(`Your soldiers reach ${r.name} and wait to be let in.`, 'good');
+    } else if (sent.length) {
       attackTargets.delete(id); commit({ op: 'sendatk', idx: id, to: key, units: u });
       if (r.online) ui.toast(`Your army attacks ${r.name}!`, 'good');
       else attackAway(r, u);
@@ -1242,7 +1351,7 @@ function pruneGhosts() {
     list.sort((a, b) => Number(b.online) - Number(a.online) || b.village.world.building_count() - a.village.world.building_count() || b.tick - a.tick);
     for (const r of list.slice(1)) {
       if (r.online) continue;   // never drop somebody who is here
-      r.village.dispose(); rivals.delete(r.key); awayFights.delete(r.key);
+      r.village.dispose(); rivals.delete(r.key); awayFights.delete(r.key); room?.forget(r.key);
       for (const [peer, key] of [...byPeer]) if (key === r.key) byPeer.delete(peer);
     }
   }
@@ -1260,7 +1369,7 @@ function updatePeers() {
   const compass = (dx: number, dz: number) => ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'][((Math.round(Math.atan2(dz, dx) / (Math.PI / 4)) % 8) + 8) % 8];
   const rows = [...rivals.values()].map(r => {
     const dx = r.village.ox - lv.ox, dz = r.village.oz - lv.oz, dist = Math.hypot(dx, dz);
-    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : r.ai ? ' (computer)' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync, busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
+    return { dist, row: { key: r.key, name: r.name + (r.online ? '' : r.ai ? ' (computer)' : ' (away)'), where: `${compass(dx, dz)} ${Math.round(dist / 10) * 10}`, pop: r.village.world.population(), buildings: r.village.world.building_count(), sync: r.sync + (r.online && r.link && r.link !== 'good' ? ' · connection unstable' : r.online && r.ping != null ? ` · ${r.ping} ms` : ''), busy: r.village.world.battle_active(), online: r.online, ...relOf(r.key) } };
   });
   rows.sort((a, b) => Number(b.row.online) - Number(a.row.online) || a.dist - b.dist);   // villages with somebody at home first, then by distance
   ui.setPeers(rows.map(x => x.row), worldName);
@@ -1468,6 +1577,7 @@ async function startGame(name: string, username: string, pve = false) {
   startVillageWatch();
   if (computerVillages) await setupPve();
   if (!pveMode) connect();
+  startUpdateWatch();
   setupPerf(); applySettings(settings()); onSettings(applySettings);
   const agentPort = Number(params.get('agent') ?? ''), agentToken = params.get('token') ?? '';
   if (Number.isInteger(agentPort) && agentPort >= 1024 && agentPort <= 65535 && /^[A-Za-z0-9_-]{8,128}$/.test(agentToken)) startAgentBridge({
@@ -1602,6 +1712,10 @@ function afterLocalChange(focus?: number) {
 /** Armies may march only on a village we are at war with: declaring war drops the feeling to -80 or lower and ends every treaty. */
 const WAR_BELOW = -60;
 function atWarWith(key: string) { return relOf(key).rel <= WAR_BELOW; }
+/** An alliance is in force with this village (treaty bit 4): allies cannot attack each other, and can send soldiers to help (docs/ALLIES.md). */
+function isAlly(key: string) { return (relOf(key).treaties & 4) !== 0; }
+/** Field armies that are guests of an ally (not ours to order). */
+function guestIds(): Set<number> { const f = lv.world.det_flat(), al = lv.world.det_ally_flat(), out = new Set<number>(); for (let i = 0; i < al.length; i++) if (al[i] !== 0) out.add(f[i * 17]); return out; }
 const NOT_AT_WAR = (name: string) => `You are not at war with ${name}. Declare war on them in the Embassy first.`;
 function relOf(key: string) {
   const tag = tagOf(key), f = lv.world.relations_flat();
@@ -1958,8 +2072,8 @@ function updateFoeArrow() {
 
 /** Field armies that are free to be sent to the fight (not already in it). */
 function freeArmyIds(): number[] {
-  const f = lv.world.det_flat(), out: number[] = [];
-  for (let o = 0; o < f.length; o += 17) if (f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] + f[o + 16] > 0) out.push(f[o]);
+  const f = lv.world.det_flat(), out: number[] = [], guests = guestIds();
+  for (let o = 0; o < f.length; o += 17) if (!guests.has(f[o]) && f[o + 8] !== 8 && f[o + 3] + f[o + 4] + f[o + 5] + f[o + 6] + f[o + 7] + f[o + 16] > 0) out.push(f[o]);
   return out;
 }
 const fieldArmiesFree = () => freeArmyIds().length;

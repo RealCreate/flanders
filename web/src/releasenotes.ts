@@ -4,6 +4,24 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.5.0', date: '2026-11-22', title: 'Steadier multiplayer',
+    added: [
+      'Commands no longer get lost: every command a player gives reaches everybody, complete and in order, even over a bad connection. Anything missing is noticed at once and sent again.',
+      'The multiplayer panel shows the ping to each player and says when a connection is unstable.',
+      'The game now checks for a newer version, and updates itself (after saving) when one is out or when another player is already on a newer one, so everybody plays the same version.',
+      'Allies can help each other: send a selected army to an ally, who is asked to let it in. It then fights beside their defenders whenever they are raided, until it is sent home. You can also ask an ally for help.',
+    ],
+    changed: [
+      'A connection that drops for a moment is picked up again where it left off, without sending whole villages again, and a short break no longer shows "has left the world".',
+      'The game reopens the connection to the world by itself when nobody can be reached, when the network comes back and when the page is shown again.',
+      'A player who sends bad data is shut out for five minutes instead of for the whole session, and one stray message is forgiven.',
+      'A copy of another village that goes out of step keeps trying to mend itself, with longer pauses, instead of giving up.',
+    ],
+    fixed: [
+      'Commands that arrived just before a player had been introduced were silently thrown away and left their village wrong for everybody else.',
+    ],
+  },
+  {
     version: '0.4.0', date: '2026-11-22', title: 'Siege towers, new bosses, gifts and a guided tutorial',
     added: [
       'Siege towers and sapping: big raids bring towers against stone walls that dock and carry soldiers over, and infantry stopped by a wall dig a shaft that brings a wall section down. Defenders can wreck towers at the foot, flood shafts with a moat and fill them in by sallying out.',

@@ -950,10 +950,14 @@ impl World {
     /// One tick: armies sent to defend join the fight when they get close to an attacker; the armies in it follow their soldiers; with no battle, none is left in one.
     pub(crate) fn defence_step(&mut self) {
         if self.dets.is_empty() { return; }
-        let Some(b) = self.battle.as_ref() else {
+        if self.battle.is_none() {
             for d in self.dets.iter_mut() { d.defend = false; if d.state == march::S_FIGHT { d.state = march::S_IDLE; } }
             return;
-        };
+        }
+        // guests of allied villages set out for the fight by themselves
+        let guests: Vec<u32> = self.dets.iter().filter(|d| d.ally != 0 && !d.defend && d.state == march::S_IDLE).map(|d| d.id).collect();
+        for id in guests { self.det_defend_mode(id, false); }
+        let Some(b) = self.battle.as_ref() else { return };
         let foes: Vec<(f32, f32)> = b.units.iter().filter(|u| u.side == 1 && u.alive).map(|u| (u.x, u.y)).collect();
         let joins: Vec<usize> = (0..self.dets.len()).filter(|&i| { let d = &self.dets[i]; d.defend && d.state != march::S_FIGHT && foes.iter().any(|f| (f.0 - d.x).powi(2) + (f.1 - d.y).powi(2) <= JOIN_REACH * JOIN_REACH) }).collect();
         for i in joins { self.det_join(i); }
@@ -968,6 +972,7 @@ impl World {
 
     /// Order a field army to the fight. 0 ok, -10 there is no fight, else the march's own codes.
     pub(crate) fn det_defend_inner(&mut self, id: u32) -> i32 {
+        if self.dets.iter().any(|d| d.id == id && d.ally != 0) { return -1; }   // guests go to the fight by themselves
         self.det_defend_mode(id, false)
     }
 

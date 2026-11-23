@@ -1,7 +1,7 @@
 // The rules for judging a copy of another player's village (net/sync.ts) and the checks on the messages that carry the hashes (net/validate.ts). No game, no network.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ReplicaTrack, ResyncPolicy, sameBuild, describe, WAIT_MS, SYNC_PROTOCOL } from '../src/net/sync.ts';
+import { ReplicaTrack, ResyncPolicy, sameBuild, isNewerBuild, describe, WAIT_MS, SYNC_PROTOCOL } from '../src/net/sync.ts';
 import { sanitizeHash, sanitizeBuild, Sequence } from '../src/net/validate.ts';
 
 const NAMES = ['core', 'stock', 'buildings'];
@@ -60,16 +60,26 @@ test('nothing is judged when the copy is already past the tick, when testing too
   assert.equal(tr.judge(msg(fake(25, [1, 2, 3]), 0), mine, NAMES, () => false, 0).kind, 'behind', 'a copy that cannot get there is not called wrong');
 });
 
-test('re-syncs are paced and capped, so a persistent problem cannot loop', () => {
+test('re-syncs are paced with growing pauses and never given up for good', () => {
   const p = new ResyncPolicy();
   assert.equal(p.ask(0), 'go');
   assert.equal(p.ask(1000), 'later');
-  assert.equal(p.ask(ResyncPolicy.GAP + 1), 'go');
-  let t = 2 * ResyncPolicy.GAP + 2; assert.equal(p.ask(t), 'go');
-  t += ResyncPolicy.GAP + 1; assert.equal(p.ask(t), 'go');
-  t += ResyncPolicy.GAP + 1; assert.equal(p.ask(t), 'stop', 'four requests in ten minutes is all there is');
-  assert.equal(p.ask(t + ResyncPolicy.WINDOW), 'go', 'after the window it may try again');
-  p.reset(); assert.equal(p.requests, 0);
+  let t = ResyncPolicy.GAP + 1; assert.equal(p.ask(t), 'go');
+  assert.equal(p.ask(t + ResyncPolicy.GAP + 1), 'later', 'the pause doubled');
+  t += 2 * ResyncPolicy.GAP + 1; assert.equal(p.ask(t), 'go');
+  for (let i = 0; i < 12; i++) { t += ResyncPolicy.MAX_GAP + 1; assert.equal(p.ask(t), 'go', 'it keeps trying, at most every two minutes'); }
+  assert.equal(p.ask(t + 1000), 'later');
+  p.reset(); assert.equal(p.requests, 0); assert.equal(p.ask(t + 2000), 'go', 'once back in step the pace starts over');
+});
+
+test('the later build is the newer one', () => {
+  const me = { v: SYNC_PROTOCOL, rules: 'aa', b: 100 };
+  assert.ok(isNewerBuild({ v: SYNC_PROTOCOL + 1, rules: 'aa', b: 1 }, me), 'a higher protocol');
+  assert.ok(!isNewerBuild({ v: SYNC_PROTOCOL - 1, rules: 'zz', b: 999 }, me), 'a lower protocol, whatever its clock says');
+  assert.ok(isNewerBuild({ v: SYNC_PROTOCOL, rules: 'bb', b: 200 }, me), 'other rules, built later');
+  assert.ok(!isNewerBuild({ v: SYNC_PROTOCOL, rules: 'bb', b: 50 }, me), 'other rules, built earlier');
+  assert.ok(!isNewerBuild({ v: SYNC_PROTOCOL, rules: 'aa', b: 200 }, me), 'the same rules: nothing to update');
+  assert.ok(!isNewerBuild({}, me), 'an old build that says nothing');
 });
 
 test('builds are the same only when protocol and rules fingerprint agree; an older build counts as different', () => {
@@ -88,8 +98,8 @@ test('hash messages are rebuilt field by field', () => {
 });
 
 test('the build a hello claims is checked', () => {
-  assert.deepEqual(sanitizeBuild({ v: 2, rules: '0123abcdef' }), { v: 2, rules: '0123abcdef' });
-  assert.deepEqual(sanitizeBuild({}), { v: 0, rules: '' });
+  assert.deepEqual(sanitizeBuild({ v: 2, rules: '0123abcdef' }), { v: 2, rules: '0123abcdef', b: 0 });
+  assert.deepEqual(sanitizeBuild({}), { v: 0, rules: '', b: 0 });
   for (const bad of [{ v: -1 }, { v: 1.5 }, { v: '2' }, { v: 2, rules: 'XYZ' }, { v: 2, rules: 'a'.repeat(33) }, { rules: 5 }, null]) assert.equal(sanitizeBuild(bad), null, JSON.stringify(bad));
 });
 

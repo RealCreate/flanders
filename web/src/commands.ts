@@ -64,6 +64,10 @@ export function applyCmd(w: World, c: Cmd) {
     case 'merge': w.det_merge(c.idx!, c.kind!); break;
     case 'halt': w.det_halt(c.idx!); break;
     case 'sendatk': w.det_send(c.idx!); break;
+    case 'sendaid': w.det_send(c.idx!); break;   // our soldiers go to help an ally: they leave the field (and are counted as away until they come home)
+    case 'host': w.host_guests(c.tag ?? 0, Uint32Array.from(c.units ?? [])); break;   // the host village took an ally's soldiers in (only the host's village and its copies run this)
+    case 'unhost': w.release_guests(c.tag ?? 0); break;   // ...and sent them home
+    case 'recallaid': case 'ask': break;   // requests between players: they change nothing in any village
     case 'defend': w.det_defend(c.idx!); break;   // a field army marches to the fight at home and joins the defenders
     case 'retreat': if (c.tag) w.battle_retreat(c.tag); break;   // (the attacker's own call has no `tag`: it is only a request, which the defender's village carries out and records with the tag)
     case 'reinforce': if (c.tag) w.battle_reinforce_equipped(c.tag, Uint32Array.from(c.units ?? []), c.tech ?? 0); break;

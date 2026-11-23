@@ -202,6 +202,9 @@ pub const DIED_WAR: usize = 4;
 const HERO_NAMES: [&str; 12] = ["Sir Aldric", "Dame Isolde", "Lord Godfrey", "Lady Maud", "Sir Baldwin", "Dame Hawise", "Lord Roland", "Lady Eleanor", "Sir Hugh", "Dame Alys", "Lord Edmund", "Lady Cecily"];
 /// The lord's levels: experience needed for each.
 /// Counts per soldier kind from a list a caller made: five numbers (older callers: no rams) or six. None if there are fewer than five.
+/// Most soldiers one allied village may send to stand with us at a time, and how many such guest armies we host in all.
+pub const GUEST_MAX: u32 = 120;
+pub const GUEST_ARMIES: usize = 6;
 pub(crate) fn kinds(v: &[u32]) -> Option<[u32; NK]> { if v.len() < 5 { return None; } let mut a = [0u32; NK]; for k in 0..NK { a[k] = v.get(k).copied().unwrap_or(0); } Some(a) }
 const HERO_XP: [u32; 5] = [0, 30, 80, 150, 250];
 const HERO_COST: i32 = 150;
@@ -416,6 +419,7 @@ pub struct World {
 }
 
 /// Start of every world snapshot: a name and the layout version. Bump the version when a field of the world is added, removed or changes type (a snapshot of another layout is refused).
+const GUESTS_SNAP_MAGIC: &[u8; 8] = b"FLWORLDC";
 const SNAP_MAGIC: &[u8; 8] = b"FLWORLDB";
 const SIEGE_SNAP_MAGIC: &[u8; 8] = b"FLWORLDA";
 const EXTRAS_SNAP_MAGIC: &[u8; 8] = b"FLWORLD9";
@@ -440,11 +444,15 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     let mut extras = ([0u32; NK], [0u32; NK]);
     let mut siege: Option<Option<siege::Siege>> = None;
     let mut camp: Option<plague::Camp> = None;
-    let (mut w, marches) = if magic == SNAP_MAGIC || magic == SIEGE_SNAP_MAGIC || magic == EXTRAS_SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
+    let mut allies: Vec<i32> = vec![];
+    let (mut w, marches) = if magic == GUESTS_SNAP_MAGIC || magic == SNAP_MAGIC || magic == SIEGE_SNAP_MAGIC || magic == EXTRAS_SNAP_MAGIC || magic == VETS_SNAP_MAGIC || magic == TOOLS_SNAP_MAGIC || magic == ESTATE_SNAP_MAGIC || magic == OBJECTIVE_SNAP_MAGIC || magic == TACTICS_SNAP_MAGIC {
         type TacticalState = (World, Vec<march::SavedMarch>, u16, bool, Option<tactics::Tactics>);
         type ObjectiveState = (TacticalState, Option<raid_objective::RaidObjective>);
         let (((state, estate), tools), planted): (((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>) =
-            if magic == SNAP_MAGIC { let ((inner, ex), (sg, cp)): (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), (Option<siege::Siege>, Option<plague::Camp>)) = bincode::deserialize(payload).ok()?; extras = ex; siege = Some(sg); camp = cp; inner }
+            if magic == SNAP_MAGIC || magic == GUESTS_SNAP_MAGIC {
+                type Body = (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), (Option<siege::Siege>, Option<plague::Camp>));
+                let ((inner, ex), (sg, cp)): Body = if magic == GUESTS_SNAP_MAGIC { let (body, a): (Body, Vec<i32>) = bincode::deserialize(payload).ok()?; allies = a; body } else { bincode::deserialize(payload).ok()? };
+                extras = ex; siege = Some(sg); camp = cp; inner }
             else if magic == SIEGE_SNAP_MAGIC { let ((inner, ex), sg): (((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])), Option<siege::Siege>) = bincode::deserialize(payload).ok()?; extras = ex; siege = Some(sg); inner }
             else if magic == EXTRAS_SNAP_MAGIC { let (inner, ex): ((((ObjectiveState, estate::Estate), [u64; 2]), Vec<forestry::Planted>), ([u32; NK], [u32; NK])) = bincode::deserialize(payload).ok()?; extras = ex; inner }
             else if magic == VETS_SNAP_MAGIC { bincode::deserialize(payload).ok()? }
@@ -486,6 +494,7 @@ pub fn world_restore(bytes: &[u8]) -> Option<World> {
     } else if magic == MARCH_SNAP_MAGIC { bincode::deserialize(payload).ok()? } else { return None; };
     if w.dets.len() != marches.len() { return None; }
     for (det, saved) in w.dets.iter_mut().zip(marches) { det.restore_march(saved)?; }
+    if !allies.is_empty() { if allies.len() != w.dets.len() { return None; } for (det, a) in w.dets.iter_mut().zip(allies) { det.ally = a; } }
     w.ledger.ensure_kinds(DEFS.len());
     Some(w)
 }
@@ -602,12 +611,13 @@ fn demolition_refund(kind: u8) -> impl Iterator<Item = Amount> {
 impl World {
     /// The whole state of the village as bytes (the caches are not in it: they are rebuilt on demand). `world_restore` turns it back into the same world, to the last bit.
     pub fn snapshot(&self) -> Vec<u8> {
-        let mut v = SNAP_MAGIC.to_vec();
+        let mut v = GUESTS_SNAP_MAGIC.to_vec();
         let marches: Vec<_> = self.dets.iter().map(march::Det::save_march).collect();
         let battle = self.battle.as_ref();
         let tactical_state = (self, marches, self.military_tech, self.auto_bridge, battle.map(|b| &b.tactics));
         let objective_state = (tactical_state, battle.and_then(|b| b.objective));
-        v.extend(bincode::serialize(&(((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc)), (battle.map(|b| &b.siege), self.plague_camp))).expect("a world can be written"));
+        let allies: Vec<i32> = self.dets.iter().map(|d| d.ally).collect();   // (whose soldiers each field army is: 0 ours; see `host_guests`)
+        v.extend(bincode::serialize(&((((((objective_state, self.estate), self.emergency_tools), &self.planted), (self.vets, self.train_acc)), (battle.map(|b| &b.siege), self.plague_camp)), allies)).expect("a world can be written"));
         v
     }
 
@@ -2830,7 +2840,7 @@ impl World {
     pub fn det_merge(&mut self, a: u32, b: u32) -> bool { self.det_merge_inner(a, b) }
     pub fn det_halt(&mut self, id: u32) {
         let Some(d) = self.dets.iter_mut().find(|d| d.id == id) else { return; };
-        if d.state == march::S_FIGHT { return; }
+        if d.state == march::S_FIGHT || d.ally != 0 { return; }
         d.defend = false; d.atk = None; d.home = false;
         if d.state == march::S_FERRY {
             d.path.truncate(d.wi + 1);
@@ -2862,6 +2872,28 @@ impl World {
     /// Soldiers still standing in the standing army's defence of the battle, per kind (what can be sent out to meet the raiders).
     pub fn battle_standing(&self) -> Vec<u32> { self.standing_in_battle().to_vec() }
     pub fn det_send(&mut self, id: u32) -> Vec<u32> { self.det_send_inner(id).map_or(vec![], |u| u.to_vec()) }
+    /// An allied village sends soldiers to stand with us (see docs/ALLIES.md). They become a guest army of ours that fights beside the defenders of any battle here, eats our food, and cannot be
+    /// ordered by us. Only with an alliance in force, at most `GUEST_MAX` soldiers a time and `GUEST_ARMIES` guest armies in all. False: refused (the sender takes them home).
+    pub fn host_guests(&mut self, tag: i32, units: &[u32]) -> bool {
+        let Some(u) = kinds(units) else { return false };
+        if u.iter().any(|&n| n > GUEST_MAX) { return false; }   // (first: a peer chooses these numbers, and their sum must not overflow)
+        let total: u32 = u.iter().sum();
+        if tag == 0 || total == 0 || total > GUEST_MAX || !self.has_treaty(tag, TREATY_ALLIANCE) { return false; }
+        if self.dets.iter().filter(|d| d.ally != 0).count() >= GUEST_ARMIES || self.battle.as_ref().is_some_and(|b| b.bought) { return false; }
+        self.det_muster(u, tag) != 0
+    }
+    /// Our guests of this allied village go home: those not in a fight now leave, and their soldiers are returned (per kind) for the sender to take back. Guests in a fight stay until it is over.
+    pub fn release_guests(&mut self, tag: i32) -> Vec<u32> {
+        let mut back = [0u32; NK];
+        self.dets.retain(|d| {
+            if d.ally != tag || tag == 0 || d.state == march::S_FIGHT { return true; }
+            for k in 0..NK { back[k] += d.units[k]; }
+            false
+        });
+        back.to_vec()
+    }
+    /// Which allied village each field army belongs to, in the order of `det_flat` (0: ours).
+    pub fn det_ally_flat(&self) -> Vec<i32> { self.dets.iter().map(|d| d.ally).collect() }
     /// [id, x, y, spear, archer, sword, knight, catapult, state, legMode, legsLeft, workProgress, atkX, atkY, heading, speed] (stride 17, the last is the number of rams)
     pub fn det_flat(&self) -> Vec<f32> {
         self.dets.iter().flat_map(|d| {
@@ -3189,7 +3221,7 @@ impl World {
             part(&|mix| { for d in &self.deposits { mix(d.rem as i64 as u64); mix(d.max as i64 as u64); mix(d.asleep as u64); } }),
             part(&|mix| { for pl in &self.links { mix(pl.len() as u64); for p in pl { mix(p.0.to_bits() as u64); mix(p.1.to_bits() as u64); } } }),
             part(&|mix| { for k in 0..NK { mix(self.army[k] as u64); mix(self.queue[k] as u64); mix(self.away[k] as u64); } mix(self.military_tech as u64); mix(self.auto_bridge as u64); for k in 0..NK { mix(self.vets[k] as u64); mix(self.train_acc[k] as u64); } }),
-            part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); mix(d.file.dispatch.to_bits() as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); mix(g.file.dispatch.to_bits() as u64); } } }),
+            part(&|mix| { for d in &self.dets { mix(d.id as u64); mix(d.x.to_bits() as u64); mix(d.y.to_bits() as u64); mix(d.state as u64); mix(d.wi as u64); mix(d.defend as u64); mix(d.ally as i64 as u64); mix(d.file.dispatch.to_bits() as u64); for k in 0..NK { mix(d.units[k] as u64); } for g in &d.grp { mix(g.x.to_bits() as u64); mix(g.y.to_bits() as u64); mix(g.wi as u64); mix(g.file.dispatch.to_bits() as u64); } } }),
             part(&|mix| {   // trade and diplomacy
                 for r in &self.relations { mix(r.0 as i64 as u64); mix(r.1 as i64 as u64); } for m in &self.married { mix(*m as i64 as u64); }
                 for c in &self.caravans { mix(c.start); mix(c.eta); mix(c.amount as u64); mix(c.res as u64); mix(c.to as i64 as u64); mix(c.escort as u64); } for j in &self.journeys { mix(j.kind as u64); mix(j.tag as i64 as u64); mix(j.arg as i64 as u64); mix(j.start); mix(j.arrive); } for a in &self.awaiting { mix(a[1] as u64); mix(a[2] as i64 as u64); } for t in &self.treaties { mix(t.until); mix(t.tag as u64); }

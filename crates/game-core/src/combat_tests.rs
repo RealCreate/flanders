@@ -400,3 +400,66 @@ fn an_army_that_made_camp_fights_out_of_it_not_from_one_heap() {
         assert_eq!(*p, slots[i], "and each starts at their own place in the camp");
     }
 }
+
+// ---- allied guests (docs/ALLIES.md) ----
+
+fn allied(w: &mut World, tag: i32) { w.rel_add(tag, 70); assert!(w.treaty_set(tag, TREATY_TRADE, 30)); assert!(w.treaty_set(tag, TREATY_ALLIANCE, 30)); }
+
+#[test]
+fn guests_need_an_alliance_and_cannot_be_ordered_about() {
+    let mut w = weak_village();
+    assert!(!w.host_guests(7, &[10, 5, 5, 0, 0, 0]), "no alliance, no guests");
+    allied(&mut w, 7);
+    assert!(!w.host_guests(0, &[10, 5, 5, 0, 0, 0]) && !w.host_guests(7, &[0; 6]) && !w.host_guests(7, &[GUEST_MAX + 1, 0, 0, 0, 0, 0]), "nobody, nothing, too many");
+    assert!(!w.host_guests(8, &[10, 5, 5, 0, 0, 0]), "an ally of somebody else is not our ally");
+    assert!(w.host_guests(7, &[10, 5, 5, 0, 0, 0]));
+    let id = w.dets[0].id; assert_eq!(w.dets[0].ally, 7); assert_eq!(w.det_ally_flat(), vec![7]);
+    assert!(w.det_march(id, 40.0, 40.0, false, 0.0, 0.0) < 0, "they do not take our orders");
+    assert!(w.det_defend(id) < 0 && w.det_send(id).is_empty() && w.det_split(id, &[1, 0, 0, 0, 0, 0]) == 0);
+    w.det_halt(id); assert_eq!(w.dets.len(), 1);
+    for _ in 0..GUEST_ARMIES { w.host_guests(7, &[1, 0, 0, 0, 0, 0]); }
+    assert_eq!(w.dets.len(), GUEST_ARMIES, "only so many guest armies");
+    assert_eq!(w.army, [0; 6], "guests are not part of our own army");
+}
+
+#[test]
+fn allied_guests_join_a_defence_by_themselves_and_go_home() {
+    let run_it = |guests: bool| -> (u64, Vec<i32>, usize, [u32; 6]) {
+        let mut w = weak_village();
+        if guests { allied(&mut w, 7); assert!(w.host_guests(7, &[14, 8, 6, 0, 0, 0])); }
+        assert!(w.start_raid(0.0, &[14, 6, 3, 0, 0, 0], 0));
+        let mut fought = 0usize;
+        for _ in 0..500 {
+            w.step(); w.stock[GR as usize] = 3000;
+            if let Some(b) = &w.battle { fought = fought.max(b.units.iter().filter(|u| u.side == 0 && u.det > 0).count()); } else { break; }
+        }
+        let home = if guests { let mut b = [0u32; 6]; for d in &w.dets { for k in 0..6 { b[k] += d.units[k]; } } b } else { [0; 6] };
+        (w.state_hash(), w.last_report(), fought, home)
+    };
+    let (_, alone, _, _) = run_it(false);
+    assert_eq!(alone[1], 0, "the village alone loses: {alone:?}");
+    let (h1, helped, fought, left) = run_it(true);
+    assert_eq!(fought, 28, "all the guests went to the fight");
+    assert_eq!(helped[1], 1, "with its allies' troops the village holds: {helped:?}");
+    assert!(left.iter().sum::<u32>() > 0 && left.iter().sum::<u32>() <= 28, "some of them are left: {left:?}");
+    let (h2, again, _, _) = run_it(true);
+    assert_eq!((h1, &helped), (h2, &again), "every peer replaying the same commands reaches the same state");
+    // they go home with whoever survived, and not before a fight is over
+    let mut w = weak_village(); allied(&mut w, 7); assert!(w.host_guests(7, &[14, 8, 6, 0, 0, 0]));
+    assert!(w.start_raid(0.0, &[14, 6, 3, 0, 0, 0], 0));
+    for _ in 0..200 { w.step(); w.stock[GR as usize] = 3000; if w.dets.iter().all(|d| d.state == march::S_FIGHT) { break; } }
+    assert!(w.dets.iter().all(|d| d.state == march::S_FIGHT), "they reached the fight");
+    assert_eq!(w.release_guests(7).iter().sum::<u32>(), 0, "guests in a fight stay in it"); assert!(!w.dets.is_empty());
+    for _ in 0..500 { if w.battle.is_none() { break; } w.step(); w.stock[GR as usize] = 3000; }
+    let back = w.release_guests(7);
+    assert!(back.iter().sum::<u32>() > 0 && back.iter().sum::<u32>() <= 28 && w.dets.is_empty(), "{back:?}");
+    assert!(w.release_guests(7).iter().sum::<u32>() == 0 && w.release_guests(0).iter().sum::<u32>() == 0);
+}
+
+#[test]
+fn guests_survive_a_snapshot() {
+    let mut w = weak_village(); allied(&mut w, 7); assert!(w.host_guests(7, &[10, 5, 5, 0, 0, 0]));
+    for _ in 0..20 { w.step(); }
+    let back = world_restore(&w.snapshot()).expect("a snapshot restores");
+    assert_eq!(back.det_ally_flat(), vec![7]); assert_eq!(back.state_hash_parts(), w.state_hash_parts());
+}

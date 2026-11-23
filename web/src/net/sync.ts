@@ -8,7 +8,7 @@
 // This file has no imports from the game, so it runs under plain node (tests/sync.test.mjs).
 
 /** Version of the sync protocol: the shape of the hash message and of the hello. Bump it when either changes. Builds with another version cannot judge each other. */
-export const SYNC_PROTOCOL = 3;
+export const SYNC_PROTOCOL = 4;
 
 /** What a copy needs from the world it keeps (the wasm `World` has all of this). */
 export interface SimWorld { tick(): bigint; state_hash(): bigint; state_hash_parts(): BigUint64Array | bigint[] }
@@ -108,23 +108,30 @@ export function describe(d: Diagnosis): string {
   return `differs at tick ${d.tick} in ${where} (${since}; ${d.count} commands applied)${ops}`;
 }
 
-/** Decides when a copy that went wrong may ask for the owner's history again. It must never loop: a pause between requests, and only a few in ten minutes. */
+/** Decides when a copy that went wrong may ask for the owner's history again. It must never loop, and it must never give up for good: the pause between requests doubles each
+ *  time (6 s, 12 s, 24 s … at most two minutes), and starts over once the copy is back in step. */
 export class ResyncPolicy {
-  static readonly GAP = 6000; static readonly WINDOW = 600_000; static readonly MAX = 4;
-  private asked: number[] = [];
-  /** 'go': ask now. 'later': too soon after the last request. 'stop': enough, give up until things change. */
+  static readonly GAP = 6000; static readonly MAX_GAP = 120_000;
+  private asked = 0; private last = -Infinity;
+  /** 'go': ask now. 'later': too soon after the last request. ('stop' is no longer returned: it stays in the type for callers written for the old rule.) */
   ask(now: number): 'go' | 'later' | 'stop' {
-    this.asked = this.asked.filter(t => now - t < ResyncPolicy.WINDOW);
-    if (this.asked.length >= ResyncPolicy.MAX) return 'stop';
-    const last = this.asked[this.asked.length - 1];
-    if (last !== undefined && now - last < ResyncPolicy.GAP) return 'later';
-    this.asked.push(now); return 'go';
+    const gap = Math.min(ResyncPolicy.MAX_GAP, ResyncPolicy.GAP * 2 ** Math.max(0, this.asked - 1));
+    if (this.asked > 0 && now - this.last < gap) return 'later';
+    this.asked++; this.last = now; return 'go';
   }
-  get requests() { return this.asked.length; }
-  reset() { this.asked = []; }
+  get requests() { return this.asked; }
+  reset() { this.asked = 0; this.last = -Infinity; }
 }
 
 /** Do two builds play the same rules? (`v` is the protocol, `rules` the fingerprint of the simulation.) */
 export function sameBuild(a: { v?: number; rules?: string }, b: { v?: number; rules?: string }): boolean {
   return (a.v ?? 0) === (b.v ?? 0) && (a.rules ?? '') === (b.rules ?? '');
+}
+
+/** Is `theirs` a newer build than `ours`? A higher protocol is newer; with the same protocol, different rules and a later build time. (Builds that cannot be told apart are not newer.) */
+export function isNewerBuild(theirs: { v?: number; rules?: string; b?: number }, ours: { v?: number; rules?: string; b?: number }): boolean {
+  const tv = theirs.v ?? 0, ov = ours.v ?? 0;
+  if (tv !== ov) return tv > ov;
+  if ((theirs.rules ?? '') === (ours.rules ?? '')) return false;
+  return (theirs.b ?? 0) > (ours.b ?? 0);
 }
