@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { shadeVertices, tint } from './geomutil';
 import { eyes } from './animalmodels';
 import { surfaceTexture, type Surface } from './surfaces';
+import { freeze } from './static';
 
 /** One person (or soldier) to draw this frame. */
 export interface Draw {
@@ -171,7 +172,14 @@ export class Crowd {
     ]));
     this.distantHead = mk(cyl(0.14, 0.15, 0.27, 0xffffff, 0, 1.51, 0, 5));
     this.distantBody.castShadow = this.distantHead.castShadow = false;
+    this.all = [this.torso, this.head, this.thighL, this.thighR, this.shinL, this.shinR, this.uArmL, this.uArmR, this.foreL, this.foreR, this.dress, this.horse, this.horseLeg, this.distantBody, this.distantHead, ...this.hats, ...this.tools, ...this.shields];
+    this.counts = new Array(this.all.length).fill(0);
+    freeze(...this.all);   // instances carry world matrices; the meshes themselves never move
   }
+  /** Every instanced part, in the order `end()` fills `counts`. */
+  private all: THREE.InstancedMesh[];
+  private counts: number[];
+  private googly = false;
 
   setGooglyEyes(on: boolean) {
     if (on && !this.horseEyes) {
@@ -180,9 +188,10 @@ export class Crowd {
       this.horseEyes.instanceMatrix = this.horse.instanceMatrix;
       this.horseEyes.count = this.horse.count;
       this.horseEyes.frustumCulled = false;
-      this.group.add(this.horseEyes);
+      this.group.add(freeze(this.horseEyes));
     }
-    if (this.horseEyes) this.horseEyes.visible = on;
+    this.googly = on;
+    if (this.horseEyes) this.horseEyes.visible = on && this.horseEyes.count > 0;
   }
 
   begin() {
@@ -192,16 +201,24 @@ export class Crowd {
   }
 
   end() {
-    if (this.horseEyes) this.horseEyes.count = this.n.horse;
-    const all = [this.torso, this.head, this.thighL, this.thighR, this.shinL, this.shinR, this.uArmL, this.uArmR, this.foreL, this.foreR, this.dress, this.horse, this.horseLeg, this.distantBody, this.distantHead, ...this.hats, ...this.tools, ...this.shields];
-    const n = this.n, counts = [n.torso, n.torso, n.leg, n.leg, n.leg, n.leg, n.arm, n.arm, n.arm, n.arm, n.dress, n.horse, n.hleg, this.distant, this.distant, ...n.hats, ...n.tools, ...n.shields];
-    all.forEach((mesh, i) => {
-      const c = counts[i], prev = (mesh.userData.prev as number | undefined) ?? -1;
-      mesh.count = c; mesh.userData.prev = c;
-      if (c === 0 && prev === 0) return;                         // nothing to draw, nothing to upload
-      mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, Math.max(1, c) * 16); mesh.instanceMatrix.needsUpdate = true;   // upload only the instances in use
-      if (mesh.instanceColor) { mesh.instanceColor.clearUpdateRanges(); mesh.instanceColor.addUpdateRange(0, Math.max(1, c) * 3); mesh.instanceColor.needsUpdate = true; }
-    });
+    const n = this.n, counts = this.counts;
+    if (this.horseEyes) { this.horseEyes.count = n.horse; this.horseEyes.visible = this.googly && n.horse > 0; }
+    counts[0] = counts[1] = n.torso; counts[2] = counts[3] = counts[4] = counts[5] = n.leg; counts[6] = counts[7] = counts[8] = counts[9] = n.arm;
+    counts[10] = n.dress; counts[11] = n.horse; counts[12] = n.hleg; counts[13] = counts[14] = this.distant;
+    let k = 15;
+    for (const c of n.hats) counts[k++] = c;
+    for (const c of n.tools) counts[k++] = c;
+    for (const c of n.shields) counts[k++] = c;
+    for (let i = 0; i < this.all.length; i++) {
+      const mesh = this.all[i], c = counts[i];
+      mesh.count = c;
+      // An instanced mesh with no instances is not drawn, but three.js still binds its program, uploads its uniforms and sets up its buffers first, in the main
+      // pass and again in the shadow pass (and none of that shows in renderer.info's draw calls). Most hats, tools and shields are unused most of the time.
+      mesh.visible = c > 0;
+      if (c === 0) continue;                                     // nothing to draw, nothing to upload
+      mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, c * 16); mesh.instanceMatrix.needsUpdate = true;   // upload only the instances in use
+      if (mesh.instanceColor) { mesh.instanceColor.clearUpdateRanges(); mesh.instanceColor.addUpdateRange(0, c * 3); mesh.instanceColor.needsUpdate = true; }
+    }
   }
 
   /** Distant villagers are two rigid instances rather than a full joint rig. */
