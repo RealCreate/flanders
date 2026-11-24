@@ -204,14 +204,6 @@ export class UI {
 </header>
 <button type="button" id="follow-stop" class="btn" hidden></button>
 <div id="follow-marker" class="lbl" hidden></div>
-<div id="battle" hidden>
-  <button type="button" id="battle-close" aria-label="Minimize to the notification bell" title="Minimize (the bell in the top bar brings it back)">×</button>
-  <div id="battle-text"></div>
-  <div id="battle-bribe" hidden>
-    <button type="button" id="battle-pay" class="pbtn">${bi('gold')} <span id="battle-pay-label"></span></button>
-    <span class="raid-greed" title="Higher greed makes future raids earlier, stronger and more expensive to pay off. It fades each day.">Greed <b id="battle-greed" aria-live="polite">0</b></span>
-  </div>
-</div>
 <button id="hall-exit" class="btn go" hidden>← Leave the test hall</button>
 <aside id="ledger" hidden>
   <div class="tabs" id="tabs">
@@ -312,9 +304,10 @@ export class UI {
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
   <section class="pane" id="pane-sel">
+    <button type="button" class="paneclose" data-act="deselect" aria-label="Deselect" title="Deselect (Esc)">${bi('close', 14)}</button>
     <div id="selected-details"></div>
     <p class="muted" id="selected-refund" hidden></p>
-    <div class="btnrow"><button class="pbtn danger" id="selected-demolish" data-act="demolish" hidden>Demolish</button><button class="pbtn" data-act="deselect">Close</button></div>
+    <div class="btnrow"><button class="pbtn danger" id="selected-demolish" data-act="demolish" hidden>Demolish</button></div>
   </section>
 </aside>
 <div id="minimap-card" hidden><div class="cap" id="mm-cap" title="Hide / show the minimap"><span>REALM</span><span id="mm-hint">click to travel</span><b id="mm-chev">▾</b></div><canvas id="minimap" width="190" height="190"></canvas>
@@ -338,6 +331,14 @@ export class UI {
     <button type="button" class="tool-action" id="touch-cancel">Cancel</button>
   </div>
   <section id="battle-controls" class="tool-panel" aria-label="Battle controls" hidden>
+    <div id="battle" hidden>
+      <button type="button" id="battle-close" aria-label="Minimize to the notification bell" title="Minimize (the bell in the top bar brings it back)">×</button>
+      <div id="battle-text"></div>
+      <div id="battle-bribe" hidden>
+        <button type="button" id="battle-pay" class="pbtn">${bi('gold')} <span id="battle-pay-label"></span></button>
+        <span class="raid-greed" title="Higher greed makes future raids earlier, stronger and more expensive to pay off. It fades each day.">Greed <b id="battle-greed" aria-live="polite">0</b></span>
+      </div>
+    </div>
     <div id="battle-orders" class="tool-row">
       <label class="tool-select">
         <select id="battle-group" aria-label="Troop group"><option value="4">All troops</option><option value="0">Infantry</option><option value="1">Archers</option><option value="2">Knights</option><option value="3">Siege</option></select>
@@ -508,7 +509,7 @@ export class UI {
     this.initSettingsTabs();
     mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('settings', false); this.h.watch(''); }, text => this.confirm(text, 'Replace', 'Restore this backup?'));
     $('btn-mp').onclick = () => this.modal('mp', true);
-    const setBattleMin = (min: boolean) => { this.battleMin = min; $('battle').hidden = min || $('btn-bell').hidden; $('btn-bell').classList.toggle('alert', min); $('btn-bell').setAttribute('aria-pressed', String(!min)); };
+    const setBattleMin = (min: boolean) => { this.battleMin = min; $('battle').hidden = min || $('btn-bell').hidden; this.syncBattleBar(); $('btn-bell').classList.toggle('alert', min); $('btn-bell').setAttribute('aria-pressed', String(!min)); };
     $('btn-home').onclick = () => this.h.goHome();
     $('battle-close').onclick = () => setBattleMin(true);
     $('btn-bell').onclick = () => setBattleMin(!this.battleMin);
@@ -1255,6 +1256,7 @@ export class UI {
     const b = $('battle');
     if (!text) this.battleMin = false;
     b.hidden = !text || this.battleMin;
+    this.syncBattleBar();
     const bell = $('btn-bell'); bell.hidden = !text; bell.classList.toggle('alert', !!text && this.battleMin); bell.setAttribute('aria-pressed', String(!!text && !this.battleMin));
     $('battle-bribe').hidden = !bribe || !text;
     const pay = $<HTMLButtonElement>('battle-pay');
@@ -1277,8 +1279,11 @@ export class UI {
     b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
   }
 
+  private battleHas = false;
+  /** The battle bar (headline, orders, actions) shows while any of its parts has something to say. */
+  private syncBattleBar() { $('battle-controls').hidden = $('battle').hidden && !this.battleHas; }
   battleControls(actions: BattleAction[] = [], order?: (group: number, mode: number) => void, issued?: Uint8Array) {
-    $('battle-controls').hidden = !order && actions.length === 0;
+    this.battleHas = !!order || actions.length > 0; this.syncBattleBar();
     const bar = $('battle-acts'), orders = $('battle-orders'), group = $('battle-group') as HTMLSelectElement;
     orders.hidden = !order;
     const current = $('battle-current-orders');

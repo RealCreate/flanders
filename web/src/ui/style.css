@@ -73,7 +73,7 @@ body { background: #1a140e; color: var(--paper); font-family: var(--f-ui); font-
 /* ---------- ledger (parchment) ---------- */
 #ledger { position: fixed; z-index: 4; right: 14px; top: 62px; bottom: 14px; width: 372px; background: var(--paper); color: var(--ink); border-radius: 3px; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 12px 40px rgba(0,0,0,.5), inset 0 0 60px rgba(150,115,60,.18); border: 1px solid #00000040; }
 .tabs { display: flex; background: var(--wood-2); border-bottom: 2px solid var(--gold); }
-.tab { flex: 1; font-family: var(--f-display); font-size: 15px; letter-spacing: .05em; padding: 9px 4px 7px; background: transparent; border: 0; color: #cdbb95; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; }
+.tab { flex: 1; font-family: var(--f-display); font-size: 14px; letter-spacing: .02em; padding: 9px 2px 7px; background: transparent; border: 0; color: #cdbb95; cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; }
 .tab:hover { color: var(--paper); }
 .tab.on { color: var(--gold-soft); border-bottom-color: var(--gold-soft); background: var(--wood-3); }
 .pane { overflow: auto; padding: 12px 16px 18px; flex: 1; display: none; flex-direction: column; gap: 12px; scrollbar-width: thin; scrollbar-color: var(--paper-edge) transparent; }
@@ -601,3 +601,14 @@ body.cmd-mode #cs-sel { display: none; }
 #ledger .sect input:not([type=checkbox]):not([type=range]) { width: 100%; font-family: var(--f-old); font-size: 16px; padding: 7px 10px; border: 1px solid var(--paper-edge); background: #f8f0d8; color: var(--ink); border-radius: 3px; }
 #ledger .sect label { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
 #ledger .sect > summary { justify-content: flex-start; gap: 8px; } #ledger .sect > summary::after { margin-left: auto; }
+/* the selected pane: what it is, what it does, then one bar of actions (repair, upgrade) and demolish last */
+#pane-sel { position: relative; }
+#pane-sel .paneclose { position: absolute; top: 0; right: 0; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 1px solid var(--paper-edge); border-radius: 3px; background: transparent; color: var(--ink-soft); cursor: pointer; }
+#pane-sel .paneclose:hover { color: var(--ink); border-color: var(--ink); }
+#selected-details .eyebrow:first-child, #selected-details > div:first-child { padding-right: 34px; }
+.actbar { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--paper-edge); padding-top: 10px; }
+.actbar .act-sec { display: flex; flex-direction: column; gap: 6px; }
+.actbar .act-sec h3 { margin: 0; }
+/* the battle headline lives in the battle bar with the orders, not as a second banner at the top */
+#battle-controls #battle { position: relative; top: auto; left: auto; transform: none; width: 100%; max-width: min(620px, 92vw); margin: 0 auto; text-align: center; pointer-events: auto; }
+@media (min-width: 901px) { #tool-dock:has(#battle-controls:not([hidden])) { left: calc(50% - 187px); max-width: calc(100vw - 420px); } }
