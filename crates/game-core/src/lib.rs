@@ -3279,8 +3279,24 @@ impl World {
 
     /// FNV-1a state hash for determinism / peer sync checks: the sections of `state_hash_parts` folded into one number.
     pub fn state_hash(&self) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325 ^ self.seed;
-        for p in self.state_hash_parts() { h ^= p; h = h.wrapping_mul(0x100000001b3); }
+        Self::fold_hash_parts(self.seed, &self.state_hash_parts())
+    }
+
+    /// `state_hash` followed by `state_hash_parts`, from one pass over the state. Multiplayer sends both every tick; asking for them separately hashed the
+    /// whole world twice.
+    pub fn state_hash_and_parts(&self) -> Vec<u64> {
+        let parts = self.state_hash_parts();
+        let mut out = Vec::with_capacity(parts.len() + 1);
+        out.push(Self::fold_hash_parts(self.seed, &parts));
+        out.extend_from_slice(&parts);
+        out
+    }
+}
+
+impl World {
+    fn fold_hash_parts(seed: u64, parts: &[u64]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325 ^ seed;
+        for &p in parts { h ^= p; h = h.wrapping_mul(0x100000001b3); }
         h
     }
 }

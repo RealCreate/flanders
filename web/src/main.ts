@@ -186,6 +186,8 @@ interface Rival {
   loadSeq?: number; loading?: boolean;         // a history is being replayed into a fresh copy in slices (newest wins); the old copy waits meanwhile
   /** Their commands changed the village (and its ground) since its scene was last refreshed: see flushRivals. */
   dirty?: boolean; dirtyTerrain?: boolean; flushedAt?: number; groundAt?: number;
+  /** A command since the last flush may have changed what syncFull rebuilds (buildings, roads, walls, the flag): see LIGHT_OPS. */
+  dirtyFull?: boolean;
   cacheDue?: boolean;                          // a rebuilt copy that is kept in this browser once a hash confirms it
   /** The connection to them: the round trip in ms, how it is doing, and (while they are gone) the timer that tells the player they left (a short break is not worth a message). */
   ping?: number | null; link?: 'good' | 'weak' | 'lost'; leftTimer?: number; leftTold?: boolean;
@@ -427,6 +429,9 @@ function advanceReplica(r: Rival, tick: number): boolean {
 }
 
 /** Bring the scenes of other villages up to date after their commands: at most every 400 ms per village, and their ground at most once a second. */
+/** Rival commands that change nothing syncFull rebuilds (trade, diplomacy, armies on the move, training, research): the per-tick afterTick() covers what they
+ *  do show. Any op not listed here (including new ones) still gets the full rebuild. */
+const LIGHT_OPS: ReadonlySet<string> = new Set(['accept', 'arrive', 'ask', 'attack', 'battleorder', 'bribe', 'buy', 'caravan', 'carhome', 'choose', 'envoy', 'form', 'goods', 'halt', 'journey', 'march', 'marriage', 'merge', 'raid', 'rally', 'recall', 'recallaid', 'reinforce', 'research', 'reserve', 'retreat', 'return', 'sendaid', 'sendatk', 'split', 'train', 'treaty', 'turnback', 'untrain', 'visit', 'war', 'workers']);
 function flushRivals(now: number) {
   for (const r of rivals.values()) {
     if (!r.dirty || r.loading || r.broken || replay?.target === r.village || now - (r.flushedAt ?? -1e9) < 400) continue;
@@ -435,7 +440,10 @@ function flushRivals(now: number) {
     r.dirty = false; r.flushedAt = now;
     try {
       if (ground) { r.dirtyTerrain = false; r.groundAt = now; refreshTerrain(r.village.world); }
-      r.village.syncFull(); r.village.afterTick();
+      // the full rebuild (roads, road props, walls, props, the forest's clearings) only after a command that can change them; afterTick() refreshes the rest,
+      // and itself rebuilds in full when the building count or the ground changed
+      if (r.dirtyFull || ground) { r.dirtyFull = false; r.village.syncFull(); }
+      r.village.afterTick();
     } catch (e) { quarantine(r, e); }
   }
 }
@@ -589,6 +597,7 @@ function connect() {
         // full refresh re-levels the whole village's ground and rebuilds its buildings and the forest. Every player paid that for every other village.
         r.dirty = true;
         if (c.op === 'place' || c.op === 'level' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') r.dirtyTerrain = true;
+        if (!LIGHT_OPS.has(c.op)) r.dirtyFull = true;
         r.tick = c.tick;
         if (c.op === 'battleorder') battleBanner();
       } catch (e) { quarantine(r, e); return; }
@@ -2298,7 +2307,7 @@ function stepLocal() {
     else queueMarchPreview(previewShown.id, ...previewShown.request.to);
   }
   if (selectedDet !== null && !previewShown) showRoute();
-  if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools, e: myEpoch });
+  if (room && room.peers.size) { const hp = w.state_hash_and_parts(); room.broadcastHash({ tick: t, hash: hp[0].toString(), c: sharedCount, p: Array.from(hp.subarray(1), x => x.toString()), tools: usedTools, e: myEpoch }); }   // (one pass over the world, not two)
   if (t % 15 === 0) { if (covOn) covOverlay(); if (covB !== null || covG) covRefocus(); }
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
   if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) { deposits.attach(w.buildings_flat()); camps.sync(w.neutrals_flat()); } }
