@@ -20,6 +20,9 @@ export interface Draw {
 }
 
 const MAX = 800;
+/** Where a horse's legs hang from its body (x, z for each), and each gait's phase offsets per leg (constants, not new arrays per horse per frame). */
+const HORSE_LEGS = [0.16, 0.45, -0.16, 0.45, 0.16, -0.45, -0.16, -0.45];
+const GALLOP = [0, 0.25, 2.3, 2.55], TROT = [0, Math.PI, Math.PI, 0], WALK = [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
 const T = (g: THREE.BufferGeometry, x: number, y: number, z: number) => g.translate(x, y, z);
 const merge = (parts: THREE.BufferGeometry[]) => mergeGeometries(parts.map(p => (p.attributes.normal ? p : (p.computeVertexNormals(), p))))!;
 const box = (w: number, h: number, d: number, hex: number, x = 0, y = 0, z = 0) => T(tint(new THREE.BoxGeometry(w, h, d), hex), x, y, z);
@@ -152,8 +155,13 @@ export class Crowd {
   private m = new THREE.Matrix4(); private a1 = new THREE.Matrix4(); private a2 = new THREE.Matrix4(); private l1 = new THREE.Matrix4();
 
   constructor() {
-    const mk = (g: THREE.BufferGeometry, max = MAX, surface?: Surface) => {
-      const mat = new THREE.MeshStandardMaterial({ map: surface ? surfaceTexture(surface) : null, vertexColors: true, roughness: 0.85, metalness: 0.05 });
+    // One material per kind of part (surface texture, tinted per person or not) instead of one per part: three.js then skips re-uploading the material's
+    // uniforms between consecutive parts. (Tinted and untinted parts use different shader versions, so they do not share: switching versions per draw costs more.)
+    const mats = new Map<string, THREE.MeshStandardMaterial>();
+    const mk = (g: THREE.BufferGeometry, max = MAX, surface?: Surface, tinted = true) => {
+      const key = `${surface ?? ''}|${tinted}`;
+      let mat = mats.get(key);
+      if (!mat) { mat = new THREE.MeshStandardMaterial({ map: surface ? surfaceTexture(surface) : null, vertexColors: true, roughness: 0.85, metalness: 0.05 }); mats.set(key, mat); }
       const m = new THREE.InstancedMesh(g, mat, max); m.castShadow = true; m.frustumCulled = false; m.count = 0; this.group.add(m); return m;
     };
     this.torso = mk(geoTorso(), MAX, 'linen'); this.head = mk(geoHead());
@@ -161,7 +169,7 @@ export class Crowd {
     this.uArmL = mk(geoUpperArm(), MAX, 'linen'); this.uArmR = mk(geoUpperArm(), MAX, 'linen'); this.foreL = mk(geoFore()); this.foreR = mk(geoFore());
     this.dress = mk(geoDress(), MAX, 'linen'); this.horse = mk(horseGeo(), MAX, 'fur'); this.horseLeg = mk(horseLegGeo(), MAX * 4);
     for (const m of [this.head, this.shinL, this.shinR, this.foreL, this.foreR]) m.castShadow = false;   // too small to matter in the shadow pass
-    this.hats = HATS.map(h => mk(h())); this.tools = TOOLS.map(t => mk(t())); this.shields = SHIELDS.map(s => mk(s()));
+    this.hats = HATS.map(h => mk(h(), MAX, undefined, false)); this.tools = TOOLS.map(t => mk(t(), MAX, undefined, false)); this.shields = SHIELDS.map(s => mk(s()));
     this.n.hats = new Array(this.hats.length).fill(0);
     this.n.tools = new Array(this.tools.length).fill(0);
     this.n.shields = new Array(this.shields.length).fill(0);
@@ -175,6 +183,10 @@ export class Crowd {
     this.all = [this.torso, this.head, this.thighL, this.thighR, this.shinL, this.shinR, this.uArmL, this.uArmR, this.foreL, this.foreR, this.dress, this.horse, this.horseLeg, this.distantBody, this.distantHead, ...this.hats, ...this.tools, ...this.shields];
     this.counts = new Array(this.all.length).fill(0);
     freeze(...this.all);   // instances carry world matrices; the meshes themselves never move
+    // the parts that are tinted per person get their colour buffer now (filled white, as setColorAt would), not on the first frame they are drawn: adding it
+    // later changes their shader, which then had to be rebuilt after warm-up
+    for (const m of [this.torso, this.head, this.thighL, this.thighR, this.shinL, this.shinR, this.uArmL, this.uArmR, this.foreL, this.foreR, this.dress, this.horse, this.horseLeg, this.distantBody, this.distantHead, ...this.shields])
+      m.instanceColor ??= new THREE.InstancedBufferAttribute(new Float32Array(m.instanceMatrix.count * 3).fill(1), 3);
   }
   /** Every instanced part, in the order `end()` fills `counts`. */
   private all: THREE.InstancedMesh[];
@@ -234,11 +246,38 @@ export class Crowd {
   }
 
   /** out = parent * translate(x,y,z) * rotate(rx, ry, rz) */
+  /** out = parent × (translate(x, y, z) · rotate(rx, ry, rz in 'YXZ' order)): a joint `(x, y, z)` from its parent, turned by those angles.
+   *  Written out by hand: it runs about twelve times per person per frame, and going through Euler → Quaternion → compose → a full 4×4 multiply cost several
+   *  times as much. Every matrix here is affine (no projection), so the bottom row is skipped, and most joints only bend about x. */
   private frame(out: THREE.Matrix4, parent: THREE.Matrix4, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0) {
-    this.e.set(rx, ry, rz, 'YXZ'); this.q.setFromEuler(this.e); this.v.set(x, y, z); this.s.set(1, 1, 1);
-    this.t4.compose(this.v, this.q, this.s); out.multiplyMatrices(parent, this.t4); return out;
+    let r00 = 1, r01 = 0, r02 = 0, r10 = 0, r11 = 1, r12 = 0, r20 = 0, r21 = 0, r22 = 1;
+    if (ry === 0 && rz === 0) {
+      if (rx !== 0) { const c = Math.cos(rx), sn = Math.sin(rx); r11 = c; r12 = -sn; r21 = sn; r22 = c; }
+    } else {   // as Matrix4.makeRotationFromEuler for order 'YXZ'
+      const a = Math.cos(rx), b = Math.sin(rx), c = Math.cos(ry), d = Math.sin(ry), e = Math.cos(rz), f = Math.sin(rz);
+      const ce = c * e, cf = c * f, de = d * e, df = d * f;
+      r00 = ce + df * b; r01 = de * b - cf; r02 = a * d;
+      r10 = a * f; r11 = a * e; r12 = -b;
+      r20 = cf * b - de; r21 = df + ce * b; r22 = a * c;
+    }
+    const p = parent.elements, o = out.elements;
+    const p0 = p[0], p1 = p[1], p2 = p[2], p4 = p[4], p5 = p[5], p6 = p[6], p8 = p[8], p9 = p[9], p10 = p[10], p12 = p[12], p13 = p[13], p14 = p[14];
+    o[0] = p0 * r00 + p4 * r10 + p8 * r20; o[1] = p1 * r00 + p5 * r10 + p9 * r20; o[2] = p2 * r00 + p6 * r10 + p10 * r20; o[3] = 0;
+    o[4] = p0 * r01 + p4 * r11 + p8 * r21; o[5] = p1 * r01 + p5 * r11 + p9 * r21; o[6] = p2 * r01 + p6 * r11 + p10 * r21; o[7] = 0;
+    o[8] = p0 * r02 + p4 * r12 + p8 * r22; o[9] = p1 * r02 + p5 * r12 + p9 * r22; o[10] = p2 * r02 + p6 * r12 + p10 * r22; o[11] = 0;
+    o[12] = p0 * x + p4 * y + p8 * z + p12; o[13] = p1 * x + p5 * y + p9 * z + p13; o[14] = p2 * x + p6 * y + p10 * z + p14; o[15] = 1;
+    return out;
   }
-  private put(mesh: THREE.InstancedMesh, i: number, m: THREE.Matrix4, hex?: number) { mesh.setMatrixAt(i, m); if (hex !== undefined) mesh.setColorAt(i, this.col.setHex(hex)); }
+  /** Colours as hex → the linear colour the shader wants. Color.setHex converts from sRGB (three pow() calls) and ran for every body part of everyone, every
+   *  frame, with only a few dozen distinct colours in play. */
+  private linear = new Map<number, THREE.Color>();
+  private put(mesh: THREE.InstancedMesh, i: number, m: THREE.Matrix4, hex?: number) {
+    m.toArray(mesh.instanceMatrix.array as Float32Array, i * 16);
+    if (hex !== undefined && mesh.instanceColor) {
+      let c = this.linear.get(hex); if (!c) { c = new THREE.Color(hex); this.linear.set(hex, c); }
+      const a = mesh.instanceColor.array as Float32Array, k = i * 3; a[k] = c.r; a[k + 1] = c.g; a[k + 2] = c.b;
+    }
+  }
 
   /** A horse with nobody on it (pulling a cart, carrying a pack): standing at (x, y, z) facing `yaw`. `phase` is the gait angle and `speed` the ground speed, as for a person. */
   addHorse(x: number, y: number, z: number, yaw: number, phase: number, speed: number, hex: number, scale = 1) {
@@ -249,12 +288,12 @@ export class Crowd {
     this.frame(this.Hm, this.B, 0, hbob, 0, walk ? Math.sin(phase) * (gallop ? 0.07 : 0.03) : 0);
     this.Hm.scale(this.s.set(1.05, 1.05, 1.05));
     this.put(this.horse, this.n.horse++, this.Hm, hex);
-    const off = gallop ? [0, 0.25, 2.3, 2.55] : trot ? [0, Math.PI, Math.PI, 0] : [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
+    const off = gallop ? GALLOP : trot ? TROT : WALK;
     const amp = walk ? (gallop ? 0.95 : trot ? 0.6 : 0.42) : 0;
-    [[0.16, 0.45], [-0.16, 0.45], [0.16, -0.45], [-0.16, -0.45]].forEach(([lx, lz], k) => {
-      this.frame(this.l1, this.Hm, lx, HORSE_HIP, lz, -(amp * Math.sin(phase + off[k])));
+    for (let k = 0; k < 4; k++) {
+      this.frame(this.l1, this.Hm, HORSE_LEGS[k * 2], HORSE_HIP, HORSE_LEGS[k * 2 + 1], -(amp * Math.sin(phase + off[k])));
       this.put(this.horseLeg, this.n.hleg++, this.l1, hex);
-    });
+    }
   }
 
   add(d: Draw) {
@@ -281,14 +320,12 @@ export class Crowd {
       this.frame(this.Hm, this.B, 0, -lift + hbob, 0, walk ? Math.sin(ph) * (gallop ? 0.07 : 0.03) : 0);
       this.Hm.scale(this.s.set(1.05, 1.05, 1.05));
       this.put(this.horse, this.n.horse++, this.Hm, HORSE_COAT);
-      const off = gallop ? [0, 0.25, 2.3, 2.55] : trot ? [0, Math.PI, Math.PI, 0] : [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
+      const off = gallop ? GALLOP : trot ? TROT : WALK;
       const amp = walk ? (gallop ? 0.95 : trot ? 0.6 : 0.42) : 0;
-      [[0.16, 0.45], [-0.16, 0.45], [0.16, -0.45], [-0.16, -0.45]].forEach(([lx, lz], k) => {
-        const a = amp * Math.sin(ph * (gallop ? 1 : 1) + off[k]) + (k > 1 ? 0 : 0);
-        this.frame(this.l1, this.Hm, lx, HORSE_HIP, lz, -a);
+      for (let k = 0; k < 4; k++) {
+        this.frame(this.l1, this.Hm, HORSE_LEGS[k * 2], HORSE_HIP, HORSE_LEGS[k * 2 + 1], -(amp * Math.sin(ph + off[k])));
         this.put(this.horseLeg, this.n.hleg++, this.l1, HORSE_COAT);
-      });
-      this.B.multiply(this.t4.makeTranslation(0, 0, 0));
+      }
     }
 
     // ---- pelvis and torso frames
@@ -349,7 +386,7 @@ export class Crowd {
     this.frame(this.a2, this.a1, 0, -0.29, 0, eL); this.put(this.foreL, this.n.arm++, this.a2, d.body);
     if (d.shield !== undefined) {
       this.frame(this.m, this.a2, -0.08, -0.12, 0.2);
-      this.shields[d.shield].setMatrixAt(this.n.shields[d.shield], this.m); this.shields[d.shield].setColorAt(this.n.shields[d.shield]++, this.col.setHex(d.shieldCol ?? 0xb03030));
+      this.put(this.shields[d.shield], this.n.shields[d.shield]++, this.m, d.shieldCol ?? 0xb03030);
     }
   }
 }
