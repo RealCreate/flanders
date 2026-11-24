@@ -59,7 +59,7 @@ export class PlantedTrees {
       this.dummy.position.set(x, this.ground[i], z); this.dummy.rotation.set(0, (x * 7.3 + z * 3.1) % 6.28, 0); this.dummy.scale.set(s, s, s); this.dummy.updateMatrix();
       this.mesh.setMatrixAt(i, this.dummy.matrix);
     }
-    this.mesh.count = n; this.mesh.instanceMatrix.needsUpdate = true; this.young = young;
+    this.mesh.count = n; this.mesh.visible = n > 0; this.mesh.instanceMatrix.needsUpdate = true; this.young = young;
   }
 
   dispose() { this.mesh.geometry.dispose(); (this.mesh.material as THREE.Material).dispose(); this.mesh.dispose(); }

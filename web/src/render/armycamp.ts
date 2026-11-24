@@ -143,7 +143,7 @@ export class ArmyCamp {
       this.logs.setMatrixAt(i, this.m);
     }
     for (let i = n; i < MAX_LOGS && this.logBorn[i] >= 0; i++) this.logBorn[i] = -1;
-    this.logs.count = n; this.logs.instanceMatrix.needsUpdate = true;
+    this.logs.count = n; this.logs.visible = n > 0; this.logs.instanceMatrix.needsUpdate = true;
 
     this.props.visible = shown.stores;
     if (shown.stores) this.props.children.forEach(g => { const b = g.userData.base as Camp['props'][number]; g.position.y = ground(b.x, b.z); });

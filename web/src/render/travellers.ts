@@ -137,7 +137,7 @@ export class Travellers {
       }
     }
     this.shown = labels;
-    for (const p of Object.values(this.pools)) { p.mesh.count = p.n; p.mesh.instanceMatrix.needsUpdate = true; if (p.mesh.instanceColor) p.mesh.instanceColor.needsUpdate = true; }
+    for (const p of Object.values(this.pools)) { p.mesh.count = p.n; p.mesh.visible = p.n > 0; p.mesh.instanceMatrix.needsUpdate = true; if (p.mesh.instanceColor) p.mesh.instanceColor.needsUpdate = true; }
   }
 
   /** Put a primitive in a pool: centre at (lx, ly, lz) in the frame `f` (turned by its yaw), size (sx, sy, sz), optional further turn. Everything is scaled by `k` so a figure grows out of the ground and shrinks back into it. */

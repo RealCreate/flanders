@@ -452,6 +452,7 @@ export class People {
       n++;
     }
     this.cartBody.count = this.cartLoad.count = this.cartShaft.count = n; this.cartWheel.count = w;
+    this.cartBody.visible = this.cartLoad.visible = this.cartShaft.visible = this.cartWheel.visible = n > 0;   // empty instanced meshes still cost a program bind per pass
     for (const q of [this.cartBody, this.cartLoad, this.cartShaft, this.cartWheel]) q.instanceMatrix.needsUpdate = true;
     if (this.cartLoad.instanceColor) this.cartLoad.instanceColor.needsUpdate = true;
   }
@@ -460,7 +461,7 @@ export class People {
   /** Queue everyone for drawing. */
   /** Queue everyone near the view for drawing (people far outside the screen are skipped). */
   draw(crowd: Crowd, cx = 0, cz = 0, radius = 1e9, camera?: THREE.Vector3, detailRange = Infinity) {
-    if (this.hidden) { this.cartBody.count = this.cartLoad.count = this.cartShaft.count = this.cartWheel.count = 0; return; }
+    if (this.hidden) { this.cartBody.count = this.cartLoad.count = this.cartShaft.count = this.cartWheel.count = 0; this.cartBody.visible = this.cartLoad.visible = this.cartShaft.visible = this.cartWheel.visible = false; return; }
     const r2 = radius * radius, detail2 = detailRange ** 2;
     const detailed = (x: number, y: number, z: number) => !camera || (x - camera.x) ** 2 + (y - camera.y) ** 2 + (z - camera.z) ** 2 <= detail2;
     this.drawCarts(cx, cz, r2); this.drawStations(crowd, cx, cz, r2, detailed);
