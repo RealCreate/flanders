@@ -89,17 +89,21 @@ export function addRibbon(m: Mesh, line: RoadLine, half: number, seed = 0, ends?
     const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
     let ux = P[2 * b] - P[2 * a], uz = P[2 * b + 1] - P[2 * a + 1]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
     // the ribbon is as wide across the corner as along the straight: widen by the mitre of the turn here (limited)
-    let wide = 1;
+    let wide = 1, inner = Infinity, turnLeft = 0;   // (inner: how far the inner edge may reach before it folds over the middle of a tight bend)
     if (i > 0 && i < n - 1) {
       let ix = P[2 * i] - P[2 * i - 2], iz = P[2 * i + 1] - P[2 * i - 1], ox = P[2 * i + 2] - P[2 * i], oz = P[2 * i + 3] - P[2 * i + 1];
       const il = Math.hypot(ix, iz) || 1, ol = Math.hypot(ox, oz) || 1; ix /= il; iz /= il; ox /= ol; oz /= ol;
       const c = Math.max(-1, Math.min(1, ix * ox + iz * oz)); wide = Math.min(MITRE, 1 / Math.max(0.3, Math.cos(Math.acos(c) / 2)));
+      // on the inside of a bend tighter than the ribbon is wide the edge would cross the middle and fold back over the road (its dark fringe then shows across the surface as a broken patch):
+      // hold the inner edge inside the turning circle, and never mitre-widen it
+      const th = Math.acos(c); turnLeft = ix * oz - iz * ox > 0 ? 1 : -1;
+      if (th > 1e-3) inner = 0.8 * 0.5 * Math.min(il, ol) / Math.tan(Math.min(th, Math.PI - 0.05) / 2);
     }
     const nx = -uz, nz = ux, hw = half * wide, wob = Math.min(0.08, half * 0.07) * Math.sin(cum[i] * 0.7 + seed * 1.7) * Math.min(1, i / 2, (n - 1 - i) / 2);
     const cx = P[2 * i] + nx * wob, cz = P[2 * i + 1] + nz * wob, t = cum[i] / total, v = cum[i] * 0.25;
     const row: number[] = [];
     for (const [s, al, uu] of [[1, 0, 0], [0, 0.95, 0.5], [-1, 0, 1]] as const) {
-      const k = m.x.length; m.x.push(cx + nx * hw * EDGE * s); m.z.push(cz + nz * hw * EDGE * s); m.a.push(al * alphaAt(cum[i], total)); m.u.push(uu); m.v.push(v);
+      const k = m.x.length; const reach = s === turnLeft ? Math.min(hw * EDGE, Math.max(inner, 0.2)) : hw * EDGE; m.x.push(cx + nx * reach * s); m.z.push(cz + nz * reach * s); m.a.push(al * alphaAt(cum[i], total)); m.u.push(uu); m.v.push(v);
       m.born.push(line.born); m.along.push(t); m.mat.push(matAt(cum[i], total)); row.push(k);
     }
     if (prev) for (let k = 0; k < 2; k++) m.idx.push(prev[k], row[k], prev[k + 1], prev[k + 1], row[k], row[k + 1]);

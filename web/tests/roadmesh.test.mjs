@@ -182,3 +182,16 @@ test('a cross has one through road and two side roads, a stub is never the throu
   const mid = []; for (let i = 0; i < m.x.length; i++) if (Math.abs(m.z[i]) < 0.12 && Math.abs(m.x[i]) > 2.6 && Math.abs(m.x[i]) < 5) mid.push(m.a[i]);
   assert.ok(mid.length > 0 && mid.every(a => a > 0.9), 'the through road is solid up to the node on both sides');
 });
+
+test('a tight bend does not fold the inner edge back over the road', () => {
+  // a turn of radius 1 (tighter than the ribbon's soft edge is wide): the inner edge must stay on its own side of the middle
+  const pts = [0, 0]; const R = 1, n = 20;
+  for (let i = 0; i <= n; i++) { const a = -Math.PI / 2 + (i / n) * (Math.PI * 0.75); pts.push(10 + Math.cos(a) * R, R + Math.sin(a) * R); }
+  const m = newMesh(); addRibbon(m, { kind: 1, born: 0, tier: 0, opts: 0, pts }, 1.3);
+  let pos = 0, neg = 0;
+  for (let t = 0; t < m.idx.length; t += 3) {
+    const [a, b, c] = [m.idx[t], m.idx[t + 1], m.idx[t + 2]], ar = (m.x[b] - m.x[a]) * (m.z[c] - m.z[a]) - (m.x[c] - m.x[a]) * (m.z[b] - m.z[a]);
+    if (ar > 1e-6) pos++; else if (ar < -1e-6) neg++;
+  }
+  assert.ok(pos <= 2 && neg > 20, `folded triangles: ${pos} against ${neg}`);
+});
