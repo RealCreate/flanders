@@ -63,11 +63,11 @@ export function downloadBackup() {
 }
 
 /** Read a chosen file, check it, and (after the caller's confirmation) write it to local storage. Resolves to the number of items restored. */
-export async function restoreBackup(file: File, confirmOverwrite: (n: number) => boolean): Promise<number> {
+export async function restoreBackup(file: File, confirmOverwrite: (n: number) => boolean | Promise<boolean>): Promise<number> {
   if (file.size > MAX_TOTAL) throw new Error('The backup file is too large.');
   let raw: unknown; try { raw = JSON.parse(await file.text()); } catch { throw new Error('This file is not a Flanders backup.'); }
   const items = await checkBackup(raw);
-  if (!confirmOverwrite(Object.keys(items).length)) return 0;
+  if (!(await confirmOverwrite(Object.keys(items).length))) return 0;
   for (const [k, v] of Object.entries(items)) localStorage.setItem(k, v);
   return Object.keys(items).length;
 }

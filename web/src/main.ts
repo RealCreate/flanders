@@ -1958,7 +1958,7 @@ function battleBanner() {
         () => rig.focus(objective?.x ?? f.x, objective?.z ?? f.z, 65), mine ? { greed: w.bribe_greed() } : undefined);
       const actions: Parameters<UI['battleControls']>[0] = [];
       if (preparing) {
-        actions.push({ label: 'Army panel', icon: 'army', title: 'Check your standing army and training queue', run: () => ui.setTab('army') });
+        actions.push({ label: 'Military', icon: 'army', title: 'Check your standing army and training queue', run: () => ui.setTab('army') });
         if (ready > 0) actions.push({ label: `Man towers (${ready})`, icon: 'watchtower', title: 'Station available archers at towers and keeps nearest the raid', run: () => manRaidTowers(w, objective ?? f) });
         if (paused) actions.push({ label: 'Resume countdown', icon: 'play', title: 'Let the raid countdown continue at normal speed', run: () => { playerPresent(); setSpeed(1); battleBanner(); } });
       }
@@ -2340,11 +2340,10 @@ function stewardAction(action: StewardAction) {
   if (replay?.target === lv) return;
   if (action === 'open') { ui.openSteward(); renderWatch(); return; }
   if (action === 'pause' || action === 'steward') { watch.mode = action; renderWatch(); writeSave(); return; }
-  ui.modal('steward', false);
   switch (action) {
     case 'resume': setSpeed(speed || 1); break;
     case 'food': ui.openFlow(-2); break;
-    case 'wood': ui.modal('winter', true); updateHud(); break;
+    case 'wood': ui.openWinter(); updateHud(); break;
     case 'work': ui.openWork(); break;
     case 'ruins': {
       const index = lv.world.recovery_ruin();
@@ -2790,12 +2789,13 @@ function updateSelection() {
   html += `<div><div class="eyebrow">${burning ? `${icon('fire', 16)} On fire!` : 'Condition'} · <b>${Math.ceil(hp[selectedIdx * 3])} / ${Math.round(hp[selectedIdx * 3 + 1])} hp</b></div><div class="bar ${health < 0.4 || burning ? 'red' : ''}"><i style="width:${Math.round(health * 100)}%"></i></div></div>`;
   html += reachHtml(kind, tier);
   html += productionProblemsHtml(selectedIdx);
-  if (health < 0.995 && !burning) {   // damaged: offer repairs
+  let repairHtml = '';   // damaged: offer repairs (shown with the other actions, below what the building does)
+  if (health < 0.995 && !burning) {
     const rc = w.repair_cost(selectedIdx), rcost: [number, number][] = []; for (let i = 0; i < rc.length; i += 2) rcost.push([rc[i], rc[i + 1]]);
     const rok = rcost.every(([r, n]) => stocks[r] >= n);
-    html += `<div><h3>Repair</h3><div class="cost">${ui.costHtml(rcost, stocks)}</div></div><button class="pbtn primary" data-act="repair" ${rok ? '' : 'disabled'}>${rok ? 'Repair' : 'Not enough resources'}</button>`;
+    repairHtml = `<div class="act-sec"><h3>Repair</h3><div class="cost">${ui.costHtml(rcost, stocks)}</div></div><button class="pbtn primary" data-act="repair" ${rok ? '' : 'disabled'}>${rok ? 'Repair' : 'Not enough resources'}</button></div>`;
   }
-  if (kind === 49) { html += embassyHtml(selectedIdx, tier, stocks); ui.setSelectedPane(html, demolitionTip(w, selectedIdx)); return; }
+  if (kind === 49) { html += embassyHtml(selectedIdx, tier, stocks) + (repairHtml ? `<div class="actbar">${repairHtml}</div>` : ''); ui.setSelectedPane(html, demolitionTip(w, selectedIdx)); return; }
   if (kind === 3 || kind === 26) {   // towers and keeps need archers stationed inside to defend
     const cap = w.garrison_cap(selectedIdx), cur = w.garrison_flat()[selectedIdx] ?? 0, avail = w.army()[1];
     html += `<div><h3>Garrison</h3><div class="stats"><div class="stat"><b>${cur} / ${cap}</b><span>archers inside</span></div><div class="stat"><b>${avail}</b><span>archers free in the barracks</span></div></div>
@@ -2859,13 +2859,13 @@ function updateSelection() {
   if (kind === 15 && tier >= 3) html += rallyHtml(1);
   if (kind === 19) html += `<p class="muted">Tier ${tier + 1}: ${['spearmen and archers', '+ swordsmen', '+ knights', '+ catapults'][tier]}. Open the Army tab to recruit.</p>`;
   if (kind === 2 || kind === 21 || kind === 22) html += `<div class="btnrow"><button class="pbtn" data-act="selwalls">Select connected walls</button></div>`;
-  if (kind === 37) { html += roadPanelHtml(selectedIdx, tier, stocks); ui.setSelectedPane(html, demolitionTip(w, selectedIdx)); return; }
+  if (kind === 37) { html += roadPanelHtml(selectedIdx, tier, stocks) + (repairHtml ? `<div class="actbar">${repairHtml}</div>` : ''); ui.setSelectedPane(html, demolitionTip(w, selectedIdx)); return; }
   if (d.cycle && (w.road_access_flat()[selectedIdx] ?? 1) === 0) html += `<p class="muted road-warn">${icon('road', 16)} No road to the castle: this workplace works at half pace. Lay a road from its ring to the castle.</p>`;
   if (tier < defs[kind].maxTier) {
     const uc = upgrade_cost_flat(kind, tier + 1), cost: [number, number][] = []; for (let i = 0; i < uc.length; i += 2) cost.push([uc[i], uc[i + 1]]);
     const ok = cost.every(([r, n]) => stocks[r] >= n);
-    html += `<div><h3>Upgrade to ${tierName(kind, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div></div>${upgradeGainsHtml(kind, tier, hp[selectedIdx * 3 + 1], recipe)}<button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button>`;
-  } else html += `<p><b>Fully upgraded.</b></p>`;
+    html += `<div class="actbar">${repairHtml}<div class="act-sec"><h3>Upgrade to ${tierName(kind, tier + 1)}</h3><div class="cost">${ui.costHtml(cost, stocks)}</div>${upgradeGainsHtml(kind, tier, hp[selectedIdx * 3 + 1], recipe)}<button class="pbtn primary" data-act="upgrade" ${ok ? '' : 'disabled'}>${ok ? 'Upgrade' : 'Not enough resources'}</button></div></div>`;
+  } else html += `<div class="actbar">${repairHtml}<p><b>Fully upgraded.</b></p></div>`;
   html += optionsHtml(selectedIdx, kind, tier, stocks, kind === 47 ? 'Upgrades' : 'Design options');
   ui.setSelectedPane(html, kind !== 15 ? demolitionTip(w, selectedIdx) : '');
 }
@@ -3769,7 +3769,7 @@ function bindInput() {
       case 'coverage': toggleCoverage(); break;
       case 'pause': e.preventDefault(); setSpeed(speed === 0 || watch.review ? 1 : 0); break;
       case 'perf': e.preventDefault(); perf.toggle(); break;
-      case 'help': e.preventDefault(); ui.modal('help', true); break;
+      case 'help': e.preventDefault(); ui.openSettings('controls'); break;
       case 'toggleLedger': ui.toggleLedger(); break;
       case 'nextArmy': { e.preventDefault(); const ids = lv.field.ids(); if (ids.length) { const i = ids.indexOf(selectedDet ?? -1); const id = ids[(i + 1) % ids.length], p = lv.field.position(id); selectDet(id); if (p) rig.focus(p.x, p.z); } break; }
       case 'haltArmy': multiDets.slice().forEach(id => detAction('halt', id)); break;

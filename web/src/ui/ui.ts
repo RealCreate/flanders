@@ -24,6 +24,7 @@ import { downloadBackup } from '../backup';
 import { loadFlag, saveFlag } from '../flag';
 import { versionLabel } from '../version';
 import { renderNotes } from '../releasenotes';
+import { modals } from './modal';
 
 /** The keys bound to an action, as they are now (after any rebinding), e.g. "W / Z / ↑". */
 export const keyNames = (a: Action) => keys.binds[a].map(k => `<kbd>${prettyKey(k).toUpperCase()}</kbd>`).join(' ');
@@ -198,36 +199,15 @@ export class UI {
   <button class="btn" id="btn-home" aria-label="Go to your town hall" title="Go to your town hall (centre the camera on your village)">${bi('townhall')} Home</button>
   <button class="btn" id="btn-bell" hidden aria-pressed="false" aria-label="Notifications" title="Show the battle notice">${bi('attack')}</button>
   <button class="btn" id="btn-mp" title="Players in this world">${bi('globe')} <span id="mp-count">Online</span></button>
-  <button class="btn" id="btn-steward" title="Away policy and village recovery">${bi('townhall')} <span id="watch-label">Steward</span></button>
-  <button class="btn" id="btn-map" title="Full-screen map (M)">${bi('map')} Map</button>
-  <button class="btn" id="btn-cov" aria-pressed="false" title="Show how far wells and towers reach, and what they leave unprotected (C)">${bi('coverage')} Show coverage</button>
-  <div class="menuwrap">
-    <button class="btn" id="btn-menu" title="Menu: display settings, sound, deposits, full screen, help" aria-haspopup="true" aria-expanded="false">${bi('menu')} Menu</button>
-    <div id="menu" hidden>
-      <button class="btn" id="btn-display" title="Quality, shadows, anti-aliasing…">${bi('gear')} Display settings</button>
-  <button class="btn" id="btn-sound" title="Sound on / off"><svg viewBox="0 0 16 16" id="snd-on"><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 5.2a4 4 0 0 1 0 5.6M12.8 3.6a6.3 6.3 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><svg viewBox="0 0 16 16" id="snd-off" hidden><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span class="ml">Sound on / off</span></button>
-      <button class="btn" id="btn-res" aria-pressed="false" title="Show ore and stone deposits (V)">${bi('pick')} Show deposits</button>
-      <button class="btn" id="btn-full" title="Full-screen mode (F11)">${bi('fullscreen')} Full screen</button>
-      <button class="btn" id="btn-help">? Help and keys</button>
-      <button class="btn" id="btn-cheat" hidden title="Testing tools">${bi('tools')} Test tools</button>
-    </div>
-  </div>
+  <button class="btn" id="btn-settings" title="Settings: display, sound, controls, your data, about">${bi('gear')} Settings</button>
   </div>
 </header>
 <button type="button" id="follow-stop" class="btn" hidden></button>
 <div id="follow-marker" class="lbl" hidden></div>
-<div id="battle" hidden>
-  <button type="button" id="battle-close" aria-label="Minimize to the notification bell" title="Minimize (the bell in the top bar brings it back)">×</button>
-  <div id="battle-text"></div>
-  <div id="battle-bribe" hidden>
-    <button type="button" id="battle-pay" class="pbtn">${bi('gold')} <span id="battle-pay-label"></span></button>
-    <span class="raid-greed" title="Higher greed makes future raids earlier, stronger and more expensive to pay off. It fades each day.">Greed <b id="battle-greed" aria-live="polite">0</b></span>
-  </div>
-</div>
 <button id="hall-exit" class="btn go" hidden>← Leave the test hall</button>
 <aside id="ledger" hidden>
   <div class="tabs" id="tabs">
-    <button class="tab on" data-t="build">Build</button><button class="tab" data-t="army">Army</button><button class="tab" data-t="village">Village</button><button class="tab" data-t="stock">Stock</button><button class="tab" data-t="sel" id="tab-sel" hidden>Selected</button><button class="tabmin" id="ledger-min" title="Hide the panel (H)">▸</button>
+    <button class="tab on" data-t="build">Build</button><button class="tab" data-t="army">Military</button><button class="tab" data-t="village">Village</button><button class="tab" data-t="stock">Stock</button><button class="tab" data-t="sel" id="tab-sel" hidden>Selected</button><button class="tabmin" id="ledger-min" title="Hide the panel (H)">▸</button>
   </div>
   <section class="pane on" id="pane-build">
     <div class="build-find" role="search" aria-label="Building catalog">
@@ -246,20 +226,20 @@ export class UI {
     </div>
   </section>
   <section class="pane" id="pane-army">
-    <div><div class="eyebrow">Military</div><h2>Army</h2></div>
+    <div><div class="eyebrow">Military</div><h2>Military</h2></div>
     <div class="stats five" id="army-stats"></div>
     <p class="muted" id="army-info"></p>
     <div class="sect"><h3>Field armies</h3>
       <div id="det-list" class="armies"></div>
       <p class="muted tiny">Click an army's banner (or press <b>Tab</b>) to select it, then <b>right-click</b> the ground to march. <b>G</b> halts it, <b>B</b> sends it home. Armies walk round buildings, fell trees in their way and bridge or ferry over water.</p>
       <label class="tiny" title="Armies may spend planks to shorten new routes across water. With shortcuts off, they build only if no route over land or an existing bridge is available."><input id="army-bridging" type="checkbox"> Allow automatic bridge shortcuts</label>
+      <details id="muster-box"><summary>Muster a new army</summary>
+        <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
+        <div class="mrows" id="muster-row"></div>
+        <div class="btnrow"><button class="pbtn" id="muster-go">${bi('muster')} Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
+      </details>
+      <p class="muted tiny" id="army-embassy">Trade, diplomacy and marching on other villages are handled by the Embassy. <button class="chip" id="army-embassy-go">${bi('embassy', 14)} Open the Embassy</button></p>
     </div>
-    <div class="sect" id="army-embassy"><h3>Rival villages</h3><p class="muted tiny">Trade, diplomacy and marching on other villages are handled by the Embassy.</p><button class="pbtn" id="army-embassy-go">${bi('embassy')} Open the Embassy</button></div>
-    <details class="sect" id="muster-box"><summary>Muster a new army</summary>
-      <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
-      <div class="mrows" id="muster-row"></div>
-      <div class="btnrow"><button class="pbtn" id="muster-go">${bi('muster')} Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
-    </details>
     <details class="sect" open><summary>Train soldiers</summary><div class="cards" id="unit-cards"></div></details>
     <details class="sect"><summary>Armory upgrades</summary><div class="cards" id="military-upgrades"></div></details>
     <p class="muted tiny">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
@@ -267,9 +247,28 @@ export class UI {
   <div id="embassy-home" hidden><div class="sect" id="attack-box"><div id="attack-form"></div></div></div>
   <section class="pane" id="pane-village">
     <div><div class="eyebrow" id="v-sub">Your settlement</div><h2>The Village</h2></div>
-    <div class="btnrow wrap"><button class="pbtn" data-steward="open">${bi('townhall')} Village steward</button><button class="pbtn" id="find-villager">${bi('pop')} Villagers</button></div>
+    <div id="steward-status" class="vstatus">
+      <p id="watch-report" role="status" hidden></p>
+      <p id="watch-stores"></p>
+      <ul class="watch-risks" id="watch-risks" hidden></ul>
+      <div class="btnrow wrap" aria-label="Recovery">
+        <button class="pbtn" data-steward="food">${bi('grain')} Food supply</button>
+        <button class="pbtn" data-steward="wood">${bi('cold')} Winter supplies</button>
+        <button class="pbtn" data-steward="work">${bi('work')} Workers</button>
+        <button class="pbtn" data-steward="market" hidden>${bi('gold')} Visit market</button>
+        <button class="pbtn" data-steward="ruins" hidden>${bi('tools')} Find a ruin</button>
+      </div>
+      <div class="btnrow"><button class="pbtn primary" data-steward="resume" hidden>Resume village</button></div>
+    </div>
     <div class="stats"><div class="stat"><b id="s-pop">0</b><span>Villagers</span></div><div class="stat"><b id="s-cap">0</b><span>Housing</span></div><div class="stat"><b id="s-sick">0</b><span>Sick</span></div></div>
     <div class="stats"><div class="stat"><b id="s-eff">0%</b><span>Workforce</span></div><div class="stat"><b id="s-bld">0</b><span>Buildings</span></div><div class="stat"><b id="s-rad">0</b><span>Border radius</span></div></div>
+    <details class="sect flowsheet" id="sec-winter"><summary><span id="winter-title">${icon('cold', 20)} Winter</span></summary><div id="winter-body"></div></details>
+    <details class="sect flowsheet worksheet" id="sec-work"><summary>${icon('work', 20)} Workers</summary><div id="work-body"></div></details>
+    <details class="sect" id="sec-villagers"><summary>${icon('pop', 20)} Villagers</summary>
+      <label for="villager-search">Search by name or workplace</label><input id="villager-search" type="search" autocomplete="off">
+      <p class="muted" id="villagers-note"></p>
+      <ul id="villagers-list" class="villagers-list"></ul>
+    </details>
     <div><h3>Health &amp; death care</h3><div class="stats" id="care-stats"></div><p class="muted" id="care-info"></p></div>
     <div><div class="eyebrow">Housing used</div><div class="bar"><i id="b-house" style="width:0"></i></div></div>
     <div><div class="eyebrow">Storage (per resource)</div><div class="bar"><i id="b-store" style="width:0"></i></div><p class="muted" id="t-store"></p></div>
@@ -279,7 +278,18 @@ export class UI {
   </section>
   <section class="pane" id="pane-stock">
     <div><div class="eyebrow">Warehouse</div><h2>Stock &amp; Industry</h2></div>
-    <button class="pbtn" data-reserves>${bi('storehouse')} Set reserves</button>
+    <details class="sect flowsheet" id="sec-flow"><summary><span id="flow-title">${icon('storehouse', 20)} Where it comes from, where it goes</span></summary><div id="flow-body"><p class="muted">Click a resource in the top bar, or a row below, to see what makes and uses it.</p></div></details>
+    <details class="sect" id="sec-reserves"><summary>${icon('storehouse', 20)} Stock reserves</summary>
+      <form id="reserve-form" aria-label="Stock reserves">
+        <p class="muted">Workplaces, ports and automatic repairs spend only the surplus. Villagers can still eat the grain and burn the wood for heat. You can spend either with a direct order.</p>
+        <div class="reserve-fields">
+          <label>${icon('grain', 18)} Grain<input id="reserve-grain" type="number" min="0" max="${RESERVE_MAX}" step="1" required></label>
+          <label>${icon('wood', 18)} Firewood<input id="reserve-wood" type="number" min="0" max="${RESERVE_MAX}" step="1" required></label>
+        </div>
+        <p class="muted" id="reserve-stock"></p>
+        <div class="btnrow"><button id="reserve-save" class="pbtn primary">Save reserves</button></div>
+      </form>
+    </details>
     <table class="res" id="restable"></table>
     <div><h3>Production chains</h3><div class="chain">
       ${icon('wood', 16)} Wood <span class="arrow">→</span> Sawmill <span class="arrow">→</span> ${icon('planks', 16)} Planks<br>
@@ -294,12 +304,18 @@ export class UI {
       <p class="muted" style="margin-top:6px">Mines and quarries must stand beside a deposit — press <b>V</b> to reveal them. Rates are per minute.</p></div>
   </section>
   <section class="pane" id="pane-sel">
+    <button type="button" class="paneclose" data-act="deselect" aria-label="Deselect" title="Deselect (Esc)">${bi('close', 14)}</button>
     <div id="selected-details"></div>
     <p class="muted" id="selected-refund" hidden></p>
-    <div class="btnrow"><button class="pbtn danger" id="selected-demolish" data-act="demolish" hidden>Demolish</button><button class="pbtn" data-act="deselect">Close</button></div>
+    <div class="btnrow"><button class="pbtn danger" id="selected-demolish" data-act="demolish" hidden>Demolish</button></div>
   </section>
 </aside>
-<div id="minimap-card" hidden><div class="cap" id="mm-cap" title="Hide / show the minimap (M)"><span>REALM</span><span id="mm-hint">click to travel</span><i id="mm-full" title="Full-screen map (M)">${bi('fullscreen', 14)}</i><b id="mm-chev">▾</b></div><canvas id="minimap" width="190" height="190"></canvas></div>
+<div id="minimap-card" hidden><div class="cap" id="mm-cap" title="Hide / show the minimap"><span>REALM</span><span id="mm-hint">click to travel</span><b id="mm-chev">▾</b></div><canvas id="minimap" width="190" height="190"></canvas>
+  <div class="layers" role="group" aria-label="Map layers">
+    <button class="btn small" id="btn-map" title="Full-screen map (M)">${bi('map', 14)} Map</button>
+    <button class="btn small" id="btn-cov" aria-pressed="false" title="Show how far wells and towers reach, and what they leave unprotected (C)">${bi('coverage', 14)} Reach</button>
+    <button class="btn small" id="btn-res" aria-pressed="false" title="Show ore and stone deposits (V)">${bi('pick', 14)} Deposits</button>
+  </div></div>
 <div id="goals" hidden><div class="gh" id="goals-head" title="Collapse"><b>Goals</b><span id="goals-count"></span><b id="goals-chev">▾</b></div><ul id="goal-list"></ul></div>
 <button id="ledger-open" hidden title="Show the panel (H)">◂</button>
 <div class="overlay clear" id="worldmap" hidden><div class="mapwrap"><div class="maphead"><b>The Realm</b><span class="muted">Click anywhere to travel there · Esc to close</span><button class="btn" data-close="worldmap">${bi('close', 14)}</button></div><canvas id="bigmap" width="900" height="900"></canvas></div></div>
@@ -315,6 +331,14 @@ export class UI {
     <button type="button" class="tool-action" id="touch-cancel">Cancel</button>
   </div>
   <section id="battle-controls" class="tool-panel" aria-label="Battle controls" hidden>
+    <div id="battle" hidden>
+      <button type="button" id="battle-close" aria-label="Minimize to the notification bell" title="Minimize (the bell in the top bar brings it back)">×</button>
+      <div id="battle-text"></div>
+      <div id="battle-bribe" hidden>
+        <button type="button" id="battle-pay" class="pbtn">${bi('gold')} <span id="battle-pay-label"></span></button>
+        <span class="raid-greed" title="Higher greed makes future raids earlier, stronger and more expensive to pay off. It fades each day.">Greed <b id="battle-greed" aria-live="polite">0</b></span>
+      </div>
+    </div>
     <div id="battle-orders" class="tool-row">
       <label class="tool-select">
         <select id="battle-group" aria-label="Troop group"><option value="4">All troops</option><option value="0">Infantry</option><option value="1">Archers</option><option value="2">Knights</option><option value="3">Siege</option></select>
@@ -334,10 +358,10 @@ export class UI {
 </div>
 <div id="tooltip" hidden></div>
 
-<div class="overlay" id="loader" hidden>
+<div class="overlay" id="loader" data-static hidden>
   <div class="sheet loading"><h1>Flanders</h1><div class="tag" id="ltext">Preparing the world…</div><div class="lbar"><i id="lbar-i"></i></div><p class="muted" id="ltip"></p></div>
 </div>
-<div class="overlay" id="intro">
+<div class="overlay" id="intro" data-static>
   <div class="sheet">
     <h1>Flanders</h1>
     <div class="tag">One shared medieval world. Found a village, raise a castle, defend it — or march on your neighbours.</div>
@@ -347,43 +371,47 @@ export class UI {
     <div class="flagrow"><button type="button" class="flagmini" id="flag-mini" title="Design your flag"><canvas width="60" height="40"></canvas></button><div><b>Your flag</b><div class="muted">Click it to design your own.</div></div></div>
     <div class="btnrow"><button class="pbtn primary" id="found" title="Join the shared world: other players can arrive and meet you. Two computer villages are there too, but only you see them.">Multiplayer</button><button class="pbtn" id="found-pve" title="A game of your own, with nobody else: only the two computer villages grow beside yours, trade with you and raid you, under the same rules as a player.">Single player</button></div>
     <p class="muted">There is no game server: every player runs a copy of the game and your browsers connect to each other. Your village is saved in this browser and keeps growing while you are away.</p>
-    <div class="btnrow"><button class="pbtn" id="home-keys-btn">${bi('keys')} Controls and keybindings</button><button class="pbtn" id="home-display-btn">${bi('gear')} Display settings</button></div>
+    <div class="btnrow"><button class="pbtn" id="home-settings-btn">${bi('gear')} Settings and controls</button></div>
     <p class="muted tiny verline"><span id="home-version" title="The build you are running. The rules fingerprint to compare with other players is under The shared world, once you are in.">${esc(versionLabel())}</span> · <a href="#" id="home-notes-btn">Release notes</a></p>
   </div>
 </div>
-<div class="overlay" id="notes" hidden style="z-index:21">
-  <div class="sheet wide"><h2>Release notes</h2><p class="muted tiny">${esc(versionLabel())}</p><div id="notes-body">${renderNotes()}</div>
-    <div class="btnrow"><button class="pbtn primary" data-close="notes">Back</button></div></div>
-</div>
-<div class="overlay" id="flag-page" hidden style="z-index:21">
+<div class="overlay" id="flag-page" hidden>
   <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. Flag design is available here on the start screen.</p><div id="intro-flag"></div>
     <div class="btnrow"><button class="pbtn primary" id="flag-done">Done</button></div></div>
 </div>
-<div class="overlay clear" id="display" hidden>
-  <div class="sheet wide"><h2>Display settings</h2><p class="muted">Saved in this browser. These only change how the game looks on your screen, never the game itself.</p>
-    <div id="display-body"></div>
-    <div class="btnrow"><button class="pbtn primary" data-close="display">Done</button></div></div>
-</div>
-<div class="overlay" id="restart" hidden style="z-index:39">
-  <div class="sheet wide"></div>
-</div>
-<div class="overlay" id="confirm" hidden style="z-index:40">
-  <div class="sheet"><h2 id="confirm-title">Are you sure?</h2><p id="confirm-text"></p>
-    <div class="btnrow"><button class="pbtn" id="confirm-no">Cancel</button><button class="pbtn primary" id="confirm-yes">Yes</button></div></div>
-</div>
-<div class="overlay clear" id="help" hidden>
-  <div class="sheet">
-    <h2>How to rule</h2>
-    <div class="keytable" id="keytable"></div>
-    <p class="muted" id="help-mouse"></p>
-    <div class="btnrow"><button class="pbtn" id="keys-reset">Reset keys to default</button></div>
-    <p class="muted">Feed your people, then dig for stone, clay, iron and gold. Hunters keep the larder full. Build a barracks, train soldiers and man your towers: bandits will come, and fire spreads fast through thatch. Siege engines scar the land with craters; stone and wells keep fires small.</p>
-    <div class="btnrow"><button class="pbtn primary" data-close="help">Done</button></div>
-  </div>
-</div>
-<div class="overlay clear" id="cheats" hidden>
-  <div class="sheet">
-    <h2>Testing tools</h2>
+<div class="overlay clear" id="settings" hidden>
+  <div class="sheet wide settingsheet">
+    <h2>Settings</h2>
+    <div class="settabs" id="settabs" role="tablist" aria-label="Settings sections">
+      <button type="button" role="tab" data-sec="display">Display</button><button type="button" role="tab" data-sec="sound">Sound</button><button type="button" role="tab" data-sec="game">While away</button><button type="button" role="tab" data-sec="controls">Controls</button><button type="button" role="tab" data-sec="data">Data &amp; network</button><button type="button" role="tab" data-sec="about">About</button><button type="button" role="tab" data-sec="tests" id="settab-tests" hidden>Test tools</button>
+    </div>
+    <div class="setbody" id="setbody">
+      <div id="display-body"></div>
+      <section data-sec="sound" hidden>
+        <h3>Sound</h3>
+        <button class="btn" id="btn-sound" title="Sound on / off"><svg viewBox="0 0 16 16" id="snd-on"><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 5.2a4 4 0 0 1 0 5.6M12.8 3.6a6.3 6.3 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg><svg viewBox="0 0 16 16" id="snd-off" hidden><path d="M2 6h3l4-3v10l-4-3H2z"/><path d="M11 6l4 4M15 6l-4 4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg> <span class="ml">Sound on / off</span></button>
+        <h3>Screen</h3>
+        <button class="btn" id="btn-full" title="Full-screen mode (F11)">${bi('fullscreen')} Full screen</button>
+      </section>
+      <section data-sec="game" hidden>
+        <h3>When you step away</h3>
+        <p class="muted">This applies in a hidden tab or after two minutes without input. Closing the game saves and stops the village.</p>
+        <div class="btnrow wrap" role="group" aria-label="Away policy">
+          <button class="pbtn" data-steward="pause" aria-pressed="true">Pause village</button>
+          <button class="pbtn" data-steward="steward" aria-pressed="false">Let steward work</button>
+        </div>
+        <p class="muted" id="watch-policy"></p>
+      </section>
+      <section data-sec="controls" hidden>
+        <h3>Controls and keys</h3>
+        <div class="keytable" id="keytable"></div>
+        <p class="muted" id="help-mouse"></p>
+        <div class="btnrow"><button class="pbtn" id="keys-reset">Reset keys to default</button></div>
+        <p class="muted">Feed your people, then dig for stone, clay, iron and gold. Hunters keep the larder full. Build a barracks, train soldiers and man your towers: bandits will come, and fire spreads fast through thatch. Siege engines scar the land with craters; stone and wells keep fires small.</p>
+      </section>
+      <section data-sec="about" hidden><h3>Release notes</h3><p class="muted tiny">${esc(versionLabel())}</p><div id="notes-body">${renderNotes()}</div></section>
+      <section data-sec="tests" id="cheats" hidden>
+        <h3>Testing tools</h3>
     <p class="muted">For testing only. These actions are signed and sent to other players like any other command. They appear because you are running locally (or added <b>?cheats=1</b> to the address).</p>
     <div id="cheat-res" class="cheatgrid"></div>
     <div class="btnrow" style="flex-wrap:wrap">
@@ -395,32 +423,18 @@ export class UI {
     <h3>Repair</h3><div class="btnrow" style="flex-wrap:wrap"><button class="pbtn" data-ch="7,0,0">${bi('water')} Extinguish all fires</button><button class="pbtn" data-ch="8,0,0">${bi('raiseground')} Reset terrain</button><button class="pbtn danger" data-ch="101,0,0">${bi('reset')} Full reset (all villages)</button></div>
     <h3>Trouble</h3>
     <div class="btnrow" style="flex-wrap:wrap"><button class="pbtn danger" data-ch="4,90,200">Small raid</button><button class="pbtn danger" data-ch="4,200,700">Big raid</button><button class="pbtn danger" data-ch="5,-1,0">Burn selected building</button></div>
-    <div class="btnrow"><button class="pbtn primary" data-close="cheats">Close</button></div>
+      </section>
+    </div>
+    <div class="btnrow"><button class="pbtn primary" data-close="settings">Done</button></div>
   </div>
 </div>
-<div class="overlay clear" id="flow" hidden>
-  <div class="sheet flowsheet"><h2 id="flow-title"></h2><div id="flow-body"></div>
-    <div class="btnrow"><button class="pbtn" data-reserves>${bi('storehouse')} Set reserves</button><button class="pbtn primary" data-close="flow">Close</button></div></div>
+<div class="overlay" id="restart" hidden>
+  <div class="sheet wide"></div>
 </div>
-<div class="overlay clear" id="work" hidden>
-  <div class="sheet flowsheet worksheet"><h2 id="work-title">${icon('work', 26)} Work</h2><div id="work-body"></div>
-    <div class="btnrow"><button class="pbtn primary" data-close="work">Close</button></div></div>
+<div class="overlay" id="confirm" hidden>
+  <div class="sheet"><h2 id="confirm-title">Are you sure?</h2><p id="confirm-text"></p>
+    <div class="btnrow"><button class="pbtn" id="confirm-no">Cancel</button><button class="pbtn primary" id="confirm-yes">Yes</button></div></div>
 </div>
-<div class="overlay clear" id="winter" hidden>
-  <div class="sheet flowsheet"><h2 id="winter-title"></h2><div id="winter-body"></div>
-    <div class="btnrow"><button class="pbtn" data-reserves>${bi('storehouse')} Set reserves</button><button class="pbtn primary" data-close="winter">Close</button></div></div>
-</div>
-<div class="overlay clear" id="reserves" hidden>
-  <form class="sheet" id="reserve-form" aria-labelledby="reserve-title" role="dialog" aria-modal="true">
-    <h2 id="reserve-title">${icon('storehouse', 26)} Stock reserves</h2>
-    <p class="muted">Workplaces, ports and automatic repairs spend only the surplus. Villagers can still eat the grain and burn the wood for heat. You can spend either with a direct order.</p>
-    <div class="reserve-fields">
-      <label>${icon('grain', 18)} Grain<input id="reserve-grain" type="number" min="0" max="${RESERVE_MAX}" step="1" required></label>
-      <label>${icon('wood', 18)} Firewood<input id="reserve-wood" type="number" min="0" max="${RESERVE_MAX}" step="1" required></label>
-    </div>
-    <p class="muted" id="reserve-stock"></p>
-    <div class="btnrow"><button type="button" class="pbtn" data-close="reserves">Close</button><button id="reserve-save" class="pbtn primary">Save reserves</button></div>
-  </form></div>
 <div class="overlay clear" id="split" hidden>
   <form class="sheet" id="split-form" aria-labelledby="split-title" role="dialog" aria-modal="true">
     <h2 id="split-title">${icon('split', 26)} Split the army</h2>
@@ -429,46 +443,6 @@ export class UI {
     <p class="muted" id="split-sum"></p>
     <div class="btnrow"><button type="button" class="pbtn" data-close="split">Cancel</button><button id="split-go" class="pbtn primary">Split off</button></div>
   </form>
-</div>
-<div class="overlay clear" id="villagers" hidden>
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="villagers-title">
-    <h2 id="villagers-title">${icon('pop', 26)} Villagers</h2>
-    <label for="villager-search">Search by name or workplace</label><input id="villager-search" type="search" autocomplete="off">
-    <p class="muted" id="villagers-note"></p>
-    <ul id="villagers-list" class="villagers-list"></ul>
-    <div class="btnrow"><button class="pbtn primary" data-close="villagers">Close</button></div>
-  </div>
-</div>
-<div class="overlay clear" id="steward" hidden>
-  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="steward-title">
-    <h2 id="steward-title" tabindex="-1">${bi('townhall', 26)} Village steward</h2>
-    <p id="watch-report" role="status" hidden></p>
-    <div>
-      <h3>When you step away</h3>
-      <p class="muted">This applies in a hidden tab or after two minutes without input. Closing the game saves and stops the village.</p>
-      <div class="btnrow wrap" role="group" aria-label="Away policy">
-        <button class="pbtn" data-steward="pause" aria-pressed="true">Pause village</button>
-        <button class="pbtn" data-steward="steward" aria-pressed="false">Let steward work</button>
-      </div>
-      <p class="muted" id="watch-policy"></p>
-    </div>
-    <div>
-      <h3>Village report</h3>
-      <p id="watch-stores"></p>
-      <ul class="watch-risks" id="watch-risks" hidden></ul>
-      <div class="btnrow wrap" aria-label="Recovery">
-        <button class="pbtn" data-steward="food">${bi('grain')} Food supply</button>
-        <button class="pbtn" data-steward="wood">${bi('cold')} Winter supplies</button>
-        <button class="pbtn" data-steward="work">${bi('work')} Workers</button>
-        <button class="pbtn" data-steward="market" hidden>${bi('gold')} Visit market</button>
-        <button class="pbtn" data-steward="ruins" hidden>${bi('tools')} Find a ruin</button>
-      </div>
-    </div>
-    <div class="btnrow">
-      <button class="pbtn" id="watch-close">Close</button>
-      <button class="pbtn primary" data-steward="resume" hidden>Resume village</button>
-    </div>
-  </div>
 </div>
 <div class="overlay clear" id="mp" hidden>
   <div class="sheet">
@@ -493,8 +467,8 @@ export class UI {
     const mini = $('flag-mini').querySelector('canvas') as HTMLCanvasElement; paintFlag(mini, loadFlag());
     mountFlagDesigner($('intro-flag'), loadFlag(), f => { saveFlag(f); paintFlag(mini, f); });
     $('flag-mini').onclick = () => { $('flag-page').hidden = false; }; $('flag-done').onclick = () => { $('flag-page').hidden = true; };
-    $('home-notes-btn').onclick = e => { e.preventDefault(); this.modal('notes', true); };
-    $('home-keys-btn').onclick = () => this.modal('help', true); $('home-display-btn').onclick = () => this.modal('display', true);   // separate pages, also before the game starts
+    $('home-notes-btn').onclick = e => { e.preventDefault(); this.openSettings('about'); };
+    $('home-settings-btn').onclick = () => this.openSettings('display');   // also before the game starts
     // rebinding a key must work on the start page too, before the game's own key handler exists
     document.addEventListener('keydown', e => { this.captureKey(e); }, true);
     { const h = () => { $('help-mouse').innerHTML = controlsHtml() + ' Number keys <b>1-9</b> pick a building on any keyboard layout.'; }; h(); keys.onChange(h); }
@@ -524,53 +498,36 @@ export class UI {
     $('army-embassy-go').onclick = () => this.h.act('embassy:open');
     $('military-upgrades').onclick = e => { const id = (e.target as HTMLElement).closest('button')?.dataset.research; if (id !== undefined) this.h.research(Number(id)); };
     $('speed').onclick = e => { const button = (e.target as Element).closest<HTMLButtonElement>('button[data-s]'); if (button) this.h.speed(Number(button.dataset.s)); };
-    { const menu = $('menu'), btn = $('btn-menu'), close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
-      btn.onclick = e => { e.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute('aria-expanded', String(!menu.hidden)); };
-      menu.addEventListener('click', e => { if ((e.target as HTMLElement).closest('.btn') && !(e.target as HTMLElement).closest('#btn-sound,#btn-res')) close(); });   // choosing something closes the menu (sound and deposits are toggles: it stays)
-      document.addEventListener('pointerdown', e => { if (!menu.hidden && !(e.target as HTMLElement).closest('.menuwrap')) close(); });
-      addEventListener('keydown', e => { if (e.key === 'Escape') close(); }); }
     $('btn-res').onclick = () => this.h.toggleResources();
     $('btn-cov').onclick = () => this.h.toggleCoverage();
     $('btn-sound').onclick = () => this.h.toggleMute();
     this.initTitleTips();
-    $('sub').onclick = () => { this.modal('winter', true); if (this.lastHud) this.renderWinter(this.lastHud); };
-    $('btn-help').onclick = () => this.modal('help', true);
+    $('sub').onclick = () => this.openWinter();
+    $('btn-settings').onclick = () => this.openSettings(this.lastSettingsSection);
     const restart = mountRestart($('restart'), { info: () => this.h.restartInfo(), run: () => this.h.restartRun(), restore: () => this.h.restartRestore(), backup: () => downloadBackup(), toast: (t, k) => this.toast(t, k) });
-    $('btn-display').onclick = () => { this.modal('display', true); void restart.drawSection($('restart-section')); };
-    mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
+    this.restartSection = () => { void restart.drawSection($('restart-section')); };
+    this.initSettingsTabs();
+    mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('settings', false); this.h.watch(''); }, text => this.confirm(text, 'Replace', 'Restore this backup?'));
     $('btn-mp').onclick = () => this.modal('mp', true);
-    $('btn-steward').onclick = () => this.h.steward('open');
-    const setBattleMin = (min: boolean) => { this.battleMin = min; $('battle').hidden = min || $('btn-bell').hidden; $('btn-bell').classList.toggle('alert', min); $('btn-bell').setAttribute('aria-pressed', String(!min)); };
+    const setBattleMin = (min: boolean) => { this.battleMin = min; $('battle').hidden = min || $('btn-bell').hidden; this.syncBattleBar(); $('btn-bell').classList.toggle('alert', min); $('btn-bell').setAttribute('aria-pressed', String(!min)); };
     $('btn-home').onclick = () => this.h.goHome();
     $('battle-close').onclick = () => setBattleMin(true);
     $('btn-bell').onclick = () => setBattleMin(!this.battleMin);
     document.querySelectorAll<HTMLButtonElement>('[data-steward]').forEach(button => {
       button.onclick = () => this.h.steward(button.dataset.steward as StewardAction);
     });
-    const closeWatch = () => { this.modal('steward', false); $('btn-steward').focus(); };
-    $('watch-close').onclick = closeWatch;
-    $('steward').onkeydown = e => {
-      if (e.key === 'Escape') { e.stopPropagation(); closeWatch(); }
-    };
     $('v-work').onclick = () => this.openWork();
-    $('v-pop').onclick = $('find-villager').onclick = () => this.openVillagers();
+    $('v-pop').onclick = () => this.openVillagers();
     $('follow-stop').onclick = () => this.h.followVillager(null);
     $('villager-search').oninput = () => this.renderVillagers();
     $('villagers-list').onclick = e => {
       const btn = (e.target as HTMLElement).closest<HTMLElement>('[data-follow]');
-      if (btn && this.h.followVillager(Number(btn.dataset.follow))) this.modal('villagers', false);
+      if (btn) this.h.followVillager(Number(btn.dataset.follow));
     };
-    document.querySelectorAll<HTMLButtonElement>('[data-reserves]').forEach(btn => {
-      btn.onclick = () => {
-        const from = btn.closest<HTMLElement>('.overlay');
-        if (from) this.modal(from.id, false);
-        this.openReserves();
-      };
-    });
     $<HTMLFormElement>('reserve-form').onsubmit = e => {
       e.preventDefault();
       const grain = $<HTMLInputElement>('reserve-grain').valueAsNumber, wood = $<HTMLInputElement>('reserve-wood').valueAsNumber;
-      if (this.h.setReserves(grain, wood)) this.modal('reserves', false);
+      if (this.h.setReserves(grain, wood)) this.toast('Reserves saved.', 'info');
     };
     $<HTMLFormElement>('split-form').onsubmit = e => {
       e.preventDefault();
@@ -579,9 +536,6 @@ export class UI {
       if (go(take)) { this.splitDone = null; this.modal('split', false); }
     };
     $('split-rows').oninput = () => this.splitSum();
-    for (const id of ['reserves', 'villagers', 'split']) $(id).onkeydown = e => {
-      if (e.key === 'Escape') { e.stopPropagation(); this.modal(id, false); }
-    };
     $('work-body').onclick = e => this.workClick(e); $('work-body').onchange = e => this.workChange(e);
     for (const id of ['work-body', 'pane-sel']) $(id).addEventListener('pointerdown', e => { if ((e.target as HTMLElement).matches?.('input[type=range]')) this.sliding = true; });
     addEventListener('pointerup', () => { setTimeout(() => (this.sliding = false), 0); });
@@ -590,14 +544,14 @@ export class UI {
     $('flow-body').onclick = e => {   // "Show on map": close the breakdown and look at the next building of that kind
       const b = (e.target as HTMLElement).closest<HTMLElement>('[data-show]'); if (!b) return;
       const [res, sign, kind] = b.dataset.show!.split(':').map(Number);
-      this.modal('flow', false); this.h.stockGo([res], sign, kind);
+      this.h.stockGo([res], sign, kind);
     };
     document.querySelectorAll<HTMLElement>('[data-close]').forEach(b => b.onclick = () => this.modal(b.dataset.close!, false));
     $('mp-copy').onclick = () => { this.h.copyLink(); $('mp-copy').innerHTML = `${bi('check')} Copied`; setTimeout(() => ($('mp-copy').innerHTML = `${bi('copy')} Copy invite link`), 1800); };
     { const up = (e: Event) => this.h.upgradeHover(!!(e.target as HTMLElement).closest('[data-act="upgrade"]'));   // hovering Upgrade outlines the bigger building
       $('pane-sel').onmouseover = up; $('pane-sel').onmouseleave = () => this.h.upgradeHover(false); }
     $('pane-sel').onclick = e => { const a = (e.target as HTMLElement).closest<HTMLElement>('[data-act]'); if (a && !(a as HTMLButtonElement).disabled) this.h.act(a.dataset.act!); };
-    $('btn-map').onclick = () => this.toggleMap(); $('btn-full').onclick = () => toggleFullscreen(); $('mm-full').onclick = e => { e.stopPropagation(); this.toggleMap(); };
+    $('btn-map').onclick = () => this.toggleMap(); $('btn-full').onclick = () => toggleFullscreen();
     $('bigmap').onclick = e => { const r = $('bigmap').getBoundingClientRect(); this.h.minimapClick(((e.clientX - r.left) / r.width - 0.5) * HALF * 2, ((e.clientY - r.top) / r.height - 0.5) * HALF * 2); this.toggleMap(false); };
     // the browser's own context menu never shows: right-click belongs to the game
     addEventListener('contextmenu', e => e.preventDefault(), true);
@@ -615,12 +569,7 @@ export class UI {
       const ally = (e.target as HTMLElement).closest<HTMLElement>('[data-ally]');
       if (ally) { const key = ally.dataset.key!, act = ally.dataset.ally; if (act === 'ask') this.h.askHelp(key); else if (act === 'recall') this.h.recallAid(key); else if (act === 'guests') this.h.guestsHome(key); return; }
       const wb = (e.target as HTMLElement).closest<HTMLElement>('[data-watch]'); if (wb) { this.modal('mp', false); this.h.watch(wb.dataset.watch!); return; } const b = (e.target as HTMLElement).closest<HTMLElement>('[data-peer]'); if (b) { this.h.focusPeer(b.dataset.peer!); this.modal('mp', false); } };
-    addEventListener('keydown', e => {
-      if ((e.target as HTMLElement)?.matches?.('input,textarea')) return;
-      if (e.key === 'Escape') { document.querySelectorAll('.overlay.clear').forEach(o => ((o as HTMLElement).hidden = true)); }
-    });
-    // a click on the dimmed backdrop (outside the sheet) closes any pop-up
-    document.querySelectorAll<HTMLElement>('.overlay.clear').forEach(o => o.addEventListener('pointerdown', e => { if (e.target === o) o.hidden = true; }));
+    modals.mount();   // Esc, the backdrop, focus and stacking of every pop-up page: see ui/modal.ts
   }
 
   // ---- loading screen ----
@@ -652,8 +601,8 @@ export class UI {
   toggleLedger() { if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); return; } this.pref.ledger = !this.pref.ledger; this.savePrefs(); }
   toggleMinimap() { this.pref.map = !this.pref.map; this.savePrefs(); }
   get bigmap() { return $('bigmap') as HTMLCanvasElement; }
-  mapOpen() { return !$('worldmap').hidden; }
-  toggleMap(show = $('worldmap').hidden) { $('worldmap').hidden = !show; }
+  mapOpen() { return modals.isOpen('worldmap'); }
+  toggleMap(show = !modals.isOpen('worldmap')) { this.modal('worldmap', show); }
 
   /** The in-game right-click menu. `items` with no `run` are headings; '-' is a divider. */
   ctxMenu(x: number, y: number, title: string, items: ({ label: string; sub?: string; tip?: string; disabled?: boolean; run?: () => void } | '-')[]) {
@@ -740,8 +689,7 @@ export class UI {
 
   private buildCheats() {
     const enabled = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || new URLSearchParams(location.search).has('cheats');
-    $('btn-cheat').hidden = !enabled; if (!enabled) return;
-    $('btn-cheat').onclick = () => this.modal('cheats', true);
+    $('settab-tests').hidden = !enabled; if (!enabled) return;
     $('cheat-res').innerHTML = RES.map((r, i) => `<span>${resIcon(i)} ${r.name}</span><button class="pbtn" data-ch="0,${i},100">+100</button><button class="pbtn" data-ch="0,${i},1000">+1000</button>`).join('');
     $('cheat-army').innerHTML = units.slice(0, 6).map(u => `<button class="pbtn" data-ch="2,${u.id},10">${unitIcon(u.id, 16)} +10 ${u.name}</button>`).join('');
     $('cheats').onclick = e => { const target = e.target as HTMLElement; const flat = target.closest<HTMLElement>('[data-flat-radius]'); if (flat) { const radius = Number(flat.dataset.flatRadius); const height = Number(($('flat-height') as HTMLInputElement).value); if (Number.isFinite(height) && height >= 0 && height <= 24) this.h.cheat(102, radius, Math.round(height * 10)); return; } const b = target.closest<HTMLElement>('[data-ch]'); if (!b) return; const [a, x, y] = b.dataset.ch!.split(',').map(Number); this.h.cheat(a, x, y); };
@@ -749,24 +697,61 @@ export class UI {
 
   /** Show the rules fingerprint (the hash other players compare) next to the build in The shared world and in the home page tooltip. */
   setRules(fp: string) { const t = `${versionLabel()} · rules ${fp}`; $('mp-build').textContent = t; $('home-version').title = `Rules fingerprint ${fp}: players with the same one play by the same rules.`; }
-  modal(id: string, show: boolean) { $(id).hidden = !show; }
-
-  openSteward() {
-    this.modal('steward', true);
-    $('steward-title').focus({ preventScroll: true });
+  private lastSettingsSection = 'display';
+  private restartSection = () => {};
+  /** The one settings page: Display, Sound, Controls, Data and network, About (and the test tools when they are on). */
+  openSettings(section = 'display') {
+    this.showSettingsSection(section); this.modal('settings', true);
+    if (!$('topbar').hidden) this.restartSection();   // the restart section needs a village: not on the start page
   }
-  stewardOpen() { return !$('steward').hidden; }
+  private showSettingsSection(section: string) {
+    const tabs = [...document.querySelectorAll<HTMLElement>('#settabs [data-sec]')];
+    if (!tabs.some(t => t.dataset.sec === section && !t.hidden)) section = 'display';
+    this.lastSettingsSection = section;
+    tabs.forEach(t => { const on = t.dataset.sec === section; t.setAttribute('aria-selected', String(on)); t.classList.toggle('on', on); t.tabIndex = on ? 0 : -1; });
+    document.querySelectorAll<HTMLElement>('#setbody [data-sec]').forEach(el => { el.hidden = el.dataset.sec !== section; });
+  }
+  private initSettingsTabs() {
+    const bar = $('settabs');
+    bar.onclick = e => { const t = (e.target as HTMLElement).closest<HTMLElement>('[data-sec]'); if (t) this.showSettingsSection(t.dataset.sec!); };
+    bar.onkeydown = e => {   // arrow keys move between the tabs
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      const tabs = [...bar.querySelectorAll<HTMLElement>('[data-sec]')].filter(t => !t.hidden), i = tabs.indexOf(document.activeElement as HTMLElement); if (i < 0) return;
+      const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length]; next.focus(); this.showSettingsSection(next.dataset.sec!); e.preventDefault();
+    };
+    this.showSettingsSection('display');
+  }
+  modal(id: string, show: boolean) { if (show) modals.open(id); else modals.close(id); }
+
+  /** Show a section of the side panel: open the panel if it is folded away, go to its tab, unfold the section and bring it into view. */
+  private showSection(tab: string, id: string, focus?: string) {
+    if (this.pref.ledger) { this.pref.ledger = false; this.savePrefs(); }
+    this.setTab(tab);
+    const el = document.getElementById(id) as HTMLDetailsElement | null; if (!el) return;
+    if (el instanceof HTMLDetailsElement) el.open = true;
+    el.scrollIntoView({ block: 'nearest' }); if (focus) $(focus).focus({ preventScroll: true });
+  }
+  /** True while a section is unfolded and on screen: the game only feeds it numbers then. */
+  private sectionVisible(id: string) { const el = document.getElementById(id) as HTMLDetailsElement | null; return !!el && el.open && el.offsetParent !== null; }
+  /** The steward's report and recovery buttons, at the top of the Village tab. */
+  openSteward() { this.showSection('village', 'steward-status'); }
+  stewardOpen() { return this.tab === 'village' && !!$('steward-status').offsetParent; }
+  openWinter() { this.showSection('village', 'sec-winter'); if (this.lastHud) this.renderWinter(this.lastHud); }
   setSteward(info: { mode: StewardMode; report: WatchReport | null; paused: boolean; playerBattle: boolean; status?: ArrayLike<number>; market: boolean }) {
     const { mode, report, paused, playerBattle, status, market } = info;
-    $('watch-label').textContent = report && !playerBattle ? 'Village paused' : 'Steward';
-    $('btn-steward').classList.toggle('on', !!report && !playerBattle);
-    if (!status) return;
-    const box = $('steward');
-    for (const modeButton of box.querySelectorAll<HTMLButtonElement>('[data-steward="pause"], [data-steward="steward"]')) {
+    // the Village tab carries a mark while the village is paused with a report waiting
+    const waiting = !!report && !playerBattle;
+    document.querySelector<HTMLElement>('#tabs [data-t="village"]')?.classList.toggle('alert', waiting);
+    for (const modeButton of document.querySelectorAll<HTMLButtonElement>('[data-steward="pause"], [data-steward="steward"]')) {
       const active = modeButton.dataset.steward === mode;
       modeButton.classList.toggle('on', active);
       modeButton.setAttribute('aria-pressed', String(active));
     }
+    $('watch-policy').textContent = mode === 'pause'
+      ? 'The village waits for your return. Player battles already underway finish at normal speed.'
+      : 'Routine work continues at normal speed for up to one village day. The steward stops for trouble or decisions.';
+    if (!status) return;
+    const box = $('steward-status');
     const hours = (report?.ticks ?? 0) * 24 / DAY_TICKS;
     const summary = report?.closed ? 'Welcome back. Your village is waiting at its last saved moment.'
       : hours ? `The steward oversaw ${hours >= 1 ? `${Math.round(hours)} village hours` : 'a short shift'}.`
@@ -776,9 +761,6 @@ export class UI {
     const message = $('watch-report');
     message.hidden = !reportLine;
     if (message.textContent !== reportLine) message.textContent = reportLine;
-    $('watch-policy').textContent = mode === 'pause'
-      ? 'The village waits for your return. Player battles already underway finish at normal speed.'
-      : 'Routine work continues at normal speed for up to one village day. The steward stops for trouble or decisions.';
     $('watch-stores').textContent = `${status[1]} meals in stores · ${status[2]} firewood · ${status[3]} ${status[3] === 1 ? 'ruin' : 'ruins'}`;
     const risks = stewardRisks(status[0]).filter(r => r !== report?.stop && (!playerBattle || r !== 'battle'));
     $('watch-risks').hidden = risks.length === 0;
@@ -792,11 +774,14 @@ export class UI {
   /** The game's own yes/no question (in place of the browser's confirm box). Resolves true on yes; Esc, the backdrop and Cancel mean no. */
   confirm(text: string, yes = 'Yes', title = 'Are you sure?', no = 'Cancel'): Promise<boolean> {
     return new Promise(resolve => {
-      const box = $('confirm'); $('confirm-title').textContent = title; $('confirm-text').textContent = text; $('confirm-yes').textContent = yes; $('confirm-no').textContent = no; box.hidden = false;
-      const done = (v: boolean) => { box.hidden = true; box.removeEventListener('pointerdown', back); removeEventListener('keydown', key, true); resolve(v); };
-      const back = (e: Event) => { if (e.target === box) done(false); }, key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } else if (e.key === 'Enter') { e.stopPropagation(); done(true); } };
-      $('confirm-yes').onclick = () => done(true); $('confirm-no').onclick = () => done(false); box.addEventListener('pointerdown', back); addEventListener('keydown', key, true);
-      ($('confirm-yes') as HTMLButtonElement).focus();
+      $('confirm-title').textContent = title; $('confirm-text').textContent = text; $('confirm-yes').textContent = yes; $('confirm-no').textContent = no;
+      let answer = false;
+      modals.guard('confirm', { afterClose: () => { modals.guard('confirm', {}); resolve(answer); } });   // Esc, the backdrop and Cancel all mean no
+      const done = (v: boolean) => { answer = v; modals.close('confirm'); };
+      $('confirm-yes').onclick = () => done(true); $('confirm-no').onclick = () => done(false);
+      const key = (e: KeyboardEvent) => { if (e.key === 'Enter' && e.target === $('confirm-no')) return; if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); done(true); } };
+      $('confirm').onkeydown = key;
+      modals.open('confirm'); ($('confirm-yes') as HTMLButtonElement).focus();
     });
   }
 
@@ -971,17 +956,17 @@ export class UI {
   private sliding = false;
   private workFilter: Filter = 'all'; private workSort: Sort = 'kind';
   /** True while the work overview is showing (the game then hands it the workers every update). */
-  get workOpen() { return !$('work').hidden; }
-  openWork() { this.modal('work', true); this.h.act('wk:refresh'); }
+  get workOpen() { return this.sectionVisible('sec-work'); }
+  openWork() { this.showSection('village', 'sec-work'); this.h.act('wk:refresh'); }
   private workClick(e: Event) {
     const t = e.target as HTMLElement;
     const action = t.closest<HTMLButtonElement>('[data-act]');
-    if (action) { this.modal('work', false); this.h.act(action.dataset.act!); return; }
+    if (action) { this.h.act(action.dataset.act!); return; }
     const f = t.closest<HTMLElement>('[data-wf]'); if (f) { this.workFilter = f.dataset.wf as Filter; if (this.lastHud) this.renderWork(this.lastHud); return; }
     const s = t.closest<HTMLElement>('[data-ws]'); if (s) { this.workSort = s.dataset.ws as Sort; if (this.lastHud) this.renderWork(this.lastHud); return; }
     const a = t.closest<HTMLButtonElement>('[data-wa]'); if (a && !a.disabled) { this.h.workAll(a.dataset.wa!); return; }
     const b = t.closest<HTMLButtonElement>('[data-wset]'); if (b && !b.disabled) { const [i, n] = b.dataset.wset!.split(':').map(Number); this.h.setWorkers(i, n); return; }
-    const g = t.closest<HTMLElement>('[data-wgo]'); if (g && !t.closest('button, input')) { this.modal('work', false); this.h.goBuilding(Number(g.dataset.wgo)); }
+    const g = t.closest<HTMLElement>('[data-wgo]'); if (g && !t.closest('button, input')) this.h.goBuilding(Number(g.dataset.wgo));
   }
   private workChange(e: Event) { const t = e.target as HTMLInputElement; if (t.dataset.wslide !== undefined) this.h.setWorkers(Number(t.dataset.wslide), Number(t.value)); }
   /** The work overview: every workplace by kind with who works there, the totals of the village's hands, and the controls to assign them. */
@@ -1022,8 +1007,7 @@ export class UI {
   openVillagers(workplace: number | null = null) {
     this.workplaceFilter = workplace;
     $<HTMLInputElement>('villager-search').value = '';
-    this.modal('villagers', true); this.renderVillagers();
-    $('villager-search').focus();
+    this.showSection('village', 'sec-villagers', 'villager-search'); this.renderVillagers();
   }
   private renderVillagers() {
     const { rows, sheltering } = this.h.villagers();
@@ -1078,8 +1062,7 @@ export class UI {
     if (!h) return;
     $<HTMLInputElement>('reserve-grain').value = String(h.reserves[0]);
     $<HTMLInputElement>('reserve-wood').value = String(h.reserves[1]);
-    this.modal('reserves', true); this.renderReserveStock(h);
-    $('reserve-grain').focus();
+    this.showSection('stock', 'sec-reserves', 'reserve-grain'); this.renderReserveStock(h);
   }
   private renderReserveStock(h: Hud) {
     $('reserve-stock').textContent = `In store now · ${h.stocks[10]} grain · ${h.stocks[0]} wood. Set a reserve to zero to turn off its limit.`;
@@ -1087,7 +1070,7 @@ export class UI {
     for (const id of ['reserve-grain', 'reserve-wood']) $<HTMLInputElement>(id).disabled = !h.canSetReserves;
   }
   /** The breakdown of one resource: what makes it and what uses it, per day (from the core's ledger of the last day). */
-  openFlow(i: number) { this.flowOpen = i; this.modal('flow', true); if (this.lastHud) this.renderFlow(this.lastHud); }
+  openFlow(i: number) { this.flowOpen = i; this.showSection('stock', 'sec-flow'); if (this.lastHud) this.renderFlow(this.lastHud); }
   private flowTables(h: Hud, i: number) {
     const rows = (list: Row[], sign: string) => list.length ? list.map(r => {
       const k = /^b\d+$/.test(r.key) ? Number(r.key.slice(1)) : -1;
@@ -1156,12 +1139,12 @@ export class UI {
     if (h.winter) {
       const wn = parseWinter(h.winter), si = Math.floor((day - 1) / 10) % 4; $('sub').title = winterTip(wn, si);
       const key = `${Math.floor((day - 1) / 40)}:${day}`; if (key !== this.warnedDay) { this.warnedDay = key; const m = winterWarning(wn, si, (day - 1) % 10 + 1); if (m) this.toast(m.text, m.tone, 'cold'); }
-      if (!$('winter').hidden) this.renderWinter(h);
+      if (this.sectionVisible('sec-winter')) this.renderWinter(h);
     }
-    this.lastHud = h; if (this.flowOpen >= 0 && !$('flow').hidden) this.renderFlow(h);
-    if (!$('reserves').hidden) this.renderReserveStock(h);
-    if (!$('villagers').hidden) this.renderVillagers();
-    if (!$('work').hidden) this.renderWork(h);
+    this.lastHud = h; if (this.flowOpen !== CLOSED && this.sectionVisible('sec-flow')) this.renderFlow(h);
+    if (this.sectionVisible('sec-reserves')) this.renderReserveStock(h);
+    if (this.sectionVisible('sec-villagers')) this.renderVillagers();
+    if (this.sectionVisible('sec-work')) this.renderWork(h);
     if (h.food) {
       const t = foodTotals(h.stocks, h.rates, h.food), p = this.pills[RES.length], left = daysLeft(t.meals, t.rate);
       p.querySelector('b')!.textContent = String(Math.floor(t.meals));
@@ -1273,6 +1256,7 @@ export class UI {
     const b = $('battle');
     if (!text) this.battleMin = false;
     b.hidden = !text || this.battleMin;
+    this.syncBattleBar();
     const bell = $('btn-bell'); bell.hidden = !text; bell.classList.toggle('alert', !!text && this.battleMin); bell.setAttribute('aria-pressed', String(!!text && !this.battleMin));
     $('battle-bribe').hidden = !bribe || !text;
     const pay = $<HTMLButtonElement>('battle-pay');
@@ -1295,8 +1279,11 @@ export class UI {
     b.classList.toggle('clickable', !!onClick); body.onclick = onClick ?? null; body.title = onClick ? 'Click to look at the attackers' : '';
   }
 
+  private battleHas = false;
+  /** The battle bar (headline, orders, actions) shows while any of its parts has something to say. */
+  private syncBattleBar() { $('battle-controls').hidden = $('battle').hidden && !this.battleHas; }
   battleControls(actions: BattleAction[] = [], order?: (group: number, mode: number) => void, issued?: Uint8Array) {
-    $('battle-controls').hidden = !order && actions.length === 0;
+    this.battleHas = !!order || actions.length > 0; this.syncBattleBar();
     const bar = $('battle-acts'), orders = $('battle-orders'), group = $('battle-group') as HTMLSelectElement;
     orders.hidden = !order;
     const current = $('battle-current-orders');

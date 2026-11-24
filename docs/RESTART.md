@@ -1,6 +1,6 @@
 # Restart: starting a village again from nothing
 
-The player can pull their whole village down and begin again (Display settings, bottom of the panel: "Restart village…"). This note says what a restart is, what it resets, how
+The player can pull their whole village down and begin again (Settings → Data & network, bottom of the page: "Restart village…"). This note says what a restart is, what it resets, how
 the other players' copies follow it, and what protects it. Code: `World::restart` (`crates/game-core/src/lib.rs`), `web/src/restart.ts` (the rules: epochs, archive, the dialog's
 state machine), `web/src/ui/restartui.ts` (the dialog), `restartVillage` / `restoreArchivedVillage` / `onRivalRestart` in `web/src/main.ts`, epoch handling in `net/validate.ts`,
 `net/sync.ts`, `net/p2p.ts` and `checkpoint.ts`.
@@ -87,7 +87,7 @@ apply. A village never restarted has no epoch in its checkpoints and keeps resum
 ## The archive and bringing it back
 
 The archive is the whole signed log of the life that ended, in IndexedDB next to the checkpoints, **once** (the next restart replaces it). The dialog offers "Download a backup of this village first"
-(the existing backup file, which holds the save and the key), and Display settings shows "Bring back the old village" when an archive exists.
+(the existing backup file, which holds the save and the key), and Settings → Data & network shows "Bring back the old village" when an archive exists.
 
 Bringing it back (`restoreArchivedVillage`) is a restart again, to epoch k+1, whose commands are the archive's: `rebaseLog` makes `restart`, then every archived command with `n` counted again and
 `e` = k+1, and the owner **signs them all again** with the same key. The new world is built from them behind the scenes first (so a damaged archive never replaces the village in play), the active

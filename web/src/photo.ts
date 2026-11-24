@@ -1,5 +1,5 @@
 import { icon } from './ui/icons';
-// Photo mode: hides the interface so you can fly the camera and save a picture of your village. F9 (or the camera button in Display settings) toggles it.
+// Photo mode: hides the interface so you can fly the camera and save a picture of your village. F9 (or the camera button in Settings → Display) toggles it.
 const STYLE_ID = 'photo-style';
 const CSS = `
 body.photo-mode #app > *:not(#stage) { display: none !important; }
