@@ -1,6 +1,7 @@
 // The "Start the village again" dialog: what will be lost, what stays, a backup button, and a phrase to type. The rules are in restart.ts (RestartFlow); this only draws them.
 import { RestartFlow, lossLines, KEPT_LINES, CONFIRM_WORD, ARM_MS, type Facts } from '../restart';
 import { icon } from './icons';
+import { modals } from './modal';
 
 export interface RestartInfo {
   facts: Facts; name: string;
@@ -25,7 +26,9 @@ export function mountRestart(overlay: HTMLElement, h: RestartHooks) {
   const sheet = overlay.querySelector<HTMLElement>('.sheet')!;
   let flow = new RestartFlow('');
   let timer = 0;
-  const close = () => { clearInterval(timer); flow.cancel(); if (flow.state === 'closed') overlay.hidden = true; };
+  const close = () => { modals.close(overlay.id); };
+  // closing means cancelling the flow first; while a restart is running it cannot be dismissed
+  modals.guard(overlay.id, { beforeClose: () => { flow.cancel(); if (flow.state !== 'closed') return false; clearInterval(timer); } });
 
   function draw(info: RestartInfo) {
     const now = Date.now();
@@ -57,7 +60,7 @@ export function mountRestart(overlay: HTMLElement, h: RestartHooks) {
       yes.disabled = true; yes.textContent = 'Starting again…'; type.disabled = true;
       const err = await h.run();
       if (err) { flow.fail(err); draw(info); return; }
-      flow.done(); clearInterval(timer); overlay.hidden = true;
+      flow.done(); clearInterval(timer); modals.close(overlay.id);
     };
     clearInterval(timer);
     timer = window.setInterval(() => { if (!overlay.hidden) refresh(); }, 250);
@@ -68,10 +71,8 @@ export function mountRestart(overlay: HTMLElement, h: RestartHooks) {
     const info = await h.info();
     flow = new RestartFlow(info.name);
     flow.open({ ...info.facts, now: Date.now() });
-    overlay.hidden = false; draw(info);
+    modals.open(overlay.id); draw(info);
   }
-  overlay.addEventListener('pointerdown', e => { if (e.target === overlay) close(); });
-  addEventListener('keydown', e => { if (e.key === 'Escape' && !overlay.hidden) { e.stopPropagation(); close(); } }, true);
 
   /** The part of the settings panel: a heading, one sentence and a button (and a second one when an archived village waits). */
   async function drawSection(root: HTMLElement) {

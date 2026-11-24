@@ -150,7 +150,7 @@ table.res td.r { text-align: right; }
 .toast { background: #2a2017f2; border: 1px solid #6b5536; border-left: 4px solid var(--gold-soft); color: var(--paper); padding: 8px 12px; border-radius: 3px; font-family: var(--f-old); font-size: 15px; box-shadow: 0 6px 20px #0008; animation: tin .35s ease-out; }
 .toast.good { border-left-color: #7fc062; } .toast.bad { border-left-color: #d9604e; }
 @keyframes tin { from { transform: translateX(-20px); opacity: 0; } }
-#tool-dock { position: fixed; z-index: 50; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; width: max-content; max-width: calc(100vw - 24px); pointer-events: none; }
+#tool-dock { position: fixed; z-index: 15; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; width: max-content; max-width: calc(100vw - 24px); pointer-events: none; }
 #tool-dock:not(:has(.tool-panel:not([hidden]))) { left: calc(50% - 187px); z-index: 4; }
 .tool-panel { max-width: 100%; display: flex; gap: 5px; background: #1d150de6; border: 1px solid #c9a24a; border-radius: 8px; padding: 5px 8px; box-shadow: 0 4px 16px #0008; color: #f1e4c3; font: 12px system-ui, sans-serif; pointer-events: auto; }
 .tool-row { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 5px; }
@@ -579,3 +579,8 @@ body.cmd-mode #cs-sel { display: none; }
 .gains td:nth-child(3) { opacity: .6; padding: 2px 6px; }
 .gains td:last-child { color: #6bbf6b; }
 #split-rows .mrow input { width: 84px; margin-left: auto; }
+
+/* ---------- stacking order (one scale for everything that floats; pop-ups are stacked by ui/modal.ts from 21 up) ---------- */
+#choicebox { position: fixed; left: 50%; top: 90px; transform: translateX(-50%); z-index: 15; width: min(460px, 92vw); background: #f3e8cc; color: #2a1d10; border: 2px solid #7a5a22; border-radius: 6px; padding: 14px 16px; font: 15px Georgia, serif; box-shadow: 0 8px 30px #0008; }
+#choicebox .cb-title { font-size: 18px; }
+#choicebox .cb-opt { display: block; width: 100%; margin: 5px 0; text-align: left; }

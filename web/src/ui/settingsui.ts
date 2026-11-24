@@ -30,7 +30,7 @@ const ROWS: { title: string; rows: Row[] }[] = [
 ];
 
 /** Build the display settings panel into `root`. It stays in step with the settings (a preset changes several controls at once). */
-export function mountSettings(root: HTMLElement, askReload: () => void, watchOwn: () => void = () => {}) {
+export function mountSettings(root: HTMLElement, askReload: () => void, watchOwn: () => void = () => {}, ask: (text: string) => Promise<boolean> = async () => true) {
   root.innerHTML = ROWS.map(g => `<h3>${g.title}</h3>` + g.rows.map(r => {
     const id = `set-${r.key}`;
     const ctl = r.kind === 'select' ? `<select id="${id}">${r.options!.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`
@@ -78,7 +78,7 @@ export function mountSettings(root: HTMLElement, askReload: () => void, watchOwn
   file.onchange = async () => {
     const f = file.files?.[0]; file.value = ''; if (!f) return;
     try {
-      const n = await restoreBackup(f, count => confirm(`This replaces ${count} saved item(s) in this browser (your village, key and name) with the ones in the file. Continue?`));
+      const n = await restoreBackup(f, count => ask(`This replaces ${count} saved item(s) in this browser (your village, key and name) with the ones in the file. Continue?`));
       if (n) { msg(`Restored ${n} items. Reloading…`); setTimeout(() => location.reload(), 800); } else msg('Nothing was changed.');
     } catch (e) { msg((e as Error).message); }
   };

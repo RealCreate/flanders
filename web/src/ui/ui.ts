@@ -24,6 +24,7 @@ import { downloadBackup } from '../backup';
 import { loadFlag, saveFlag } from '../flag';
 import { versionLabel } from '../version';
 import { renderNotes } from '../releasenotes';
+import { modals } from './modal';
 
 /** The keys bound to an action, as they are now (after any rebinding), e.g. "W / Z / ↑". */
 export const keyNames = (a: Action) => keys.binds[a].map(k => `<kbd>${prettyKey(k).toUpperCase()}</kbd>`).join(' ');
@@ -334,10 +335,10 @@ export class UI {
 </div>
 <div id="tooltip" hidden></div>
 
-<div class="overlay" id="loader" hidden>
+<div class="overlay" id="loader" data-static hidden>
   <div class="sheet loading"><h1>Flanders</h1><div class="tag" id="ltext">Preparing the world…</div><div class="lbar"><i id="lbar-i"></i></div><p class="muted" id="ltip"></p></div>
 </div>
-<div class="overlay" id="intro">
+<div class="overlay" id="intro" data-static>
   <div class="sheet">
     <h1>Flanders</h1>
     <div class="tag">One shared medieval world. Found a village, raise a castle, defend it — or march on your neighbours.</div>
@@ -351,11 +352,11 @@ export class UI {
     <p class="muted tiny verline"><span id="home-version" title="The build you are running. The rules fingerprint to compare with other players is under The shared world, once you are in.">${esc(versionLabel())}</span> · <a href="#" id="home-notes-btn">Release notes</a></p>
   </div>
 </div>
-<div class="overlay" id="notes" hidden style="z-index:21">
+<div class="overlay" id="notes" hidden>
   <div class="sheet wide"><h2>Release notes</h2><p class="muted tiny">${esc(versionLabel())}</p><div id="notes-body">${renderNotes()}</div>
     <div class="btnrow"><button class="pbtn primary" data-close="notes">Back</button></div></div>
 </div>
-<div class="overlay" id="flag-page" hidden style="z-index:21">
+<div class="overlay" id="flag-page" hidden>
   <div class="sheet"><h2>Design your flag</h2><p class="muted">It flies over your town hall, your towers and your banners. Flag design is available here on the start screen.</p><div id="intro-flag"></div>
     <div class="btnrow"><button class="pbtn primary" id="flag-done">Done</button></div></div>
 </div>
@@ -364,10 +365,10 @@ export class UI {
     <div id="display-body"></div>
     <div class="btnrow"><button class="pbtn primary" data-close="display">Done</button></div></div>
 </div>
-<div class="overlay" id="restart" hidden style="z-index:39">
+<div class="overlay" id="restart" hidden>
   <div class="sheet wide"></div>
 </div>
-<div class="overlay" id="confirm" hidden style="z-index:40">
+<div class="overlay" id="confirm" hidden>
   <div class="sheet"><h2 id="confirm-title">Are you sure?</h2><p id="confirm-text"></p>
     <div class="btnrow"><button class="pbtn" id="confirm-no">Cancel</button><button class="pbtn primary" id="confirm-yes">Yes</button></div></div>
 </div>
@@ -537,7 +538,7 @@ export class UI {
     $('btn-help').onclick = () => this.modal('help', true);
     const restart = mountRestart($('restart'), { info: () => this.h.restartInfo(), run: () => this.h.restartRun(), restore: () => this.h.restartRestore(), backup: () => downloadBackup(), toast: (t, k) => this.toast(t, k) });
     $('btn-display').onclick = () => { this.modal('display', true); void restart.drawSection($('restart-section')); };
-    mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); });
+    mountSettings($('display-body'), () => this.toast('Anti-aliasing is chosen when the page loads: reload to apply it.', 'info'), () => { this.modal('display', false); this.h.watch(''); }, text => this.confirm(text, 'Replace', 'Restore this backup?'));
     $('btn-mp').onclick = () => this.modal('mp', true);
     $('btn-steward').onclick = () => this.h.steward('open');
     const setBattleMin = (min: boolean) => { this.battleMin = min; $('battle').hidden = min || $('btn-bell').hidden; $('btn-bell').classList.toggle('alert', min); $('btn-bell').setAttribute('aria-pressed', String(!min)); };
@@ -549,9 +550,7 @@ export class UI {
     });
     const closeWatch = () => { this.modal('steward', false); $('btn-steward').focus(); };
     $('watch-close').onclick = closeWatch;
-    $('steward').onkeydown = e => {
-      if (e.key === 'Escape') { e.stopPropagation(); closeWatch(); }
-    };
+    modals.guard('steward', { afterClose: () => $('btn-steward').focus() });
     $('v-work').onclick = () => this.openWork();
     $('v-pop').onclick = $('find-villager').onclick = () => this.openVillagers();
     $('follow-stop').onclick = () => this.h.followVillager(null);
@@ -579,9 +578,6 @@ export class UI {
       if (go(take)) { this.splitDone = null; this.modal('split', false); }
     };
     $('split-rows').oninput = () => this.splitSum();
-    for (const id of ['reserves', 'villagers', 'split']) $(id).onkeydown = e => {
-      if (e.key === 'Escape') { e.stopPropagation(); this.modal(id, false); }
-    };
     $('work-body').onclick = e => this.workClick(e); $('work-body').onchange = e => this.workChange(e);
     for (const id of ['work-body', 'pane-sel']) $(id).addEventListener('pointerdown', e => { if ((e.target as HTMLElement).matches?.('input[type=range]')) this.sliding = true; });
     addEventListener('pointerup', () => { setTimeout(() => (this.sliding = false), 0); });
@@ -615,12 +611,7 @@ export class UI {
       const ally = (e.target as HTMLElement).closest<HTMLElement>('[data-ally]');
       if (ally) { const key = ally.dataset.key!, act = ally.dataset.ally; if (act === 'ask') this.h.askHelp(key); else if (act === 'recall') this.h.recallAid(key); else if (act === 'guests') this.h.guestsHome(key); return; }
       const wb = (e.target as HTMLElement).closest<HTMLElement>('[data-watch]'); if (wb) { this.modal('mp', false); this.h.watch(wb.dataset.watch!); return; } const b = (e.target as HTMLElement).closest<HTMLElement>('[data-peer]'); if (b) { this.h.focusPeer(b.dataset.peer!); this.modal('mp', false); } };
-    addEventListener('keydown', e => {
-      if ((e.target as HTMLElement)?.matches?.('input,textarea')) return;
-      if (e.key === 'Escape') { document.querySelectorAll('.overlay.clear').forEach(o => ((o as HTMLElement).hidden = true)); }
-    });
-    // a click on the dimmed backdrop (outside the sheet) closes any pop-up
-    document.querySelectorAll<HTMLElement>('.overlay.clear').forEach(o => o.addEventListener('pointerdown', e => { if (e.target === o) o.hidden = true; }));
+    modals.mount();   // Esc, the backdrop, focus and stacking of every pop-up page: see ui/modal.ts
   }
 
   // ---- loading screen ----
@@ -652,8 +643,8 @@ export class UI {
   toggleLedger() { if (this.tempOpen) { this.tempOpen = false; this.applyPanels(); return; } this.pref.ledger = !this.pref.ledger; this.savePrefs(); }
   toggleMinimap() { this.pref.map = !this.pref.map; this.savePrefs(); }
   get bigmap() { return $('bigmap') as HTMLCanvasElement; }
-  mapOpen() { return !$('worldmap').hidden; }
-  toggleMap(show = $('worldmap').hidden) { $('worldmap').hidden = !show; }
+  mapOpen() { return modals.isOpen('worldmap'); }
+  toggleMap(show = !modals.isOpen('worldmap')) { this.modal('worldmap', show); }
 
   /** The in-game right-click menu. `items` with no `run` are headings; '-' is a divider. */
   ctxMenu(x: number, y: number, title: string, items: ({ label: string; sub?: string; tip?: string; disabled?: boolean; run?: () => void } | '-')[]) {
@@ -749,7 +740,7 @@ export class UI {
 
   /** Show the rules fingerprint (the hash other players compare) next to the build in The shared world and in the home page tooltip. */
   setRules(fp: string) { const t = `${versionLabel()} · rules ${fp}`; $('mp-build').textContent = t; $('home-version').title = `Rules fingerprint ${fp}: players with the same one play by the same rules.`; }
-  modal(id: string, show: boolean) { $(id).hidden = !show; }
+  modal(id: string, show: boolean) { if (show) modals.open(id); else modals.close(id); }
 
   openSteward() {
     this.modal('steward', true);
@@ -792,11 +783,14 @@ export class UI {
   /** The game's own yes/no question (in place of the browser's confirm box). Resolves true on yes; Esc, the backdrop and Cancel mean no. */
   confirm(text: string, yes = 'Yes', title = 'Are you sure?', no = 'Cancel'): Promise<boolean> {
     return new Promise(resolve => {
-      const box = $('confirm'); $('confirm-title').textContent = title; $('confirm-text').textContent = text; $('confirm-yes').textContent = yes; $('confirm-no').textContent = no; box.hidden = false;
-      const done = (v: boolean) => { box.hidden = true; box.removeEventListener('pointerdown', back); removeEventListener('keydown', key, true); resolve(v); };
-      const back = (e: Event) => { if (e.target === box) done(false); }, key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } else if (e.key === 'Enter') { e.stopPropagation(); done(true); } };
-      $('confirm-yes').onclick = () => done(true); $('confirm-no').onclick = () => done(false); box.addEventListener('pointerdown', back); addEventListener('keydown', key, true);
-      ($('confirm-yes') as HTMLButtonElement).focus();
+      $('confirm-title').textContent = title; $('confirm-text').textContent = text; $('confirm-yes').textContent = yes; $('confirm-no').textContent = no;
+      let answer = false;
+      modals.guard('confirm', { afterClose: () => { modals.guard('confirm', {}); resolve(answer); } });   // Esc, the backdrop and Cancel all mean no
+      const done = (v: boolean) => { answer = v; modals.close('confirm'); };
+      $('confirm-yes').onclick = () => done(true); $('confirm-no').onclick = () => done(false);
+      const key = (e: KeyboardEvent) => { if (e.key === 'Enter' && e.target === $('confirm-no')) return; if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); done(true); } };
+      $('confirm').onkeydown = key;
+      modals.open('confirm'); ($('confirm-yes') as HTMLButtonElement).focus();
     });
   }
 
