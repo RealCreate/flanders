@@ -31,17 +31,17 @@ const ROWS: { title: string; rows: Row[] }[] = [
 
 /** Build the display settings panel into `root`. It stays in step with the settings (a preset changes several controls at once). */
 export function mountSettings(root: HTMLElement, askReload: () => void, watchOwn: () => void = () => {}, ask: (text: string) => Promise<boolean> = async () => true) {
-  root.innerHTML = ROWS.map(g => `<h3>${g.title}</h3>` + g.rows.map(r => {
+  root.innerHTML = '<section data-sec="display" hidden>' + ROWS.map(g => `<h3>${g.title}</h3>` + g.rows.map(r => {
     const id = `set-${r.key}`;
     const ctl = r.kind === 'select' ? `<select id="${id}">${r.options!.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>`
       : r.kind === 'toggle' ? `<input type="checkbox" id="${id}">`
       : `<input type="range" id="${id}" min="${r.min}" max="${r.max}" step="${r.step}"><output id="${id}-v"></output>`;
     return `<label class="setrow" for="${id}"><span><b>${r.label}</b><small>${r.hint}</small></span>${ctl}</label>`;
-  }).join('')).join('') + `<h3>Network</h3><p class="muted">Players connect directly to each other. If a friend cannot connect (strict office or mobile network), a TURN relay server helps. Optional; applies after a reload.</p>
+  }).join('')).join('') + `<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div></section><section data-sec="data" hidden><h3>Network</h3><p class="muted">Players connect directly to each other. If a friend cannot connect (strict office or mobile network), a TURN relay server helps. Optional; applies after a reload.</p>
     <label class="setrow"><span><b>TURN server</b><small>For example turn:turn.example.com:3478</small></span><input type="text" id="turn-urls" placeholder="turn:host:3478"></label>
     <label class="setrow"><span><b>User name</b></span><input type="text" id="turn-user" autocomplete="off"></label>
     <label class="setrow"><span><b>Password</b></span><input type="password" id="turn-cred" autocomplete="off"></label>` + `<h3>Your data</h3><p class="muted">Your village and your signing key live only in this browser: clearing site data or switching computers loses them. Save a backup file now and then. <b>The file holds your private key: keep it to yourself.</b></p>
-    <div class="btnrow"><button class="pbtn" id="data-export">Save a backup file</button><button class="pbtn" id="data-import">Restore from a backup file…</button><button class="pbtn" id="data-replay" hidden title="Play your village's whole history back, from the first day">${icon('play', 14, { mono: true })} Watch my history</button><input type="file" id="data-file" accept="application/json,.json" hidden></div><p class="muted" id="data-msg" role="status"></p>` + '<div class="btnrow"><button class="pbtn" id="set-reset">Back to defaults</button><button class="pbtn" id="set-reload" hidden>Reload now to apply</button></div><hr><div id="restart-section"></div>';
+    <div class="btnrow"><button class="pbtn" id="data-export">Save a backup file</button><button class="pbtn" id="data-import">Restore from a backup file…</button><button class="pbtn" id="data-replay" hidden title="Play your village's whole history back, from the first day">${icon('play', 14, { mono: true })} Watch my history</button><input type="file" id="data-file" accept="application/json,.json" hidden></div><p class="muted" id="data-msg" role="status"></p>` + '<hr><div id="restart-section"></div></section>';
   const el = <T extends HTMLElement>(k: string) => root.querySelector<T>(`#set-${k}`)!;
   const sync = () => {
     const s = settings() as unknown as Record<string, unknown>;

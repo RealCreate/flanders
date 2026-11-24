@@ -131,9 +131,9 @@ export class Tutorial {
   }
 
   private addHelpButton() {
-    const row = document.querySelector('#help .btnrow'); if (!row || document.getElementById('tut-restart')) return;
+    const row = document.querySelector('#settings [data-sec="controls"] .btnrow'); if (!row || document.getElementById('tut-restart')) return;
     const b = document.createElement('button'); b.className = 'pbtn'; b.id = 'tut-restart'; b.textContent = 'Restart the guide';
-    b.onclick = () => { document.getElementById('help')!.hidden = true; this.start(0); if (this.lastCounts) this.update(this.lastCounts); };
+    b.onclick = () => { document.getElementById('settings')!.hidden = true; this.start(0); if (this.lastCounts) this.update(this.lastCounts); };
     row.prepend(b);
   }
 }

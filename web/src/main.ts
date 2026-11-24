@@ -3738,7 +3738,7 @@ function bindInput() {
       case 'coverage': toggleCoverage(); break;
       case 'pause': e.preventDefault(); setSpeed(speed === 0 || watch.review ? 1 : 0); break;
       case 'perf': e.preventDefault(); perf.toggle(); break;
-      case 'help': e.preventDefault(); ui.modal('help', true); break;
+      case 'help': e.preventDefault(); ui.openSettings('controls'); break;
       case 'toggleLedger': ui.toggleLedger(); break;
       case 'nextArmy': { e.preventDefault(); const ids = lv.field.ids(); if (ids.length) { const i = ids.indexOf(selectedDet ?? -1); const id = ids[(i + 1) % ids.length], p = lv.field.position(id); selectDet(id); if (p) rig.focus(p.x, p.z); } break; }
       case 'haltArmy': multiDets.slice().forEach(id => detAction('halt', id)); break;
