@@ -1313,6 +1313,18 @@ impl World {
         for k in 0..NK { self.vets[k] = self.vets[k].min(self.army[k]); }
     }
 
+    /// A soldier who finishes training while a fight is on takes the field at the barracks (or the hall), so he can be mustered, ordered and counted like those who stood when it began.
+    fn recruit_joins_fight(&mut self, kind: usize) {
+        let spot = self.buildings.iter().find(|b| b.kind == BARRACKS).map_or((self.buildings[0].x, self.buildings[0].y), |b| (b.x, b.y + 8.0));
+        let Some(b) = self.battle.as_mut() else { return };
+        if b.bought { return; }
+        let n = b.units.iter().filter(|u| u.side == 0 && u.from_army).count() as f32;
+        let a = n * 0.7;
+        let mut u = Unit::new(0, kind as u8, spot.0 + a.cos() * 2.0, spot.1 + a.sin() * 2.0, 0.0);
+        u.from_army = true;
+        b.units.push(u); b.start_side[0] += 1;
+    }
+
     /// Barracks turn queued recruits into soldiers, every queued kind at once: the drill is shared between them.
     pub(crate) fn training_step(&mut self) {
         for k in 0..NK { self.vets[k] = self.vets[k].min(self.army[k]); }
@@ -1329,6 +1341,7 @@ impl World {
             while self.queue[k] > 0 && self.train_acc[k] >= UNITS[k].time {
                 self.train_acc[k] -= UNITS[k].time;
                 self.queue[k] -= 1; self.army[k] += 1;
+                self.recruit_joins_fight(k);
                 self.push_event(EV_TRAINED, k as i32, 0);
             }
             if self.queue[k] == 0 { self.train_acc[k] = 0; }

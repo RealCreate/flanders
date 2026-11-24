@@ -3612,6 +3612,21 @@ mod tests {
     }
 
     #[test]
+    fn soldiers_trained_during_a_raid_join_the_fight_and_can_be_mustered() {
+        let mut w = village();
+        let spot = (-40..=40).step_by(3).flat_map(|x| (-40..=40).step_by(3).map(move |y| (x, y))).find(|&(x, y)| w.can_place(BARRACKS, x, y) == 0).expect("somewhere to build a barracks");
+        w.place(BARRACKS, spot.0, spot.1, 0);
+        w.population = 50;
+        assert!(w.start_raid(0.5, &[40, 20, 10, 0, 0, 0], 0));
+        assert_eq!(w.train(0, 3), 0);
+        for _ in 0..200 { w.step(); w.stock[GR as usize] = 3000; if w.army()[0] == 3 { break; } }
+        assert_eq!(w.army()[0], 3, "the soldiers were trained");
+        assert!(w.battle_active(), "the raid is still on");
+        assert_eq!(w.battle_standing()[0], 3, "and they stand in the fight");
+        assert_ne!(w.det_form(&[3, 0, 0, 0, 0, 0]), 0, "so they can be mustered");
+    }
+
+    #[test]
     fn cheats_give_resources_and_soldiers() {
         let mut w = village();
         let before = w.stock[IR as usize];
