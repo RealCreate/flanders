@@ -1520,7 +1520,7 @@ async function startGame(name: string, username: string, pve = false) {
   wildlife = new Wildlife(seedBig, terrain, forest.all, Array.from(village_sites(seedBig))); scene.add(wildlife.group);
   crowd = new Crowd(); scene.add(crowd.group);
   travellers = new Travellers(terrain); scene.add(travellers.group);
-  fx = new Effects2(terrain); scene.add(fx.group);
+  fx = new Effects2(terrain); scene.add(fx.group, fx.light); addLampLights();
   effects = new Effects(); scene.add(effects.group);
   covInit(); selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
   for (let i = 0; i < 8; i++) { const r = new SelectionMark(terrain, 0xff6a5a); blockRings.push(r); scene.add(r); }
@@ -1634,7 +1634,8 @@ async function startGame(name: string, username: string, pve = false) {
 async function warmUp() {
   ui.progress(72, 'Compiling shaders…'); await nextFrame();
   fx.warm(true); effects.warm(true);
-  try { await renderer.compileAsync(scene, rig.cam); } catch { /* older drivers: the warm-up frames below compile instead */ }
+  // both versions of every shader: with the lamps and fire light (night, fires) and without them (day); see lightLamps()
+  try { setPointLights(true); await renderer.compileAsync(scene, rig.cam); setPointLights(false); await renderer.compileAsync(scene, rig.cam); } catch { /* older drivers: the warm-up frames below compile instead */ }
   fx.warm(false); effects.warm(false);
   ui.progress(86, 'Baking shadows…'); await nextFrame();
   const view = Math.max(90, rig.dist * 1.7 + 50);
@@ -3900,12 +3901,32 @@ function adaptResolution(frameMs: number) {
   if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
 }
 
-/** A handful of real point lights, moved each moment to the lanterns nearest the camera: at night they throw warm pools of light on the street. (Always in the scene, dark by day, so
- *  the shaders never have to be rebuilt when evening comes.) */
+/** A handful of real point lights, moved each moment to the lanterns nearest the camera: at night they throw warm pools of light on the street.
+ *
+ *  Every lit material pays for every point light on every pixel, even a light at intensity 0, so the lamps and the fire light are hidden while none of them gives
+ *  any light (all day, unless something burns). Hiding them changes the shaders three.js uses, so `warmUp()` compiles both versions behind the loading screen
+ *  (three.js keeps every version a material has used), and switching between them later costs nothing. They are created before `warmUp()` for the same reason:
+ *  created on the first frame, they forced every shader to be rebuilt just after loading. */
 const lampLights: THREE.PointLight[] = [];
-let lampT = 0;
-function lightLamps(all: Village[], now: number) {
+let lampT = 0, pointLightsOn = true, pointLightsIdle = 0;
+function addLampLights() {
   if (!lampLights.length) for (let i = 0; i < 4; i++) { const l = new THREE.PointLight(0xffb464, 0, 17, 1.5); scene.add(l); lampLights.push(l); }
+}
+function setPointLights(on: boolean) {
+  pointLightsOn = on;
+  for (const l of lampLights) l.visible = on;
+  fx.light.visible = on;
+}
+/** After the lamps and fires have set their intensities for this frame: show the point lights while any of them shines, hide them once all have been dark for a
+ *  couple of seconds (so a fire that flickers out and back does not switch them every frame). */
+function updatePointLights(dt: number) {
+  const lit = fx.light.intensity > 0 || lampLights.some(l => l.intensity > 0);
+  pointLightsIdle = lit ? 0 : pointLightsIdle + dt;
+  if (lit && !pointLightsOn) setPointLights(true);
+  else if (!lit && pointLightsOn && pointLightsIdle > 2) setPointLights(false);
+}
+function lightLamps(all: Village[], now: number) {
+  addLampLights();
   const k = atmo.night;
   if (k < 0.02) { for (const l of lampLights) l.intensity = 0; return; }
   if (now - lampT > 150) {   // pick the nearest lanterns a few times a second, not every frame
@@ -4029,6 +4050,7 @@ function frame(now: number) {
   const fires = fireBuf.subarray(0, nf);
   if (fx.group.visible || effects.group.visible) effectView.update(rig.cam);
   fx.update(worldDt, fires, rig.cam.position, effectView);
+  updatePointLights(dt);
   effects.update(worldDt, sceneTime, all.map(v => v.view), rig.target.x, rig.target.z, view, effectView);
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
