@@ -214,6 +214,19 @@ let speed = 1, acc = 0, showDeposits = false;
 const rates = new Array(RES.length).fill(0);   // steady net rate of each resource per day (from the core's ledger: see flowrate.ts)
 let LEDGER_EXTRAS: string[] = [];
 const depLabels: HTMLElement[] = [];
+/** A copy out of the core that changes only when the world ticks, read at most once per tick (and at least every quarter second, so a command applied while
+ *  paused still shows) per world, however many labels, arrows and maps ask for it in a frame. Each call into the core copies the whole array. */
+function perTick<T>(read: (w: World) => T) {
+  const cache = new WeakMap<World, { tick: bigint; at: number; v: T }>();
+  return (w: World): T => {
+    const tick = w.tick(), now = performance.now(), c = cache.get(w);
+    if (c && c.tick === tick && now - c.at < 250) return c.v;
+    const v = read(w); cache.set(w, { tick, at: now, v }); return v;
+  };
+}
+const battleUnits = perTick(w => w.battle_units_flat());
+const depositsNow = perTick(w => ({ flat: w.deposits_flat(), asleep: w.deposits_asleep() }));
+const buildingsNow = perTick(w => w.buildings_flat());
 const hallLabels = new Map<string, HTMLElement>();
 let pathLine!: PathLine;
 let selectedDet: number | null = null;
@@ -2029,7 +2042,7 @@ function announceBoss(v: Village, mine: boolean, key: string) {
 }
 
 /** The health bar that floats over the boss while he stands: follows him on the screen (a thin bar and his name). */
-let bossBarEl: HTMLDivElement | null = null;
+let bossBarEl: HTMLDivElement | null = null; let bossFill: HTMLElement | null = null;
 function updateBossBar() {
   let b: ReturnType<Village['army']['bossAt']> = null;
   for (const v of allVillages()) { if (v.world.battle_active()) { b = v.army.bossAt(); if (b) break; } }
@@ -2037,19 +2050,22 @@ function updateBossBar() {
   if (!bossBarEl) { bossBarEl = document.createElement('div'); bossBarEl.id = 'bossbar'; bossBarEl.innerHTML = '<span></span><i><b></b></i>'; document.body.appendChild(bossBarEl); }
   vtmp.set(b.x, b.y, b.z).project(rig.cam);
   const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.1 && Math.abs(vtmp.y) < 1.1;
-  bossBarEl.hidden = !on; if (!on) return;
-  bossBarEl.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; bossBarEl.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
-  (bossBarEl.firstElementChild as HTMLElement).textContent = bossTitle(bosses, b.boss, b.name);
-  const fill = bossBarEl.querySelector('b') as HTMLElement; fill.style.width = Math.round(Math.max(0, Math.min(1, b.hp / b.max)) * 100) + '%'; fill.classList.toggle('rage', b.phase > 0);
+  if (bossBarEl.hidden === on) bossBarEl.hidden = !on; if (!on) return;
+  bossBarEl.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
+  const title = bossTitle(bosses, b.boss, b.name), name = bossBarEl.firstElementChild as HTMLElement; if (name.textContent !== title) name.textContent = title;
+  bossFill ??= bossBarEl.querySelector('b') as HTMLElement;
+  const w = Math.round(Math.max(0, Math.min(1, b.hp / b.max)) * 100) + '%'; if (bossFill.style.width !== w) bossFill.style.width = w;
+  const rage = b.phase > 0; if (bossFill.classList.contains('rage') !== rage) bossFill.classList.toggle('rage', rage);
 }
 
 /** Small health bars over wounded soldiers in a fight (friend green, foe red), nearest few only. */
 const unitBarEls: HTMLDivElement[] = [];
+const woundedList: { x: number; y: number; z: number; hp: number; max: number; side: number; d: number }[] = [];
 function updateUnitBars() {
-  let list: { x: number; y: number; z: number; hp: number; max: number; side: number }[] = [];
-  for (const v of allVillages()) { if (v.world.battle_active()) list = list.concat(v.army.woundedAt()); }
+  const list = woundedList; list.length = 0;
   const cx = rig.cam.position.x, cy = rig.cam.position.y, cz = rig.cam.position.z;
-  list.sort((a, b) => ((a.x - cx) ** 2 + (a.y - cy) ** 2 + (a.z - cz) ** 2) - ((b.x - cx) ** 2 + (b.y - cy) ** 2 + (b.z - cz) ** 2));
+  for (const v of allVillages()) { if (v.world.battle_active()) for (const u of v.army.woundedAt() as typeof list) { u.d = (u.x - cx) ** 2 + (u.y - cy) ** 2 + (u.z - cz) ** 2; list.push(u); } }
+  list.sort((a, b) => a.d - b.d);   // (the distance is worked out once per soldier, not twice per comparison)
   let n = 0;
   for (const u of list) {
     if (n >= 60) break;
@@ -2057,12 +2073,14 @@ function updateUnitBars() {
     if (vtmp.z >= 1 || Math.abs(vtmp.x) > 1.05 || Math.abs(vtmp.y) > 1.05) continue;
     let el = unitBarEls[n];
     if (!el) { el = document.createElement('div'); el.className = 'unitbar'; el.innerHTML = '<b></b>'; document.body.appendChild(el); unitBarEls[n] = el; }
-    el.hidden = false; el.classList.toggle('foe', u.side === 1);
-    el.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; el.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
-    (el.firstElementChild as HTMLElement).style.width = Math.round(Math.max(0, Math.min(1, u.hp / u.max)) * 100) + '%';
+    if (el.hidden) el.hidden = false;
+    const foe = u.side === 1, w = Math.round(Math.max(0, Math.min(1, u.hp / u.max)) * 100) + '%';
+    if (el.dataset.f !== String(foe)) { el.dataset.f = String(foe); el.classList.toggle('foe', foe); }
+    el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;   // a transform: no layout
+    const fill = el.firstElementChild as HTMLElement; if (fill.style.width !== w) fill.style.width = w;
     n++;
   }
-  for (let i = n; i < unitBarEls.length; i++) unitBarEls[i].hidden = true;
+  for (let i = n; i < unitBarEls.length; i++) if (!unitBarEls[i].hidden) unitBarEls[i].hidden = true;
 }
 
 /** Move the camera to where the attackers stand. */
@@ -2080,22 +2098,22 @@ for (const ev of ['pointerdown', 'keydown', 'wheel']) addEventListener(ev, () =>
 function updateFoeTrack(now: number) {
   if (!trackFoe) return;
   if (now > trackFoe.until || !trackFoe.v.world.battle_active()) { trackFoe = null; return; }
-  const c = foeCentroid(trackFoe.v.world.battle_units_flat());
+  const c = foeCentroid(battleUnits(trackFoe.v.world));
   if (c) rig.focus(c.x, c.z);
 }
 
 /** An arrow at the edge of the screen that points to the attackers while they are out of sight (click it to go there). */
-let foeArrowEl: HTMLDivElement | null = null;
+let foeArrowEl: HTMLDivElement | null = null; let foeArrowVillage: Village | null = null;
 function updateFoeArrow() {
   let target: { v: Village; x: number; z: number } | null = null;
-  for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(v.world.battle_units_flat()); if (c) { target = { v, x: c.x, z: c.z }; break; } }
+  for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(battleUnits(v.world)); if (c) { target = { v, x: c.x, z: c.z }; break; } }
   if (!target) { if (foeArrowEl) foeArrowEl.hidden = true; return; }
   vtmp.set(target.x, terrain.heightAt(target.x, target.z), target.z).project(rig.cam);
   const e = edgeArrow((vtmp.x * 0.5 + 0.5) * innerWidth, (-vtmp.y * 0.5 + 0.5) * innerHeight, innerWidth, innerHeight, vtmp.z > 1);
-  if (!foeArrowEl) { foeArrowEl = document.createElement('div'); foeArrowEl.id = 'foearrow'; foeArrowEl.title = 'The attackers are this way: click to look at them'; foeArrowEl.textContent = '➤'; document.body.appendChild(foeArrowEl); const v0 = target.v; foeArrowEl.onclick = () => lookAtAttackers(v0); }
-  foeArrowEl.onclick = () => lookAtAttackers(target!.v);
+  if (!foeArrowEl) { foeArrowEl = document.createElement('div'); foeArrowEl.id = 'foearrow'; foeArrowEl.title = 'The attackers are this way: click to look at them'; foeArrowEl.textContent = '➤'; document.body.appendChild(foeArrowEl); foeArrowEl.onclick = () => { if (foeArrowVillage) lookAtAttackers(foeArrowVillage); }; }
+  foeArrowVillage = target.v;   // (the click handler reads this: no new closure every frame)
   foeArrowEl.hidden = !e; if (!e) return;
-  foeArrowEl.style.left = e.x + 'px'; foeArrowEl.style.top = e.y + 'px'; foeArrowEl.style.transform = `translate(-50%, -50%) rotate(${e.angle}rad)`;
+  foeArrowEl.style.transform = `translate(${Math.round(e.x)}px, ${Math.round(e.y)}px) translate(-50%, -50%) rotate(${e.angle}rad)`;   // left/top would make the browser redo the layout every frame
 }
 
 /** Field armies that are free to be sent to the fight (not already in it). */
@@ -3768,7 +3786,7 @@ function depositHtml(idx: number): string {
 function buildDepositLabels() {
   const raw = deposits.raw;
   for (let i = 0; i < raw.length; i += 5) {
-    const el = document.createElement('div'); el.className = 'lbl'; el.hidden = true;
+    const el = document.createElement('div'); el.className = 'lbl dep'; el.hidden = true;
     el.innerHTML = `${icon(DEPOSIT[raw[i]].icon, 18)}<span>${DEPOSIT[raw[i]].name}</span>`; ui.labels.appendChild(el); depLabels.push(el);
     el.style.pointerEvents = 'auto'; el.style.cursor = 'pointer'; el.title = 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
     const idx = i / 5; let armed = 0;
@@ -3796,15 +3814,22 @@ function updateLabels() {
     } else ui.moveFollowMarker(0, 0, false);
   }
   if (!showDeposits) return;
-  const flat = lv.world.deposits_flat(), asleep = lv.world.deposits_asleep();
+  const { flat, asleep } = depositsNow(lv.world);
   for (let i = 0; i < Math.min(depLabels.length, flat.length / 5); i++) {
     const x = flat[i * 5 + 1], z = flat[i * 5 + 2], rem = flat[i * 5 + 3];
     vtmp.set(x, terrain.heightAt(x, z) + 3.2, z).project(rig.cam);
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.05 && Math.abs(vtmp.y) < 1.05 && Math.hypot(x - rig.target.x, z - rig.target.z) < 210;
-    const el = depLabels[i]; el.hidden = !on || flat[i * 5 + 4] <= 0; if (el.hidden) continue;
-    el.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; el.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
-    const text = depositLabel(DEPOSIT[flat[i * 5]].name, { rem, max: flat[i * 5 + 4], asleep: asleep[i] === 1 });
-    (el.firstElementChild as HTMLElement).textContent = text; el.classList.toggle('dormant', asleep[i] === 1); el.title = asleep[i] === 1 ? 'Dormant, recovering. It wakes by itself once it has regrown. Click twice to clear it off the land (40 wood, 10 tools)' : 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
+    const el = depLabels[i], hide = !on || flat[i * 5 + 4] <= 0;
+    if (el.hidden !== hide) el.hidden = hide;
+    if (hide) continue;
+    // moved with a transform (no layout), and the text, class and tooltip are written only when they change, not every frame
+    el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
+    const dormant = asleep[i] === 1, text = depositLabel(DEPOSIT[flat[i * 5]].name, { rem, max: flat[i * 5 + 4], asleep: dormant });
+    if (el.dataset.t !== text) { el.dataset.t = text; (el.firstElementChild as HTMLElement).textContent = text; }
+    if (el.dataset.a !== String(dormant)) {
+      el.dataset.a = String(dormant); el.classList.toggle('dormant', dormant);
+      el.title = dormant ? 'Dormant, recovering. It wakes by itself once it has regrown. Click twice to clear it off the land (40 wood, 10 tools)' : 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
+    }
   }
 }
 
@@ -3838,8 +3863,8 @@ function updateHallLabels(all: Village[]) {
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist > 28;
     el.hidden = !on; if (!on) continue;
     el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
-    const html = `${icon(v.mine ? 'castle' : 'attack', 18)}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`;
-    if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
+    const key = `${v.mine}|${tier}|${v.name}`;   // the label's HTML (icon included) is rebuilt only when one of these changes, not every frame
+    if (el.dataset.k !== key) { el.dataset.k = key; el.innerHTML = `${icon(v.mine ? 'castle' : 'attack', 18)}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`; }
   }
 }
 
@@ -4063,11 +4088,11 @@ function frame(now: number) {
     miniT = now;
     const corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => { ndc.set(u * 2 - 1, -(v * 2 - 1)); ray.setFromCamera(ndc, rig.cam); const p = terrain.pick(ray.ray); return p ? { x: p.x, z: p.z } : null; });
     const view = corners.every(c => c) ? (corners as { x: number; z: number }[]) : null;
-    const mapV = (v: Village, color: string, name: string): MapVillage => { const f = v.world.buildings_flat(), b: MapVillage['buildings'] = []; for (let i = 0; i < f.length; i += 10) b.push({ x: f[i + 2], z: f[i + 3], r: shared.radii[f[i]], kind: f[i] }); return { x: v.ox, z: v.oz, r: v.radius, color, name, buildings: b }; };
+    const mapV = (v: Village, color: string, name: string): MapVillage => { const f = buildingsNow(v.world), b: MapVillage['buildings'] = []; for (let i = 0; i < f.length; i += 10) b.push({ x: f[i + 2], z: f[i + 3], r: shared.radii[f[i]], kind: f[i] }); return { x: v.ox, z: v.oz, r: v.radius, color, name, buildings: b }; };
     const villages = [mapV(lv, '#5f8fe0', myName), ...[...rivals.values()].map(r => mapV(r.village, '#e05f5f', r.name))];
     const armies = [lv, ...[...rivals.values()].map(r => r.village)].flatMap((v, k) => v.field.ids().map(id => ({ ...v.field.position(id)!, color: k ? '#ff8a7a' : '#8fb8ff' })));
-    for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(v.world.battle_units_flat()); if (c) armies.push({ x: c.x, z: c.z, color: '#ff2d1a' }); }   // the raiders, wherever they are
-    const mo = { fog: lv.world.explored_flat(), neutrals: lv.world.neutrals_flat(), villages, armies, deposits: lv.world.deposits_flat(), showDeposits, view, target: { x: rig.target.x, z: rig.target.z } };
+    for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(battleUnits(v.world)); if (c) armies.push({ x: c.x, z: c.z, color: '#ff2d1a' }); }   // the raiders, wherever they are
+    const mo = { fog: lv.world.explored_flat(), neutrals: lv.world.neutrals_flat(), villages, armies, deposits: depositsNow(lv.world).flat, showDeposits, view, target: { x: rig.target.x, z: rig.target.z } };
     minimap.draw(mo); if (ui.mapOpen()) bigMap.draw(mo);
   }
   perf.stop('labels + minimap');
