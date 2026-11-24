@@ -187,7 +187,6 @@ table.res td.r { text-align: right; }
 .sheet hr { border: 0; border-top: 1px solid var(--paper-edge); width: 100%; margin: 2px 0; }
 #watch-report { padding: 8px 10px; border-inline-start: 3px solid #9c712b; background: #bc9a4a28; }
 .watch-risks { margin: 6px 0 10px; padding-inline-start: 20px; color: #82331b; }
-#steward .btnrow { margin-top: 8px; }
 .sheet label { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
 .sheet input, .sheet textarea, .sheet select { width: 100%; font-family: var(--f-old); font-size: 16px; padding: 7px 10px; border: 1px solid var(--paper-edge); background: #f8f0d8; color: var(--ink); border-radius: 3px; }
 .sheet textarea { font-family: monospace; font-size: 11px; resize: vertical; }
@@ -474,7 +473,6 @@ table.flowbld .pbtn { padding: 2px 8px; font-size: 12px; }
 .wkslide { flex: 1; display: flex; align-items: center; gap: 8px; } .wkslide input { flex: 1; min-width: 0; accent-color: var(--gold); } .wkval { min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; }
 .btnrow.wrap { flex-wrap: wrap; gap: 4px; } .btnrow.wrap .pbtn { flex: none; padding: 4px 10px; font-size: 14px; }
 .pill#v-work { cursor: pointer; }
-.worksheet { width: min(760px, 94vw); }
 .worksheet .chip { padding: 2px 9px; font-size: 13px; }
 .worksheet h3.workh { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 10px 0 2px; font-size: 14px; letter-spacing: .06em; color: var(--ink); text-transform: none; }
 .worksheet h3.workh .muted { font-size: 13px; letter-spacing: 0; } .worksheet h3.workh .muted svg { vertical-align: -2px; }
@@ -593,3 +591,13 @@ body.cmd-mode #cs-sel { display: none; }
 #minimap-card .layers { display: flex; gap: 4px; padding-top: 5px; }
 #minimap-card .layers .btn { flex: 1; padding: 3px 4px; font-size: 12px; white-space: nowrap; }
 @media (max-width: 900px) { #minimap-card { display: block; width: auto; left: 8px; bottom: calc(46vh + 16px); } #minimap-card canvas, #minimap-card .cap { display: none; } }
+
+/* village status, and the sections that used to be pop-ups */
+.tab.alert::after { content: ''; display: inline-block; width: 7px; height: 7px; margin-left: 5px; border-radius: 50%; background: #e0a43a; vertical-align: 2px; }
+.vstatus { display: flex; flex-direction: column; gap: 6px; }
+.vstatus > p { margin: 0; }
+#ledger .flowsheet table.flowtab { font-size: 14px; } #ledger .flowsheet h2.foodh { font-size: 15px; }
+#ledger .worksheet .btnrow { flex-wrap: wrap; }
+#ledger .sect input:not([type=checkbox]):not([type=range]) { width: 100%; font-family: var(--f-old); font-size: 16px; padding: 7px 10px; border: 1px solid var(--paper-edge); background: #f8f0d8; color: var(--ink); border-radius: 3px; }
+#ledger .sect label { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
+#ledger .sect > summary { justify-content: flex-start; gap: 8px; } #ledger .sect > summary::after { margin-left: auto; }

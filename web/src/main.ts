@@ -2309,11 +2309,10 @@ function stewardAction(action: StewardAction) {
   if (replay?.target === lv) return;
   if (action === 'open') { ui.openSteward(); renderWatch(); return; }
   if (action === 'pause' || action === 'steward') { watch.mode = action; renderWatch(); writeSave(); return; }
-  ui.modal('steward', false);
   switch (action) {
     case 'resume': setSpeed(speed || 1); break;
     case 'food': ui.openFlow(-2); break;
-    case 'wood': ui.modal('winter', true); updateHud(); break;
+    case 'wood': ui.openWinter(); updateHud(); break;
     case 'work': ui.openWork(); break;
     case 'ruins': {
       const index = lv.world.recovery_ruin();
