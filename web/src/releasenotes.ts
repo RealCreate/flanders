@@ -4,6 +4,20 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.7.0', date: '2026-11-24', title: 'A tidier interface',
+    added: [
+      'One Settings page (the Settings button in the top bar) with tabs for Display, Sound, While away, Controls, Data & network and About. Everything that used to be spread over the Menu, Display settings, Help and Release notes is there.',
+      'Map layers (Map, Reach, Deposits) now sit under the minimap.',
+    ],
+    changed: [
+      'The Village steward is no longer a pop-up. Its report and recovery buttons are at the top of the Village tab, with Winter, Workers and Villagers as sections below. Food and stock breakdowns, and the reserves form, are sections of the Stock tab. Away policy moved to Settings → While away.',
+      'The Army tab is now called Military, and mustering a new army sits with your field armies.',
+      'Pop-ups now stack: Esc closes the top one, the Tab key stays inside it, and focus returns to what opened it.',
+      'The selected-building panel keeps repair and upgrade together in one place and closes with a small cross; the battle headline joins the battle controls at the bottom of the screen.',
+    ],
+    fixed: [],
+  },
+  {
     version: '0.6.0', date: '2026-11-23', title: 'Better roads',
     added: [
       'Roads have four surfaces: dirt, gravel, cobbles and flagstones. Select a road and resurface the whole stretch up to the next junction; a road with a better surface looks different, and one surface runs softly into the next.',
