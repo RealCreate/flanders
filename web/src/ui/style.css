@@ -321,6 +321,9 @@ table.res td.r { text-align: right; }
 /* nothing in the game is selectable text, except what you type */
 * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; } input, textarea { -webkit-user-select: text; user-select: text; }
 .lbl.hall { left: 0; top: 0; will-change: transform; }
+/* moved by a transform set every frame (no layout), as are the unit and boss bars */
+.lbl.dep { left: 0; top: 0; will-change: transform; }
+.unitbar, #bossbar, #foearrow { left: 0; top: 0; will-change: transform; }
 .optlist { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
 .optlist .pbtn.opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 6px 10px; }
 .optlist .pbtn.opt small { font-size: 13px; opacity: 0.85; font-family: var(--f-sans, inherit); }

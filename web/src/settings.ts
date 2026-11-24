@@ -25,7 +25,7 @@ type Preset = Omit<Settings, 'quality' | 'antialias' | 'fpsCap' | 'showFps' | 's
 export const PRESETS: Record<Exclude<Quality, 'custom'>, Preset> = {
   low:    { shadows: 0,    pixelCap: 1,    drawDistance: 450,  treeDetail: false, trees: true, waterFx: false, particles: true, crowds: true },
   medium: { shadows: 1024, pixelCap: 1.25, drawDistance: 750,  treeDetail: false, trees: true, waterFx: true,  particles: true, crowds: true },
-  high:   { shadows: 2048, pixelCap: 2,    drawDistance: 1300, treeDetail: true,  trees: true, waterFx: true,  particles: true, crowds: true },
+  high:   { shadows: 2048, pixelCap: 1.5,  drawDistance: 1300, treeDetail: true,  trees: true, waterFx: true,  particles: true, crowds: true },
   ultra:  { shadows: 4096, pixelCap: 2,    drawDistance: 2600, treeDetail: true,  trees: true, waterFx: true,  particles: true, crowds: true },
 };
 export const DEFAULTS: Settings = { quality: 'high', antialias: true, resolution: 1, adaptive: true, fpsCap: 0, showFps: false, showPaths: false, jumpToRaiders: false, pauseForRaids: true, googlyEyes: false, ...PRESETS.high };
@@ -38,7 +38,12 @@ export const playerChoseSettings = () => saved;
 const listeners: ((s: Settings, changed: (keyof Settings)[]) => void)[] = [];
 
 function load(): Settings {
-  try { const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings>; return { ...DEFAULTS, ...raw }; } catch { return { ...DEFAULTS }; }
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<Settings>, s = { ...DEFAULTS, ...raw };
+    // a preset means that preset as this version defines it (High now caps the pixel ratio at 1.5): saved values of an older version do not override it
+    if (s.quality !== 'custom' && PRESETS[s.quality]) Object.assign(s, PRESETS[s.quality]);
+    return s;
+  } catch { return { ...DEFAULTS }; }
 }
 export const settings = () => current;
 export function onSettings(fn: (s: Settings, changed: (keyof Settings)[]) => void) { listeners.push(fn); }
@@ -61,6 +66,10 @@ function matchPreset(s: Settings): Quality {
   for (const [name, p] of Object.entries(PRESETS)) if ((Object.keys(p) as (keyof Preset)[]).every(k => s[k] === p[k])) return name as Quality;
   return 'custom';
 }
+
+/** Whether to ask for a multisampled (antialiased) canvas. Above about 1.5 device pixels per CSS pixel the edges are already fine, and 4× multisampling at
+ *  that many pixels costs the GPU a great deal of memory bandwidth for little visible difference. (Chosen when the canvas is created.) */
+export const wantAntialias = (dpr: number) => current.antialias && Math.min(dpr, current.pixelCap) * current.resolution < 1.5;
 
 /** The pixel ratio to render at, given the screen's own and what the adaptive scaler has taken off. */
 export const pixelRatio = (dpr: number, adapt: number) => Math.max(0.4, Math.min(dpr, current.pixelCap) * current.resolution * (current.adaptive ? adapt : 1));

@@ -24,7 +24,7 @@ import { RadiusRings } from './render/coverage';
 import { parseRadii, describe as describeRadii, uncoveredByWells, wallsOutOfReach, FX_FIRE_FULL, FX_FIRE_HALF, FX_SHOOT, type Radius } from './coverage';
 import { OVER_WATER_KINDS } from './render/ringheight';
 import { buildShowroom } from './render/showroom';
-import { settings, onSettings, pixelRatio, setSettings, playerChoseSettings, type Settings } from './settings';
+import { settings, onSettings, pixelRatio, wantAntialias, setSettings, playerChoseSettings, type Settings } from './settings';
 import { rendererName, isSoftwareRenderer, isIntegratedGpu } from './gpucheck';
 import { auditModel, setNightLight } from './render/buildings';
 import { subdivide, curve, type Pt } from './roadtool';
@@ -44,6 +44,7 @@ import { Crowd } from './render/crowd';
 import { Travellers, type TVillage } from './render/travellers';
 import { JK, GIFT, arrivedText } from './render/journey';
 import { Effects2, EffectView } from './render/fx';
+import { freeze } from './render/static';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
 import { keys, digitOf, prettyKey, type Action } from './keys';
@@ -185,6 +186,8 @@ interface Rival {
   loadSeq?: number; loading?: boolean;         // a history is being replayed into a fresh copy in slices (newest wins); the old copy waits meanwhile
   /** Their commands changed the village (and its ground) since its scene was last refreshed: see flushRivals. */
   dirty?: boolean; dirtyTerrain?: boolean; flushedAt?: number; groundAt?: number;
+  /** A command since the last flush may have changed what syncFull rebuilds (buildings, roads, walls, the flag): see LIGHT_OPS. */
+  dirtyFull?: boolean;
   cacheDue?: boolean;                          // a rebuilt copy that is kept in this browser once a hash confirms it
   /** The connection to them: the round trip in ms, how it is doing, and (while they are gone) the timer that tells the player they left (a short break is not worth a message). */
   ping?: number | null; link?: 'good' | 'weak' | 'lost'; leftTimer?: number; leftTold?: boolean;
@@ -213,6 +216,19 @@ let speed = 1, acc = 0, showDeposits = false;
 const rates = new Array(RES.length).fill(0);   // steady net rate of each resource per day (from the core's ledger: see flowrate.ts)
 let LEDGER_EXTRAS: string[] = [];
 const depLabels: HTMLElement[] = [];
+/** A copy out of the core that changes only when the world ticks, read at most once per tick (and at least every quarter second, so a command applied while
+ *  paused still shows) per world, however many labels, arrows and maps ask for it in a frame. Each call into the core copies the whole array. */
+function perTick<T>(read: (w: World) => T) {
+  const cache = new WeakMap<World, { tick: bigint; at: number; v: T }>();
+  return (w: World): T => {
+    const tick = w.tick(), now = performance.now(), c = cache.get(w);
+    if (c && c.tick === tick && now - c.at < 250) return c.v;
+    const v = read(w); cache.set(w, { tick, at: now, v }); return v;
+  };
+}
+const battleUnits = perTick(w => w.battle_units_flat());
+const depositsNow = perTick(w => ({ flat: w.deposits_flat(), asleep: w.deposits_asleep() }));
+const buildingsNow = perTick(w => w.buildings_flat());
 const hallLabels = new Map<string, HTMLElement>();
 let pathLine!: PathLine;
 let selectedDet: number | null = null;
@@ -413,6 +429,9 @@ function advanceReplica(r: Rival, tick: number): boolean {
 }
 
 /** Bring the scenes of other villages up to date after their commands: at most every 400 ms per village, and their ground at most once a second. */
+/** Rival commands that change nothing syncFull rebuilds (trade, diplomacy, armies on the move, training, research): the per-tick afterTick() covers what they
+ *  do show. Any op not listed here (including new ones) still gets the full rebuild. */
+const LIGHT_OPS: ReadonlySet<string> = new Set(['accept', 'arrive', 'ask', 'attack', 'battleorder', 'bribe', 'buy', 'caravan', 'carhome', 'choose', 'envoy', 'form', 'goods', 'halt', 'journey', 'march', 'marriage', 'merge', 'raid', 'rally', 'recall', 'recallaid', 'reinforce', 'research', 'reserve', 'retreat', 'return', 'sendaid', 'sendatk', 'split', 'train', 'treaty', 'turnback', 'untrain', 'visit', 'war', 'workers']);
 function flushRivals(now: number) {
   for (const r of rivals.values()) {
     if (!r.dirty || r.loading || r.broken || replay?.target === r.village || now - (r.flushedAt ?? -1e9) < 400) continue;
@@ -421,7 +440,10 @@ function flushRivals(now: number) {
     r.dirty = false; r.flushedAt = now;
     try {
       if (ground) { r.dirtyTerrain = false; r.groundAt = now; refreshTerrain(r.village.world); }
-      r.village.syncFull(); r.village.afterTick();
+      // the full rebuild (roads, road props, walls, props, the forest's clearings) only after a command that can change them; afterTick() refreshes the rest,
+      // and itself rebuilds in full when the building count or the ground changed
+      if (r.dirtyFull || ground) { r.dirtyFull = false; r.village.syncFull(); }
+      r.village.afterTick();
     } catch (e) { quarantine(r, e); }
   }
 }
@@ -575,6 +597,7 @@ function connect() {
         // full refresh re-levels the whole village's ground and rebuilds its buildings and the forest. Every player paid that for every other village.
         r.dirty = true;
         if (c.op === 'place' || c.op === 'level' || c.op === 'demolish' || c.op === 'rebuild' || c.op === 'upgrade') r.dirtyTerrain = true;
+        if (!LIGHT_OPS.has(c.op)) r.dirtyFull = true;
         r.tick = c.tick;
         if (c.op === 'battleorder') battleBanner();
       } catch (e) { quarantine(r, e); return; }
@@ -1496,7 +1519,7 @@ async function startGame(name: string, username: string, pve = false) {
   if (autoLow) setSettings({ quality: 'low', antialias: false }, false);   // for this visit only: not saved as the player's choice
   // graphics built into the processor start on Medium (shorter tree distance, smaller shadows, no rich near trees), also for this visit only
   else if (isIntegratedGpu(gpuName) && !playerChoseSettings()) setSettings({ quality: 'medium' }, false);
-  renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: settings().antialias, powerPreference: 'high-performance' });
+  renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: wantAntialias(devicePixelRatio), powerPreference: 'high-performance' });
   if (softwareGpu) ui.toast(!autoLow ?'No graphics card is drawing the game (the browser draws it on the processor): the Low display preset runs much faster.' : 'No graphics card is drawing the game, so it starts on Low display settings. Change them under Settings.', 'info');
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, 1)); renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // Atmosphere schedules shadow redraws
@@ -1519,13 +1542,15 @@ async function startGame(name: string, username: string, pve = false) {
   wildlife = new Wildlife(seedBig, terrain, forest.all, Array.from(village_sites(seedBig))); scene.add(wildlife.group);
   crowd = new Crowd(); scene.add(crowd.group);
   travellers = new Travellers(terrain); scene.add(travellers.group);
-  fx = new Effects2(terrain); scene.add(fx.group);
+  fx = new Effects2(terrain); scene.add(fx.group, fx.light); addLampLights();
   effects = new Effects(); scene.add(effects.group);
   covInit(); selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
   for (let i = 0; i < 8; i++) { const r = new SelectionMark(terrain, 0xff6a5a); blockRings.push(r); scene.add(r); }
   pathLine = new PathLine(terrain); scene.add(pathLine.mesh);
   penPreview = new PenPreview(terrain); scene.add(...penPreview.objects);
   worldShips = new WorldShips(terrain); scene.add(worldShips.group);
+  // containers that never move: computed once instead of every frame (see render/static.ts)
+  freeze(tunnels.group, wildlife.group, crowd.group, travellers.group, fx.group, effects.group, worldShips.group);
   minimap = new Minimap(ui.minimap, terrain); bigMap = new Minimap(ui.bigmap, terrain, 900); minimap.tunnels = bigMap.tunnels = tunnels.list;
   ghostRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 56).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x66ff88, transparent: true, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
   ghostRing.visible = false; ghostRing.renderOrder = 9; scene.add(ghostRing);
@@ -1581,7 +1606,7 @@ async function startGame(name: string, username: string, pve = false) {
   lv.onReport = onLocalReport;
   Village.onBossFx = (k, x, z) => { if (Math.hypot(x - rig.target.x, z - rig.target.z) < 200) { if (k === 3) sound.warhorn(); else sound.slam(); } };   // a horn or a slam near the camera is heard
   deposits = new Deposits(w.deposits_flat(), terrain); scene.add(deposits.group); deposits.refit();
-  camps = new Camps(terrain); scene.add(camps.group); camps.sync(w.neutrals_flat());
+  camps = new Camps(terrain); scene.add(freeze(camps.group)); camps.sync(w.neutrals_flat());
   buildDepositLabels();
   refreshTerrain(w); lv.syncFull(); lv.markCaughtUp();
   const ev = w.take_events();
@@ -1631,7 +1656,8 @@ async function startGame(name: string, username: string, pve = false) {
 async function warmUp() {
   ui.progress(72, 'Compiling shaders…'); await nextFrame();
   fx.warm(true); effects.warm(true);
-  try { await renderer.compileAsync(scene, rig.cam); } catch { /* older drivers: the warm-up frames below compile instead */ }
+  // both versions of every shader: with the lamps and fire light (night, fires) and without them (day); see lightLamps()
+  try { setPointLights(true); await renderer.compileAsync(scene, rig.cam); setPointLights(false); await renderer.compileAsync(scene, rig.cam); } catch { /* older drivers: the warm-up frames below compile instead */ }
   fx.warm(false); effects.warm(false);
   ui.progress(86, 'Baking shadows…'); await nextFrame();
   const view = Math.max(90, rig.dist * 1.7 + 50);
@@ -2025,7 +2051,7 @@ function announceBoss(v: Village, mine: boolean, key: string) {
 }
 
 /** The health bar that floats over the boss while he stands: follows him on the screen (a thin bar and his name). */
-let bossBarEl: HTMLDivElement | null = null;
+let bossBarEl: HTMLDivElement | null = null; let bossFill: HTMLElement | null = null;
 function updateBossBar() {
   let b: ReturnType<Village['army']['bossAt']> = null;
   for (const v of allVillages()) { if (v.world.battle_active()) { b = v.army.bossAt(); if (b) break; } }
@@ -2033,19 +2059,22 @@ function updateBossBar() {
   if (!bossBarEl) { bossBarEl = document.createElement('div'); bossBarEl.id = 'bossbar'; bossBarEl.innerHTML = '<span></span><i><b></b></i>'; document.body.appendChild(bossBarEl); }
   vtmp.set(b.x, b.y, b.z).project(rig.cam);
   const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.1 && Math.abs(vtmp.y) < 1.1;
-  bossBarEl.hidden = !on; if (!on) return;
-  bossBarEl.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; bossBarEl.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
-  (bossBarEl.firstElementChild as HTMLElement).textContent = bossTitle(bosses, b.boss, b.name);
-  const fill = bossBarEl.querySelector('b') as HTMLElement; fill.style.width = Math.round(Math.max(0, Math.min(1, b.hp / b.max)) * 100) + '%'; fill.classList.toggle('rage', b.phase > 0);
+  if (bossBarEl.hidden === on) bossBarEl.hidden = !on; if (!on) return;
+  bossBarEl.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
+  const title = bossTitle(bosses, b.boss, b.name), name = bossBarEl.firstElementChild as HTMLElement; if (name.textContent !== title) name.textContent = title;
+  bossFill ??= bossBarEl.querySelector('b') as HTMLElement;
+  const w = Math.round(Math.max(0, Math.min(1, b.hp / b.max)) * 100) + '%'; if (bossFill.style.width !== w) bossFill.style.width = w;
+  const rage = b.phase > 0; if (bossFill.classList.contains('rage') !== rage) bossFill.classList.toggle('rage', rage);
 }
 
 /** Small health bars over wounded soldiers in a fight (friend green, foe red), nearest few only. */
 const unitBarEls: HTMLDivElement[] = [];
+const woundedList: { x: number; y: number; z: number; hp: number; max: number; side: number; d: number }[] = [];
 function updateUnitBars() {
-  let list: { x: number; y: number; z: number; hp: number; max: number; side: number }[] = [];
-  for (const v of allVillages()) { if (v.world.battle_active()) list = list.concat(v.army.woundedAt()); }
+  const list = woundedList; list.length = 0;
   const cx = rig.cam.position.x, cy = rig.cam.position.y, cz = rig.cam.position.z;
-  list.sort((a, b) => ((a.x - cx) ** 2 + (a.y - cy) ** 2 + (a.z - cz) ** 2) - ((b.x - cx) ** 2 + (b.y - cy) ** 2 + (b.z - cz) ** 2));
+  for (const v of allVillages()) { if (v.world.battle_active()) for (const u of v.army.woundedAt() as typeof list) { u.d = (u.x - cx) ** 2 + (u.y - cy) ** 2 + (u.z - cz) ** 2; list.push(u); } }
+  list.sort((a, b) => a.d - b.d);   // (the distance is worked out once per soldier, not twice per comparison)
   let n = 0;
   for (const u of list) {
     if (n >= 60) break;
@@ -2053,12 +2082,14 @@ function updateUnitBars() {
     if (vtmp.z >= 1 || Math.abs(vtmp.x) > 1.05 || Math.abs(vtmp.y) > 1.05) continue;
     let el = unitBarEls[n];
     if (!el) { el = document.createElement('div'); el.className = 'unitbar'; el.innerHTML = '<b></b>'; document.body.appendChild(el); unitBarEls[n] = el; }
-    el.hidden = false; el.classList.toggle('foe', u.side === 1);
-    el.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; el.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
-    (el.firstElementChild as HTMLElement).style.width = Math.round(Math.max(0, Math.min(1, u.hp / u.max)) * 100) + '%';
+    if (el.hidden) el.hidden = false;
+    const foe = u.side === 1, w = Math.round(Math.max(0, Math.min(1, u.hp / u.max)) * 100) + '%';
+    if (el.dataset.f !== String(foe)) { el.dataset.f = String(foe); el.classList.toggle('foe', foe); }
+    el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;   // a transform: no layout
+    const fill = el.firstElementChild as HTMLElement; if (fill.style.width !== w) fill.style.width = w;
     n++;
   }
-  for (let i = n; i < unitBarEls.length; i++) unitBarEls[i].hidden = true;
+  for (let i = n; i < unitBarEls.length; i++) if (!unitBarEls[i].hidden) unitBarEls[i].hidden = true;
 }
 
 /** Move the camera to where the attackers stand. */
@@ -2076,22 +2107,22 @@ for (const ev of ['pointerdown', 'keydown', 'wheel']) addEventListener(ev, () =>
 function updateFoeTrack(now: number) {
   if (!trackFoe) return;
   if (now > trackFoe.until || !trackFoe.v.world.battle_active()) { trackFoe = null; return; }
-  const c = foeCentroid(trackFoe.v.world.battle_units_flat());
+  const c = foeCentroid(battleUnits(trackFoe.v.world));
   if (c) rig.focus(c.x, c.z);
 }
 
 /** An arrow at the edge of the screen that points to the attackers while they are out of sight (click it to go there). */
-let foeArrowEl: HTMLDivElement | null = null;
+let foeArrowEl: HTMLDivElement | null = null; let foeArrowVillage: Village | null = null;
 function updateFoeArrow() {
   let target: { v: Village; x: number; z: number } | null = null;
-  for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(v.world.battle_units_flat()); if (c) { target = { v, x: c.x, z: c.z }; break; } }
+  for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(battleUnits(v.world)); if (c) { target = { v, x: c.x, z: c.z }; break; } }
   if (!target) { if (foeArrowEl) foeArrowEl.hidden = true; return; }
   vtmp.set(target.x, terrain.heightAt(target.x, target.z), target.z).project(rig.cam);
   const e = edgeArrow((vtmp.x * 0.5 + 0.5) * innerWidth, (-vtmp.y * 0.5 + 0.5) * innerHeight, innerWidth, innerHeight, vtmp.z > 1);
-  if (!foeArrowEl) { foeArrowEl = document.createElement('div'); foeArrowEl.id = 'foearrow'; foeArrowEl.title = 'The attackers are this way: click to look at them'; foeArrowEl.textContent = '➤'; document.body.appendChild(foeArrowEl); const v0 = target.v; foeArrowEl.onclick = () => lookAtAttackers(v0); }
-  foeArrowEl.onclick = () => lookAtAttackers(target!.v);
+  if (!foeArrowEl) { foeArrowEl = document.createElement('div'); foeArrowEl.id = 'foearrow'; foeArrowEl.title = 'The attackers are this way: click to look at them'; foeArrowEl.textContent = '➤'; document.body.appendChild(foeArrowEl); foeArrowEl.onclick = () => { if (foeArrowVillage) lookAtAttackers(foeArrowVillage); }; }
+  foeArrowVillage = target.v;   // (the click handler reads this: no new closure every frame)
   foeArrowEl.hidden = !e; if (!e) return;
-  foeArrowEl.style.left = e.x + 'px'; foeArrowEl.style.top = e.y + 'px'; foeArrowEl.style.transform = `translate(-50%, -50%) rotate(${e.angle}rad)`;
+  foeArrowEl.style.transform = `translate(${Math.round(e.x)}px, ${Math.round(e.y)}px) translate(-50%, -50%) rotate(${e.angle}rad)`;   // left/top would make the browser redo the layout every frame
 }
 
 /** Field armies that are free to be sent to the fight (not already in it). */
@@ -2276,7 +2307,7 @@ function stepLocal() {
     else queueMarchPreview(previewShown.id, ...previewShown.request.to);
   }
   if (selectedDet !== null && !previewShown) showRoute();
-  if (room && room.peers.size) room.broadcastHash({ tick: t, hash: w.state_hash().toString(), c: sharedCount, p: Array.from(w.state_hash_parts(), x => x.toString()), tools: usedTools, e: myEpoch });
+  if (room && room.peers.size) { const hp = w.state_hash_and_parts(); room.broadcastHash({ tick: t, hash: hp[0].toString(), c: sharedCount, p: Array.from(hp.subarray(1), x => x.toString()), tools: usedTools, e: myEpoch }); }   // (one pass over the world, not two)
   if (t % 15 === 0) { if (covOn) covOverlay(); if (covB !== null || covG) covRefocus(); }
   if (hlShown && t % 15 === 0 || (hlRes.length && !hlOn())) applyHighlight();
   if (t % 3 === 0) { deposits.sync(w.deposits_flat(), w.deposits_asleep()); if (t % 15 === 0) { deposits.attach(w.buildings_flat()); camps.sync(w.neutrals_flat()); } }
@@ -3764,7 +3795,7 @@ function depositHtml(idx: number): string {
 function buildDepositLabels() {
   const raw = deposits.raw;
   for (let i = 0; i < raw.length; i += 5) {
-    const el = document.createElement('div'); el.className = 'lbl'; el.hidden = true;
+    const el = document.createElement('div'); el.className = 'lbl dep'; el.hidden = true;
     el.innerHTML = `${icon(DEPOSIT[raw[i]].icon, 18)}<span>${DEPOSIT[raw[i]].name}</span>`; ui.labels.appendChild(el); depLabels.push(el);
     el.style.pointerEvents = 'auto'; el.style.cursor = 'pointer'; el.title = 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
     const idx = i / 5; let armed = 0;
@@ -3792,15 +3823,22 @@ function updateLabels() {
     } else ui.moveFollowMarker(0, 0, false);
   }
   if (!showDeposits) return;
-  const flat = lv.world.deposits_flat(), asleep = lv.world.deposits_asleep();
+  const { flat, asleep } = depositsNow(lv.world);
   for (let i = 0; i < Math.min(depLabels.length, flat.length / 5); i++) {
     const x = flat[i * 5 + 1], z = flat[i * 5 + 2], rem = flat[i * 5 + 3];
     vtmp.set(x, terrain.heightAt(x, z) + 3.2, z).project(rig.cam);
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1.05 && Math.abs(vtmp.y) < 1.05 && Math.hypot(x - rig.target.x, z - rig.target.z) < 210;
-    const el = depLabels[i]; el.hidden = !on || flat[i * 5 + 4] <= 0; if (el.hidden) continue;
-    el.style.left = ((vtmp.x * 0.5 + 0.5) * innerWidth) + 'px'; el.style.top = ((-vtmp.y * 0.5 + 0.5) * innerHeight) + 'px';
-    const text = depositLabel(DEPOSIT[flat[i * 5]].name, { rem, max: flat[i * 5 + 4], asleep: asleep[i] === 1 });
-    (el.firstElementChild as HTMLElement).textContent = text; el.classList.toggle('dormant', asleep[i] === 1); el.title = asleep[i] === 1 ? 'Dormant, recovering. It wakes by itself once it has regrown. Click twice to clear it off the land (40 wood, 10 tools)' : 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
+    const el = depLabels[i], hide = !on || flat[i * 5 + 4] <= 0;
+    if (el.hidden !== hide) el.hidden = hide;
+    if (hide) continue;
+    // moved with a transform (no layout), and the text, class and tooltip are written only when they change, not every frame
+    el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
+    const dormant = asleep[i] === 1, text = depositLabel(DEPOSIT[flat[i * 5]].name, { rem, max: flat[i * 5 + 4], asleep: dormant });
+    if (el.dataset.t !== text) { el.dataset.t = text; (el.firstElementChild as HTMLElement).textContent = text; }
+    if (el.dataset.a !== String(dormant)) {
+      el.dataset.a = String(dormant); el.classList.toggle('dormant', dormant);
+      el.title = dormant ? 'Dormant, recovering. It wakes by itself once it has regrown. Click twice to clear it off the land (40 wood, 10 tools)' : 'Click twice to clear this deposit off the land (40 wood, 10 tools)';
+    }
   }
 }
 
@@ -3834,8 +3872,8 @@ function updateHallLabels(all: Village[]) {
     const on = vtmp.z < 1 && Math.abs(vtmp.x) < 1 && Math.abs(vtmp.y) < 1 && rig.dist > 28;
     el.hidden = !on; if (!on) continue;
     el.style.transform = `translate(${Math.round((vtmp.x * 0.5 + 0.5) * innerWidth)}px, ${Math.round((-vtmp.y * 0.5 + 0.5) * innerHeight)}px) translate(-50%, -100%)`;
-    const html = `${icon(v.mine ? 'castle' : 'attack', 18)}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`;
-    if (el.dataset.h !== html) { el.dataset.h = html; el.innerHTML = html; }
+    const key = `${v.mine}|${tier}|${v.name}`;   // the label's HTML (icon included) is rebuilt only when one of these changes, not every frame
+    if (el.dataset.k !== key) { el.dataset.k = key; el.innerHTML = `${icon(v.mine ? 'castle' : 'attack', 18)}<b>${esc(v.name)}</b><span>${tierName(15, tier).toUpperCase()}</span>`; }
   }
 }
 
@@ -3892,17 +3930,42 @@ function adaptResolution(frameMs: number) {
   if (++resFrames < 90 || resFrames % 45 !== 0) return;   // let things settle after loading, then adjust a little at a time
   const was = resScale;
   const budget = settings().fpsCap === 30 ? 34 : 17.5;
-  if (slowMs > budget && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.1);
-  else if (slowMs < 13 && resScale < 1) resScale = Math.min(1, resScale + 0.1);
+  // Fewer pixels only help when the graphics card is what holds the frame back. Where the browser can time the GPU, a slow frame with the GPU well inside the
+  // budget is the CPU's (simulation, scripts, many villages): lowering the resolution then only blurs the picture, so it is left alone, and given back if it was
+  // lowered before. Without GPU timing (most phones and tablets) the frame time alone decides, as before.
+  const gpu = perf.gpuTime;
+  const gpuBound = gpu === null || gpu > budget * 0.8, gpuRoom = gpu !== null && gpu < budget * 0.55;
+  if (slowMs > budget && gpuBound && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.1);
+  else if ((slowMs < 13 || gpuRoom) && resScale < 1) resScale = Math.min(1, resScale + 0.1);
   if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
 }
 
-/** A handful of real point lights, moved each moment to the lanterns nearest the camera: at night they throw warm pools of light on the street. (Always in the scene, dark by day, so
- *  the shaders never have to be rebuilt when evening comes.) */
+/** A handful of real point lights, moved each moment to the lanterns nearest the camera: at night they throw warm pools of light on the street.
+ *
+ *  Every lit material pays for every point light on every pixel, even a light at intensity 0, so the lamps and the fire light are hidden while none of them gives
+ *  any light (all day, unless something burns). Hiding them changes the shaders three.js uses, so `warmUp()` compiles both versions behind the loading screen
+ *  (three.js keeps every version a material has used), and switching between them later costs nothing. They are created before `warmUp()` for the same reason:
+ *  created on the first frame, they forced every shader to be rebuilt just after loading. */
 const lampLights: THREE.PointLight[] = [];
-let lampT = 0;
-function lightLamps(all: Village[], now: number) {
+let lampT = 0, pointLightsOn = true, pointLightsIdle = 0;
+function addLampLights() {
   if (!lampLights.length) for (let i = 0; i < 4; i++) { const l = new THREE.PointLight(0xffb464, 0, 17, 1.5); scene.add(l); lampLights.push(l); }
+}
+function setPointLights(on: boolean) {
+  pointLightsOn = on;
+  for (const l of lampLights) l.visible = on;
+  fx.light.visible = on;
+}
+/** After the lamps and fires have set their intensities for this frame: show the point lights while any of them shines, hide them once all have been dark for a
+ *  couple of seconds (so a fire that flickers out and back does not switch them every frame). */
+function updatePointLights(dt: number) {
+  const lit = fx.light.intensity > 0 || lampLights.some(l => l.intensity > 0);
+  pointLightsIdle = lit ? 0 : pointLightsIdle + dt;
+  if (lit && !pointLightsOn) setPointLights(true);
+  else if (!lit && pointLightsOn && pointLightsIdle > 2) setPointLights(false);
+}
+function lightLamps(all: Village[], now: number) {
+  addLampLights();
   const k = atmo.night;
   if (k < 0.02) { for (const l of lampLights) l.intensity = 0; return; }
   if (now - lampT > 150) {   // pick the nearest lanterns a few times a second, not every frame
@@ -4026,6 +4089,7 @@ function frame(now: number) {
   const fires = fireBuf.subarray(0, nf);
   if (fx.group.visible || effects.group.visible) effectView.update(rig.cam);
   fx.update(worldDt, fires, rig.cam.position, effectView);
+  updatePointLights(dt);
   effects.update(worldDt, sceneTime, all.map(v => v.view), rig.target.x, rig.target.z, view, effectView);
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
@@ -4038,11 +4102,11 @@ function frame(now: number) {
     miniT = now;
     const corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => { ndc.set(u * 2 - 1, -(v * 2 - 1)); ray.setFromCamera(ndc, rig.cam); const p = terrain.pick(ray.ray); return p ? { x: p.x, z: p.z } : null; });
     const view = corners.every(c => c) ? (corners as { x: number; z: number }[]) : null;
-    const mapV = (v: Village, color: string, name: string): MapVillage => { const f = v.world.buildings_flat(), b: MapVillage['buildings'] = []; for (let i = 0; i < f.length; i += 10) b.push({ x: f[i + 2], z: f[i + 3], r: shared.radii[f[i]], kind: f[i] }); return { x: v.ox, z: v.oz, r: v.radius, color, name, buildings: b }; };
+    const mapV = (v: Village, color: string, name: string): MapVillage => { const f = buildingsNow(v.world), b: MapVillage['buildings'] = []; for (let i = 0; i < f.length; i += 10) b.push({ x: f[i + 2], z: f[i + 3], r: shared.radii[f[i]], kind: f[i] }); return { x: v.ox, z: v.oz, r: v.radius, color, name, buildings: b }; };
     const villages = [mapV(lv, '#5f8fe0', myName), ...[...rivals.values()].map(r => mapV(r.village, '#e05f5f', r.name))];
     const armies = [lv, ...[...rivals.values()].map(r => r.village)].flatMap((v, k) => v.field.ids().map(id => ({ ...v.field.position(id)!, color: k ? '#ff8a7a' : '#8fb8ff' })));
-    for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(v.world.battle_units_flat()); if (c) armies.push({ x: c.x, z: c.z, color: '#ff2d1a' }); }   // the raiders, wherever they are
-    const mo = { fog: lv.world.explored_flat(), neutrals: lv.world.neutrals_flat(), villages, armies, deposits: lv.world.deposits_flat(), showDeposits, view, target: { x: rig.target.x, z: rig.target.z } };
+    for (const v of allVillages()) { if (!v.world.battle_active() || v.world.battle_lair().length) continue; const c = foeCentroid(battleUnits(v.world)); if (c) armies.push({ x: c.x, z: c.z, color: '#ff2d1a' }); }   // the raiders, wherever they are
+    const mo = { fog: lv.world.explored_flat(), neutrals: lv.world.neutrals_flat(), villages, armies, deposits: depositsNow(lv.world).flat, showDeposits, view, target: { x: rig.target.x, z: rig.target.z } };
     minimap.draw(mo); if (ui.mapOpen()) bigMap.draw(mo);
   }
   perf.stop('labels + minimap');

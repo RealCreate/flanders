@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { freeze } from './static';
 import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { trees_in } from '../wasm/game_core.js';
 import { HALF, type Terrain } from './terrain';
@@ -250,6 +251,7 @@ export class Forest {
         if (!sector) {
           sector = { x: (sx + 0.5) * SECTOR, z: (sz + 0.5) * SECTOR, local: new THREE.Group(), distant: new THREE.Group(), batches: [], merged: new Map(), bounds: new THREE.Box3(), dirty: true };
           sector.distant.visible = false;
+          freeze(sector.local, sector.distant);
           this.sectors.set(id, sector);
           this.group.add(sector.local, sector.distant);
         }
@@ -297,6 +299,8 @@ export class Forest {
           vColor.rgb *= uForestSky + uForestDaylight * (0.22 + 0.66 * sun);
         #endif`);
     };
+    // the forest's containers never move (every instance is in world coordinates): frozen, they no longer force thousands of tree meshes to recompute world matrices every frame
+    freeze(this.group, this.shadowGroup);
     this.group.add(this.shadowGroup);
     for (const [tile, layoutsByType] of layouts) for (const [type, ids] of layoutsByType) {
       const mesh = new TreeMesh(this.geos[type][1], this.farMat, ids.length);

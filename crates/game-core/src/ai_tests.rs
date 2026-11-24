@@ -50,6 +50,14 @@ fn it_is_deterministic_and_seeded() {
 }
 
 #[test]
+fn hash_and_parts_match_the_separate_calls() {
+    let (w, _) = play(9, 3, 10);
+    let both = w.state_hash_and_parts();
+    assert_eq!(both[0], w.state_hash());
+    assert_eq!(&both[1..], &w.state_hash_parts()[..]);
+}
+
+#[test]
 fn it_trains_soldiers_and_builds_defences() {
     // bandits raid the computer's villages like anybody's and may sack one, so look at the best the village reached, not the day it was counted
     let ok = (1..=5u64).filter(|&seed| {

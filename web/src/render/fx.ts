@@ -90,7 +90,8 @@ export class Particles {
   }
 }
 
-interface Shot { m: THREE.Object3D; t: number; dur: number; a: THREE.Vector3; b: THREE.Vector3; arc: number; fire: boolean; stone: boolean; nextTrail: number }
+/** A flying arrow or stone. Drawn as one instance of `Effects2.arrows` or `.stones` (it used to be a mesh of its own: one draw call per arrow in a volley). */
+interface Shot { pos: THREE.Vector3; q: THREE.Quaternion; t: number; dur: number; a: THREE.Vector3; b: THREE.Vector3; arc: number; fire: boolean; stone: boolean; nextTrail: number }
 
 /** Flames, smoke, arrows, stones, dust and fire light. */
 export class Effects2 {
@@ -99,7 +100,8 @@ export class Effects2 {
   private smoke = new Particles(1800, false, 0.8, 0.4);
   private dust = new Particles(500, false, -3, 1.4);
   private shots: Shot[] = [];
-  private light = new THREE.PointLight(0xff7a2a, 0, 34, 2);
+  /** The light of the nearest fire. Not in `group` (main.ts adds it to the scene): hiding the particles must not change how many lights the shaders were built for. */
+  readonly light = new THREE.PointLight(0xff7a2a, 0, 34, 2);
   private shotPosition = new THREE.Vector3();
   private shotLook = new THREE.Vector3();
   private acc: number[] = [];
@@ -107,10 +109,17 @@ export class Effects2 {
   private arrowMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2a });
   private stoneGeo = new THREE.IcosahedronGeometry(0.32, 0);
   private stoneMat = new THREE.MeshStandardMaterial({ color: 0x8a8782, roughness: 1 });
+  private arrows = new THREE.InstancedMesh(this.arrowGeo, this.arrowMat, 1024);
+  private stones = new THREE.InstancedMesh(this.stoneGeo, this.stoneMat, 128);
+  private aim = new THREE.Object3D();
   private t = 0;
 
   constructor(private terrain: Terrain) {
-    this.group.add(this.dust.points, this.smoke.points, this.flames.points, this.light);
+    this.group.add(this.dust.points, this.smoke.points, this.flames.points);
+    for (const m of [this.arrows, this.stones]) {
+      m.count = 0; m.visible = false; m.frustumCulled = false; m.castShadow = false; m.matrixAutoUpdate = false;
+      m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); this.group.add(m);
+    }
   }
 
   warm(on: boolean) { this.flames.warm(on); this.smoke.warm(on); this.dust.warm(on); }
@@ -119,9 +128,8 @@ export class Effects2 {
   shot(kind: number, x0: number, z0: number, x1: number, z1: number, fire: boolean, y0 = 1.5) {
     const stone = kind === 1;
     const a = new THREE.Vector3(x0, this.terrain.heightAt(x0, z0) + (stone ? 2.4 : y0), z0), b = new THREE.Vector3(x1, this.terrain.heightAt(x1, z1) + (stone ? 0.4 : 1.1), z1);
-    const m = new THREE.Mesh(stone ? this.stoneGeo : this.arrowGeo, stone ? this.stoneMat : this.arrowMat); m.castShadow = false; this.group.add(m);
     const d = a.distanceTo(b);
-    this.shots.push({ m, t: 0, dur: Math.max(0.35, d / (stone ? 15 : 30)), a, b, arc: stone ? d * 0.35 : d * 0.08, fire, stone, nextTrail: 0 });
+    this.shots.push({ pos: a.clone(), q: new THREE.Quaternion(), t: 0, dur: Math.max(0.35, d / (stone ? 15 : 30)), a, b, arc: stone ? d * 0.35 : d * 0.08, fire, stone, nextTrail: 0 });
   }
 
   /** The ogre's slam: a ring of dust and small stones thrown outward from where he struck. */
@@ -143,9 +151,8 @@ export class Effects2 {
   }
 
   arrowAt(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) {
-    const m = new THREE.Mesh(this.arrowGeo, this.arrowMat); this.group.add(m);
     const a = new THREE.Vector3(x0, y0, z0), b = new THREE.Vector3(x1, y1, z1), d = a.distanceTo(b);
-    this.shots.push({ m, t: 0, dur: Math.max(0.3, d / 30), a, b, arc: d * 0.08, fire: false, stone: false, nextTrail: 0 });
+    this.shots.push({ pos: a.clone(), q: new THREE.Quaternion(), t: 0, dur: Math.max(0.3, d / 30), a, b, arc: d * 0.08, fire: false, stone: false, nextTrail: 0 });
   }
 
   /** A bucket of water thrown onto a burning building: droplets in an arc, then a hiss of steam. */
@@ -208,14 +215,19 @@ export class Effects2 {
 
     // projectiles
     const v = this.shotPosition, look = this.shotLook;
-    let survivors = 0;
+    let survivors = 0, nArrows = 0, nStones = 0;
+    const aim = this.aim;
     for (const s of this.shots) {
       s.t += dt; const u = Math.min(1, s.t / s.dur);
       v.lerpVectors(s.a, s.b, u); v.y += s.arc * 4 * u * (1 - u);
       if (u < 1) {
-        look.subVectors(v, s.m.position); s.m.position.copy(v);
-        if (look.lengthSq() > 1e-6) s.m.lookAt(look.add(v));
-        if (s.stone) s.m.rotation.x += dt * 8;
+        look.subVectors(v, s.pos); s.pos.copy(v);
+        aim.position.copy(v); aim.quaternion.copy(s.q);
+        if (look.lengthSq() > 1e-6) { aim.lookAt(look.add(v)); s.q.copy(aim.quaternion); }   // point along the flight path
+        if (s.stone) aim.rotation.x += dt * 8;
+        aim.updateMatrix();
+        if (s.stone) { if (nStones < 128) this.stones.setMatrixAt(nStones++, aim.matrix); }
+        else if (nArrows < 1024) this.arrows.setMatrixAt(nArrows++, aim.matrix);
         if (enabled && (s.stone || s.fire) && s.t >= s.nextTrail && (!view || view.includes(v.x, v.y, v.z, 6))) {
           s.nextTrail = s.t + 1 / 30 - 0.001;
           if (s.stone) this.smoke.emit(v.x, v.y, v.z, 0, 0.2, 0, 0.8, 0.5, 1.4, 0.3, 0.28, 0.26, 0.4);
@@ -223,13 +235,16 @@ export class Effects2 {
         }
         this.shots[survivors++] = s;
       } else {
-        this.group.remove(s.m);
         if (!enabled || (view && !view.includes(s.b.x, s.b.y, s.b.z, 16))) continue;
         if (s.stone) this.burst(s.b.x, s.b.z, true);
         else if (s.fire) this.flames.emit(s.b.x, s.b.y, s.b.z, 0, 1, 0, 0.8, 1.2, 0.2, 1, 0.5, 0.1, 0.9);
       }
     }
     this.shots.length = survivors;
+    for (const [m, n] of [[this.arrows, nArrows], [this.stones, nStones]] as const) {
+      m.count = n; m.visible = n > 0;
+      if (n) { m.instanceMatrix.clearUpdateRanges(); m.instanceMatrix.addUpdateRange(0, n * 16); m.instanceMatrix.needsUpdate = true; }
+    }
     this.flames.update(dt); this.smoke.update(dt); this.dust.update(dt);
   }
 }

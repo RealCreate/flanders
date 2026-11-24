@@ -39,6 +39,8 @@ export class Perf {
   toggle(on = !this.open) { this.open = on; this.panel.hidden = !on; }
 
   attachGpu(gl: WebGL2RenderingContext) { this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2'); }
+  /** Smoothed GPU time of the main render in ms, or null where the browser does not offer GPU timer queries (most phones and tablets, Safari). */
+  get gpuTime(): number | null { return this.gpuOk ? this.gpuMs : null; }
   setLayers(l: Layer[]) { this.layers = l; }
 
   /** Measure a CPU section (exponentially smoothed milliseconds). */

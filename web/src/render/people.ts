@@ -452,15 +452,19 @@ export class People {
       n++;
     }
     this.cartBody.count = this.cartLoad.count = this.cartShaft.count = n; this.cartWheel.count = w;
+    this.cartBody.visible = this.cartLoad.visible = this.cartShaft.visible = this.cartWheel.visible = n > 0;   // empty instanced meshes still cost a program bind per pass
     for (const q of [this.cartBody, this.cartLoad, this.cartShaft, this.cartWheel]) q.instanceMatrix.needsUpdate = true;
     if (this.cartLoad.instanceColor) this.cartLoad.instanceColor.needsUpdate = true;
   }
   private ty = new THREE.Vector3(0, 1, 0); private tx = new THREE.Vector3(1, 0, 0);
+  /** Reused every frame by draw() and drawStations(): Crowd reads a Draw and keeps nothing of it. */
+  private dv: Draw = { x: 0, y: 0, z: 0, yaw: 0, pose: 0, phase: 0, body: 0, skin: 0 };
+  private present = new Map<number, number>();
 
   /** Queue everyone for drawing. */
   /** Queue everyone near the view for drawing (people far outside the screen are skipped). */
   draw(crowd: Crowd, cx = 0, cz = 0, radius = 1e9, camera?: THREE.Vector3, detailRange = Infinity) {
-    if (this.hidden) { this.cartBody.count = this.cartLoad.count = this.cartShaft.count = this.cartWheel.count = 0; return; }
+    if (this.hidden) { this.cartBody.count = this.cartLoad.count = this.cartShaft.count = this.cartWheel.count = 0; this.cartBody.visible = this.cartLoad.visible = this.cartShaft.visible = this.cartWheel.visible = false; return; }
     const r2 = radius * radius, detail2 = detailRange ** 2;
     const detailed = (x: number, y: number, z: number) => !camera || (x - camera.x) ** 2 + (y - camera.y) ** 2 + (z - camera.z) ** 2 <= detail2;
     this.drawCarts(cx, cz, r2); this.drawStations(crowd, cx, cz, r2, detailed);
@@ -480,18 +484,18 @@ export class People {
       const walking = a.route.length > 0 && a.at < a.route.length;
       const pose: Draw['pose'] = walking ? 1 : a.fight && a.fs === 4 ? 3 : a.aim ? 3 : a.fight ? 0 : a.crew ? (a.cs === 2 ? 2 : 0) : a.work > 0 && a.goingToWork && a.tool && !a.hunter ? 2 : 0;
       const y = this.terrain.walkAt(a.x, a.z);
-      crowd.addVillager({
-        x: a.x, y, z: a.z, yaw: a.yaw + (walking ? 0 : Math.sin(this.t * 0.9 + a.seed) * 0.35), pose, phase: walking ? a.gait : this.t + a.seed, speed: walking ? a.pace : 0,
-        body: a.body, skin: a.skin, hat: a.hat, tool: a.fight ? TOOL.BUCKET : a.tool || undefined, dress: a.dress, scale: a.scale, swing: a.aim ? 0 : a.fight && a.fs === 4 ? Math.max(0.05, a.fsT / 0.7) : undefined,
-        legs: a.dress ? a.body : 0x4a3a2a,
-      }, detailed(a.x, y, a.z));
+      const d = this.dv;   // one object refilled for every villager, every frame, instead of a new one each
+      d.x = a.x; d.y = y; d.z = a.z; d.yaw = a.yaw + (walking ? 0 : Math.sin(this.t * 0.9 + a.seed) * 0.35); d.pose = pose; d.phase = walking ? a.gait : this.t + a.seed; d.speed = walking ? a.pace : 0;
+      d.body = a.body; d.skin = a.skin; d.hat = a.hat; d.tool = a.fight ? TOOL.BUCKET : a.tool || undefined; d.dress = a.dress; d.scale = a.scale; d.swing = a.aim ? 0 : a.fight && a.fs === 4 ? Math.max(0.05, a.fsT / 0.7) : undefined;
+      d.legs = a.dress ? a.body : 0x4a3a2a;
+      crowd.addVillager(d, detailed(a.x, y, a.z));
     }
   }
 
   /** Workers stand at their workplace for only part of the day (the rest they walk or are at home), and there are fewer walking villagers than workers, so a busy building could look
    *  empty. Every workplace with workers always shows at least one (up to two) of them at work beside it, in addition to any who are really there. */
   private drawStations(crowd: Crowd, cx: number, cz: number, r2: number, detailed: (x: number, y: number, z: number) => boolean) {
-    const present = new Map<number, number>();
+    const present = this.present; present.clear();
     for (const a of this.agents) {
       if (a.route.length && a.at < a.route.length) continue;
       const B = this.bld[a.work]; if (!B || Math.hypot(a.x - B.x, a.z - B.z) > this.radii[B.kind] + 4.5) continue;
@@ -505,11 +509,11 @@ export class People {
         const look = LOOKS[B.kind], seed = b * 13 + k * 7, r = (j: number) => { const x = Math.sin(seed * 12.9898 + j * 78.233) * 43758.5453; return x - Math.floor(x); };
         const woman = !look && r(1) < 0.5;
         const y = this.terrain.walkAt(p.x, p.y);
-        crowd.addVillager({
-          x: p.x, y, z: p.y, yaw: Math.atan2(B.x - p.x, B.z - p.y) + Math.sin(this.t * 0.7 + seed) * 0.25, pose: 2, phase: this.t * 1.1 + seed, speed: 0,
-          body: look ? look[2][Math.floor(r(2) * look[2].length)] : woman ? DRESS[Math.floor(r(2) * DRESS.length)] : PLAIN[Math.floor(r(2) * PLAIN.length)], skin: SKIN[Math.floor(r(3) * SKIN.length)],
-          hat: look?.[0], tool: look ? look[1] || undefined : undefined, dress: woman, scale: 1 + (r(4) - 0.5) * 0.1, legs: woman ? DRESS[0] : 0x4a3a2a,
-        }, detailed(p.x, y, p.y));
+        const d = this.dv;
+        d.x = p.x; d.y = y; d.z = p.y; d.yaw = Math.atan2(B.x - p.x, B.z - p.y) + Math.sin(this.t * 0.7 + seed) * 0.25; d.pose = 2; d.phase = this.t * 1.1 + seed; d.speed = 0;
+        d.body = look ? look[2][Math.floor(r(2) * look[2].length)] : woman ? DRESS[Math.floor(r(2) * DRESS.length)] : PLAIN[Math.floor(r(2) * PLAIN.length)]; d.skin = SKIN[Math.floor(r(3) * SKIN.length)];
+        d.hat = look?.[0]; d.tool = look ? look[1] || undefined : undefined; d.dress = woman; d.scale = 1 + (r(4) - 0.5) * 0.1; d.legs = woman ? DRESS[0] : 0x4a3a2a; d.swing = undefined;
+        crowd.addVillager(d, detailed(p.x, y, p.y));
       }
     }
   }
