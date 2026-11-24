@@ -634,6 +634,16 @@ const mint: Model = b => {
 };
 
 
+/** A fire station: a brick engine house with a big red door, a hose tower and a water cart standing out front. */
+const firestation: Model = b => {
+  const t = b.t, m = M(), red = new THREE.MeshStandardMaterial({ color: 0xa8362a, roughness: 0.8 });
+  b.box(4.2, 2.2, 3.0, t >= 1 ? m.stone : m.plaster, 0, 0, 0); b.gable(4.2, 3.0, 1.2 + t * 0.2, t >= 1 ? m.slate : m.tile, 0, 2.2, 0, 0.35);
+  b.box(2.0, 1.7, 0.12, red, -0.5, 0, 1.52); b.box(0.12, 1.7, 0.14, m.darkwood, -0.5, 0, 1.55);
+  b.box(1.1, 3.6, 1.1, m.stone, 1.7, 0, -0.9); b.pyramid(1.4, 1.4, 0.9, m.slate, 1.7, 3.6, -0.9);
+  b.cyl(0.55, 0.55, 0.7, m.wood, -1.4, 0.55, 2.4, 10).rotation.z = Math.PI / 2; b.box(1.4, 0.15, 0.7, m.darkwood, -1.4, 0.35, 2.4);
+  for (const dz of [-0.3, 0.3]) b.cyl(0.3, 0.3, 0.1, m.darkwood, -1.4, 0.3, 2.4 + dz * 1.2, 10).rotation.x = Math.PI / 2;
+};
+
 const well: Model = b => {
   const t = b.t, m = M();
   b.cyl(1.0, 1.1, 0.9, t >= 2 ? m.stone : m.stone, 0, 0, 0, 14); b.cyl(0.8, 0.8, 0.05, m.glass, 0, 0.8, 0, 14);
@@ -1457,7 +1467,7 @@ const bakery: Model = b => {
   if (t >= 2) b.box(W + 0.6, 0.2, 0.5, m.timber, 0, h + 0.1, D / 2 + 0.3);   // an awning over the counter
   if (t >= 3) b.flag(-W / 2 + 0.2, h + 1.8, -D / 2 + 0.3, 2.0);
 };
-const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza, livestockPen(false), livestockPen(true), stable, forester, embassy];
+const MODELS: Model[] = [house, farm, wall, tower, woodcutter, sawmill, quarry, claypit, brickworks, mine(false), mine(true), charcoal, smelter, blacksmith, mint, townhall, well, chapel, lodge, barracks, builders, fence, gate, drawbridge, moat, storehouse, keep, courthouse, market, waterwheel, garden, park, riverPiece, moundPiece, pitPiece, port, toll, roadPiece, bridgeGhost, hospital, graveyard, fishingHut, smokehouse, bakery, plaza, livestockPen(false), livestockPen(true), stable, forester, embassy, firestation];
 
 /** Merge a finished building's static meshes into one mesh per material. A house is built from dozens of boxes, beams and
  *  roof pieces; drawn separately each one costs a draw call (and another in the shadow pass). Animated parts (flags, wheels,

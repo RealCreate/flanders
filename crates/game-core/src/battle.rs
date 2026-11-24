@@ -38,6 +38,10 @@ pub const FIRE_RANGE: f32 = 9.0;
 pub const WELL_CREW: f32 = 2.0;
 pub const BUILDER_CREW: f32 = 3.0;
 pub const HELP_CUT: f32 = 0.06;
+/// A staffed fire station within `STATION_RANGE` (at most two count): `STATION_CREW` firefighters each, villagers who need no well, `STATION_EXTRA_CUT` more off the damage beyond the usual cap, and fires burn out `STATION_QUENCH` faster per station.
+pub const STATION_CREW: f32 = 4.0;
+pub const STATION_EXTRA_CUT: f32 = 0.12;
+pub const STATION_QUENCH: f32 = 1.5;
 
 /// A ram does this many times its blow to a gate (doors), a wall, and anything else it is set against; it hits soldiers for a fraction (see its stats in military.rs).
 pub const RAM_VS_GATE: f32 = 4.0;
@@ -272,6 +276,7 @@ impl World {
         let nb = self.buildings.len();
         let wells: Vec<(f32, f32)> = self.buildings.iter().filter(|b| b.kind == WELL).map(|b| (b.x, b.y)).collect();
         let yards: Vec<(f32, f32)> = self.buildings.iter().filter(|b| b.kind == BUILDERS && b.staff > 0 && b.hp > 0.0).map(|b| (b.x, b.y)).collect();
+        let stations: Vec<(f32, f32)> = self.buildings.iter().filter(|b| b.kind == FIRE_STATION && b.staff > 0 && b.hp > 0.0).map(|b| (b.x, b.y)).collect();
         let mut ignite: Vec<usize> = vec![];
         let mut forest_spawn: Vec<(f32, f32)> = vec![];
         let fighters = self.firefighters() as f32;
@@ -286,8 +291,11 @@ impl World {
             let mut help = 0.0f32;
             if w18 > 0 { help = fighters + WELL_CREW * w18.min(2) as f32 } else if w36 > 0 { help = fighters * 0.5 + WELL_CREW * 0.5 }
             help += BUILDER_CREW * near(&yards, radii::YARD_FIRE_RANGE).min(2) as f32;
-            self.buildings[i].hp -= FIRE_DAMAGE * (4.0 + 14.0 * fl) * dt * (1.0 - (help * HELP_CUT).min(0.75));
-            self.buildings[i].burning -= dt * (1.0 + help * 0.55);
+            let ns = near(&stations, radii::STATION_RANGE).min(2) as f32;
+            if ns > 0.0 { if w18 == 0 { help += fighters * 0.5; } help += STATION_CREW * ns; }
+            let cut = ((help * HELP_CUT).min(0.75) + STATION_EXTRA_CUT * ns).min(0.93);
+            self.buildings[i].hp -= FIRE_DAMAGE * (4.0 + 14.0 * fl) * dt * (1.0 - cut);
+            self.buildings[i].burning -= dt * (1.0 + help * 0.55 + STATION_QUENCH * ns);
             if self.buildings[i].burning <= 0.0 && self.buildings[i].hp > 0.0 { put_out += 1; continue; }
             for j in 0..nb {
                 if j == i || self.buildings[j].burning > 0.0 || self.buildings[j].hp <= 0.0 { continue; }
@@ -298,7 +306,8 @@ impl World {
                 let flj = flammability(self.buildings[j].kind, self.buildings[j].tier);
                 let mut p = FIRE_SPREAD * flj * (1.0 - d / FIRE_RANGE) * (0.7 + 0.55 * align) * dt;
                 let wn = wells.iter().filter(|w| (w.0 - self.buildings[j].x).powi(2) + (w.1 - self.buildings[j].y).powi(2) < radii::WELL_SPARK_RANGE * radii::WELL_SPARK_RANGE).count().min(2);
-                p *= 0.5f32.powi(wn as i32);                       // each well beside it (two count) halves the chance a spark takes
+                let sn = stations.iter().filter(|s| (s.0 - self.buildings[j].x).powi(2) + (s.1 - self.buildings[j].y).powi(2) < radii::STATION_RANGE * radii::STATION_RANGE).count().min(2);
+                p *= 0.5f32.powi((wn + sn) as i32);                       // each well beside it (two count) halves the chance a spark takes
                 if self.rf() < p { ignite.push(j); }
             }
             if self.rf() < 0.006 { forest_spawn.push((bx, by)); }

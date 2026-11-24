@@ -82,6 +82,7 @@ pub const PIGSTY: u8 = 46;
 pub const STABLE: u8 = 47;
 pub const FORESTER: u8 = 48;
 pub const EMBASSY: u8 = 49;
+pub const FIRE_STATION: u8 = 50;
 
 /// Highest upgrade tier of a building: simple fences, drawbridges and moats do not upgrade.
 pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER | RAISE | LOWER | PLAZA | STABLE => 0, PASTURE | PIGSTY => 2, _ => 3 } }   // (a road has its four surfaces: dirt, gravel, cobbles, flagstones)
@@ -89,7 +90,7 @@ pub fn max_tier(kind: u8) -> u8 { match kind { FENCE | DRAWBRIDGE | MOAT | RIVER
 /// Pieces that reshape the ground instead of standing on it.
 pub fn is_edit(kind: u8) -> bool { matches!(kind, MOAT | RIVER | RAISE | LOWER) }
 
-pub static DEFS: [Def; 50] = [
+pub static DEFS: [Def; 51] = [
     Def { name: "House", cat: 0, r: 3.2, weight: 1, cost: &[(W, 12)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 5, max_slope: 0.35, pad: true, desc: "Homes for your villagers. Better tiers house more people." },
     Def { name: "Farm", cat: 1, r: 6.5, weight: 2, cost: &[(W, 25)], jobs: 2, inputs: &[], outputs: &[(GR, 10)], cycle: 8, req: 0, req_arg: 0, housing: 0, max_slope: 0.22, pad: true, desc: "Grows grain to feed the village. Needs flat ground." },
     Def { name: "Wall", cat: 4, r: 2.4, weight: 1, cost: &[(ST, 5)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 2.4, pad: true, desc: "A wall segment. Rotate with R and chain them into a curtain wall." },
@@ -140,6 +141,7 @@ pub static DEFS: [Def; 50] = [
     Def { name: "Stable", cat: 5, r: 5.2, weight: 0, cost: &[(W, 20), (PL, 8)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.35, pad: true, desc: "Houses the village's horses. Its upgrades make caravans, riders and knights quicker: each one counts once across the village, however many stables you build." },
     Def { name: "Forester", cat: 2, r: 3.2, weight: 1, cost: &[(W, 20), (PL, 4)], jobs: 1, inputs: &[], outputs: &[], cycle: 10, req: 0, req_arg: 0, housing: 0, max_slope: 0.6, pad: true, desc: "Plants young trees over time in an area you choose, so a forest grows back where woodcutters and hunters work. Trees take a day and a half to grow; a woodcutter fells grown planted trees before the wild forest. Select it and pick Plant zone to choose the area." },
     Def { name: "Embassy", cat: 5, r: 24.0, weight: 3, cost: &[(PL, 40), (ST, 40), (W, 20), (GD, 30)], jobs: 0, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A vast walled castle-like compound: a keep with a great hall, chapel, granary, armoury and blacksmith; gardens, a well, guard houses, an archery range and a dungeon; and a little hall for every other city with that city's flag on its roof. Upgrade it to send more parties out at once. Open its Diplomacy tab to send caravans, envoys, treaties, wedding parties, heralds and armies to other villages. Its four upgrades make each kind of party travel faster." },
+    Def { name: "Fire Station", cat: 5, r: 3.8, weight: 2, cost: &[(PL, 20), (ST, 15), (W, 10)], jobs: 2, inputs: &[], outputs: &[], cycle: 0, req: 0, req_arg: 0, housing: 0, max_slope: 0.3, pad: true, desc: "A staffed fire brigade with its own water cart and ladders. Within its reach it fights any fire with or without a well, douses burning buildings faster and wets down the neighbours so sparks rarely take. Two stations in reach work together." },
 ];
 
 /// Resources needed to upgrade to `new_tier` (1..=3).

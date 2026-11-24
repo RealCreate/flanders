@@ -8,6 +8,7 @@ export const RELEASES: Release[] = [
     added: [
       'One Settings page (the Settings button in the top bar) with tabs for Display, Sound, While away, Controls, Data & network and About. Everything that used to be spread over the Menu, Display settings, Help and Release notes is there.',
       'Map layers (Map, Reach, Deposits) now sit under the minimap.',
+      'Fire Station (Village buildings): a staffed brigade that fights fires within reach with or without a well, puts them out faster and wets down neighbouring buildings so sparks take half as often. Two stations in reach work together.',
     ],
     changed: [
       'The Village steward is no longer a pop-up. Its report and recovery buttons are at the top of the Village tab, with Winter, Workers and Villagers as sections below. Food and stock breakdowns, and the reserves form, are sections of the Stock tab. Away policy moved to Settings → While away.',

@@ -3660,6 +3660,30 @@ mod tests {
         assert!(with >= without, "a well never makes things worse: {with} vs {without}");
     }
 
+    #[test]
+    fn a_fire_station_saves_more_houses_than_wells_alone() {
+        let run = |station: bool| -> u32 {
+            let mut total = 0;
+            for seed in [1337u64, 7, 99, 2024] {
+                let mut w = World::new(seed, 0, 0);
+                w.stock = [3000; N_RES];
+                for k in 0..8 { w.place(HOUSE, 11 + (k % 4) * 6, 4 + (k / 4) * 6, 0); }
+                w.place(WELL, 17, -2, 0);
+                if station { assert!(w.place(FIRE_STATION, 14, -12, 0) >= 0, "station placed"); }
+                w.population = 40;
+                for _ in 0..10 { w.step(); w.stock[GR as usize] = 3000; }
+                let houses = w.buildings.iter().filter(|b| b.kind == HOUSE).count() as u32;
+                let _ = houses;
+                w.set_fire(1);
+                for _ in 0..300 { w.step(); w.stock[GR as usize] = 3000; w.stock[W as usize] = 3000; w.population = 40; }
+                total += w.buildings.iter().filter(|b| b.kind == HOUSE).count() as u32;
+            }
+            total
+        };
+        let (with, without) = (run(true), run(false));
+        assert!(with >= without, "a fire station never makes things worse: {with} vs {without}");
+    }
+
     fn nav_cell_centre(i: usize) -> (f32, f32) { (((i as i32 % march::NC) as f32) * march::CELL - 1200.0 + march::CELL / 2.0, ((i as i32 / march::NC) as f32) * march::CELL - 1200.0 + march::CELL / 2.0) }
 
     #[test]

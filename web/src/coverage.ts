@@ -2,7 +2,7 @@
 // Every radius comes from the Rust core (`effect_radii`, crates/game-core/src/radii.rs): nothing here repeats a number from the rules.
 
 /** Effect codes, as in radii.rs. */
-export const FX_FIRE_FULL = 0, FX_FIRE_HALF = 1, FX_SPARK_GUARD = 2, FX_YARD_HELP = 3, FX_SHOOT = 4, FX_SHOOT_MIN = 5;
+export const FX_FIRE_FULL = 0, FX_FIRE_HALF = 1, FX_SPARK_GUARD = 2, FX_YARD_HELP = 3, FX_SHOOT = 4, FX_SHOOT_MIN = 5, FX_STATION = 6;
 export interface Radius { r: number; fx: number; pct: number }
 export const STRIDE = 10;   // buildings_flat: kind, tier, x, z, _, pad height, status, cycle %, workers, residents
 
@@ -14,6 +14,7 @@ export const FX_STYLE: Record<number, { color: number; dashed: boolean; fill: nu
   [FX_FIRE_HALF]: { color: 0x7cc4ff, dashed: false, fill: 0.5 },
   [FX_SPARK_GUARD]: { color: 0x9fe0ff, dashed: true, fill: 0 },
   [FX_YARD_HELP]: { color: 0x58d6c0, dashed: false, fill: 0.6 },
+  [FX_STATION]: { color: 0xe0623a, dashed: false, fill: 0.6 },
   [FX_SHOOT]: { color: 0xff6a3a, dashed: false, fill: 1 },
   [FX_SHOOT_MIN]: { color: 0xff6a3a, dashed: true, fill: 0 },
 };
@@ -28,6 +29,8 @@ export function describe(radii: Radius[]): { icon: string; text: string; fx: num
   if (full || half) out.push({ icon: 'water', text: `Fire help: ${full ? `${n(full.r)} full` : ''}${full && half ? ' / ' : ''}${half ? `${n(half.r)} half` : ''}`, fx: [FX_FIRE_FULL, FX_FIRE_HALF] });
   if (spark) out.push({ icon: 'fire', text: `Sparks take half as often within ${n(spark.r)}`, fx: [FX_SPARK_GUARD] });
   if (yard) out.push({ icon: 'buildersyard', text: `Carpenters fight fires within ${n(yard.r)}`, fx: [FX_YARD_HELP] });
+  const station = by(FX_STATION);
+  if (station) out.push({ icon: 'firestation', text: `Fire brigade within ${n(station.r)}: fights fires without a well, sparks take half as often`, fx: [FX_STATION] });
   if (shoot) out.push({ icon: 'archer', text: `Archers shoot ${n(shoot.r)}${min ? `, not closer than ${n(min.r)}` : ''}`, fx: [FX_SHOOT, FX_SHOOT_MIN] });
   return out;
 }

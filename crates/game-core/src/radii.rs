@@ -10,6 +10,8 @@ pub const WELL_HALF_RANGE: f32 = 36.0;
 pub const WELL_SPARK_RANGE: f32 = 16.0;
 /// A staffed builders' yard this close sends carpenters to a fire.
 pub const YARD_FIRE_RANGE: f32 = 45.0;
+/// A staffed fire station this close to a burning building fights it with or without a well, and wets down its neighbours (sparks take half as often).
+pub const STATION_RANGE: f32 = 50.0;
 /// How far a ground-level archer shoots.
 pub const ARCHER_RANGE: f32 = 22.0;
 /// How far a garrison shoots from a tower or keep.
@@ -25,12 +27,14 @@ pub const FX_YARD_HELP: u8 = 3;
 pub const FX_SHOOT: u8 = 4;
 /// Archers cannot shoot closer than this (the code has no such limit yet; the effect code is kept for the interface).
 pub const FX_SHOOT_MIN: u8 = 5;
+pub const FX_STATION: u8 = 6;
 
 /// (radius, effect code, strength in percent) for a building of this kind and tier.
 pub fn effect_radii(kind: u8, tier: u8) -> Vec<(f32, u8, u32)> {
     match kind {
         WELL => vec![(WELL_FULL_RANGE, FX_FIRE_FULL, 100), (WELL_HALF_RANGE, FX_FIRE_HALF, 50), (WELL_SPARK_RANGE, FX_SPARK_GUARD, 50)],
         BUILDERS => vec![(YARD_FIRE_RANGE, FX_YARD_HELP, 100)],
+        FIRE_STATION => vec![(STATION_RANGE, FX_STATION, 100)],
         TOWER | KEEP => vec![(TOWER_RANGE, FX_SHOOT, 100)],
         WALL | GATE if tier >= 1 => vec![(ARCHER_RANGE * WALL_HEIGHT_RANGE, FX_SHOOT, 100)],
         _ => vec![],
