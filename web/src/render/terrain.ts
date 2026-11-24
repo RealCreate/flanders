@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { terrain_land_rows, type World } from '../wasm/game_core.js';
 import { patchWater, waterNormalTexture, type WaterSurface } from './water';
+import { freeze } from './static';
 import { groundDetailTexture, patchGround } from './groundtex';
 import { renderedRiverAt, riverFootprint, riverGrid, riverStageAt, seaGrid, triangleHeight } from './rivergrid';
 
@@ -120,8 +121,10 @@ export class Terrain {
       if (surface.indices.length === 0) continue;
       const river = new THREE.Mesh(waterGeometry(surface), this.riverMaterial);
       river.renderOrder = this.water.renderOrder + 1;
-      this.riverWater.add(river);
+      this.riverWater.add(freeze(river));
     }
+    // none of the ground or river water moves (heights change in the vertex data, not the transforms): frozen, the 225 chunks no longer recompute their matrices every frame
+    freeze(this.mesh, this.riverWater); for (const { mesh } of this.chunks) freeze(mesh);
   }
 
   /** A water surface material: shaded by how deep the water is over the ground (see water.ts). The sea and the water of the moats share it. Reflections are kept gentle: a

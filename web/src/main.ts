@@ -44,6 +44,7 @@ import { Crowd } from './render/crowd';
 import { Travellers, type TVillage } from './render/travellers';
 import { JK, GIFT, arrivedText } from './render/journey';
 import { Effects2, EffectView } from './render/fx';
+import { freeze } from './render/static';
 import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
 import { keys, digitOf, prettyKey, type Action } from './keys';
@@ -1526,6 +1527,8 @@ async function startGame(name: string, username: string, pve = false) {
   pathLine = new PathLine(terrain); scene.add(pathLine.mesh);
   penPreview = new PenPreview(terrain); scene.add(...penPreview.objects);
   worldShips = new WorldShips(terrain); scene.add(worldShips.group);
+  // containers that never move: computed once instead of every frame (see render/static.ts)
+  freeze(tunnels.group, wildlife.group, crowd.group, travellers.group, fx.group, effects.group, worldShips.group);
   minimap = new Minimap(ui.minimap, terrain); bigMap = new Minimap(ui.bigmap, terrain, 900); minimap.tunnels = bigMap.tunnels = tunnels.list;
   ghostRing = new THREE.Mesh(new THREE.RingGeometry(0.9, 1, 56).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x66ff88, transparent: true, opacity: 0.9, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 }));
   ghostRing.visible = false; ghostRing.renderOrder = 9; scene.add(ghostRing);
@@ -1581,7 +1584,7 @@ async function startGame(name: string, username: string, pve = false) {
   lv.onReport = onLocalReport;
   Village.onBossFx = (k, x, z) => { if (Math.hypot(x - rig.target.x, z - rig.target.z) < 200) { if (k === 3) sound.warhorn(); else sound.slam(); } };   // a horn or a slam near the camera is heard
   deposits = new Deposits(w.deposits_flat(), terrain); scene.add(deposits.group); deposits.refit();
-  camps = new Camps(terrain); scene.add(camps.group); camps.sync(w.neutrals_flat());
+  camps = new Camps(terrain); scene.add(freeze(camps.group)); camps.sync(w.neutrals_flat());
   buildDepositLabels();
   refreshTerrain(w); lv.syncFull(); lv.markCaughtUp();
   const ev = w.take_events();
