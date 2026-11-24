@@ -25,6 +25,7 @@ import { loadFlag, saveFlag } from '../flag';
 import { versionLabel } from '../version';
 import { renderNotes } from '../releasenotes';
 import { modals } from './modal';
+import { mountDropdowns } from './dropdown';
 
 /** The keys bound to an action, as they are now (after any rebinding), e.g. "W / Z / ↑". */
 export const keyNames = (a: Action) => keys.binds[a].map(k => `<kbd>${prettyKey(k).toUpperCase()}</kbd>`).join(' ');
@@ -165,6 +166,7 @@ export class UI {
     document.getElementById('app')!.innerHTML = this.template(world, name);
     this.canvas = $('gl') as HTMLCanvasElement;
     this.minimap = $('minimap') as HTMLCanvasElement;
+    mountDropdowns();   // every <select> gets the game's own dropdown
     this.bind();
     this.buildCards();
     this.buildCheats();
@@ -236,9 +238,10 @@ export class UI {
       <details id="muster-box"><summary>Muster a new army</summary>
         <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
         <div class="mrows" id="muster-row"></div>
-        <div class="btnrow"><button class="pbtn" id="muster-go">${bi('muster')} Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
+        <div class="btnrow tiles"><button class="pbtn tile" id="muster-go">${bi('muster', 18)}<span>Muster</span></button><button class="pbtn tile primary" id="muster-all" title="Everyone in the barracks (F)">${bi('army', 18)}<span>Everyone (F)</span></button></div>
       </details>
-      <p class="muted tiny" id="army-embassy">Trade, diplomacy and marching on other villages are handled by the Embassy. <button class="chip" id="army-embassy-go">${bi('embassy', 14)} Open the Embassy</button></p>
+      <p class="muted tiny" id="army-embassy">Trade, diplomacy and marching on other villages are handled by the Embassy.</p>
+      <div class="btnrow tiles"><button class="pbtn tile" id="army-embassy-go">${bi('embassy', 18)}<span>Open the Embassy</span></button></div>
     </div>
     <details class="sect" open><summary>Train soldiers</summary><div class="cards" id="unit-cards"></div></details>
     <details class="sect"><summary>Armory upgrades</summary><div class="cards" id="military-upgrades"></div></details>
@@ -516,6 +519,13 @@ export class UI {
     document.querySelectorAll<HTMLButtonElement>('[data-steward]').forEach(button => {
       button.onclick = () => this.h.steward(button.dataset.steward as StewardAction);
     });
+    // a section that is unfolded by clicking its heading fills itself at once, as it does when something else opens it
+    const onOpen = (id: string, fill: () => void) => $(id).addEventListener('toggle', () => { if (($(id) as HTMLDetailsElement).open) fill(); });
+    onOpen('sec-winter', () => { if (this.lastHud) this.renderWinter(this.lastHud); });
+    onOpen('sec-work', () => { this.h.act('wk:refresh'); if (this.lastHud) this.renderWork(this.lastHud); });
+    onOpen('sec-villagers', () => this.renderVillagers());
+    onOpen('sec-reserves', () => this.fillReserves());
+    onOpen('sec-flow', () => { if (this.lastHud && this.flowOpen !== CLOSED) this.renderFlow(this.lastHud); });
     $('v-work').onclick = () => this.openWork();
     $('v-pop').onclick = () => this.openVillagers();
     $('follow-stop').onclick = () => this.h.followVillager(null);
@@ -660,9 +670,9 @@ export class UI {
         <div class="army-h"><span class="army-n">${bi('muster')} Army ${d.id}</span><span class="badge">${n} soldier${n === 1 ? '' : 's'}</span></div>
         <div class="army-u">${mix}</div>
         <div class="army-s">${esc(d.text)}</div>
-        <div class="army-b"><button class="pbtn ${d.selected ? 'primary' : ''}" data-da="select" data-id="${d.id}">${d.selected ? bi('check') + ' Selected' : 'Select'}</button>
-          <button class="pbtn" data-da="halt" data-id="${d.id}" title="Stop where it stands (G)">${bi('halt')} Halt</button><button class="pbtn" data-da="recall" data-id="${d.id}" title="Send it home (B)">${bi('home')} Home</button>
-          <button class="pbtn" data-da="split" data-id="${d.id}" title="Split the army in two halves">${bi('split')} Split</button><button class="pbtn" data-da="merge" data-id="${d.id}" title="Join the army next to it">${bi('merge')} Merge</button></div></div>`;
+        <div class="army-b"><button class="pbtn tile ${d.selected ? 'primary' : ''}" data-da="select" data-id="${d.id}">${bi(d.selected ? 'check' : 'army', 18)}<span>${d.selected ? 'Selected' : 'Select'}</span></button>
+          <button class="pbtn tile" data-da="halt" data-id="${d.id}" title="Stop where it stands (G)">${bi('halt', 18)}<span>Halt</span></button><button class="pbtn tile" data-da="recall" data-id="${d.id}" title="Send it home (B)">${bi('home', 18)}<span>Home</span></button>
+          <button class="pbtn tile" data-da="split" data-id="${d.id}" title="Split the army in two halves">${bi('split', 18)}<span>Split</span></button><button class="pbtn tile" data-da="merge" data-id="${d.id}" title="Join the army next to it">${bi('merge', 18)}<span>Merge</span></button></div></div>`;
     }).join('') : '<p class="muted">No field armies yet. Muster one below.</p>';
   }
 
@@ -895,7 +905,7 @@ export class UI {
       c.innerHTML = `<div class="ico">${unitIcon(u.id, 30)}</div><div><div class="nm"><span>${u.name}</span><span class="key">tier ${u.tier + 1}</span></div>
         <div class="ds">${u.desc}</div><div class="io">${bi('heart', 14)} ${u.hp} · ${bi('attack', 14)} ${u.dmg} · ${bi('archer', 14)} range ${u.range} · ${bi('shield', 14)} ${u.armor}</div>
         <div class="cost">${u.cost.map(([r, n]) => `<span data-r="${r}" data-n="${n}">${resIcon(r)} ${n}</span>`).join('')}</div>
-        <div class="btnrow" style="margin-top:6px"><button class="pbtn" data-train="1">Train 1</button><button class="pbtn" data-train="5">Train 5</button><button class="pbtn" data-untrain="1" title="Take one out of the queue and get its cost back">Cancel 1</button></div></div>`;
+        <div class="btnrow tiles" style="margin-top:6px"><button class="pbtn tile" data-train="1">${bi('worker', 18)}<span>Train 1</span></button><button class="pbtn tile" data-train="5">${bi('army', 18)}<span>Train 5</span></button><button class="pbtn tile" data-untrain="1" title="Take one out of the queue and get its cost back">${bi('cross', 18)}<span>Cancel 1</span></button></div></div>`;
       c.onclick = e => { const t = e.target as HTMLElement, b = t.closest<HTMLElement>('[data-train]'); if (b) this.h.train(u.id, Number(b.dataset.train)); const x = t.closest<HTMLElement>('[data-untrain]'); if (x) this.h.untrain(u.id, Number(x.dataset.untrain)); };
       el.appendChild(c);
     });
@@ -903,7 +913,7 @@ export class UI {
 
   setMilitaryUpgrades(upgrades: MilitaryUpgrade[]) {
     this.militaryUpgrades = upgrades;
-    $('military-upgrades').innerHTML = upgrades.map(u => `<div class="card"><div><div class="nm">${esc(u.name)}</div><div class="ds">${esc(u.desc)}</div><div class="cost">${u.cost.map(([r, n]) => `<span>${resIcon(r)} ${n}</span>`).join('')}</div></div><button class="pbtn" data-research="${u.id}">Research</button></div>`).join('');
+    $('military-upgrades').innerHTML = upgrades.map(u => `<div class="card"><div><div class="nm">${esc(u.name)}</div><div class="ds">${esc(u.desc)}</div><div class="cost">${u.cost.map(([r, n]) => `<span>${resIcon(r)} ${n}</span>`).join('')}</div></div><button class="pbtn tile" data-research="${u.id}">${bi('tools', 18)}<span>Research</span></button></div>`).join('');
   }
 
   private io(d: BuildingDef) {
@@ -1057,12 +1067,14 @@ export class UI {
     $('split-sum').textContent = `${take} leave · ${have - take} stay`;
     $<HTMLButtonElement>('split-go').disabled = !ok || take === 0 || take === have;
   }
-  openReserves() {
+  openReserves() { this.showSection('stock', 'sec-reserves', 'reserve-grain'); this.fillReserves(); }
+  /** Put the current reserves in the form (when the section is opened, by anything). */
+  private fillReserves() {
     const h = this.lastHud;
     if (!h) return;
     $<HTMLInputElement>('reserve-grain').value = String(h.reserves[0]);
     $<HTMLInputElement>('reserve-wood').value = String(h.reserves[1]);
-    this.showSection('stock', 'sec-reserves', 'reserve-grain'); this.renderReserveStock(h);
+    this.renderReserveStock(h);
   }
   private renderReserveStock(h: Hud) {
     $('reserve-stock').textContent = `In store now · ${h.stocks[10]} grain · ${h.stocks[0]} wood. Set a reserve to zero to turn off its limit.`;
@@ -1193,7 +1205,7 @@ export class UI {
       const u = this.militaryUpgrades[Number(btn.dataset.research)];
       const done = (h.militaryTech & (1 << u.id)) !== 0;
       const lock = h.barracks < u.tier ? `Barracks tier ${u.tier + 1} required` : (h.militaryTech & u.prereq) !== u.prereq ? 'Requires Padded armor' : u.cost.some(([r, n]) => h.stocks[r] < n) ? 'Insufficient supplies' : '';
-      btn.disabled = done || !!lock; btn.textContent = done ? 'Researched' : 'Research'; btn.title = done ? 'Upgrade equipped' : lock;
+      btn.disabled = done || !!lock; btn.querySelector('span')!.textContent = done ? 'Researched' : 'Research'; btn.title = done ? 'Upgrade equipped' : lock;
     });
     document.querySelectorAll<HTMLElement>('#unit-cards .card').forEach(c => { const u = units[Number(c.dataset.u)]; c.classList.toggle('locked', h.barracks < u.tier); });
   }

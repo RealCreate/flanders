@@ -68,6 +68,7 @@ function watch(el: HTMLElement) {
 
 function onKey(e: KeyboardEvent) {
   const top = stack[stack.length - 1]; if (!top) return;
+  if (document.querySelector('.dd-list')) return;   // an open dropdown takes Esc and the arrow keys first (ui/dropdown.ts)
   if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); e.stopPropagation(); modals.close(top.id); return; }
   if (e.key !== 'Tab') return;
   const list = focusables(top.querySelector<HTMLElement>('.sheet') ?? top); if (!list.length) { e.preventDefault(); return; }
