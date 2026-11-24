@@ -664,3 +664,12 @@ body.cmd-mode #cs-sel { display: none; }
 #ledger .workrow .wn { grid-area: wn; min-width: 0; overflow-wrap: anywhere; } #ledger .workrow .wt { grid-area: wt; } #ledger .workrow .ws { grid-area: ws; }
 #ledger .workrow .wc { grid-area: wc; min-width: 0; } #ledger .workrow .wc input { min-width: 0; }
 #ledger .workrow .wc .pbtn { min-width: 30px; }
+
+/* scrollbars: thin and in the game's colours (the dark colour scheme made the browser draw big dark ones with arrows) */
+* { scrollbar-width: thin; scrollbar-color: #a88d5a55 transparent; }
+.sheet, .setbody, #ledger .pane, .dd-list { scrollbar-color: #8a6b3fa0 #00000012; }
+*::-webkit-scrollbar { width: 9px; height: 9px; } *::-webkit-scrollbar-button { display: none; }
+*::-webkit-scrollbar-track { background: transparent; } *::-webkit-scrollbar-thumb { background: #8a6b3fa0; border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: #8a6b3f; background-clip: padding-box; }
+.setbody { overflow-x: hidden; padding-right: 6px; } .setrow { min-width: 0; }
+.sheet { color-scheme: light; } #ledger { color-scheme: light; }
