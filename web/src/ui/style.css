@@ -207,7 +207,7 @@ table.res td.r { text-align: right; }
 .stats.five .stat span { font-size: 10.5px; line-height: 1.15; display: block; }
 .card.unit { cursor: default; }
 .card.unit.locked { opacity: .55; }
-.card.unit .btnrow .pbtn { padding: 4px 8px; font-size: 14px; }
+.card.unit .btnrow:not(.tiles) .pbtn { padding: 4px 8px; font-size: 14px; }
 #attack-form select, #attack-form input { font-family: var(--f-old); font-size: 15px; padding: 4px 6px; border: 1px solid var(--paper-edge); background: #f8f0d8; color: var(--ink); border-radius: 3px; }
 #attack-form select { width: 100%; margin-bottom: 6px; }
 .atk-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin-bottom: 8px; }
@@ -398,14 +398,14 @@ kbd { font: inherit; font-size: 0.85em; padding: 0 5px; border: 1px solid #8a7a5
 .army-b { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
 .army-b .pbtn { padding: 4px 2px; font-size: 13.5px; }
 .mrows { display: flex; flex-direction: column; gap: 4px; }
-.mrow { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.mrow { display: grid; grid-template-columns: 26px minmax(0, 1fr) 156px; align-items: center; gap: 8px; }
 .mrow .mi { font-size: 20px; text-align: center; }
 .mrow .mn { font-family: var(--f-old); font-size: 15px; line-height: 1.1; display: flex; flex-direction: column; }
 .mrow .mn small { font-family: var(--f-ui); font-size: 11.5px; color: var(--ink-soft); }
-.step { display: inline-flex; align-items: stretch; border: 1px solid var(--paper-edge); border-radius: 3px; overflow: hidden; background: #f8f0d8; }
-.step button { border: 0; background: var(--paper-2); color: var(--ink); font-family: var(--f-old); font-size: 14px; padding: 2px 6px; cursor: pointer; min-width: 24px; }
+.step { display: grid; grid-template-columns: 30px 26px minmax(0, 1fr) 26px 30px; width: 156px; align-items: stretch; border: 1px solid var(--paper-edge); border-radius: 3px; overflow: hidden; background: #f8f0d8; }
+.step button { border: 0; background: var(--paper-2); color: var(--ink); font-family: var(--f-old); font-size: 14px; padding: 2px 0; cursor: pointer; min-width: 0; }
 .step button:hover { background: #efe2bf; }
-.step input { width: 42px; border: 0; border-left: 1px solid var(--paper-edge); border-right: 1px solid var(--paper-edge); text-align: center; font-family: var(--f-old); font-size: 15px; background: #fffaf0; padding: 2px 0; -moz-appearance: textfield; }
+.step input { width: 100%; min-width: 0; border: 0; border-left: 1px solid var(--paper-edge); border-right: 1px solid var(--paper-edge); text-align: center; font-family: var(--f-old); font-size: 15px; background: #fffaf0; padding: 2px 0; -moz-appearance: textfield; }
 .step input::-webkit-outer-spin-button, .step input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .stats.five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .stats.five .stat { padding-left: 2px; padding-right: 2px; text-align: center; }
@@ -601,8 +601,8 @@ body.cmd-mode #cs-sel { display: none; }
 .vstatus > p { margin: 0; }
 #ledger .flowsheet table.flowtab { font-size: 14px; } #ledger .flowsheet h2.foodh { font-size: 15px; }
 #ledger .worksheet .btnrow { flex-wrap: wrap; }
-#ledger .sect input:not([type=checkbox]):not([type=range]) { width: 100%; font-family: var(--f-old); font-size: 16px; padding: 7px 10px; border: 1px solid var(--paper-edge); background: #f8f0d8; color: var(--ink); border-radius: 3px; }
-#ledger .sect label { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
+#villager-search, #reserve-grain, #reserve-wood { width: 100%; font-family: var(--f-old); font-size: 16px; padding: 7px 10px; border: 1px solid var(--paper-edge); background: #f8f0d8; color: var(--ink); border-radius: 3px; }
+#sec-villagers label, #sec-reserves .reserve-fields label { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
 #ledger .sect > summary { justify-content: flex-start; gap: 8px; } #ledger .sect > summary::after { margin-left: auto; }
 /* the selected pane: what it is, what it does, then one bar of actions (repair, upgrade) and demolish last */
 #pane-sel { position: relative; }
@@ -615,3 +615,47 @@ body.cmd-mode #cs-sel { display: none; }
 /* the battle headline lives in the battle bar with the orders, not as a second banner at the top */
 #battle-controls #battle { position: relative; top: auto; left: auto; transform: none; width: 100%; max-width: min(620px, 92vw); margin: 0 auto; text-align: center; pointer-events: auto; }
 @media (min-width: 901px) { #tool-dock:has(#battle-controls:not([hidden])) { left: calc(50% - 187px); max-width: calc(100vw - 420px); } }
+
+/* ---------- dropdowns (ui/dropdown.ts): the <select> stays, hidden; this is what you see ---------- */
+.dd { position: relative; display: inline-block; max-width: 100%; min-width: 0; vertical-align: middle; }
+.dd .dd-native { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; }
+.dd-btn { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; font-family: var(--b-font); font-size: var(--b-size); line-height: 1.25; padding: var(--b-pad); border: 1px solid var(--b-edge); border-radius: 3px; background: var(--b-bg); color: var(--b-fg); cursor: pointer; }
+.sheet .dd-btn, #ledger .dd-btn, .userfield .dd-btn { background: #f8f0d8; border-color: var(--paper-edge); font-size: 15px; padding: 6px 10px; }
+.dd-btn::after { content: ''; flex: none; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: translateY(-2px) rotate(45deg); opacity: .7; }
+.dd-btn:hover:not(:disabled) { border-color: var(--b-hover-edge); }
+.sheet .dd-btn:hover:not(:disabled), #ledger .dd-btn:hover:not(:disabled) { border-color: var(--ink); }
+.dd-btn:focus-visible { outline: 2px solid var(--gold-soft); outline-offset: 2px; }
+.dd-btn:disabled { opacity: .5; cursor: not-allowed; }
+.dd-btn[aria-expanded="true"] { border-color: var(--gold); }
+.sheet .dd, #ledger .dd, .userfield .dd, .trade-row .dd { display: block; width: 100%; }
+.setrow .dd { display: block; width: 230px; max-width: 45%; flex: none; } .setrow .dd-btn { font-size: 14px; padding: 4px 8px; }
+.flagctl .dd { flex: 1; max-width: 170px; } .flagctl .dd-btn { font-size: inherit; padding: 3px 6px; }
+.trade-row .dd-btn { height: 36px; font-size: 16px; padding: 0 8px; }
+#attack-form .dd { margin-bottom: 6px; } #attack-form .dd-btn { height: 36px; }
+.dd-list { position: fixed; z-index: 70; margin: 0; padding: 3px; list-style: none; overflow: auto; background: #f8f0d8; color: var(--ink); border: 1px solid var(--ink); border-radius: 3px; box-shadow: 0 8px 24px #0009; font-family: var(--f-old); font-size: 15px; user-select: none; }
+.dd-list li { padding: 5px 10px; border-radius: 2px; cursor: pointer; white-space: nowrap; }
+.dd-list li.on { background: var(--gold-soft); }
+.dd-list li[aria-selected="true"] { font-weight: 700; }
+.dd-list li[aria-disabled="true"] { opacity: .45; cursor: default; }
+/* in the battle dock the button is dark like the other tools there */
+#tool-dock .dd-btn { background: #2a2014; border-color: #6d5a38; color: var(--paper); font-size: inherit; padding: 4px 8px; min-height: 30px; border-radius: 5px; }
+#tool-dock .dd-btn:hover:not(:disabled) { border-color: #c9a24a; background: #392b1a; }
+/* the battle headline in the bar: compact (the red notice used to be larger than the controls under it) */
+#battle-controls #battle { padding: 4px 28px 4px 10px; font-size: 13px; letter-spacing: .04em; line-height: 1.25; max-width: min(480px, 92vw); animation: none; box-shadow: none; }
+#battle-controls #battle small { font-size: 11.5px; line-height: 1.3; margin-top: 1px; }
+#battle-controls #battle .bossstrip { font-size: 12px; margin-top: 2px; }
+#battle-controls #battle-bribe { margin-top: 4px; gap: 6px 8px; }
+#battle-controls #battle-pay { padding: 3px 9px; font-size: 12px; }
+#battle-controls .raid-greed { padding: 2px 6px; font-size: 11.5px; }
+#battle-controls #battle-close { top: 2px; right: 4px; font-size: 18px; }
+.tool-select::after { display: none; }
+
+/* tile buttons: the icon always above its label, every tile in a row the same size */
+.pbtn.tile, .btn.tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 54px; padding: 6px 4px; text-align: center; line-height: 1.15; font-size: 14px; }
+.pbtn.tile svg.gi, .btn.tile svg.gi { margin: 0; vertical-align: 0; }
+.pbtn.tile > span, .btn.tile > span { min-width: 0; overflow-wrap: anywhere; }
+.btnrow.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 6px; }
+.btnrow.tiles .pbtn { width: 100%; }
+.army-b .pbtn.tile { padding: 6px 2px; font-size: 13px; }
+.card .btnrow.tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } .card .btnrow.tiles .pbtn.tile { min-height: 48px; font-size: 13px; }
+.card > .pbtn.tile { align-self: center; min-width: 78px; }
