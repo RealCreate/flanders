@@ -1932,7 +1932,7 @@ function battleBanner() {
         () => rig.focus(objective?.x ?? f.x, objective?.z ?? f.z, 65), mine ? { greed: w.bribe_greed() } : undefined);
       const actions: Parameters<UI['battleControls']>[0] = [];
       if (preparing) {
-        actions.push({ label: 'Army panel', icon: 'army', title: 'Check your standing army and training queue', run: () => ui.setTab('army') });
+        actions.push({ label: 'Military', icon: 'army', title: 'Check your standing army and training queue', run: () => ui.setTab('army') });
         if (ready > 0) actions.push({ label: `Man towers (${ready})`, icon: 'watchtower', title: 'Station available archers at towers and keeps nearest the raid', run: () => manRaidTowers(w, objective ?? f) });
         if (paused) actions.push({ label: 'Resume countdown', icon: 'play', title: 'Let the raid countdown continue at normal speed', run: () => { playerPresent(); setSpeed(1); battleBanner(); } });
       }

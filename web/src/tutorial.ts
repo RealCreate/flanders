@@ -32,7 +32,7 @@ export const STEPS: Step[] = [
   { title: 'Water against fire', text: 'Raiders and fires will come. Build a Well. Villagers use it to put fires out.', done: c => c.n(16) >= 1, point: { sel: '#cards .card', has: 'Well' } },
   { title: 'A watchtower', text: 'Build a Watchtower. Its archers shoot at raiders. It needs a garrison to fire.', done: c => c.n(3) >= 1, point: { sel: '#cards .card', has: 'Watchtower' } },
   { title: 'A barracks', text: 'Build a Barracks. This is where you train soldiers.', done: c => c.n(19) >= 1, point: { sel: '#cards .card', has: 'Barracks' } },
-  { title: 'Train archers', text: 'Open the Army tab. Train at least 5 archers. They man the watchtower and defend the village.', done: c => c.army >= 5 },
+  { title: 'Train archers', text: 'Open the Military tab. Train at least 5 archers. They man the watchtower and defend the village.', done: c => c.army >= 5 },
   { title: 'A growing village', text: 'Keep building houses and farms. Reach 20 villagers. Gardens, parks and chapels keep them happy.', done: c => c.pop >= 20 },
   { title: 'Look after the soil', text: 'Click a farm to see its soil. A field sown every season wears out. Set it to Rotate to let it rest. Press Next when you have looked.', point: { sel: '#cards .card', has: 'Farm' } },
   { title: 'A grander hall', text: 'Click your town hall and upgrade it. A better hall widens your border. Keep the ground around it clear.', done: c => c.hall >= 1 },

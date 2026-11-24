@@ -215,7 +215,7 @@ export class UI {
 <button id="hall-exit" class="btn go" hidden>← Leave the test hall</button>
 <aside id="ledger" hidden>
   <div class="tabs" id="tabs">
-    <button class="tab on" data-t="build">Build</button><button class="tab" data-t="army">Army</button><button class="tab" data-t="village">Village</button><button class="tab" data-t="stock">Stock</button><button class="tab" data-t="sel" id="tab-sel" hidden>Selected</button><button class="tabmin" id="ledger-min" title="Hide the panel (H)">▸</button>
+    <button class="tab on" data-t="build">Build</button><button class="tab" data-t="army">Military</button><button class="tab" data-t="village">Village</button><button class="tab" data-t="stock">Stock</button><button class="tab" data-t="sel" id="tab-sel" hidden>Selected</button><button class="tabmin" id="ledger-min" title="Hide the panel (H)">▸</button>
   </div>
   <section class="pane on" id="pane-build">
     <div class="build-find" role="search" aria-label="Building catalog">
@@ -234,20 +234,20 @@ export class UI {
     </div>
   </section>
   <section class="pane" id="pane-army">
-    <div><div class="eyebrow">Military</div><h2>Army</h2></div>
+    <div><div class="eyebrow">Military</div><h2>Military</h2></div>
     <div class="stats five" id="army-stats"></div>
     <p class="muted" id="army-info"></p>
     <div class="sect"><h3>Field armies</h3>
       <div id="det-list" class="armies"></div>
       <p class="muted tiny">Click an army's banner (or press <b>Tab</b>) to select it, then <b>right-click</b> the ground to march. <b>G</b> halts it, <b>B</b> sends it home. Armies walk round buildings, fell trees in their way and bridge or ferry over water.</p>
       <label class="tiny" title="Armies may spend planks to shorten new routes across water. With shortcuts off, they build only if no route over land or an existing bridge is available."><input id="army-bridging" type="checkbox"> Allow automatic bridge shortcuts</label>
+      <details id="muster-box"><summary>Muster a new army</summary>
+        <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
+        <div class="mrows" id="muster-row"></div>
+        <div class="btnrow"><button class="pbtn" id="muster-go">${bi('muster')} Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
+      </details>
+      <p class="muted tiny" id="army-embassy">Trade, diplomacy and marching on other villages are handled by the Embassy. <button class="chip" id="army-embassy-go">${bi('embassy', 14)} Open the Embassy</button></p>
     </div>
-    <div class="sect" id="army-embassy"><h3>Rival villages</h3><p class="muted tiny">Trade, diplomacy and marching on other villages are handled by the Embassy.</p><button class="pbtn" id="army-embassy-go">${bi('embassy')} Open the Embassy</button></div>
-    <details class="sect" id="muster-box"><summary>Muster a new army</summary>
-      <p class="muted tiny">Take soldiers out of the barracks into a field army.</p>
-      <div class="mrows" id="muster-row"></div>
-      <div class="btnrow"><button class="pbtn" id="muster-go">${bi('muster')} Muster</button><button class="pbtn primary" id="muster-all">Everyone <span class="key">F</span></button></div>
-    </details>
     <details class="sect" open><summary>Train soldiers</summary><div class="cards" id="unit-cards"></div></details>
     <details class="sect"><summary>Armory upgrades</summary><div class="cards" id="military-upgrades"></div></details>
     <p class="muted tiny">Towers, the hall and your standing army defend the village. Bandits raid from time to time: stone buildings resist fire, wells and walls help too.</p>
