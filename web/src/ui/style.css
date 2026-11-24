@@ -659,3 +659,8 @@ body.cmd-mode #cs-sel { display: none; }
 .army-b .pbtn.tile { padding: 6px 2px; font-size: 13px; }
 .card .btnrow.tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } .card .btnrow.tiles .pbtn.tile { min-height: 48px; font-size: 13px; }
 .card > .pbtn.tile { align-self: center; min-width: 78px; }
+/* workers in the side panel: the four columns made for the old wide pop-up do not fit, so a row is two lines (name, count and state; then the controls across the full width) */
+#ledger .workrow { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "wn wt ws" "wc wc wc"; gap: 4px 8px; padding: 5px 2px; }
+#ledger .workrow .wn { grid-area: wn; min-width: 0; overflow-wrap: anywhere; } #ledger .workrow .wt { grid-area: wt; } #ledger .workrow .ws { grid-area: ws; }
+#ledger .workrow .wc { grid-area: wc; min-width: 0; } #ledger .workrow .wc input { min-width: 0; }
+#ledger .workrow .wc .pbtn { min-width: 30px; }
