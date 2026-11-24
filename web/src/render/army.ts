@@ -4,7 +4,7 @@ import { buildCatapult, buildRam, buildStandard, setSiegeWheelTravel, ARM_REST, 
 import type { ArmyPicker } from './armypick';
 import { BATTLE_STRIDE as SB, B_BOSS, B_PHASE, B_NAME, B_AURA } from '../bosses';
 import { smoothPath } from './field';
-import { lunge, fallen, mix, decay } from './fight';
+import { lunge, fallen, mix, decay, DECAY } from './fight';
 import { Remains } from './remains';
 import { SiegeWorks } from './siegeworks';
 import { standHeight, onWater, chase } from './wading';
@@ -317,7 +317,9 @@ export class ArmyView {
       f.spd += ((moved / Math.max(dt, 0.001)) - f.spd) * Math.min(1, dt * 5);          // smoothed ground speed, so strides match how fast they really move
       f.gait += Math.PI * moved / (0.55 + 0.13 * f.spd);                               // one step per stride length: no sliding feet
     }
-    this.corpses = this.corpses.filter(c => !decay(this.t - c.t).done).slice(-150);
+    // in place, without building two new arrays every frame (decay(age).done is age >= DECAY.end)
+    let kept = 0; for (const c of this.corpses) if (this.t - c.t < DECAY.end) this.corpses[kept++] = c;
+    this.corpses.length = kept; if (kept > 150) this.corpses.splice(0, kept - 150);
     this.rageT -= dt;
     if (this.battle && this.rageT <= 0) { this.rageT = 0.12; for (const f of this.field) if (f.boss > 0 && f.alive && f.phase > 0) this.onRage?.(f.x, this.terrain.walkAt(f.x, f.z) + f.elev + 1, f.z); }
   }

@@ -181,5 +181,8 @@ test('offscreen fires are skipped and come into view with fresh particles', () =
   camera.lookAt(-150, 0, 0); camera.updateMatrixWorld();
   view.update(camera); effects.update(0.1, fires, camera.position, view);
   assert.equal(draws(), true);
-  assert.equal(effects.group.children.filter(child => child.isPointLight).length, 1);
+  // one fire light, kept out of `group` (main.ts adds it to the scene) so that hiding the particles does not change the number of lights the shaders use
+  assert.equal(effects.light.isPointLight, true);
+  assert.equal(effects.group.children.filter(child => child.isPointLight).length, 0);
+  assert.ok(effects.light.intensity > 0, 'the fire in view lights the scene');
 });

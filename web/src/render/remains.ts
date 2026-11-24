@@ -41,7 +41,7 @@ export class Remains {
     }
   }
   end() {
-    this.stains.count = this.ns; this.bones.count = this.nb;
+    this.stains.count = this.ns; this.bones.count = this.nb; this.stains.visible = this.ns > 0; this.bones.visible = this.nb > 0;
     this.stains.instanceMatrix.needsUpdate = this.bones.instanceMatrix.needsUpdate = true;
   }
 }

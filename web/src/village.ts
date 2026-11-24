@@ -4,6 +4,7 @@ import { drawnUp } from './defence';
 import { settings } from './settings';
 import { STEP, deck, type Deck } from './render/terrain';
 import { MoatWater } from './render/moatwater';
+import { freeze } from './render/static';
 import { soldierSpansFlat } from './render/soldierspans';
 import { WIDTH, deckHeight } from './render/spanplan';
 import * as THREE from 'three';
@@ -82,6 +83,9 @@ export class Village {
     };
     this.people.hooks = { wild: sh.wildlife, arrow: (a, b, c, d, e, f) => sh.fx.arrowAt(a, b, c, d, e, f), splash: (a, b, c, d, e, f) => sh.fx.waterThrow(a, b, c, d, e, f) };
     sh.scene.add(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.people.group, this.boats.group);
+    // these containers never move (everything in them is in world coordinates): frozen, they stop forcing every building, wall and prop below them to recompute its
+    // world matrix every frame. Whatever inside them does move (a building popping up, a boat) still updates itself.
+    freeze(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.people.group, this.boats.group, this.moats.group, this.planted.group, this.nets.group);
   }
 
   /** Which building (index) is under the pointer? Walls are separate meshes. */
@@ -98,7 +102,7 @@ export class Village {
 
   dispose() {
     this.walker.dispose();
-    this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.army.group, this.ruins.group, this.people.group, this.boats.group);
+    this.sh.scene.remove(this.field.group, this.bridges.group, this.props.group, this.view.root, this.view.batchRoot, this.paths.group, this.nodes.group, this.walls.group, this.spans.group, this.army.group, this.ruins.group, this.people.group, this.boats.group);
     this.view.root.traverse(o => (o as THREE.Mesh).geometry?.dispose());
     this.sh.scene.remove(this.moats.group, this.nets.group, this.planted.group); this.planted.dispose(); this.moats.dispose(); this.nets.dispose(); this.sh.terrain.setDecks(this, []);
     this.walls.dispose(); this.spans.dispose(); this.nodes.dispose(); this.paths.group.traverse(o => (o as THREE.Mesh).geometry?.dispose());

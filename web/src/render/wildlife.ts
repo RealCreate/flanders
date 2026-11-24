@@ -47,7 +47,7 @@ interface Animal extends Huntable {
 const rng = (seed: number) => () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 
 function upload(mesh: THREE.InstancedMesh, count: number) {
-  mesh.count = count;
+  mesh.count = count; mesh.visible = count > 0;   // hidden when empty: an empty instanced mesh still costs a program bind and uniform upload per pass
   if (count === 0) return;
   mesh.instanceMatrix.clearUpdateRanges();
   mesh.instanceMatrix.addUpdateRange(0, count * 16);

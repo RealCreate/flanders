@@ -42,7 +42,7 @@ export class RoadNodes {
       const x = this.nodes[i * 4], z = this.nodes[i * 4 + 1];
       this.m.makeScale(s, 1, s).setPosition(x, this.terrain.heightAt(x, z) + 0.15, z); this.mesh.setMatrixAt(i, this.m);
     }
-    this.mesh.count = n; this.mesh.instanceMatrix.needsUpdate = true;
+    this.mesh.count = n; this.mesh.visible = n > 0; this.mesh.instanceMatrix.needsUpdate = true;
   }
 
   dispose() { this.mesh.geometry.dispose(); this.lit.geometry.dispose(); }

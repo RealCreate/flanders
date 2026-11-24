@@ -8,6 +8,11 @@ export interface MapVillage { x: number; z: number; r: number; color: string; na
 export class Minimap {
   private ctx: CanvasRenderingContext2D;
   private bg: HTMLCanvasElement;
+  /** The fog of war as a tiny image (one pixel per fog cell), redrawn only when the explored ground changes and stretched over the map in one drawImage. It used
+   *  to be one fillRect per unexplored cell (up to 3600) on every draw, four times a second. */
+  private fog = document.createElement('canvas');
+  private fogSeen: Uint8Array | null = null;
+  private static marks: Path2D[] | undefined;
 
   constructor(private canvas: HTMLCanvasElement, terrain: Terrain, private S = 190) {
     canvas.width = canvas.height = S;
@@ -32,6 +37,17 @@ export class Minimap {
       const k = 1 + shade * 0.35, o = (y * S + x) * 4;
       img.data[o] = Math.min(255, r * k); img.data[o + 1] = Math.min(255, gr * k); img.data[o + 2] = Math.min(255, b * k); img.data[o + 3] = 255;
     }
+    g.putImageData(img, 0, 0);
+  }
+
+  private paintFog(fog: Uint8Array) {
+    const prev = this.fogSeen;
+    if (prev && prev.length === fog.length) { let same = true; for (let i = 0; i < fog.length; i++) if (prev[i] !== fog[i]) { same = false; break; } if (same) return; }
+    this.fogSeen = fog.slice();
+    const N = Math.round(Math.sqrt(fog.length));
+    if (this.fog.width !== N) this.fog.width = this.fog.height = N;
+    const g = this.fog.getContext('2d')!, img = g.createImageData(N, N);
+    for (let i = 0; i < N * N; i++) if (!fog[i]) { const o = i * 4; img.data[o] = 8; img.data[o + 1] = 10; img.data[o + 2] = 14; img.data[o + 3] = 158; }   // rgba(8,10,14,0.62)
     g.putImageData(img, 0, 0);
   }
 
@@ -74,7 +90,7 @@ export class Minimap {
     }
     // neutral places you have found: abbey, ruined castle, bandit camp, lair
     // drawn as little shapes (no font): a cross for an abbey, a tower for a ruined castle, crossed blades for a bandit camp, a banner with a skull for a lair
-    const marks = [new Path2D('M-1.2 -4 H1.2 V-1.2 H4 V1.2 H1.2 V4 H-1.2 V1.2 H-4 V-1.2 H-1.2Z'), new Path2D('M-3.5 4 V-1 H-2.2 V-3 H-0.8 V-1.6 H0.8 V-3 H2.2 V-1 H3.5 V4Z'), new Path2D('M-4 -4 L4 4 M4 -4 L-4 4'), new Path2D('M-3.6 4.5 V-4.5 M-3.6 -4 H4.2 V1 L0.3 3 L-3.6 1Z')];   // (the last is a pole with a banner: a lair)
+    const marks = Minimap.marks ??= [new Path2D('M-1.2 -4 H1.2 V-1.2 H4 V1.2 H1.2 V4 H-1.2 V1.2 H-4 V-1.2 H-1.2Z'), new Path2D('M-3.5 4 V-1 H-2.2 V-3 H-0.8 V-1.6 H0.8 V-3 H2.2 V-1 H3.5 V4Z'), new Path2D('M-4 -4 L4 4 M4 -4 L-4 4'), new Path2D('M-3.6 4.5 V-4.5 M-3.6 -4 H4.2 V1 L0.3 3 L-3.6 1Z')];   // (the last is a pole with a banner: a lair);   // parsed once, not on every draw
     if (o.neutrals) for (let i = 0; i + 3 < o.neutrals.length; i += 4) {
       const [x, y] = this.p(o.neutrals[i + 1], o.neutrals[i + 2]), k = o.neutrals[i], sc = big ? 1.6 : 1.05;
       c.save(); c.translate(x, y); c.scale(sc, sc); c.globalAlpha = o.neutrals[i + 3] ? 0.45 : 1; c.fillStyle = '#ffe9a8'; c.strokeStyle = '#000c'; c.lineWidth = 1.6 / sc; c.lineJoin = 'round';
@@ -85,7 +101,7 @@ export class Minimap {
       c.restore();
     }
     // the fog of war: ground nobody has seen is dimmed
-    if (o.fog) { const N = Math.round(Math.sqrt(o.fog.length)), cs = S / N; c.fillStyle = 'rgba(8,10,14,0.62)'; for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) if (!o.fog[j * N + i]) c.fillRect(i * cs, j * cs, cs + 0.6, cs + 0.6); }
+    if (o.fog) { this.paintFog(o.fog); c.imageSmoothingEnabled = false; c.drawImage(this.fog, 0, 0, S, S); c.imageSmoothingEnabled = true; }
     if (o.view && o.view.length === 4) {
       c.strokeStyle = '#ffffffcc'; c.lineWidth = big ? 2 : 1.2; c.beginPath();
       o.view.forEach((q, i) => { const [x, y] = this.p(q.x, q.z); i ? c.lineTo(x, y) : c.moveTo(x, y); }); c.closePath(); c.stroke();
