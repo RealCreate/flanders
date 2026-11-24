@@ -24,7 +24,7 @@ import { RadiusRings } from './render/coverage';
 import { parseRadii, describe as describeRadii, uncoveredByWells, wallsOutOfReach, FX_FIRE_FULL, FX_FIRE_HALF, FX_SHOOT, type Radius } from './coverage';
 import { OVER_WATER_KINDS } from './render/ringheight';
 import { buildShowroom } from './render/showroom';
-import { settings, onSettings, pixelRatio, setSettings, playerChoseSettings, type Settings } from './settings';
+import { settings, onSettings, pixelRatio, wantAntialias, setSettings, playerChoseSettings, type Settings } from './settings';
 import { rendererName, isSoftwareRenderer, isIntegratedGpu } from './gpucheck';
 import { auditModel, setNightLight } from './render/buildings';
 import { subdivide, curve, type Pt } from './roadtool';
@@ -1519,7 +1519,7 @@ async function startGame(name: string, username: string, pve = false) {
   if (autoLow) setSettings({ quality: 'low', antialias: false }, false);   // for this visit only: not saved as the player's choice
   // graphics built into the processor start on Medium (shorter tree distance, smaller shadows, no rich near trees), also for this visit only
   else if (isIntegratedGpu(gpuName) && !playerChoseSettings()) setSettings({ quality: 'medium' }, false);
-  renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: settings().antialias, powerPreference: 'high-performance' });
+  renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: wantAntialias(devicePixelRatio), powerPreference: 'high-performance' });
   if (softwareGpu) ui.toast(!autoLow ?'No graphics card is drawing the game (the browser draws it on the processor): the Low display preset runs much faster.' : 'No graphics card is drawing the game, so it starts on Low display settings. Change them under Settings.', 'info');
   renderer.setPixelRatio(pixelRatio(devicePixelRatio, 1)); renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;   // Atmosphere schedules shadow redraws
@@ -3930,8 +3930,13 @@ function adaptResolution(frameMs: number) {
   if (++resFrames < 90 || resFrames % 45 !== 0) return;   // let things settle after loading, then adjust a little at a time
   const was = resScale;
   const budget = settings().fpsCap === 30 ? 34 : 17.5;
-  if (slowMs > budget && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.1);
-  else if (slowMs < 13 && resScale < 1) resScale = Math.min(1, resScale + 0.1);
+  // Fewer pixels only help when the graphics card is what holds the frame back. Where the browser can time the GPU, a slow frame with the GPU well inside the
+  // budget is the CPU's (simulation, scripts, many villages): lowering the resolution then only blurs the picture, so it is left alone, and given back if it was
+  // lowered before. Without GPU timing (most phones and tablets) the frame time alone decides, as before.
+  const gpu = perf.gpuTime;
+  const gpuBound = gpu === null || gpu > budget * 0.8, gpuRoom = gpu !== null && gpu < budget * 0.55;
+  if (slowMs > budget && gpuBound && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.1);
+  else if ((slowMs < 13 || gpuRoom) && resScale < 1) resScale = Math.min(1, resScale + 0.1);
   if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
 }
 
