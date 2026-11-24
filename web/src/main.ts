@@ -1514,7 +1514,7 @@ async function startGame(name: string, username: string, pve = false) {
   sites.sort((a, b) => Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z));
 
   // no real graphics card (the browser draws on the CPU): start on the low preset, without antialiasing, unless the player has chosen settings of their own
-  const gpuName = rendererName(), softwareGpu = isSoftwareRenderer(gpuName);
+  const gpuName = rendererName(), softwareGpu = isSoftwareRenderer(gpuName); softwareRendering = softwareGpu;
   const autoLow = softwareGpu && !playerChoseSettings();
   if (autoLow) setSettings({ quality: 'low', antialias: false }, false);   // for this visit only: not saved as the player's choice
   // graphics built into the processor start on Medium (shorter tree distance, smaller shadows, no rich near trees), also for this visit only
@@ -3923,19 +3923,31 @@ function applySettings(s: Settings) {
 }
 
 // ---------- adaptive resolution: when frames run long, draw fewer pixels; when there is room again, win them back ----------
-let resScale = 1, slowMs = 0, resFrames = 0;
-function adaptResolution(frameMs: number) {
+/** The browser draws WebGL on the processor (no usable graphics card): see gpucheck.ts. */
+let softwareRendering = false;
+let resScale = 1, slowMs = 0, busyMs = 0, resStart = -1, resLast = 0;
+/** How long the main thread worked on the last frame (simulation, scripts, issuing the draws), measured at the end of `frame()`. */
+let lastBusyMs = 0;
+function adaptResolution(frameMs: number, now: number) {
   if (!settings().adaptive) return;
-  slowMs = slowMs * 0.94 + frameMs * 0.06;
-  if (++resFrames < 90 || resFrames % 45 !== 0) return;   // let things settle after loading, then adjust a little at a time
+  // smoothed over about a second of real time, whatever the frame rate: counted in frames, a computer drawing 2 frames a second took a minute to start
+  // adjusting and several minutes to reach the lowest resolution, which is exactly the computer that needs it
+  const k = 1 - Math.exp(-Math.min(frameMs, 1000) / 900);
+  slowMs += (frameMs - slowMs) * k; busyMs += (lastBusyMs - busyMs) * k;
+  if (resStart < 0) resStart = now;
+  if (now - resStart < 2500 || now - resLast < 900) return;   // let things settle after loading, then adjust a little at a time
+  resLast = now;
   const was = resScale;
   const budget = settings().fpsCap === 30 ? 34 : 17.5;
-  // Fewer pixels only help when the graphics card is what holds the frame back. Where the browser can time the GPU, a slow frame with the GPU well inside the
-  // budget is the CPU's (simulation, scripts, many villages): lowering the resolution then only blurs the picture, so it is left alone, and given back if it was
-  // lowered before. Without GPU timing (most phones and tablets) the frame time alone decides, as before.
+  // Fewer pixels only help when the graphics card (or, without one, the browser's software renderer) is what holds the frame back. Where the browser can time
+  // the GPU, that decides. Where it cannot (Safari and so every browser on iPad and iPhone, Firefox, a software renderer), the main thread's own work tells:
+  // if scripts and draw calls alone take most of the frame, it is CPU-bound and lowering the resolution only blurs the picture.
   const gpu = perf.gpuTime;
-  const gpuBound = gpu === null || gpu > budget * 0.8, gpuRoom = gpu !== null && gpu < budget * 0.55;
-  if (slowMs > budget && gpuBound && resScale > 0.55) resScale = Math.max(0.55, resScale - 0.1);
+  const gpuBound = gpu !== null ? gpu > budget * 0.8 : busyMs < slowMs * 0.6;
+  const gpuRoom = gpu !== null ? gpu < budget * 0.55 : false;
+  const floor = softwareRendering ? 0.4 : 0.55;   // drawing on the processor, every pixel is expensive: allow a lower resolution
+  const step = slowMs > budget * 2.5 ? 0.15 : 0.1;   // far too slow: come down faster
+  if (slowMs > budget && gpuBound && resScale > floor) resScale = Math.max(floor, resScale - step);
   else if ((slowMs < 13 || gpuRoom) && resScale < 1) resScale = Math.min(1, resScale + 0.1);
   if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
 }
@@ -4036,7 +4048,7 @@ function startBackgroundClock() {
 function frame(now: number) {
   frameAt = performance.now();
   { const cap = settings().fpsCap; if (cap && now - last < 1000 / cap - 2) { requestAnimationFrame(frame); return; } }   // frame rate limit
-  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last); last = now;   // never negative, never a big jump
+  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last, now); last = now;   // never negative, never a big jump
   perf.start('simulation');
   if (replay) tickReplay(dt);
   runClock(dt, frameAt);
@@ -4114,6 +4126,7 @@ function frame(now: number) {
   atmo.updateShadows(now, rig.target, rig.dist, drawCrowd && (speed > 0 || wildlife.visible > 0));
   perf.render(renderer, scene, rig.cam);
   perf.stop('render (CPU side)');
+  lastBusyMs = performance.now() - frameAt;
   if (perf.open && now - noteT > 500) { noteT = now; perf.netNotes(syncNotes()); }
   perf.counts({ Villagers: lv.people.count, Animals: wildlife.visible, Buildings: lv.world.building_count(), Soldiers: (now - sT > 500 ? (sT = now, sCount = lv.army.positions().length) : sCount) });
   perf.frame(now, { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures });
