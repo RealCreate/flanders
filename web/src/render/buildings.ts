@@ -124,6 +124,13 @@ function makeMats() {
     trampled: std(grainTile([96, 75, 56], (_u, _v, wear, grit) => 0.96 + 0.62 * wear + 0.25 * grit)),
     wallow: std(grainTile([85, 68, 54], (u, v, wear, grit) => 0.97 + 0.43 * wear + 0.10 * grit + 0.05 * wave(u * 2 - v * 3)), { roughness: 0.67 }),
     field: std(tex((g, s) => { g.fillStyle = '#7b8c3e'; g.fillRect(0, 0, s, s); for (let i = 0; i < 10; i++) { g.fillStyle = i % 2 ? 'rgba(180,170,70,.55)' : 'rgba(80,60,30,.35)'; g.fillRect(0, i * s / 10, s, s / 10 - 3); } speckle(g, s, 500, 0.15); }), { roughness: 1 }),
+    // garden and yard materials for the design options: furrowed soil, leafy foliage, straw and bark, so beds, bushes and stacks read as real things up close
+    soil: std(tex((g, s) => { g.fillStyle = '#4b3523'; g.fillRect(0, 0, s, s); for (let i = 0; i < 8; i++) { g.fillStyle = i % 2 ? 'rgba(15,8,4,.4)' : 'rgba(135,100,68,.32)'; g.fillRect(0, i * s / 8, s, s / 8 - 5); } speckle(g, s, 1600, 0.3); }), { roughness: 1 }),
+    leaf: std(tex((g, s) => { g.fillStyle = '#4f8a3c'; g.fillRect(0, 0, s, s); for (let i = 0; i < 300; i++) { g.fillStyle = Math.random() > 0.5 ? `rgba(160,205,95,${0.16 + 0.22 * Math.random()})` : `rgba(18,58,24,${0.2 + 0.22 * Math.random()})`; g.beginPath(); g.ellipse(Math.random() * s, Math.random() * s, 2 + Math.random() * 7, 1 + Math.random() * 4, Math.random() * 3, 0, 7); g.fill(); } }), { roughness: 1 }),
+    straw: std(tex((g, s) => { g.fillStyle = '#d4b258'; g.fillRect(0, 0, s, s); for (let i = 0; i < 420; i++) { g.strokeStyle = Math.random() > 0.5 ? 'rgba(255,235,150,.35)' : 'rgba(120,85,25,.3)'; g.lineWidth = 1.2; const x = Math.random() * s, y = Math.random() * s; g.beginPath(); g.moveTo(x, y); g.lineTo(x + (Math.random() - 0.5) * 10, y + 8 + Math.random() * 18); g.stroke(); } }), { roughness: 1 }),
+    bark: std(tex((g, s) => { g.fillStyle = '#7d5a37'; g.fillRect(0, 0, s, s); for (let i = 0; i < 70; i++) { g.fillStyle = Math.random() > 0.5 ? 'rgba(40,24,10,.38)' : 'rgba(190,150,100,.22)'; g.fillRect(Math.random() * s, 0, 1 + Math.random() * 3, s); } speckle(g, s, 500, 0.2); })),
+    dove: col(0xf4f1e8, { roughness: 0.8 }),
+    bloom: [0xd9404f, 0xf2c14e, 0xf4f1e8, 0xc862b8].map(c => col(c, { roughness: 0.8 })),
     glass: col(0x203040, { roughness: 0.2, metalness: 0.3 }),
     door: col(0x3a2616),
     iron: col(0x2b2b2e, { metalness: 0.6, roughness: 0.5 }),
@@ -1678,6 +1685,108 @@ const DEPENDS: Record<number, Record<number, number[]>> = { 3: { 0: [2] } };
 const hutLandX = (tier: number) => (3.0 + tier * 0.3) / 2 - 0.45;
 /** How far past its fields a farm's yard reaches: the footprint and the levelled ground (FARM_YARD in lib.rs) include it, so the extras stand on flat ground that is the farm's own. */
 const FARM_YARD = 5.0;
+/** Where the parts of a village house are at each tier (the numbers of the `house` model): what the design options attach to. The ridge runs along x for the two low tiers (the long eave side faces
+ *  the front, +z) and along z for the two brick tiers (a gable end faces the front). `foot` is how far the stone footing sticks out past the wall; `eaveY` and `ridgeY` bound the roof and `e` is its half span
+ *  (overhang included), so `roofY(u)` is the height of the roof surface at distance `u` from the ridge. */
+function houseGeo(t: number) {
+  const w = [4.0, 4.3, 4.7, 5.3][t], d = [3.2, 3.4, 3.6, 3.8][t], rx = t < 2;
+  const eaveY = [1.7, 4.37, 4.55, 5.4][t], h = [2.1, 2.0, 2.2, 2.6][t], o = [0.6, 0.5, 0.45, 0.5][t];
+  const len = rx ? (t === 1 ? w + 0.7 : w) : d, span = rx ? (t === 1 ? d + 0.7 : d) : w, e = span / 2 + o;
+  return { w, d, rx, eaveY, h, o, len, e, ridgeY: eaveY + h, foot: [0.1, 0.15, 0.15, 0.2][t], roofY: (u: number) => eaveY + h * Math.max(0, 1 - Math.abs(u) / e) };
+}
+
+/** One design option of a village house. Every part is built against something real: a wall, the roof surface or the ground at the foot of the house, using the numbers of `houseGeo`, so nothing
+ *  hangs in the air, and the options sit in places of their own (ridge: chimney and dovecote; front slope: loft; end of the roof: carved gable; side wall: woodshed and cellar; back: garden). */
+function houseOption(b: B, bit: number, c: OptionCtx) {
+  const m = M(), t = c.tier, g = houseGeo(t), { w, d, rx, eaveY, h, o, len, e, ridgeY, foot, roofY } = g;
+  /** (along the ridge, across it) to (x, z), and a box laid out the same way. */
+  const P = (s: number, u: number): [number, number] => rx ? [s, u] : [u, s];
+  const bx = (ds: number, dh: number, du: number, mat: THREE.Material, s: number, y: number, u: number) => { const [x, z] = P(s, u); return rx ? b.box(ds, dh, du, mat, x, y, z) : b.box(du, dh, ds, mat, x, y, z); };
+  const bloom = (x: number, y: number, z: number, r = 0.085, k = 0) => b.sphere(r, m.bloom[k % 4], x, y, z);
+  /** A flower box hung under a front window: a trough with leaves and blooms. */
+  const windowBox = (x: number, y: number, zFace: number, wid: number) => {
+    const z = zFace + 0.16; b.box(wid, 0.2, 0.3, m.darkwood, x, y, z); b.box(wid - 0.08, 0.05, 0.22, m.soil, x, y + 0.2, z);
+    const n = Math.round(wid / 0.19); for (let i = 0; i < n; i++) { const px = x - wid / 2 + 0.12 + i * ((wid - 0.24) / Math.max(1, n - 1)); b.dome(0.12, m.leaf, px, y + 0.2, z, 0.9); bloom(px + (i % 2 ? 0.03 : -0.03), y + 0.36 + (i % 2) * 0.05, z + 0.02, 0.075, i + (zFace > 2 ? 1 : 0)); }
+  };
+  const pot = (x: number, z: number, k: number) => { b.cyl(0.2, 0.15, 0.32, m.clay, x, 0, z, 10); b.dome(0.24, m.leaf, x, 0.3, z, 0.85); for (let i = 0; i < 3; i++) bloom(x + Math.cos(i * 2.1 + k) * 0.13, 0.55 + (i % 2) * 0.06, z + Math.sin(i * 2.1 + k) * 0.13, 0.08, k + i); };
+  const roofMat = t === 0 ? m.thatch : t === 1 ? m.tile : m.slate, dormerRoof = t === 1 ? m.slate : m.tile;   // (a dormer roof never matches the roof it grows out of)
+  switch (bit) {
+    case 0: {   // a second chimney on the ridge, its foot sunk in the roof
+      const [x, z] = P(-0.32 * len, 0), y = ridgeY - 0.55;
+      b.chimney(x, y, z, 1.75, m.brick); b.box(0.8, 0.12, 0.8, m.darkstone, x, y + 1.75, z); b.box(0.9, 0.14, 0.9, m.darkstone, x, ridgeY - 0.12, z);
+      b.cyl(0.1, 0.12, 0.32, m.clay, x - 0.12, y + 1.87, z - 0.12, 8); b.cyl(0.1, 0.12, 0.26, m.clay, x + 0.14, y + 1.87, z + 0.12, 8);
+      break;
+    }
+    case 1: {   // window boxes under the front windows and pots by the door
+      const wins = ([
+        [[-0.22 * w, 0.42, d / 2 + 0.03, 0.72]],
+        [[0.2 * w, 0.7, d / 2 + 0.05, 0.62], [-0.25 * w, 2.72, d / 2 + 0.4, 0.82], [0.25 * w, 2.72, d / 2 + 0.4, 0.82]],
+        [[-0.3 * w, 1.13, d / 2 + 0.1, 0.95], [0.3 * w, 1.13, d / 2 + 0.1, 0.95], [-0.3 * w, 2.9, d / 2 + 0.1, 0.95], [0.3 * w, 2.9, d / 2 + 0.1, 0.95]],
+        [[-0.32 * w, 1.27, d / 2 + 0.1, 1.05], [0.32 * w, 1.27, d / 2 + 0.1, 1.05], [-0.32 * w, 3.03, d / 2 + 0.1, 1.05], [0.32 * w, 3.03, d / 2 + 0.1, 1.05]],
+      ] as [number, number, number, number][][])[t];
+      for (const [x, y, zf, wid] of wins) windowBox(x, y, zf, wid);
+      const door = [0.2 * w, -0.22 * w, 0, 0][t], pz = d / 2 + 0.35;
+      if (t < 2) pot(door + (t === 0 ? 0.75 : 0.8), pz - 0.05, 1); else { pot(-(t === 2 ? 0.85 : 1.0), pz, 0); pot(t === 2 ? 0.85 : 1.0, pz, 2); }
+      break;
+    }
+    case 2: {   // a lean-to against the end wall with a stack of logs under it
+      const xw = w / 2 + foot, D = 1.35, hs = [1.3, 2.0, 2.0, 2.2][t], drop = 0.42, z0 = 0, W = 2.4, mat = t === 0 ? m.thatch : roofMat;
+      const ang = Math.atan(drop / (D + 0.15));
+      b.box(Math.hypot(D + 0.15, drop), 0.1, W + 0.2, mat, xw + (D + 0.15) / 2 - 0.05, hs - drop / 2 - 0.05, z0).rotation.z = -ang;
+      for (const sz of [-1, 1]) b.box(0.12, hs - drop, 0.12, m.darkwood, xw + D, 0, z0 + sz * (W / 2 - 0.05));
+      b.box(0.1, 0.1, W, m.darkwood, xw + D, hs - drop - 0.1, z0); b.box(0.1, 0.1, W, m.darkwood, xw + 0.05, hs - 0.15, z0);
+      for (let row = 0; row < 3; row++) for (let k = 0; k < 4 - row; k++) b.logH(W - 0.3, 0.13, m.bark, xw + 0.2 + k * 0.28 + row * 0.14, 0.14 + row * 0.25, z0, 'z');
+      b.cyl(0.22, 0.24, 0.34, m.bark, xw + 0.95, 0, z0 + W / 2 - 0.1, 10); b.box(0.06, 0.55, 0.06, m.darkwood, xw + 0.95, 0.34, z0 + W / 2 - 0.1);
+      break;
+    }
+    case 3: {   // a dovecote on the ridge: a plastered box on the ridge beam under a tiled cap, doves on the ridge
+      const s = [1.2, 0.48, 0.3 * len, 0.3 * len][t], [x, z] = P(s, 0), y = ridgeY - 0.5, sz = 0.8;
+      b.box(sz, 1.2, sz, m.plaster, x, y, z); b.box(sz + 0.14, 0.1, sz + 0.14, m.darkwood, x, y + 1.2, z); b.pyramid(sz + 0.4, sz + 0.4, 0.55, m.tile, x, y + 1.3, z); b.sphere(0.08, m.gold, x, y + 1.9, z);
+      for (const q of [1, -1]) { const [fx, fz] = rx ? [0, q * (sz / 2 + 0.03)] : [q * (sz / 2 + 0.03), 0]; const hole = b.box(rx ? 0.22 : 0.06, 0.26, rx ? 0.06 : 0.22, m.door, x + fx, y + 0.65, z + fz); void hole; b.box(rx ? 0.4 : 0.14, 0.05, rx ? 0.14 : 0.4, m.darkwood, x + fx * 1.8, y + 0.52, z + fz * 1.8); }
+      for (const ds of [0.75, 1.15]) { const [dx, dz] = P(s + ds * (s > 0 ? 1 : 1), 0), dy = ridgeY + 0.1; b.sphere(0.12, m.dove, dx, dy, dz); b.box(rx ? 0.22 : 0.08, 0.06, rx ? 0.08 : 0.22, m.dove, dx + (rx ? 0.12 : 0), dy, dz + (rx ? 0 : 0.12)); }
+      break;
+    }
+    case 4: {   // a loft dormer on the front slope: its foot is in the roof, so it grows out of it
+      const s = [0, -0.5, -0.28 * len, -0.28 * len][t], uf = 0.62 * e, y = roofY(uf) - 0.15, hh = 1.0, depth = 0.95, wid = 1.1, uc = uf - depth / 2;
+      bx(wid, hh, depth, m.plaster, s, y, uc);
+      const [rx0, rz0] = P(s, uf + 0.035); if (rx) b.window(rx0, y + 0.55, rz0, 0, 0.4, 0.45); else b.window(rx0, y + 0.55, rz0, Math.PI / 2, 0.4, 0.45);
+      const [gx, gz] = P(s, uc - 0.1), gabl = rx ? b.gableZ(1.3, wid + 0.1, 0.55, dormerRoof, gx, y + hh, gz, 0.15) : b.gable(1.3, wid + 0.1, 0.55, dormerRoof, gx, y + hh, gz, 0.15);
+      void gabl; bx(wid + 0.3, 0.1, 0.22, m.stoneMat, s, y - 0.02, uf + 0.08);
+      break;
+    }
+    case 5: {   // a kitchen garden behind the house: three raised beds of cabbages, beans and herbs
+      const zc = -(d / 2 + foot + 0.85), xs = [-0.8, 0.35, 1.5];
+      for (const [i, x] of xs.entries()) {
+        b.box(1.0, 0.24, 1.1, m.soil, x, 0, zc);
+        for (const sx of [-1, 1]) b.box(0.06, 0.34, 1.16, m.wood, x + sx * 0.52, 0, zc); for (const sz of [-1, 1]) b.box(1.04, 0.34, 0.06, m.wood, x, 0, zc + sz * 0.56);
+        if (i === 0) for (const px of [-0.25, 0.25]) for (const pz of [-0.28, 0.28]) b.dome(0.23, m.leaf, x + px, 0.22, zc + pz, 0.8);
+        if (i === 1) { for (const px of [-0.4, 0.4]) b.cyl(0.03, 0.03, 1.3, m.darkwood, x + px, 0.2, zc); b.box(0.9, 0.04, 0.04, m.darkwood, x, 1.42, zc); for (let k = 0; k < 6; k++) b.sphere(0.13, m.leaf, x - 0.4 + (k % 3) * 0.4, 0.55 + Math.floor(k / 3) * 0.5, zc + (k % 2 ? 0.1 : -0.1)); }
+        if (i === 2) for (let k = 0; k < 5; k++) { const px = x + ((k % 3) - 1) * 0.3, pz = zc + (k < 3 ? -0.25 : 0.25); b.dome(0.15, m.leaf, px, 0.22, pz, 0.9); if (k % 2) bloom(px, 0.46, pz, 0.06, k); }
+      }
+      break;
+    }
+    case 6: {   // a carved and painted gable end on the front-facing end of the roof: bargeboards, a tie beam, a sunburst
+      const end = len / 2 + o + 0.05, ang = Math.atan(h / e), L = Math.hypot(e, h) * 0.98;
+      const face = (lat: number, y: number, tw: number, th: number, mat: THREE.Material, rot = 0) => rx ? (() => { const q = b.box(0.12, th, tw, mat, end, y - th / 2, lat); q.rotation.x = rot; return q; })() : (() => { const q = b.box(tw, th, 0.12, mat, lat, y - th / 2, end); q.rotation.z = rot; return q; })();
+      for (const sd of [-1, 1]) { const lat = sd * e / 2, y = eaveY + h / 2 - 0.1; if (rx) face(lat, y, L, 0.2, m.shutterRed, sd * ang); else face(lat, y, L, 0.2, m.shutterRed, -sd * ang); }
+      face(0, eaveY + h * 0.3, e * 1.3, 0.16, m.darkwood);
+      for (const sd of [-1, 1]) face(sd * e * 0.65, eaveY + h * 0.3 + 0.03, 0.2, 0.22, m.gold);
+      const disc = rx ? b.cyl(0.36, 0.36, 0.08, m.gold, end, eaveY + h * 0.62, 0, 16) : b.cyl(0.36, 0.36, 0.08, m.gold, 0, eaveY + h * 0.62, end, 16); if (rx) disc.rotation.z = Math.PI / 2; else disc.rotation.x = Math.PI / 2;
+      face(0, eaveY + h * 0.62 + 0.14, 0.16, 0.28, m.shutterBlue); face(0, eaveY + h * 0.3 - 0.1, 0.1, 0.4, m.shutterRed);
+      for (const q of [-1, 1]) face(q * 0.3, eaveY + h * 0.78, 0.1, 0.18, m.shutterBlue);
+      break;
+    }
+    case 7: {   // a cellar hatch against the back-left wall: stepped stone cheeks, sloping doors and a barrel
+      const xw = -(w / 2 + foot), z0 = t === 3 ? 0.95 : -0.55, step = [0.85, 0.6, 0.35];
+      for (const sz of [-1, 1]) for (const [i, hh] of step.entries()) b.box(0.43, hh, 0.16, m.stone, xw - 0.215 - i * 0.43, 0, z0 + sz * 0.7);
+      const ang = Math.atan(0.5 / 1.3);
+      for (const sz of [-1, 1]) { const door = b.box(Math.hypot(1.3, 0.5), 0.07, 0.62, m.darkwood, xw - 0.65, 0.86 - 0.25 + 0.01, z0 + sz * 0.32); door.rotation.z = ang; b.box(0.5, 0.03, 0.08, m.iron, xw - 0.4, 0.74, z0 + sz * 0.32).rotation.z = ang; }
+      const bz = z0 + (t === 3 ? 1.05 : -1.05); b.cyl(0.3, 0.3, 0.6, m.wood, xw - 0.5, 0, bz, 12); for (const y of [0.12, 0.42]) b.cyl(0.315, 0.315, 0.04, m.iron, xw - 0.5, y, bz, 12);
+      break;
+    }
+  }
+}
+
 function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const m = M(), { all, cx, cz, hw, hd, reach, seed } = c, solid = c.solid;
   const top = c.top;
@@ -1776,17 +1885,7 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
         }
       }
       break;
-    case 0: // house
-      if (has(0)) b.chimney(cx - hw * 0.45, Math.max(1.2, top - 1.1), cz, 1.7, m.stone);
-      if (has(1)) { const p = spot(1.6, 0.4, 0.8); if (p) { b.box(1.6, 0.34, 0.4, m.darkwood, p[0], 0, p[1]); for (let i = 0; i < 6; i++) b.sphere(0.12, new THREE.MeshStandardMaterial({ color: [0xe04a5a, 0xf2c14e, 0xf0f0f0, 0xd070d0][i % 4] }), p[0] - 0.65 + i * 0.26, 0.5, p[1]); } }
-      if (has(2)) { const p = spot(1.8, 1.2, 1.3); if (p) { for (let r = 0; r < 3; r++) for (let c = 0; c < 4 - r; c++) b.logH(1.5, 0.15, m.log, p[0], 0.18 + r * 0.3, p[1] - 0.4 + c * 0.3 + r * 0.15, 'x'); b.box(1.9, 0.07, 1.3, m.darkwood, p[0], 1.2, p[1]); } }
-      if (has(3)) { const x = cx + hw * 0.45, y = surf(x, cz) - 0.1; b.box(0.7, 0.7, 0.7, m.plaster, x, y, cz); b.pyramid(0.95, 0.95, 0.5, m.tile, x, y + 0.7, cz); b.box(0.12, 0.12, 0.05, m.door, x, y + 0.3, cz + 0.36); }
-      // second tier (bits 4-7): loft dormer, kitchen garden, carved gable, cellar hatch
-      if (has(4)) { const y = surf(cx, cz) - 0.1; b.box(1.1, 0.8, 0.9, m.plaster, cx, y, cz); b.window(cx, y + 0.45, cz + 0.47, 0, 0.4, 0.4); b.gable(1.1, 1.0, 0.5, m.tile, cx, y + 0.8, cz, 0.15); }
-      if (has(5)) { const p = spot(2.4, 1.6, 0.7); if (p) for (let i = 0; i < 3; i++) { b.box(0.7, 0.28, 1.4, m.darkwood, p[0] - 0.8 + i * 0.8, 0, p[1]); for (let k = 0; k < 3; k++) b.sphere(0.17, new THREE.MeshStandardMaterial({ color: 0x4f8a3c, roughness: 1 }), p[0] - 0.8 + i * 0.8, 0.42, p[1] - 0.45 + k * 0.45); } }
-      if (has(6)) { const x = cx + hw + 0.1, y = top - 0.4; for (const a of [0.6, -0.6]) { const bar = b.box(0.1, 1.2, 0.1, m.darkwood, x, y, cz); bar.rotation.z = a; } b.sphere(0.13, m.gold, x, y + 1.25, cz); }
-      if (has(7)) { const p = spot(1.8, 1.4, 0.7); if (p) { b.box(1.8, 0.3, 1.4, m.stone, p[0], 0, p[1]); for (const d of [-1, 1]) { const door = b.box(0.85, 0.1, 1.2, m.darkwood, p[0] + d * 0.45, 0.38, p[1]); door.rotation.z = -d * 0.3; } } }
-      break;
+    case 0: houseOption(b, bit, c); break;   // house: see houseOption
     case 1: // farm
       if (has(0)) { const p = spot(1.2, 1.2, 2.1, 0); if (p) { b.cyl(0.05, 0.05, 1.9, m.darkwood, p[0], 0, p[1], 6); const arm = b.box(1.2, 0.07, 0.07, m.darkwood, p[0], 1.45, p[1]); arm.rotation.y = 0.4; b.sphere(0.2, m.hay, p[0], 1.95, p[1]); b.pyramid(0.6, 0.6, 0.3, m.darkwood, p[0], 2.1, p[1]); } }
       if (has(1)) for (let i = 0; i < 2; i++) { const p = spot(1.5, 1.5, 1.4); if (p) { b.dome(0.75, m.hay, p[0], 0, p[1], 1.3); b.cone(0.18, 0.5, m.hay, p[0], 0.95, p[1], 6); } }
@@ -1851,12 +1950,18 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       if (has(3)) for (let i = 0; i < 4; i++) { const p = spot(2.6, 0.7, 0.7); if (p) { b.box(2.6, 0.7, 0.7, new THREE.MeshStandardMaterial({ color: 0x3f7a35, roughness: 1 }), p[0], 0, p[1]); b.sphere(0.12, new THREE.MeshStandardMaterial({ color: 0xe04a5a }), p[0], 0.8, p[1]); } }
       break;
     case 17: // chapel
-      if (has(0)) { b.box(1.3, 3.0, 1.3, m.stone, all.max.x - 0.2, 0, cz); b.pyramid(1.8, 1.8, 1.5, m.slate, all.max.x - 0.2, 3.0, cz); }
-      if (has(1)) for (const z of [-1, 1]) b.box(0.08, 1.1, 0.5, m.stained, cx, Math.min(top * 0.35, 1.4), cz + z * (hd + 0.02));
+      if (has(0)) { const bz = c.tier < 3 ? cz + 3.2 / 2 + 0.45 * c.tier - 0.3 : cz; b.box(1.3, 3.0, 1.3, m.stone, all.max.x - 0.2, 0, bz); b.pyramid(1.8, 1.8, 1.5, m.slate, all.max.x - 0.2, 3.0, bz); }   // (a corner bell tower, so the round window has the end wall to itself)
+      // (the chapel's own numbers: its nave, walls and gable, as in the `chapel` model - the whole-model box also holds the towers and would put these in the air)
+      if (has(1)) { const t = c.tier, nave = 5 + t * 1.6, nw = 3.2 + t * 0.9, nh = 2.8 + t * 0.9, xm = -nave / 2 + 1.6 + 0.5 * (nave - 2.4) / (1 + t); for (const z of [-1, 1]) { b.box(0.5, 1.1, 0.1, m.stained, xm, nh * 0.55 - 0.55, z * (nw / 2 + 0.02)); b.box(0.74, 0.08, 0.2, m.stoneMat, xm, nh * 0.55 - 0.63, z * (nw / 2 + 0.06)); } }
       if (has(2)) for (let i = 0; i < 5; i++) { const p = spot(0.5, 0.2, 0.8); if (p) b.box(0.45, 0.8, 0.14, m.stone, p[0], 0, p[1]); }
       if (has(3)) { const p = spot(2.2, 1.2, 2.3); if (p) { b.box(0.22, 2.0, 0.22, m.darkwood, p[0] - 1, 0, p[1]); b.box(0.22, 2.0, 0.22, m.darkwood, p[0] + 1, 0, p[1]); b.gable(2.4, 1.4, 0.8, m.tile, p[0], 2.0, p[1], 0.2); } }
       // second tier: rose window, cloister, almshouse, relic shrine
-      if (has(4)) { const y = Math.min(Math.max(top * 0.7, 3.0), top - 0.9); for (const sd of [-1, 1]) { b.cyl(0.74, 0.74, 0.08, m.stone, cx, y, cz + sd * (hd + 0.02), 20).rotation.x = Math.PI / 2; b.cyl(0.58, 0.58, 0.12, m.stained, cx, y, cz + sd * (hd + 0.04), 20).rotation.x = Math.PI / 2; } }
+      if (has(4)) {   // a great round window: on the roof's east end above the door, or on the front tower of the grandest chapel
+        const t = c.tier, nave = 5 + t * 1.6, nh = 2.8 + t * 0.9, gh = 1.6 + t * 0.6, tw = 2 + t * 0.4, th = 5 + t * 1.4;
+        const r = t === 3 ? 0.7 : Math.min(0.74, 0.3 * gh), x = t === 3 ? nave / 2 - 0.1 + tw + 0.04 : nave / 2 + 0.4 + 0.5 + 0.04, y = t === 3 ? th * 0.62 : nh + 0.4 * gh;
+        b.cyl(r + 0.14, r + 0.14, 0.08, m.stone, x, y, 0, 20).rotation.z = Math.PI / 2; b.cyl(r, r, 0.12, m.stained, x + 0.02, y, 0, 20).rotation.z = Math.PI / 2;
+        for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4, sp = b.box(0.05, 0.05, r * 1.9, m.stone, x + 0.1, y, 0); sp.rotation.x = a; }
+      }
       if (has(5)) { const p = spot(3.6, 1.6, 2.4); if (p) { for (const dx of [-1.6, -0.55, 0.55, 1.6]) b.cyl(0.1, 0.12, 1.9, m.stone, p[0] + dx, 0, p[1] + 0.6, 8); b.box(3.6, 0.2, 0.2, m.stone, p[0], 1.9, p[1] + 0.6); b.box(3.6, 0.5, 0.3, m.stone, p[0], 0, p[1] - 0.65); b.gable(3.6, 1.7, 0.6, m.tile, p[0], 2.1, p[1], 0.1); } }
       if (has(6)) { const p = spot(3.4, 2.2, 2.6); if (p) { b.box(3.2, 1.5, 2.0, m.plaster, p[0], 0, p[1]); b.gable(3.4, 2.2, 1.0, m.tile, p[0], 1.5, p[1], 0.3); b.box(0.7, 1.1, 0.1, m.door, p[0] - 0.8, 0, p[1] + 1.02); b.window(p[0] + 0.7, 0.85, p[1] + 1.03, 0, 0.5, 0.5); } }
       if (has(7)) { const p = spot(1.3, 1.3, 1.9); if (p) { b.box(1.2, 0.5, 1.2, m.stone, p[0], 0, p[1]); b.box(0.8, 0.45, 0.5, m.gold, p[0], 0.5, p[1]); b.pyramid(0.95, 0.65, 0.4, m.gold, p[0], 0.95, p[1]); b.box(0.12, 0.2, 0.12, m.glow, p[0] + 0.5, 0.5, p[1] + 0.4); } }

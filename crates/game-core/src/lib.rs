@@ -1798,7 +1798,7 @@ impl World {
         if have == on { return 0; }
         if on {
             if b.tier < o.2 { return -10; }
-            let cost = if b.kind == ROAD { road_option_cost() } else { option_cost(DEFS[b.kind as usize].weight) };
+            let cost = if b.kind == ROAD { road_option_cost() } else { option_cost(b.kind, bit, DEFS[b.kind as usize].weight) };
             if cost.iter().any(|&(r, n)| self.stock[r as usize] < n) { return -6; }
             for &(r, n) in &cost { self.stock[r as usize] -= n; }
             self.buildings[idx as usize].opts |= 1 << bit;
@@ -1808,7 +1808,9 @@ impl World {
     /// Chosen optional upgrades per building (a bit mask each), in building order.
     pub fn options_flat(&self) -> Vec<u32> { self.buildings.iter().map(|b| b.opts as u32).collect() }
     /// Flat [resource, amount, ...] cost of one optional upgrade of this kind of building.
-    pub fn option_cost_flat(kind: u8) -> Vec<i32> { match DEFS.get(kind as usize) { Some(d) => (if kind == ROAD { road_option_cost() } else { option_cost(d.weight) }).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(), None => vec![] } }
+    pub fn option_cost_flat(kind: u8) -> Vec<i32> { Self::option_cost_for_flat(kind, 0) }
+    /// Flat [resource, amount, ...] cost of design option `bit` of this kind of building (each option of a house has its own price).
+    pub fn option_cost_for_flat(kind: u8, bit: u8) -> Vec<i32> { match DEFS.get(kind as usize) { Some(d) => (if kind == ROAD { road_option_cost() } else { option_cost(kind, bit, d.weight) }).into_iter().flat_map(|(r, n)| [r as i32, n]).collect(), None => vec![] } }
 
     /// Materials recovered by demolishing a building, as [resource, amount, ...].
     pub fn demolition_refund_flat(&self, idx: u32) -> Vec<i32> {
@@ -2319,6 +2321,7 @@ impl World {
     fn storage_cap(&self) -> i32 {
         let hall = self.buildings.first().map_or(0, |b| b.tier as i32);
         600 + 200 * hall + self.buildings.iter().filter(|b| b.kind == STOREHOUSE).map(|b| 250 * (b.tier as i32 + 1)).sum::<i32>()
+            + 25 * self.buildings.iter().filter(|b| b.kind == HOUSE && b.opts & (1 << 7) != 0 && b.hp > 0.0).count() as i32   // a house's cellar holds 25 more
     }
 
     pub fn storage(&self) -> i32 { self.storage_cap() }
@@ -2335,7 +2338,7 @@ impl World {
             if b.opts == 0 || b.hp <= 0.0 { continue; }
             let o = |bit: u8| b.opts & (1 << bit) != 0;
             match b.kind {
-                HOUSE => { if o(0) || o(4) { p.housing += 1; } if o(1) { flower += 1; } if o(2) || o(7) { p.woodsheds += 1; } if o(3) || o(5) { p.doves += 1; } if o(6) { pride += 1; } }   // bits 4-7: loft room, kitchen garden, carved gable, cellar
+                HOUSE => { if o(0) { p.housing += 1; } if o(4) { p.housing += 3; } if o(1) { flower += 1; } if o(2) || o(7) { p.woodsheds += 1; } if o(3) { p.doves += 2; } if o(5) { p.doves += 3; } if o(6) { pride += 2; } }   // bits 4-7: loft room, kitchen garden, carved gable, cellar
                 FARM => { if o(6) { pride += 1; } }   // the orchard (the field's other options are speed: see tier2_speed)
                 HOSPITAL | GRAVEYARD | RIVER | MOAT | RAISE | LOWER | FENCE | ROAD => {}
                 WALL => { if o(1) { banners += 1; } }
@@ -2350,7 +2353,7 @@ impl World {
                 _ => { if o(0) { banners += 1; } if o(1) { pride += 1; } }
             }
         }
-        p.happy = (flower / 2).min(8) + pride.min(10);
+        p.happy = flower.min(6) + pride.min(10);
         p.banner_pct = (banners + armoury).min(15);
         p.militia = militia.min(8) as u32;
         p
@@ -5670,7 +5673,7 @@ mod pathing_room_tests {
         let (cap0, hap0) = (w.capacity(), w.happiness());
         for &h in &hs { set_opt(&mut w, h, 0); set_opt(&mut w, h, 1); }   // chimneys and flower boxes
         assert_eq!(w.capacity(), cap0 + 6, "a chimney gives room for one more");
-        assert_eq!(w.happiness(), hap0 + 3, "six flower boxes lift happiness by three");
+        assert_eq!(w.happiness(), hap0 + 6, "each flower box lifts happiness by one");
         let g0 = w.stock[GR as usize]; w.stock[GR as usize] = 0; for &h in &hs { set_opt(&mut w, h, 3); }   // dovecotes
         w.tick = DAY - 1; w.stock[GR as usize] = 0; for _ in 0..2 { w.step(); }
         let _ = g0; assert!(w.stock[GR as usize] >= 0);

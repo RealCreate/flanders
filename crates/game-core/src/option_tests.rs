@@ -38,9 +38,11 @@ fn a_second_tier_option_is_refused_until_the_building_is_upgraded() {
 fn second_tier_options_do_their_small_jobs() {
     let mut w = village(); let (h, c, b) = (built(&mut w, HOUSE, 12, 4, 2), built(&mut w, CHAPEL, 30, 10, 2), built(&mut w, BARRACKS, -24, 6, 2));
     let (cap, happy) = (w.capacity(), w.happiness());
-    w.buildings[h].opts = 1 << 4; assert_eq!(w.capacity(), cap + 1, "loft room");
-    w.buildings[h].opts = (1 << 5) | (1 << 7); let p = w.perks(); assert_eq!((p.doves, p.woodsheds), (1, 1), "kitchen garden and cellar");
-    w.buildings[h].opts = 1 << 6; assert_eq!(w.happiness(), happy + 1, "carved gable");
+    w.buildings[h].opts = 1 << 4; assert_eq!(w.capacity(), cap + 3, "loft room: three more villagers");
+    w.buildings[h].opts = (1 << 5) | (1 << 7); let p = w.perks(); assert_eq!((p.doves, p.woodsheds), (3, 1), "kitchen garden (three grain) and cellar");
+    w.buildings[h].opts = 1 << 6; assert_eq!(w.happiness(), happy + 2, "carved gable");
+    w.buildings[h].opts = 1 << 3; assert_eq!(w.perks().doves, 2, "dovecote");
+    let stor = w.storage(); w.buildings[h].opts = 1 << 7; assert_eq!(w.storage(), stor + 25, "the cellar holds more");
     w.buildings[h].opts = 0;
     w.buildings[c].opts = 1 << 6; assert_eq!(w.capacity(), cap + 2, "almshouse");
     w.buildings[c].opts = (1 << 4) | (1 << 5) | (1 << 7); assert_eq!(w.happiness(), happy + 4, "rose window, cloister and relic shrine");
@@ -77,4 +79,17 @@ fn the_roof_palette_rides_in_the_style_and_is_part_of_the_state() {
 fn second_tier_options_are_in_the_state_hash_and_replay_the_same() {
     let run = |opts: u16| { let mut w = village(); let i = built(&mut w, FARM, -14, 6, 2); w.buildings[i].opts = opts; for _ in 0..50 { w.step(); } w.state_hash() };
     assert_eq!(run(1 << 6), run(1 << 6)); assert_ne!(run(1 << 6), run(1 << 7));
+}
+
+#[test]
+fn house_options_are_priced_one_by_one_and_the_second_tier_costs_more() {
+    use crate::catalog::option_cost;
+    let total = |bit: u8| option_cost(HOUSE, bit, 1).iter().map(|a| a.1).sum::<i32>();
+    assert!((0..8).all(|b| !option_cost(HOUSE, b, 1).is_empty()));
+    assert!(total(4) > total(0) && total(6) > total(1), "the grander options cost more");
+    let mut w = village(); let i = built(&mut w, HOUSE, 12, 4, 2); w.stock = [0; N_RES];
+    assert_eq!(w.set_option(i as u32, 0, true), -6, "a chimney wants bricks");
+    w.stock[PL as usize] = 4; w.stock[BR as usize] = 6; assert_eq!(w.set_option(i as u32, 0, true), 0); assert_eq!((w.stock[PL as usize], w.stock[BR as usize]), (0, 0));
+    assert_eq!(World::option_cost_for_flat(HOUSE, 4), option_cost(HOUSE, 4, 1).into_iter().flat_map(|(r, n)| [r as i32, n]).collect::<Vec<_>>());
+    let farm = option_cost(FARM, 0, 2); let farm2 = option_cost(FARM, 4, 2); assert!(farm2.iter().map(|a| a.1).sum::<i32>() > farm.iter().map(|a| a.1).sum::<i32>());
 }
