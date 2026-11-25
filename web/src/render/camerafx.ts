@@ -40,3 +40,63 @@ export function nearestWithin<T extends { sx: number; sy: number }>(items: T[], 
   for (const it of items) { const d = (it.sx - x) ** 2 + (it.sy - y) ** 2; if (d <= bd) { bd = d; best = it; } }
   return best;
 }
+
+/** Two fingers on the map either work the map (pan, pinch, twist) or tilt the camera, and which one is settled once they have moved this far (CSS pixels, both
+ *  fingers together) and then kept until they lift. */
+export const TWO_FINGER_DECIDE_PIXELS = 12;
+/** What two fingers are doing, from how far each has moved since the second one came down: `tilt` when both slide up or down together (mostly vertically, the same
+ *  way), as in Apple Maps and Google Maps; `map` for anything else; null while they have hardly moved. */
+export function twoFingerMode(a: { dx: number; dy: number }, b: { dx: number; dy: number }): 'tilt' | 'map' | null {
+  if (Math.hypot(a.dx, a.dy) + Math.hypot(b.dx, b.dy) < TWO_FINGER_DECIDE_PIXELS) return null;
+  const vertical = (m: { dx: number; dy: number }) => Math.abs(m.dy) > 2 * Math.abs(m.dx) && Math.abs(m.dy) > 3;
+  return vertical(a) && vertical(b) && Math.sign(a.dy) === Math.sign(b.dy) ? 'tilt' : 'map';
+}
+
+/** Turning with two fingers only starts after a deliberate twist: every pinch also changes the angle between the fingers a little, which turned the camera while
+ *  zooming. Below `threshold` (radians, about 10°) the twist is held back; past it the camera turns by what goes beyond the threshold (no jump), and then freely,
+ *  until the fingers lift. */
+export class TwistGate {
+  private sum = 0; private open = false; private threshold: number;
+  constructor(threshold = 0.17) { this.threshold = threshold; }
+  reset() { this.sum = 0; this.open = false; }
+  /** The part of this step's twist to apply. */
+  step(twist: number): number {
+    if (this.open) return twist;
+    this.sum += twist;
+    if (Math.abs(this.sum) < this.threshold) return 0;
+    this.open = true; return this.sum - Math.sign(this.sum) * this.threshold;
+  }
+}
+
+/** The ground keeps sliding for a moment after a quick swipe (and stops dead after a slow one or a pause before lifting). Velocity in world units per second. */
+export class Glide {
+  vx = 0; vz = 0; private at = 0;
+  /** A pan of (dx, dz) world units at time `t` (ms). */
+  sample(dx: number, dz: number, t: number) {
+    const dt = Math.max(1, t - this.at) / 1000; this.at = t;
+    if (dt > 0.1) { this.vx = this.vz = 0; return; }   // a pause in the drag: start measuring afresh
+    const k = Math.min(1, dt / 0.05);                  // smoothed over the last ~50 ms of the drag
+    this.vx += (dx / dt - this.vx) * k; this.vz += (dz / dt - this.vz) * k;
+  }
+  /** The fingers lifted at time `t` (ms): keep the speed only if they were still moving. Returns whether the ground glides. */
+  release(t: number): boolean { if (t - this.at > 80) this.stop(); return this.moving; }
+  stop() { this.vx = this.vz = 0; }
+  get moving() { return Math.hypot(this.vx, this.vz) > 1; }
+  /** Advance by `dt` seconds: the distance to move now. The speed falls off with a time constant of `tau` seconds. */
+  advance(dt: number, tau = 0.3): P2 {
+    const out = { x: this.vx * dt, z: this.vz * dt }, f = Math.exp(-dt / tau);
+    this.vx *= f; this.vz *= f; if (!this.moving) this.stop();
+    return out;
+  }
+}
+
+/** The page position of an element, read once and again only after the window changes size: reading it in every pointer move forced the browser to lay the page out
+ *  between frames. (The game canvas fills the window and never moves otherwise.) */
+const rects = new WeakMap<Element, DOMRect>();
+let rectsWatched = false, rectsCleared = 0;
+export function cachedRect(el: Element): DOMRect {
+  if (!rectsWatched && typeof addEventListener === 'function') { rectsWatched = true; addEventListener('resize', () => { rectsCleared++; }); }
+  const hit = rects.get(el);
+  if (hit && (hit as DOMRect & { gen?: number }).gen === rectsCleared) return hit;
+  const r = el.getBoundingClientRect() as DOMRect & { gen?: number }; r.gen = rectsCleared; rects.set(el, r); return r;
+}

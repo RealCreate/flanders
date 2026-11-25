@@ -1,4 +1,5 @@
 import { cleanWorld, withWorld } from '../worldname';
+import { touchWording } from '../touchtext';
 import { dayPhase, clockText, nightFactor } from '../daycycle';
 import { HALF } from '../render/terrain';
 import { CATS, RES, defs, units, fmtCost, resIcon, KIND_ICON, LEVEL_TOOL, PLANT_TOOL, TIER_NAMES, tierName, type BuildingDef } from '../data';
@@ -31,7 +32,7 @@ import { mountDropdowns } from './dropdown';
 export const keyNames = (a: Action) => keys.binds[a].map(k => `<kbd>${prettyKey(k).toUpperCase()}</kbd>`).join(' ');
 /** What the controls are, written from the real bindings, so the home screen and the help screen can never disagree with the game. */
 export function controlsHtml() {
-  return `<b>Left-click</b> builds and selects · <b>left-drag</b> draws a box round armies · <b>right-click</b> sends the selected army there · <b>right-drag</b> turns the camera · <b>middle-drag</b> or <b>Shift-drag</b> grabs the ground · <b>wheel</b> zooms towards the pointer.<br>Move the camera: ${keyNames('panUp')} forward, ${keyNames('panLeft')} left, ${keyNames('panDown')} back, ${keyNames('panRight')} right · turn: ${keyNames('rotLeft')} ${keyNames('rotRight')} · tilt: ${keyNames('tiltUp')} ${keyNames('tiltDown')} · zoom: ${keyNames('zoomIn')} ${keyNames('zoomOut')} · cancel: ${keyNames('cancel')} · help: ${keyNames('help')}.<br><b>Touchscreen</b> · Tap to build or select. Drag to pan, pinch to zoom, twist with two fingers to turn, and hold to open the action menu or send an army. When a drawing tool is active, drag with one finger to draw and use two fingers to move the map.`;
+  return `<b>Left-click</b> builds and selects · <b>left-drag</b> draws a box round armies · <b>right-click</b> sends the selected army there · <b>right-drag</b> turns the camera · <b>middle-drag</b> or <b>Shift-drag</b> grabs the ground · <b>wheel</b> zooms towards the pointer.<br>Move the camera: ${keyNames('panUp')} forward, ${keyNames('panLeft')} left, ${keyNames('panDown')} back, ${keyNames('panRight')} right · turn: ${keyNames('rotLeft')} ${keyNames('rotRight')} · tilt: ${keyNames('tiltUp')} ${keyNames('tiltDown')} · zoom: ${keyNames('zoomIn')} ${keyNames('zoomOut')} · cancel: ${keyNames('cancel')} · help: ${keyNames('help')}.<br><b>Touchscreen</b> · Tap to build or select; turn on <b>Select more</b> to pick several. Drag to pan (a quick swipe glides on), pinch to zoom, twist with two fingers to turn, and slide two fingers up or down together to tilt. Hold until the ring fills to open the action menu or send an army. Hold <b>Rotate</b> to turn a building back. When a drawing tool is active, drag with one finger to draw and use two fingers to move the map.`;
 }
 
 /** Names come from other players: never put them into HTML unescaped. */
@@ -131,6 +132,8 @@ export interface PeerRow { key: string; name: string; where?: string; online?: b
 const relWord = (r: number) => r >= 80 ? 'devoted' : r >= 50 ? 'friendly' : r >= 20 ? 'warm' : r > -20 ? 'neutral' : r > -50 ? 'cool' : r > -80 ? 'hostile' : 'sworn enemies';
 
 import { parseWinter, winterTip, winterWarning, winterLines } from '../winter';
+/** Hints and notices are written for a mouse: on a phone or tablet (`body.mobile`, see device.ts) they name the touch gestures instead. */
+const forTouch = (text: string) => typeof document !== 'undefined' && document.body.classList.contains('mobile') ? touchWording(text) : text;
 const SEASONS = ['Spring', 'Summer', 'Autumn', 'Winter'];
 const BUILDABLE = defs.filter(d => d.id !== 15).sort((a, b) => a.cat - b.cat || a.id - b.id);
 const PLANT_DESC = 'Plants young trees with a brush for one wood each, so forests can grow back for woodcutters and hunters. R changes the brush size. A Forester does it for you.';
@@ -332,6 +335,9 @@ export class UI {
     <button type="button" class="tool-action" id="touch-undo">Undo point</button>
     <button type="button" class="tool-action" id="touch-finish">Finish path</button>
     <button type="button" class="tool-action" id="touch-cancel">Cancel</button>
+  </div>
+  <div id="touch-select" class="tool-row" aria-label="Touch selection" hidden>
+    <button type="button" class="tool-action" id="touch-multi" aria-pressed="false">Select more</button>
   </div>
   <section id="battle-controls" class="tool-panel" aria-label="Battle controls" hidden>
     <div id="battle" hidden>
@@ -1357,10 +1363,11 @@ export class UI {
     const ul = $('log'); ul.prepend(li); if (++this.logCount > 40) ul.lastElementChild?.remove();
   }
   toast(text: string, tone = 'info', iconName?: string) {
+    text = forTouch(text);
     const t = document.createElement('div'); t.className = 'toast ' + tone; if (iconName) t.innerHTML = `${icon(iconName, 16, { mono: true })} ${esc(text)}`; else t.textContent = text; $('toasts').appendChild(t);
     setTimeout(() => { t.style.transition = 'opacity .5s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 6000);
   }
-  hint(text: string | null, bad = false) { const h = $('hint'); h.hidden = !text; if (text) { h.innerHTML = esc(text).replace(/&lt;kbd&gt;(.*?)&lt;\/kbd&gt;/g, '<kbd>$1</kbd>'); h.classList.toggle('bad', bad); } }   // key names come as <kbd> tags: keep those, escape the rest
+  hint(text: string | null, bad = false) { const h = $('hint'); h.hidden = !text; if (text) { text = forTouch(text); h.innerHTML = esc(text).replace(/&lt;kbd&gt;(.*?)&lt;\/kbd&gt;/g, '<kbd>$1</kbd>'); h.classList.toggle('bad', bad); } }   // key names come as <kbd> tags: keep those, escape the rest
   tip(html: string | null, x = 0, y = 0) {
     const t = $('tooltip'); t.hidden = !html; if (!html) return;
     t.innerHTML = html; t.style.left = Math.min(innerWidth - 280, x + 16) + 'px'; t.style.top = (y + 18) + 'px';

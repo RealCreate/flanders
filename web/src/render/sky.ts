@@ -11,6 +11,9 @@ export class ShadowRefresh {
   private extent = -1;
   private dirty = true;
   private actors = false;
+  /** Stretches the redraw interval for moving actors: 2 on phones and tablets, where villagers cast no shadow and the remaining movers (siege engines, boats) can
+   *  trail their shadows a little longer. */
+  actorScale = 1;
 
   invalidate() { this.dirty = true; }
 
@@ -18,7 +21,7 @@ export class ShadowRefresh {
     const elapsed = now - this.time;
     const pan = target.distanceToSquared(this.target);
     const sunMoved = direction.distanceToSquared(this.direction) >= 0.025 ** 2;
-    const actorInterval = zoom < 105 ? 140 : zoom < 175 ? 200 : 275;
+    const actorInterval = (zoom < 105 ? 140 : zoom < 175 ? 200 : 275) * this.actorScale;
     // while the camera pans the shadow map is redrawn every 12 units (at most every 150 ms), not every 6 (at most every 100 ms): the shadowed square is 100-160 units
     // across, so it still covers the view, and a pan no longer pays for a full shadow redraw on most of its frames (a late-game village has hundreds of casters)
     const framingChanged = pan >= 12 ** 2 || Math.abs(extent - this.extent) >= 4;
@@ -104,6 +107,8 @@ export class Atmosphere {
   }
 
   invalidateShadows() { this.shadows.invalidate(); }
+  /** See `ShadowRefresh.actorScale`. */
+  set shadowActorScale(k: number) { this.shadows.actorScale = k; }
 
   /** Returns true when the shadow map is redrawn this frame. */
   updateShadows(now: number, target: THREE.Vector3, zoom: number, movingActors: boolean): boolean {
