@@ -1685,6 +1685,8 @@ const DEPENDS: Record<number, Record<number, number[]>> = { 3: { 0: [2] } };
 const hutLandX = (tier: number) => (3.0 + tier * 0.3) / 2 - 0.45;
 /** How far past its fields a farm's yard reaches: the footprint and the levelled ground (FARM_YARD in lib.rs) include it, so the extras stand on flat ground that is the farm's own. */
 const FARM_YARD = 5.0;
+/** The ground a farm's crop fields cover at a tier (a box round all of them, as in the `farm` model): the design extras stand outside it. */
+const farmFields = (t: number) => new THREE.Box3(new THREE.Vector3(-5.2, 0, -2.8), new THREE.Vector3(t >= 1 ? 10.4 : 5.2, 1, t >= 2 ? 10.3 : 6.0));
 /** Where the parts of a village house are at each tier (the numbers of the `house` model): what the design options attach to. The ridge runs along x for the two low tiers (the long eave side faces
  *  the front, +z) and along z for the two brick tiers (a gable end faces the front). `foot` is how far the stone footing sticks out past the wall; `eaveY` and `ridgeY` bound the roof and `e` is its half span
  *  (overhang included), so `roofY(u)` is the height of the roof surface at distance `u` from the ridge. */
@@ -1791,12 +1793,13 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
   const m = M(), { all, cx, cz, hw, hd, reach, seed } = c, solid = c.solid;
   const top = c.top;
   /** A free spot (centre) for a w x d x h item standing on the ground at height y0: the first place on a widening spiral round the building that touches nothing. */
+  const ff = kind === 1 ? farmFields(c.tier) : null, fc = ff ? ff.getCenter(new THREE.Vector3()) : null, fr = ff ? Math.hypot((ff.max.x - ff.min.x) / 2, (ff.max.z - ff.min.z) / 2) : 0;
   const spot = (w: number, d: number, h: number, y0 = 0): [number, number] | null => {
-    for (let k = 0; k < (kind === 1 ? 260 : 90); k++) {
-      const a = seed * 0.83 + bit * 1.7 + k * 0.62, rad = kind === 49 ? 20 + k * 0.45 : kind === 1 ? Math.max(hw, hd) * 0.8 + k * 0.06 : Math.max(hw, hd) * 0.55 + k * 0.1;   // (the embassy's extras stand outside its wall, never in the courtyard)
-      if (rad > (kind === 1 ? reach + FARM_YARD + 1 : reach * 1.25 + 2.2)) break;
-      const x = cx + Math.cos(a) * rad, z = cz + Math.sin(a) * rad, bb = new THREE.Box3(new THREE.Vector3(x - w / 2 - 0.12, y0, z - d / 2 - 0.12), new THREE.Vector3(x + w / 2 + 0.12, y0 + h, z + d / 2 + 0.12));
-      if (kind === 1 && (bb.min.x < all.min.x - FARM_YARD || bb.max.x > all.max.x + FARM_YARD || bb.min.z < all.min.z - FARM_YARD || bb.max.z > all.max.z + FARM_YARD || (bb.max.x > all.min.x - 0.7 && bb.min.x < all.max.x + 0.7 && bb.max.z > all.min.z - 0.7 && bb.min.z < all.max.z + 0.7))) continue;   // a farm's extras stand in the yard round its fields, never on the fields themselves
+    for (let k = 0; k < (kind === 1 ? 520 : 90); k++) {
+      const a = seed * 0.83 + bit * 1.7 + k * 0.62, rad = kind === 49 ? 20 + k * 0.45 : kind === 1 ? fr * 0.7 + k * 0.05 : Math.max(hw, hd) * 0.55 + k * 0.1;   // (the embassy's extras stand outside its wall, never in the courtyard)
+      if (rad > (kind === 1 ? fr + FARM_YARD + 1 : reach * 1.25 + 2.2)) break;
+      const x = (kind === 1 ? fc!.x : cx) + Math.cos(a) * rad, z = (kind === 1 ? fc!.z : cz) + Math.sin(a) * rad, bb = new THREE.Box3(new THREE.Vector3(x - w / 2 - 0.12, y0, z - d / 2 - 0.12), new THREE.Vector3(x + w / 2 + 0.12, y0 + h, z + d / 2 + 0.12));
+      if (kind === 1 && (bb.min.x < ff!.min.x - FARM_YARD || bb.max.x > ff!.max.x + FARM_YARD || bb.min.z < ff!.min.z - FARM_YARD || bb.max.z > ff!.max.z + FARM_YARD || (bb.max.x > ff!.min.x - 0.3 && bb.min.x < ff!.max.x + 0.3 && bb.max.z > ff!.min.z - 0.3 && bb.min.z < ff!.max.z + 0.3) || (bb.max.x > -2.6 && bb.min.x < 0.2 && bb.min.z < -4.0))) continue;   // a farm's extras stand in the yard round its fields, never on the fields, and never on the strip where its road leaves the barn
       if (kind === 49 && Math.abs(x) < 16 + w / 2 + 1.2 && Math.abs(z) < 18 + d / 2 + 1.2) continue;
       if (kind === 29 && x + w / 2 + 0.4 > 3.0) continue;   // the watermill's extras stay on the land side, never by the wheel
       if (kind === 41 && x + w / 2 + 1.0 > hutLandX(c.tier)) continue;   // the fishing hut's extras stay on the land side, behind the jetty's start (never on the jetty or over the water)
@@ -1889,7 +1892,7 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
     case 1: // farm
       if (has(0)) { const p = spot(1.2, 1.2, 2.1, 0); if (p) { b.cyl(0.05, 0.05, 1.9, m.darkwood, p[0], 0, p[1], 6); const arm = b.box(1.2, 0.07, 0.07, m.darkwood, p[0], 1.45, p[1]); arm.rotation.y = 0.4; b.sphere(0.2, m.hay, p[0], 1.95, p[1]); b.pyramid(0.6, 0.6, 0.3, m.darkwood, p[0], 2.1, p[1]); } }
       if (has(1)) for (let i = 0; i < 2; i++) { const p = spot(1.5, 1.5, 1.4); if (p) { b.dome(0.75, m.hay, p[0], 0, p[1], 1.3); b.cone(0.18, 0.5, m.hay, p[0], 0.95, p[1], 6); } }
-      if (has(2)) { const n = Math.ceil((hw * 2) / 0.9); for (let i = 0; i <= n; i++) b.box(0.1, 0.9, 0.1, m.darkwood, all.min.x + i * (hw * 2) / n, 0, all.max.z + 0.5); b.box(hw * 2, 0.08, 0.06, m.wood, cx, 0.55, all.max.z + 0.5); b.box(hw * 2, 0.08, 0.06, m.wood, cx, 0.8, all.max.z + 0.5); }
+      if (has(2)) { const f = farmFields(c.tier), fw = f.max.x - f.min.x, fx = (f.min.x + f.max.x) / 2, fz = f.max.z + 0.5, n = Math.ceil(fw / 0.9); for (let i = 0; i <= n; i++) b.box(0.1, 0.9, 0.1, m.darkwood, f.min.x + i * fw / n, 0, fz); b.box(fw, 0.08, 0.06, m.wood, fx, 0.55, fz); b.box(fw, 0.08, 0.06, m.wood, fx, 0.8, fz); }   // (along the front edge of the fields)
       if (has(3)) { const p = spot(3.4, 2.6, 3.4); if (p) { b.box(3.2, 2.0, 2.4, m.wood, p[0], 0, p[1]); b.gable(3.4, 2.6, 1.4, m.thatch, p[0], 2.0, p[1], 0.3); b.box(1.2, 1.6, 0.1, m.door, p[0], 0, p[1] + 1.22); } }
       // second tier: windmill, granary, orchard, bee skeps
       if (has(4)) { const p = spot(2.6, 2.6, 5.4); if (p) { b.cyl(0.9, 1.3, 3.0, m.plaster, p[0], 0, p[1], 10); b.cone(1.1, 1.0, m.thatch, p[0], 3.0, p[1], 10); for (const a of [0.5, 0.5 + Math.PI / 2]) { const bl = b.box(0.22, 3.6, 0.05, m.wood, p[0], 2.6 - 1.8, p[1] + 1.15); bl.rotation.z = a; } b.cyl(0.1, 0.1, 0.4, m.darkwood, p[0], 2.5, p[1] + 1.0, 6).rotation.x = Math.PI / 2; b.box(0.7, 1.1, 0.1, m.door, p[0], 0, p[1] + 1.25); } }
