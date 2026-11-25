@@ -18,6 +18,10 @@ pub const ZONE_RADIUS: f32 = 10.0;
 pub const ZONE_REACH: i32 = 60;
 /// Trees a forester plants each cycle.
 pub const FORESTER_BATCH: u32 = 2;
+/// How much of a cleared patch in the wild the forest takes back each day (the patch shrinks until it is gone).
+pub const REGROW_PER_DAY: f32 = 0.2;
+/// A cleared area this big is the model village's deliberate clearing (see `demo`), never regrown.
+const BIG_CLEARING: f32 = 30.0;
 
 impl World {
     /// Can a tree be planted here: in the village's land, on dry ground clear of buildings, deposits and other trees.
@@ -28,6 +32,18 @@ impl World {
         if self.buildings.iter().any(|b| !matches!(b.kind, ROAD | BRIDGE | WALL | FENCE) && (b.x - x).hypot(b.y - y) < footprint(b.kind, b.tier) + 0.6) { return false; }
         if self.deposits.iter().any(|d| d.max > 0 && (d.x - x).hypot(d.y - y) < 2.6) { return false; }
         !self.planted.iter().any(|p| (p.0 - x).hypot(p.1 - y) < SPACING)
+    }
+
+    /// Once a day the forest takes back the ground cleared in the wild (by woodcutters beyond the village's land, or by marching soldiers): each such patch shrinks and then vanishes.
+    /// Nothing regrows inside the village's own land (the cities), nor in a big deliberate clearing.
+    pub(crate) fn regrow_forest(&mut self) {
+        if self.felled.is_empty() { return; }
+        let wild: Vec<bool> = self.felled.iter().map(|c| c[2] < BIG_CLEARING && !self.in_territory(c[0], c[1])).collect();
+        let mut changed = false;
+        for (c, _) in self.felled.iter_mut().zip(&wild).filter(|(_, &w)| w) { c[2] -= REGROW_PER_DAY; changed = true; }
+        if !changed { return; }
+        self.felled.retain(|c| c[2] >= 0.5);
+        self.map_ver += 1;
     }
 
     /// Plant at most one tree at a random spot of the disc: a few tries. True when one was planted.
@@ -160,6 +176,22 @@ mod tests {
         w.planted.push((zx, zy + 3.0, fresh));
         w.planted.retain(|p| fresh.saturating_sub(p.2) == 0);
         assert!(!w.fell_planted(zx, zy), "a young tree is left alone");
+    }
+
+    #[test]
+    fn cleared_wild_land_grows_back_but_the_village_land_does_not() {
+        let mut w = village();
+        let town = (w.buildings[0].x + 4.0, w.buildings[0].y + 4.0);
+        let wild = (w.buildings[0].x + 400.0, w.buildings[0].y + 400.0);
+        assert!(w.in_territory(town.0, town.1) && !w.in_territory(wild.0, wild.1));
+        w.felled.push([town.0, town.1, 3.0]); w.felled.push([wild.0, wild.1, 3.0]); w.felled.push([wild.0 + 50.0, wild.1, 40.0]);
+        let ver = w.map_ver;
+        w.regrow_forest();
+        assert!(w.map_ver > ver, "the map changed");
+        assert!(w.felled[1][2] < 3.0, "the wild patch shrinks");
+        assert_eq!((w.felled[0][2], w.felled[2][2]), (3.0, 40.0), "the city and the model clearing stay");
+        for _ in 0..30 { w.regrow_forest(); }
+        assert_eq!(w.felled.len(), 2, "the wild patch is gone, the rest stays");
     }
 
     #[test]

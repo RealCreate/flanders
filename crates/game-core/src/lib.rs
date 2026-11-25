@@ -2176,6 +2176,7 @@ impl World {
         } else { self.warm = true; }
         if self.tick % DAY != 0 { return; }
         self.regrow_deposits();
+        self.regrow_forest();
         { let doves = self.perks().doves; if doves > 0 { let cap = self.storage_cap(); self.gain(ledger::EX_DOVES, GR, doves, cap); } }
         let now = self.tick; self.treaties.retain(|t| t.until > now);
         self.market_refill();
