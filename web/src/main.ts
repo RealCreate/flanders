@@ -3944,7 +3944,7 @@ let resScale = 1, slowMs = 0, busyMs = 0, resStart = -1, resLast = 0;
 /** How long the main thread worked on the last frame (simulation, scripts, issuing the draws), measured at the end of `frame()`. */
 let lastBusyMs = 0;
 function adaptResolution(frameMs: number, now: number) {
-  if (!settings().adaptive) return;
+  if (!settings().adaptive || perf.profiling) return;   // (the resolution stays put while the cost test measures)
   // smoothed over about a second of real time, whatever the frame rate: counted in frames, a computer drawing 2 frames a second took a minute to start
   // adjusting and several minutes to reach the lowest resolution, which is exactly the computer that needs it
   const k = 1 - Math.exp(-Math.min(frameMs, 1000) / 900);
@@ -3972,7 +3972,7 @@ function adaptResolution(frameMs: number, now: number) {
 }
 /** The frame rate limit in force: the player's, or 30 when the device could not keep up with 60 (see adaptResolution). */
 let autoCap30 = false, slowSince = 0;
-const effectiveFpsCap = () => autoCap30 ? 30 : settings().fpsCap;
+const effectiveFpsCap = () => perf.profiling ? 0 : autoCap30 ? 30 : settings().fpsCap;   // (no limit while the cost test measures the frames)
 
 /** A handful of real point lights, moved each moment to the lanterns nearest the camera: at night they throw warm pools of light on the street.
  *
