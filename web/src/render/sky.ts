@@ -105,7 +105,8 @@ export class Atmosphere {
 
   invalidateShadows() { this.shadows.invalidate(); }
 
-  updateShadows(now: number, target: THREE.Vector3, zoom: number, movingActors: boolean) {
+  /** Returns true when the shadow map is redrawn this frame. */
+  updateShadows(now: number, target: THREE.Vector3, zoom: number, movingActors: boolean): boolean {
     const extent = THREE.MathUtils.clamp(43 + zoom * 0.48, 50, 80);
     const redraw = this.sun.castShadow && this.shadows.update(now, target, this.sunDir, zoom, movingActors, extent);
     this.renderer.shadowMap.needsUpdate = redraw;
@@ -115,6 +116,7 @@ export class Atmosphere {
       camera.right = camera.top = extent;
       camera.updateProjectionMatrix();
     }
+    return redraw;
   }
 
   /** Move the shadow frustum so it follows the camera focus. */

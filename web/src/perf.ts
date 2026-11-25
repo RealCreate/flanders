@@ -38,7 +38,10 @@ export class Perf {
   /** Show or hide the small frame-rate counter. */
   setBadge(on: boolean) { this.badge.style.display = on ? '' : 'none'; }
 
-  toggle(on = !this.open) { this.open = on; this.panel.hidden = !on; }
+  toggle(on = !this.open) { this.open = on; this.panel.hidden = !on; if (on) { this.events.clear(); this.evSince = performance.now(); } }
+  /** Count something that happens now and then (a shadow map redraw): the report says how often per second while the panel has been open. */
+  private events = new Map<string, number>(); private evSince = 0;
+  tally(name: string) { if (this.open) this.events.set(name, (this.events.get(name) ?? 0) + 1); }
 
   attachGpu(gl: WebGL2RenderingContext) { this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2'); }
   /** Smoothed GPU time of the main render in ms, or null where the browser does not offer GPU timer queries (most phones and tablets, Safari). */
@@ -60,6 +63,8 @@ export class Perf {
       game: this.context(),
       frames: { count: n, avgMs: +avg.toFixed(1), fps: avg ? +(1000 / avg).toFixed(1) : 0, p50: q(0.5), p95: q(0.95), p99: q(0.99), over16: n ? +(f.filter(v => v > 16.7).length / n).toFixed(2) : 0, over33: n ? +(f.filter(v => v > 33.3).length / n).toFixed(2) : 0 },
       cpuSectionsMs: Object.fromEntries([...this.sections].map(([k, v]) => [k, +v.toFixed(2)])),
+      perSecond: Object.fromEntries([...this.events].map(([k, v]) => [k, +(v / Math.max(1, (performance.now() - this.evSince) / 1000)).toFixed(2)])),
+      unaccountedMs: +Math.max(0, avg - [...this.sections.values()].reduce((a, b) => a + b, 0)).toFixed(1),   // frame time not spent in the timed sections: the GPU, the browser, the page's other work
       renderCallMs: +this.renderMs.toFixed(2), gpuMs: this.gpuOk ? +this.gpuMs.toFixed(2) : null,
       scene: { ...this.lastInfo, ...this.stats },
       layerCostsMs: this.lastRes ? { baseline: +this.lastRes.base.toFixed(2), ...Object.fromEntries(this.lastRes.results.map(r => [r.name, +r.ms.toFixed(2)])) } : null,

@@ -4163,7 +4163,7 @@ function frame(now: number) {
   }
   perf.stop('labels + minimap');
   perf.start('render (CPU side)');
-  atmo.updateShadows(now, rig.target, rig.dist, drawCrowd && (speed > 0 || wildlife.visible > 0));
+  if (atmo.updateShadows(now, rig.target, rig.dist, drawCrowd && (speed > 0 || wildlife.visible > 0))) perf.tally('shadow redraws');
   perf.render(renderer, scene, rig.cam);
   perf.stop('render (CPU side)');
   lastBusyMs = performance.now() - frameAt;
