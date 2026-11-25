@@ -3660,11 +3660,12 @@ function bindInput() {
   const cv = ui.canvas;
   // touch: hold a finger still for half a second to open the action menu (or send the selected armies). A ring fills under the finger meanwhile, and the menu
   // opens while the finger is still down, so a hold is never mistaken for a slow tap.
-  const pressRing = document.createElement('div'); pressRing.id = 'press-ring'; pressRing.hidden = true; document.body.appendChild(pressRing);
+  let pressRing: HTMLElement | null = null;   // made on the first hold, so nothing is added to the page for mouse players
   let press: { timer: ReturnType<typeof setTimeout>; id: number; x: number; y: number } | null = null;
-  const cancelPress = () => { if (press) { clearTimeout(press.timer); press = null; } pressRing.hidden = true; pressRing.classList.remove('go'); };
+  const cancelPress = () => { if (press) { clearTimeout(press.timer); press = null; } if (pressRing) { pressRing.hidden = true; pressRing.classList.remove('go'); } };
   const startPress = (e: PointerEvent) => {
     cancelPress();
+    if (!pressRing) { pressRing = document.createElement('div'); pressRing.id = 'press-ring'; pressRing.hidden = true; document.body.appendChild(pressRing); }
     pressRing.style.left = `${e.clientX}px`; pressRing.style.top = `${e.clientY}px`; pressRing.hidden = false;
     void pressRing.offsetWidth; pressRing.classList.add('go');   // (re)start the fill animation
     press = { id: e.pointerId, x: e.clientX, y: e.clientY, timer: setTimeout(() => {
@@ -3681,8 +3682,8 @@ function bindInput() {
   { // Rotate: a tap turns one way, a hold (400 ms) turns back the other way
     const btn = document.getElementById('touch-rotate')!;
     let held: ReturnType<typeof setTimeout> | null = null, fired = false;
-    btn.addEventListener('pointerdown', () => { fired = false; if (held) clearTimeout(held); held = setTimeout(() => { held = null; fired = true; rotateTool(-1); }, 400); });
-    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) btn.addEventListener(ev, () => { if (held) { clearTimeout(held); held = null; } });
+    btn.onpointerdown = () => { fired = false; if (held) clearTimeout(held); held = setTimeout(() => { held = null; fired = true; rotateTool(-1); }, 400); };
+    btn.onpointerup = btn.onpointercancel = btn.onpointerleave = () => { if (held) { clearTimeout(held); held = null; } };
     btn.onclick = () => { if (fired) { fired = false; return; } rotateTool(1); };
   }
   document.getElementById('touch-build')!.onclick = () => {

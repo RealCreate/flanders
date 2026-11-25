@@ -53,7 +53,8 @@ export function twoFingerMode(a: { dx: number; dy: number }, b: { dx: number; dy
 }
 
 /** Turning with two fingers only starts after a deliberate twist: every pinch also changes the angle between the fingers a little, which turned the camera while
- *  zooming. Below `threshold` (radians, about 10°) the twist is held back; past it the camera turns freely, from that point on, until the fingers lift. */
+ *  zooming. Below `threshold` (radians, about 10°) the twist is held back; past it the camera turns by what goes beyond the threshold (no jump), and then freely,
+ *  until the fingers lift. */
 export class TwistGate {
   private sum = 0; private open = false; private threshold: number;
   constructor(threshold = 0.17) { this.threshold = threshold; }
@@ -63,7 +64,7 @@ export class TwistGate {
     if (this.open) return twist;
     this.sum += twist;
     if (Math.abs(this.sum) < this.threshold) return 0;
-    this.open = true; return 0;
+    this.open = true; return this.sum - Math.sign(this.sum) * this.threshold;
   }
 }
 

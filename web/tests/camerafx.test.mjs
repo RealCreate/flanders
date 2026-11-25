@@ -49,7 +49,7 @@ test('two fingers sliding up or down together tilt; anything else works the map;
 test('a small twist during a pinch does not turn the camera; a deliberate one does, from then on', () => {
   const g = new TwistGate(0.17);
   assert.equal(g.step(0.05), 0); assert.equal(g.step(-0.04), 0); assert.equal(g.step(0.06), 0);   // wobble, 0.07 in all
-  assert.equal(g.step(0.12), 0);                                                                     // crosses the threshold: opens
+  assert.ok(Math.abs(g.step(0.12) - 0.02) < 1e-9);                                                 // crosses the threshold: turns by the part beyond it
   assert.equal(g.step(0.03), 0.03);                                                                  // then turns freely
   g.reset(); assert.equal(g.step(0.03), 0);
 });
