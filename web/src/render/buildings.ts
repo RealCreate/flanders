@@ -407,7 +407,7 @@ const farm: Model = b => {
   const bm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
   b.box(4, 2.4, 3, bm, -1.2, 0.2, -2.6); b.gable(4, 3, 1.8 + t * 0.2, t >= 1 ? m.tile : m.thatch, -1.2, 2.6, -2.6, 0.45);
   b.box(1.5, 1.7, 0.12, m.door, -1.2, 0.2, -4.16);   // the door is in the back wall of the barn, away from the fields: the farm's road leaves from there (see doors.rs)
-  b.cyl(0.8, 0.8, 0.9, m.hay, 3.2, 0.1, -3, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.3, 0.1, -2.4, 10);
+  if (t >= 1) { b.cyl(0.8, 0.8, 0.9, m.hay, 4.9, 0.1, -3.4, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.6, 0.1, -1.9, 10); } else { b.cyl(0.8, 0.8, 0.9, m.hay, 3.2, 0.1, -3, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.3, 0.1, -2.4, 10); }   // (from tier 1 the silo stands where the bales were, so they move beside it)
   if (t >= 1) { b.cyl(0.95, 1.0, 4.2, t >= 2 ? m.stone : m.wood, 2.8, 0.1, -3.4, 14); b.cone(1.1, 1.0, m.slate, 2.8, 4.3, -3.4, 14); }
   if (t >= 2) {
     b.cyl(0.4, 0.85, 4.2, m.plaster, -4.6, 0.1, 2.8, 12); b.cone(0.75, 1.1, m.thatch, -4.6, 4.3, 2.8, 12);
