@@ -24,13 +24,15 @@ export class Perf {
   constructor(host: HTMLElement) {
     this.badge = document.createElement('button'); this.badge.id = 'fps-badge'; this.badge.title = 'Performance monitor (F3)'; this.badge.textContent = '-- fps';
     this.panel = document.createElement('div'); this.panel.id = 'perf'; this.panel.hidden = true;
-    this.panel.innerHTML = `<div class="ph"><b>Performance</b><span id="perf-sub"></span><button id="perf-x" title="Close">${icon('close', 12, { mono: true })}</button></div><canvas id="perf-g" width="260" height="56"></canvas><div id="perf-body"></div><div class="pb"><button id="perf-prof">Find the biggest cost</button></div>`;
+    this.panel.innerHTML = `<div class="ph"><b>Performance</b><span id="perf-sub"></span><button id="perf-x" title="Close">${icon('close', 12, { mono: true })}</button></div><canvas id="perf-g" width="260" height="56"></canvas><div id="perf-body"></div><div class="pb"><button id="perf-prof">Find the biggest cost</button><button id="perf-copy" title="Copy a report with no personal data, to share">Copy report</button></div>`;
     host.append(this.badge, this.panel);
     this.graph = this.panel.querySelector('#perf-g') as HTMLCanvasElement; this.body = this.panel.querySelector('#perf-body') as HTMLElement;
     this.btn = this.panel.querySelector('#perf-prof') as HTMLButtonElement;
     this.badge.onclick = () => this.toggle();
     (this.panel.querySelector('#perf-x') as HTMLElement).onclick = () => this.toggle(false);
     this.btn.onclick = () => this.startProfile();
+    const copy = this.panel.querySelector('#perf-copy') as HTMLButtonElement;
+    copy.onclick = () => { void this.exportReport().then(how => { copy.textContent = how === 'copied' ? 'Copied' : 'Saved as file'; setTimeout(() => { copy.textContent = 'Copy report'; }, 2500); }); };
   }
 
   /** Show or hide the small frame-rate counter. */
@@ -42,6 +44,35 @@ export class Perf {
   /** Smoothed GPU time of the main render in ms, or null where the browser does not offer GPU timer queries (most phones and tablets, Safari). */
   get gpuTime(): number | null { return this.gpuOk ? this.gpuMs : null; }
   setLayers(l: Layer[]) { this.layers = l; }
+  /** Device and display facts for the report (supplied by the game: graphics card, settings, resolution scale). Never player or village names. */
+  setContext(fn: () => Record<string, unknown>) { this.context = fn; }
+  private context: () => Record<string, unknown> = () => ({});
+  private lastInfo = { calls: 0, triangles: 0, geometries: 0, textures: 0 };
+
+  /** A small, anonymous summary of how the game runs on this device, to paste into a bug report. */
+  report() {
+    const f = this.frames.slice(), s = [...f].sort((a, b) => a - b), n = s.length;
+    const q = (p: number) => n ? +s[Math.min(n - 1, Math.floor(n * p))].toFixed(1) : null;
+    const avg = n ? f.reduce((a, b) => a + b, 0) / n : 0;
+    return {
+      format: 'flanders-perf-1', at: new Date().toISOString(),
+      device: { userAgent: navigator.userAgent, cores: navigator.hardwareConcurrency, memoryGB: (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? null, dpr: devicePixelRatio, screen: `${screen.width}x${screen.height}`, window: `${innerWidth}x${innerHeight}`, touch: navigator.maxTouchPoints > 0 },
+      game: this.context(),
+      frames: { count: n, avgMs: +avg.toFixed(1), fps: avg ? +(1000 / avg).toFixed(1) : 0, p50: q(0.5), p95: q(0.95), p99: q(0.99), over16: n ? +(f.filter(v => v > 16.7).length / n).toFixed(2) : 0, over33: n ? +(f.filter(v => v > 33.3).length / n).toFixed(2) : 0 },
+      cpuSectionsMs: Object.fromEntries([...this.sections].map(([k, v]) => [k, +v.toFixed(2)])),
+      renderCallMs: +this.renderMs.toFixed(2), gpuMs: this.gpuOk ? +this.gpuMs.toFixed(2) : null,
+      scene: { ...this.lastInfo, ...this.stats },
+      layerCostsMs: this.lastRes ? { baseline: +this.lastRes.base.toFixed(2), ...Object.fromEntries(this.lastRes.results.map(r => [r.name, +r.ms.toFixed(2)])) } : null,
+    };
+  }
+  /** Copy the report to the clipboard, or save it as a file where the browser refuses. */
+  async exportReport(): Promise<'copied' | 'saved'> {
+    const text = JSON.stringify(this.report(), null, 2);
+    try { await navigator.clipboard.writeText(text); return 'copied'; } catch { /* no clipboard permission: save a file */ }
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' })), a = document.createElement('a');
+    a.href = url; a.download = 'flanders-performance.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return 'saved';
+  }
 
   /** Measure a CPU section (exponentially smoothed milliseconds). */
   start(name: string) { this.starts.set(name, performance.now()); }
@@ -77,7 +108,7 @@ export class Perf {
   /** Call once at the end of every frame. */
   frame(now: number, info: { calls: number; triangles: number; geometries: number; textures: number }) {
     if (this.last) { const dt = now - this.last; this.frames.push(dt); if (this.frames.length > 240) this.frames.shift(); }
-    this.last = now;
+    this.last = now; this.lastInfo = { calls: info.calls, triangles: info.triangles, geometries: info.geometries, textures: info.textures };
     if (now - this.shown < 400) return;
     this.shown = now;
     const f = this.frames.slice(-60); if (!f.length) return;

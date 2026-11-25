@@ -54,6 +54,7 @@ import { Wildlife } from './render/wildlife';
 import { UI, esc, toggleFullscreen } from './ui/ui';
 import { keys, digitOf, prettyKey, type Action } from './keys';
 import { Perf } from './perf';
+import { VERSION } from './version';
 import type { ArmyRouteRequest, MarchPreviewRequest } from './march-planner.worker';
 import { Sound } from './audio';
 import { Minimap, type MapVillage } from './ui/minimap';
@@ -3861,6 +3862,7 @@ function setupPerf() {
   perf = new Perf(document.body);
   perf.attachGpu(renderer.getContext() as WebGL2RenderingContext);
   const vis = (get: () => THREE.Object3D[]) => (on: boolean) => get().forEach(o => (o.visible = on));
+  perf.setContext(() => { const s = settings(); return { version: VERSION, gpu: rendererName(), softwareRendering, quality: s.quality, shadows: s.shadows, pixelCap: s.pixelCap, drawDistance: s.drawDistance, antialias: s.antialias, fpsCap: effectiveFpsCap(), adaptive: s.adaptive, resolutionScale: +resScale.toFixed(2), pixelRatio: renderer.getPixelRatio() }; });
   perf.setLayers([
     { name: 'Terrain', set: vis(() => [terrain.mesh]) },
     { name: 'Water', set: vis(() => [terrain.water, terrain.riverWater]) },
