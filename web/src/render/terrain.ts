@@ -116,6 +116,9 @@ export class Terrain {
       this.chunks.push({ mesh: m, i0, j0, i1, j1, lods, lod: 0, cx: -HALF + ((i0 + i1) / 2) * STEP, cz: -HALF + ((j0 + j1) / 2) * STEP });
     }
     this.fitChunks(0, 0, NV - 1, NV - 1);
+    // The grid geometry only lends its vertex attributes to the chunks, which each draw from their own index buffers: its own index (5.5 million entries, 22 MB as
+    // Uint32) is never drawn or read, and on an iPad that much memory counts (Safari takes WebGL away from a page that uses too much).
+    this.geo.setIndex(null);
 
     this.heightData = new Uint16Array(NV * NV);
     this.heightTex = new THREE.DataTexture(this.heightData, NV, NV, THREE.RedFormat, THREE.HalfFloatType);

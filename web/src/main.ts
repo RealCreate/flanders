@@ -9,7 +9,7 @@ import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import './ui/mobile.css';
 import { sceneIsStill, skipFrame } from './idle';
-import { initDevice, deviceClass, touchDefaults, isTouchDevice } from './device';
+import { initDevice, deviceClass, touchDefaults, touchLimits, isTouchDevice } from './device';
 import { seedMobilePrefs, initMobileUi } from './ui/mobile';
 { const c = initDevice(); if (c !== 'desktop') seedMobilePrefs(c === 'phone'); }   // marks <body> as mobile/phone/tablet before the interface is built (the stylesheet follows those classes)
 import * as THREE from 'three';
@@ -60,7 +60,7 @@ import { Sound } from './audio';
 import { Minimap, type MapVillage } from './ui/minimap';
 import { Tunnels } from './render/tunnels';
 import { startAgentBridge } from './agent';
-import { nearestWithin, TOUCH_DRAG_PIXELS } from './render/camerafx';
+import { cachedRect, nearestWithin, TOUCH_DRAG_PIXELS } from './render/camerafx';
 import { paintFlag } from './ui/flagdesigner';
 import { keyNames } from './ui/ui';
 import { loadFlag, packFlag, unpackFlag, randomFlag, hasSavedFlag, drawFlag, type Flag } from './flag';
@@ -157,7 +157,8 @@ const ui: UI = new UI({
 // interface sounds
 document.addEventListener('click', e => { if ((e.target as HTMLElement)?.closest?.('button,.card,.chip,.tab')) sound.click(); });
 let lastHover: Element | null = null;
-document.addEventListener('mouseover', e => { const t = (e.target as HTMLElement)?.closest?.('.btn,.card,.tab,.chip,.pbtn'); if (t && t !== lastHover) { lastHover = t; sound.hover(); } else if (!t) lastHover = null; });
+// a mouse or trackpad only: Safari fires mouseover for every tap as well, which played the hover blip on top of the click sound on phones and tablets
+document.addEventListener('pointerover', e => { if (e.pointerType !== 'mouse') return; const t = (e.target as HTMLElement)?.closest?.('.btn,.card,.tab,.chip,.pbtn'); if (t && t !== lastHover) { lastHover = t; sound.hover(); } else if (!t) lastHover = null; });
 
 // ---------- game state ----------
 let worldName = 'flanders', seedBig = 1n, started = false;
@@ -1504,6 +1505,9 @@ function tickReplay(dt: number) {
   s.bar.update(s.r.tick, s.r.end, s.playing);
 }
 
+/** Running as a Home Screen app on iPhone or iPad (`navigator.standalone` exists only there). Elsewhere an installed app shares the browser's storage. */
+const isInstalledApp = () => (navigator as unknown as { standalone?: boolean }).standalone === true;
+
 // ---------- start ----------
 async function startGame(name: string, username: string, pve = false) {
   const openedAt = Date.now();
@@ -1551,6 +1555,9 @@ async function startGame(name: string, username: string, pve = false) {
   wildlife = new Wildlife(seedBig, terrain, forest.all, Array.from(village_sites(seedBig))); scene.add(wildlife.group);
   crowd = new Crowd(); scene.add(crowd.group);
   travellers = new Travellers(terrain); scene.add(travellers.group);
+  // phones and tablets: the moving crowds cast no shadows, and the shadow map follows the remaining movers less often (see device.ts `touchLimits`)
+  const limits = touchLimits(deviceClass());
+  if (!limits.crowdShadows) { for (const g of [crowd.group, wildlife.group, travellers.group]) g.traverse((o: THREE.Object3D) => { o.castShadow = false; }); atmo.shadowActorScale = 2; }
   fx = new Effects2(terrain); scene.add(fx.group, fx.light); addLampLights();
   effects = new Effects(); scene.add(effects.group);
   covInit(); selRing = new SelectionMark(terrain); growRing = new SelectionMark(terrain, 0x9dffb0); scene.add(selRing, growRing, borderRing);
@@ -1574,6 +1581,7 @@ async function startGame(name: string, username: string, pve = false) {
     scene, terrain, wildlife, fx, radii, forest,
     terrainChanged: v => { refreshTerrain(v.world); },
     forestDirty: () => { forestDirtyFlag = true; },
+    crowdShadows: limits.crowdShadows,
   };
 
   ui.progress(50, 'Mapping the roads…'); await nextFrame();
@@ -1651,6 +1659,8 @@ async function startGame(name: string, username: string, pve = false) {
   }, agentPort, agentToken);
   setInterval(() => { save(); updatePeers(); checkpoint(); }, 8000);
   tutorial.begin(!saved); updateGoals();
+  // A Home Screen app on iPhone and iPad keeps its own storage, apart from Safari's: a player who started in Safari finds an empty village here at first.
+  if (!saved && isInstalledApp()) ui.toast('Playing from the Home Screen keeps its own save. To bring a village over from the browser, save a backup there and restore it here (Settings → Data & network).', 'info');
   if (hasSavedFlag() || !lv.world.style()) applyFlag(loadFlag());
   ui.enterGame();                       // everything is ready: reveal the game
   initMobileUi();
@@ -2715,7 +2725,7 @@ function multiPane() {
   ui.setSelectedPane(`<div><div class="eyebrow">Selection</div><h2>${multiSel.length} buildings</h2><p class="muted">${names}</p></div>
     ${plan.go.length ? `<div><h3>Upgrade ${plan.go.length} of ${multiSel.length}</h3><div class="cost">${ui.costHtml(plan.total, stocks)}</div></div><button class="pbtn primary" data-act="multi:upgrade">Upgrade ${plan.go.length}</button>` : `<p><b>Nothing here can be upgraded right now.</b></p>`}
     ${notes ? `<p class="muted">${notes}</p>` : ''}
-    <p class="muted">Shift+click adds or removes a building.</p>
+    <p class="muted">${isTouchDevice() ? 'With Select more on, a tap adds or removes a building.' : 'Shift+click adds or removes a building.'}</p>
     <div class="btnrow"><button class="pbtn" data-act="deselect">Clear selection</button></div>`, '');
   return true;
 }
@@ -3233,7 +3243,7 @@ function pickBuilding(r: THREE.Raycaster): number | null {
   return roadAt(hit.x, hit.z);
 }
 function pointerRay(e: { clientX: number; clientY: number }) {
-  const rect = ui.canvas.getBoundingClientRect();
+  const rect = cachedRect(ui.canvas);
   ndc.set(2 * (e.clientX - rect.left) / rect.width - 1, 1 - 2 * (e.clientY - rect.top) / rect.height);
   ray.setFromCamera(ndc, rig.cam);
   return ray;
@@ -3537,8 +3547,14 @@ function updateGhost(e: { clientX: number; clientY: number }) {
   }
 }
 
+/** Touch has no Shift or Ctrl: while this is on, a tap adds a building or an army to the selection (or takes it out) instead of replacing it. */
+let touchMulti = false;
+function setTouchMulti(on: boolean) { touchMulti = on; document.getElementById('touch-multi')!.setAttribute('aria-pressed', String(on)); }
 function showTouchTools() {
   document.getElementById('touch-tools')!.hidden = selectedKind === null;
+  const somethingSelected = selectedIdx !== null || multiSel.length > 0 || selectedDet !== null;
+  document.getElementById('touch-select')!.hidden = !touchInput || selectedKind !== null || (!somethingSelected && !touchMulti);
+  if (selectedKind !== null && touchMulti) setTouchMulti(false);
   document.getElementById('touch-tools')!.classList.toggle('touch-active', touchInput);
   const path = selectedKind === 37 || (selectedKind !== null && !!PEN_SPACING[selectedKind] && penShape === 'path');
   document.getElementById('touch-finish')!.hidden = !path;
@@ -3555,14 +3571,14 @@ function touchPlacementEvent() {
   if (!touchPlacement) return null;
   const { x, z } = touchPlacement;
   const p = new THREE.Vector3(x, terrain.heightAt(x, z, true), z).project(rig.cam);
-  const rect = ui.canvas.getBoundingClientRect();
+  const rect = cachedRect(ui.canvas);
   return { clientX: rect.left + (p.x + 1) * rect.width / 2, clientY: rect.top + (1 - p.y) * rect.height / 2 };
 }
 
 function touchPreviewHit(e: { clientX: number; clientY: number }) {
   let p = touchPlacementEvent();
   if (p && ghost?.visible) {
-    const at = ghost.position.clone().project(rig.cam), rect = ui.canvas.getBoundingClientRect();
+    const at = ghost.position.clone().project(rig.cam), rect = cachedRect(ui.canvas);
     p = { clientX: rect.left + (at.x + 1) * rect.width / 2, clientY: rect.top + (1 - at.y) * rect.height / 2 };
   }
   return p !== null && Math.hypot(p.clientX - e.clientX, p.clientY - e.clientY) < 48;
@@ -3590,10 +3606,11 @@ function undoStroke() {
   return false;
 }
 
-function rotateTool() {
+/** Rotate goes round in 8 steps one way; held down, it steps back the other way (so one step too far costs a hold, not seven taps). */
+function rotateTool(dir: 1 | -1 = 1) {
   if (selectedKind === PLANT_TOOL) { plantR = plantR >= 8 ? 2 : plantR + 2; ui.hint(placeHint(PLANT_TOOL)); const e = touchPlacementEvent(); if (e) updateGhost(e); return; }
   if (selectedKind === LEVEL_TOOL) { setLevelRadius(nextLevelSize(levelR)); const e = touchPlacementEvent(); if (e) updateGhost(e); showTouchTools(); return; }
-  rot = (rot + 1) % 8;
+  rot = (rot + dir + 8) % 8;
   if (selectedKind === 24) { moatWidth = rot; ui.hint(placeHint(24)); }
   ghostCode = 99; previewKey = '';
   const e = touchPlacementEvent() ?? lastGhostE;
@@ -3628,11 +3645,46 @@ function buildAtPointer(e: { clientX: number; clientY: number }) {
 
 }
 
+/** A fingertip covers about 40 CSS pixels: when the exact ray misses, a tap still picks the building whose centre is drawn within this many pixels of it. */
+const TOUCH_PICK_PIXELS = 28;
+function buildingNearTap(e: { clientX: number; clientY: number }): number | null {
+  const f = lv.world.buildings_flat(), v = new THREE.Vector3(), rect = cachedRect(ui.canvas), out: { i: number; sx: number; sy: number }[] = [];
+  for (let o = 0; o + 9 < f.length; o += 10) {
+    v.set(f[o + 2], terrain.heightAt(f[o + 2], f[o + 3], true) + 1.5, f[o + 3]).project(rig.cam);
+    if (v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1) out.push({ i: o / 10, sx: rect.left + (v.x + 1) * rect.width / 2, sy: rect.top + (1 - v.y) * rect.height / 2 });
+  }
+  return nearestWithin(out, e.clientX, e.clientY, TOUCH_PICK_PIXELS)?.i ?? null;
+}
+
 function bindInput() {
   const cv = ui.canvas;
+  // touch: hold a finger still for half a second to open the action menu (or send the selected armies). A ring fills under the finger meanwhile, and the menu
+  // opens while the finger is still down, so a hold is never mistaken for a slow tap.
+  const pressRing = document.createElement('div'); pressRing.id = 'press-ring'; pressRing.hidden = true; document.body.appendChild(pressRing);
+  let press: { timer: ReturnType<typeof setTimeout>; id: number; x: number; y: number } | null = null;
+  const cancelPress = () => { if (press) { clearTimeout(press.timer); press = null; } pressRing.hidden = true; pressRing.classList.remove('go'); };
+  const startPress = (e: PointerEvent) => {
+    cancelPress();
+    pressRing.style.left = `${e.clientX}px`; pressRing.style.top = `${e.clientY}px`; pressRing.hidden = false;
+    void pressRing.offsetWidth; pressRing.classList.add('go');   // (re)start the fill animation
+    press = { id: e.pointerId, x: e.clientX, y: e.clientY, timer: setTimeout(() => {
+      const ok = press?.id === e.pointerId && down?.id === e.pointerId && !rig.touchConsumed;
+      cancelPress();
+      if (!ok) return;
+      try { navigator.vibrate?.(12); } catch { /* no vibration (iPhone, iPad) */ }
+      dropStroke(); contextAction(e);
+    }, 500) };
+  };
+  document.getElementById('touch-multi')!.onclick = () => { setTouchMulti(!touchMulti); showTouchTools(); };
   let movingTouchPreview = false;
   let down: { x: number; y: number; id: number; at: number } | null = null, hoverT = 0, routeT = 0;
-  document.getElementById('touch-rotate')!.onclick = rotateTool;
+  { // Rotate: a tap turns one way, a hold (400 ms) turns back the other way
+    const btn = document.getElementById('touch-rotate')!;
+    let held: ReturnType<typeof setTimeout> | null = null, fired = false;
+    btn.addEventListener('pointerdown', () => { fired = false; if (held) clearTimeout(held); held = setTimeout(() => { held = null; fired = true; rotateTool(-1); }, 400); });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) btn.addEventListener(ev, () => { if (held) { clearTimeout(held); held = null; } });
+    btn.onclick = () => { if (fired) { fired = false; return; } rotateTool(1); };
+  }
   document.getElementById('touch-build')!.onclick = () => {
     const e = touchPlacementEvent();
     if (!e || selectedKind === null) return;
@@ -3646,20 +3698,22 @@ function bindInput() {
   document.getElementById('touch-undo')!.onclick = undoStroke;
   document.getElementById('touch-cancel')!.onclick = () => selectKind(null);
   const dropStroke = () => { down = null; penStart = null; if (penShape !== 'path') penPreview.clear(); ui.selBox(null); };
-  const cancelPointer = (e: PointerEvent) => { if (down?.id === e.pointerId) dropStroke(); };
+  const cancelPointer = (e: PointerEvent) => { if (press?.id === e.pointerId) cancelPress(); if (down?.id === e.pointerId) dropStroke(); };
   cv.addEventListener('pointercancel', cancelPointer); cv.addEventListener('lostpointercapture', cancelPointer);
   cv.addEventListener('pointerleave', cancelMarchPreview);
   cv.addEventListener('pointerdown', e => {
     movingTouchPreview = e.pointerType === 'touch' && touchPreviewHit(e);
     touchInput = e.pointerType === 'touch'; showTouchTools();
     cancelMarchPreview();
-    if (e.pointerType === 'touch' && rig.touchConsumed) { dropStroke(); return; }
+    if (e.pointerType === 'touch' && rig.touchConsumed) { cancelPress(); dropStroke(); return; }
     if (e.button !== 0) { dropStroke(); return; }   // any other button (the right one turns the camera) abandons a selection or pen stroke: it must never carry on under a camera drag
     down = { x: e.clientX, y: e.clientY, id: e.pointerId, at: performance.now() };
+    if (e.pointerType === 'touch' && selectedKind === null && !pendingBattleOrder && !movingTouchPreview) startPress(e);
     try { cv.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
     if (!e.shiftKey && selectedKind !== null && PEN_SPACING[selectedKind] && penShape !== 'path') { const h = terrain.pick(pointerRay(e).ray); penStart = h ? { x: h.x, z: h.z } : null; }
   });
   cv.addEventListener('pointermove', e => {
+    if (press && (e.pointerId !== press.id || rig.touchConsumed || Math.hypot(e.clientX - press.x, e.clientY - press.y) > TOUCH_DRAG_PIXELS)) cancelPress();
     if (e.pointerType === 'touch' && rig.touchConsumed) { if (down) dropStroke(); return; }
     if (movingTouchPreview && down && e.pointerType === 'touch') { previewTouchPlacement(e); return; }
     if (e.pointerType !== 'touch' && down && e.buttons === 1 && selectedKind === null && !e.shiftKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) ui.selBox({ x0: down.x, y0: down.y, x1: e.clientX, y1: e.clientY });
@@ -3693,6 +3747,7 @@ function bindInput() {
   });
   cv.addEventListener('pointerleave', () => { ui.tip(null); covHover(null); });
   cv.addEventListener('pointerup', e => {
+    if (press?.id === e.pointerId) cancelPress();
     if (e.button !== 0 || down?.id !== e.pointerId) return;
     const touch = e.pointerType === 'touch';
     if (touch && rig.touchConsumed) { dropStroke(); return; }
@@ -3729,15 +3784,18 @@ function bindInput() {
         if (now - lastArmyClick.t < 350 && lastArmyClick.id === det) { const all = [...new Set([det, ...armiesOnScreen().map(a => a.id)])]; selectDets(all); ui.toast(`${all.length} armies selected.`, 'info'); lastArmyClick = { t: 0, id: -1 }; return; }   // double-click: every army on the screen
         lastArmyClick = { t: now, id: det };
         const camp = pickedPart === 'tent' || pickedPart === 'trough' ? campText(det) : null;
-        if (e.shiftKey || e.ctrlKey) selectDets(multiDets.includes(det) ? multiDets.filter(i => i !== det) : [...multiDets, det]); else selectDet(det);   // Shift or Ctrl: add to the selection, or take out
+        if (e.shiftKey || e.ctrlKey || (touch && touchMulti)) selectDets(multiDets.includes(det) ? multiDets.filter(i => i !== det) : [...multiDets, det]); else selectDet(det);   // Shift or Ctrl (or Select more on touch): add to the selection, or take out
+        showTouchTools();
         if (camp) ui.toast(`Camp of Army ${det}: ${camp}.`, 'info');
         return;
       }
-      const idx = pickBuilding(pointerRay(e));
+      let idx = pickBuilding(pointerRay(e));
       if (idx === null) { const ri = lv.ruins.pick(pointerRay(e)); if (ri !== null) { selectRuin(ri); return; } }
-      if (idx !== null) { if (e.shiftKey || e.ctrlKey) toggleMulti(idx); else selectBuilding(idx); }
+      if (idx === null && touch) idx = buildingNearTap(e);   // a fingertip that just missed a small building
+      if (idx !== null) { if (e.shiftKey || e.ctrlKey || (touch && touchMulti)) toggleMulti(idx); else selectBuilding(idx); showTouchTools(); return; }
       else for (const r of rivals.values()) if (r.village.pick(ray) !== null) { openEmbassy(); ui.toast(`${r.name}'s village — pick it in the Embassy's Diplomacy tab to trade, talk or march on it.`, 'info'); return; }
-      if (idx === null) { selectBuilding(null); selectRuin(null); if (selectedDet !== null) selectDet(null); }
+      if (idx === null && !(touch && touchMulti)) { selectBuilding(null); selectRuin(null); if (selectedDet !== null) selectDet(null); }   // (while Select more is on, a tap on empty ground keeps the selection)
+      showTouchTools();
     }
   });
   function contextAction(e: PointerEvent) {
@@ -3983,7 +4041,7 @@ const effectiveFpsCap = () => perf.profiling ? 0 : autoCap30 ? 30 : settings().f
 const lampLights: THREE.PointLight[] = [];
 let lampT = 0, pointLightsOn = true, pointLightsIdle = 0;
 function addLampLights() {
-  if (!lampLights.length) for (let i = 0; i < 4; i++) { const l = new THREE.PointLight(0xffb464, 0, 17, 1.5); scene.add(l); lampLights.push(l); }
+  if (!lampLights.length) for (let i = 0; i < touchLimits(deviceClass()).lampLights; i++) { const l = new THREE.PointLight(0xffb464, 0, 17, 1.5); scene.add(l); lampLights.push(l); }
 }
 function setPointLights(on: boolean) {
   pointLightsOn = on;

@@ -2,8 +2,9 @@
    Everything here sits under `body.mobile`, which device.ts sets only for a touch device (or ?device=phone|tablet). The desktop stylesheet (style.css) is not edited:
    these rules come after it and are more specific, so they win on a phone or tablet and do not exist for anyone else.
    Layout in short:
-     portrait  - the top bar is two thin rows; the ledger is a bottom sheet whose tab bar is always on screen (a bottom navigation); the tool dock floats above it
-     landscape - one thin top bar; the ledger is a side panel on the right (narrower on a phone), still folding away with its arrow
+     phone, portrait - the top bar is two thin rows; the ledger is a bottom sheet whose tab bar is always on screen (a bottom navigation); the tool dock floats above it
+     landscape       - one thin top bar; the ledger is a side panel on the right (narrower on a phone), still folding away with its arrow
+     tablet, portrait - the top bar as on a phone in portrait, but the ledger stays the side panel: an iPad is a wide screen in either orientation
    `--peek` is the height of the folded sheet (tab bar and the safe area under it), `--sheet` the height of the open sheet. */
 body.mobile {
   --peek: calc(46px + env(safe-area-inset-bottom));
@@ -43,36 +44,37 @@ body.mobile #v-pop { border: 1px solid #4d3d29; background: #2a2017e6; }   /* th
 body.mobile .speed { flex: none; }
 body.mobile .speed .btn { display: flex; align-items: center; justify-content: center; }
 
-/* ---- the ledger: bottom sheet in portrait ---- */
+/* ---- the ledger: bottom sheet on a phone in portrait ----
+   (An iPad in portrait is still a wide screen: it keeps the side panel, see the tablet block after the landscape one.) */
 @media (orientation: portrait) {
-  body.mobile #ledger {
+  body.phone #ledger {
     top: auto; left: 0; right: 0; bottom: 0; width: auto; height: var(--sheet); z-index: 12;
     border-radius: 14px 14px 0 0; border-width: 1px 0 0; padding-bottom: env(safe-area-inset-bottom);
     box-shadow: 0 -10px 34px rgba(0,0,0,.55), inset 0 0 60px rgba(150,115,60,.18);
     transition: transform .26s cubic-bezier(.2,.8,.2,1);
   }
   /* folded: only the tab bar shows, so the village has the whole screen and the tabs stay one tap away */
-  body.mobile #ledger.min { transform: translateY(calc(100% - var(--peek))); opacity: 1; pointer-events: auto; }
-  body.mobile #ledger.min .pane { visibility: hidden; }
-  body.mobile #ledger-open { display: none; }
-  body.mobile #ledger-min { transform: rotate(90deg); }
-  body.mobile #ledger.min #ledger-min { transform: rotate(-90deg); }
-  body.mobile .tabs { flex: none; }
-  body.mobile .tab { min-height: 46px; padding: 6px 0; font-size: 13px; }
-  body.mobile .tabmin { width: 46px; font-size: 18px; transition: transform .2s; }
+  body.phone #ledger.min { transform: translateY(calc(100% - var(--peek))); opacity: 1; pointer-events: auto; }
+  body.phone #ledger.min .pane { visibility: hidden; }
+  body.phone #ledger-open { display: none; }
+  body.phone #ledger-min { transform: rotate(90deg); }
+  body.phone #ledger.min #ledger-min { transform: rotate(-90deg); }
+  body.phone .tabs { flex: none; }
+  body.phone .tab { min-height: 46px; padding: 6px 0; font-size: 13px; }
+  body.phone .tabmin { width: 46px; font-size: 18px; transition: transform .2s; }
   /* a little grab handle above the tabs says the sheet moves */
-  body.mobile .tabs { position: relative; }
-  body.mobile .tabs::before { content: ''; position: absolute; top: 3px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: #cdbb9566; pointer-events: none; }
+  body.phone .tabs { position: relative; }
+  body.phone .tabs::before { content: ''; position: absolute; top: 3px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: #cdbb9566; pointer-events: none; }
   /* the things that float above the village clear the sheet, folded or open */
-  body.mobile #tool-dock, body.mobile #tool-dock:not(:has(.tool-panel:not([hidden]))) { left: 8px; right: 60px; bottom: calc(var(--sheet) + 8px); transform: none; width: auto; max-width: none; align-items: stretch; }
-  body.mobile:has(#ledger.min) #tool-dock, body.mobile:has(#ledger.min) #tool-dock:not(:has(.tool-panel:not([hidden]))) { bottom: calc(var(--peek) + 8px); }
-  body.mobile #tool-dock #hint { max-width: none; text-align: left; font-size: 14px; }
-  body.mobile #toasts { bottom: calc(var(--sheet) + 8px); }
-  body.mobile:has(#ledger.min) #toasts { bottom: calc(var(--peek) + 56px); }
+  body.phone #tool-dock, body.phone #tool-dock:not(:has(.tool-panel:not([hidden]))) { left: 8px; right: 60px; bottom: calc(var(--sheet) + 8px); transform: none; width: auto; max-width: none; align-items: stretch; }
+  body.phone:has(#ledger.min) #tool-dock, body.phone:has(#ledger.min) #tool-dock:not(:has(.tool-panel:not([hidden]))) { bottom: calc(var(--peek) + 8px); }
+  body.phone #tool-dock #hint { max-width: none; text-align: left; font-size: 14px; }
+  body.phone #toasts { bottom: calc(var(--sheet) + 8px); }
+  body.phone:has(#ledger.min) #toasts { bottom: calc(var(--peek) + 56px); }
   body.phone #minimap-card canvas, body.phone #minimap-card .cap { display: none; }
-  body.mobile #minimap-card { display: flex; flex-direction: column; gap: 6px; left: auto; right: 8px; bottom: calc(var(--sheet) + 8px); padding: 0; background: none; border: 0; box-shadow: none; z-index: 5; }
-  body.mobile:has(#ledger.min) #minimap-card { bottom: calc(var(--peek) + 8px); }
-  body.mobile #tutorial { left: 8px; right: 8px; bottom: calc(var(--peek) + 8px); width: auto; z-index: 14; }
+  body.phone #minimap-card { display: flex; flex-direction: column; gap: 6px; left: auto; right: 8px; bottom: calc(var(--sheet) + 8px); padding: 0; background: none; border: 0; box-shadow: none; z-index: 5; }
+  body.phone:has(#ledger.min) #minimap-card { bottom: calc(var(--peek) + 8px); }
+  body.phone #tutorial { left: 8px; right: 8px; bottom: calc(var(--peek) + 8px); width: auto; z-index: 14; }
 }
 
 /* ---- landscape: the ledger stays a side panel ---- */
@@ -103,6 +105,21 @@ body.mobile .speed .btn { display: flex; align-items: center; justify-content: c
   body.phone #penbar button span:last-child, body.phone #levelbar button span:last-child { display: none; }   /* icons only: the labels are in the tooltip, and the height is not there */
   body.phone #tool-dock { max-height: calc(100dvh - var(--top-h, 52px) - 16px); }
   body.phone #tool-dock #hint { max-width: 100%; }
+}
+
+/* ---- a tablet in portrait: the same side panel as in landscape (an iPad is a regular-width screen either way; the bottom sheet is for phones) ---- */
+@media (orientation: portrait) {
+  body.tablet #ledger { top: calc(var(--top-h, 52px) - 4px); left: auto; height: auto; right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); width: min(340px, 42vw); }
+  body.tablet .tab { min-height: 44px; font-size: 13px; padding: 6px 0; }
+  body.tablet .tabmin { width: 44px; }
+  body.tablet #ledger-open { top: calc(var(--top-h, 52px) + 8px); width: 44px; height: 72px; }
+  body.tablet #minimap-card { left: max(8px, env(safe-area-inset-left)); bottom: max(8px, env(safe-area-inset-bottom)); }
+  body.tablet #minimap { width: 150px; height: 150px; }
+  body.tablet #minimap-card canvas { display: block; } body.tablet #minimap-card .cap { display: flex; }   /* style.css hides them below 900 px wide, which an iPad in portrait is */
+  body.tablet #tool-dock, body.tablet #tool-dock:not(:has(.tool-panel:not([hidden]))) { left: 50%; transform: translateX(-50%); bottom: max(8px, env(safe-area-inset-bottom)); max-width: calc(100vw - 400px); }
+  body.tablet:has(#ledger.min) #tool-dock { max-width: calc(100vw - 140px); }
+  body.tablet #toasts { left: max(8px, env(safe-area-inset-left)); bottom: 200px; width: min(300px, 40vw); }
+  body.tablet #tutorial { left: max(8px, env(safe-area-inset-left)); bottom: 8px; width: min(300px, 46vw); z-index: 14; }
 }
 
 /* ---- both: touch-sized controls ---- */
@@ -167,3 +184,20 @@ body.phone #cmd-screen #cs-top { top: calc(var(--top-h, 62px) + 4px); gap: 8px; 
 body.phone #tutorial { font-size: 13px; padding: 10px 12px; }
 body.phone #tutorial h4 { font-size: 15px; }
 body.mobile #tutorial .tb button { min-height: 40px; }
+
+/* ---- a tablet has the room for Apple's 44-point targets everywhere (a phone keeps the tighter 40 px rows above, where the height is not there) ---- */
+body.tablet .btn, body.tablet .pbtn, body.tablet .chip, body.tablet .tool-action, body.tablet .btn.small, body.tablet .pbtn.small { min-height: var(--tap); }
+body.tablet .tools > .btn { min-width: var(--tap); height: var(--tap); }
+body.tablet .speed .btn { min-width: var(--tap); width: var(--tap); height: var(--tap); }
+body.tablet #build-clear { width: var(--tap); height: var(--tap); }
+body.tablet .workrow .pbtn, body.tablet .card.unit .btnrow:not(.tiles) .pbtn, body.tablet .cheatgrid .pbtn, body.tablet .setrow select, body.tablet #goals .gh, body.tablet #tutorial .tb button, body.tablet .settabs button { min-height: var(--tap); }
+body.tablet .workrow .pbtn, body.tablet .card.unit .btnrow:not(.tiles) .pbtn, body.tablet .cheatgrid .pbtn { min-width: var(--tap); }
+
+/* ---- touch: selecting several things, and the ring that fills while a finger is held (the action menu opens when it closes) ---- */
+#touch-select { pointer-events: auto; }
+#touch-select .tool-action { min-height: var(--tap, 44px); background: #2a2014; color: var(--paper); }
+#touch-select .tool-action[aria-pressed="true"] { background: var(--gold); color: #1d150d; border-color: #6d4d18; font-weight: 700; }
+#press-ring { position: fixed; z-index: 60; left: 0; top: 0; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; pointer-events: none;
+  border: 3px solid #f2d58a; box-shadow: 0 0 0 2px #0008, inset 0 0 0 2px #0008; opacity: 0; transform: scale(.35); }
+#press-ring.go { animation: press-fill .5s linear forwards; }
+@keyframes press-fill { from { opacity: .35; transform: scale(.35); } to { opacity: 1; transform: scale(1); } }

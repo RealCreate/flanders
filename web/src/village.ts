@@ -37,6 +37,8 @@ export interface Shared {
   terrainChanged(v: Village): void;
   /** Trees need to be recounted (a building, ruin or burn scar appeared). */
   forestDirty(): void;
+  /** False on phones and tablets: villagers do not cast shadows there (see device.ts `touchLimits`). */
+  crowdShadows?: boolean;
 }
 
 /** One village: its simulation plus everything that draws it. Used for your own village and for every rival replica. */
@@ -66,6 +68,7 @@ export class Village {
     this.nets = new NetView(sh.terrain); sh.scene.add(this.nets.group);
     this.field = new FieldView(sh.terrain); this.field.friend = color; this.field.site = campSite(() => this.world, sh.terrain, () => sh.forest); this.bridges = new BridgesView(sh.terrain); this.people = new People(sh.terrain);
     this.army = new ArmyView(sh.terrain); this.ruins = new Ruins(sh.terrain);
+    if (sh.crowdShadows === false) this.people.group.traverse((o: THREE.Object3D) => { o.castShadow = false; });
     const channel = (x: number, z: number) => this.moats.levelAt(x, z);
     this.army.channelLevelAt = this.field.channelLevelAt = channel;
     this.boats = new Boats(sh.terrain, channel);

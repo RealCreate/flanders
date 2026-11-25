@@ -20,3 +20,18 @@ test('touch devices start without multisampling and with a frame limit; desktops
   assert.equal(touchDefaults('phone').quality, 'low');
   assert.equal(touchDefaults('desktop'), null);
 });
+
+import { reclassify, touchLimits } from '../src/device.ts';
+
+test('a resized touch window moves between phone and tablet, but never to or from desktop', () => {
+  assert.equal(reclassify('tablet', 'phone'), 'phone');     // an iPad window narrowed in Split View
+  assert.equal(reclassify('phone', 'tablet'), 'tablet');
+  assert.equal(reclassify('desktop', 'phone'), 'desktop');
+  assert.equal(reclassify('tablet', 'desktop'), 'tablet');
+});
+test('tablets start without glossy water and a lower pixel cap; touch devices use fewer lamps and no crowd shadows', () => {
+  assert.equal(touchDefaults('tablet').waterFx, false);
+  assert.ok(touchDefaults('tablet').pixelCap <= 1.25);
+  assert.deepEqual(touchLimits('desktop'), { lampLights: 4, crowdShadows: true });
+  for (const c of ['phone', 'tablet']) { const l = touchLimits(c); assert.equal(l.crowdShadows, false); assert.ok(l.lampLights < 4); }
+});
