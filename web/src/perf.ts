@@ -50,6 +50,7 @@ export class Perf {
   /** Device and display facts for the report (supplied by the game: graphics card, settings, resolution scale). Never player or village names. */
   setContext(fn: () => Record<string, unknown>) { this.context = fn; }
   private context: () => Record<string, unknown> = () => ({});
+  private capMs() { const c = Number(this.context().fpsCap); return c > 0 ? 1000 / c : 0; }
   private lastInfo = { calls: 0, triangles: 0, geometries: 0, textures: 0 };
 
   /** A small, anonymous summary of how the game runs on this device, to paste into a bug report. */
@@ -64,7 +65,7 @@ export class Perf {
       frames: { count: n, avgMs: +avg.toFixed(1), fps: avg ? +(1000 / avg).toFixed(1) : 0, p50: q(0.5), p95: q(0.95), p99: q(0.99), over16: n ? +(f.filter(v => v > 16.7).length / n).toFixed(2) : 0, over33: n ? +(f.filter(v => v > 33.3).length / n).toFixed(2) : 0 },
       cpuSectionsMs: Object.fromEntries([...this.sections].map(([k, v]) => [k, +v.toFixed(2)])),
       perSecond: Object.fromEntries([...this.events].map(([k, v]) => [k, +(v / Math.max(1, (performance.now() - this.evSince) / 1000)).toFixed(2)])),
-      unaccountedMs: +Math.max(0, avg - [...this.sections.values()].reduce((a, b) => a + b, 0)).toFixed(1),   // frame time not spent in the timed sections: the GPU, the browser, the page's other work
+      unaccountedMs: +Math.max(0, avg - Math.max(this.capMs(), [...this.sections.values()].reduce((a, b) => a + b, 0))).toFixed(1),   // frame time beyond both the timed sections and the frame limit's own wait: the GPU, the browser, the page's other work
       renderCallMs: +this.renderMs.toFixed(2), gpuMs: this.gpuOk ? +this.gpuMs.toFixed(2) : null,
       scene: { ...this.lastInfo, ...this.stats },
       layerCostsMs: this.lastRes ? { baseline: +this.lastRes.base.toFixed(2), ...Object.fromEntries(this.lastRes.results.map(r => [r.name, +r.ms.toFixed(2)])) } : null,
@@ -88,7 +89,7 @@ export class Perf {
   netNotes(lines: string[]) { this.net = lines; }
   private net: string[] = [];
 
-  /** Render with timing. While profiling, the GPU is synchronised so the time is the true cost. */
+  /** Render with timing. While profiling, the layer costs are measured as the time between frames (see `frame`), which includes the GPU and the browser: on phones the render call alone says little. */
   render(renderer: THREE.WebGLRenderer, scene: THREE.Scene, cam: THREE.Camera) {
     const gl = renderer.getContext() as WebGL2RenderingContext;
     let q: any = null;
@@ -98,7 +99,6 @@ export class Perf {
     if (this.profiling) gl.finish();
     const ms = performance.now() - t0;
     this.renderMs = this.renderMs * 0.9 + ms * 0.1;
-    if (this.profiling) this.profileSample(ms);
     if (q) { gl.endQuery(this.ext.TIME_ELAPSED_EXT); this.pending.push(q); }
     // collect finished GPU queries
     if (this.pending.length) {
@@ -112,7 +112,7 @@ export class Perf {
 
   /** Call once at the end of every frame. */
   frame(now: number, info: { calls: number; triangles: number; geometries: number; textures: number }) {
-    if (this.last) { const dt = now - this.last; this.frames.push(dt); if (this.frames.length > 240) this.frames.shift(); }
+    if (this.last) { const dt = now - this.last; this.frames.push(dt); if (this.frames.length > 240) this.frames.shift(); if (this.profiling) this.profileSample(dt); }
     this.last = now; this.lastInfo = { calls: info.calls, triangles: info.triangles, geometries: info.geometries, textures: info.textures };
     if (now - this.shown < 400) return;
     this.shown = now;
