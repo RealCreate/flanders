@@ -24,18 +24,24 @@ body.mobile .treasury, body.mobile .vitals {
 }
 body.mobile .treasury::-webkit-scrollbar, body.mobile .vitals::-webkit-scrollbar { display: none; }
 body.mobile .treasury { flex: 1 1 100%; order: 1; font-size: 14px; padding: 2px 4px; }
-body.mobile .vitals { flex: 1 1 0; order: 2; }
-body.mobile .tools { order: 3; flex: none; margin-left: 0; gap: 4px; flex-wrap: nowrap; }
+/* portrait: three tidy rows (resources, controls, status), each as wide as the screen, so nothing is squeezed or cut off at the edge */
+body.mobile .tools { order: 2; flex: 1 1 100%; margin-left: 0; gap: 4px; flex-wrap: nowrap; justify-content: space-between; }
+body.mobile .vitals { flex: 1 1 100%; order: 3; }
+/* the resource strip scrolls sideways: its right edge fades out, so a half-visible resource reads as "more this way" and not as a box cut off */
+body.mobile .treasury { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 22px), transparent); }
 body.mobile .pill { flex: none; padding: 2px 5px 2px 4px; }
 body.mobile .pill b { min-width: 3ch; }
 body.mobile #v-pop b { min-width: 4ch; }
 body.mobile .pill .d { display: none; }
 /* icon-only buttons: the text goes (font-size 0), the icon stays; every one is a finger-sized target */
-body.mobile .tools > .btn { font-size: 0; gap: 0; padding: 0; min-width: 40px; height: 40px; display: grid; place-items: center; }
+body.mobile .tools > .btn { font-size: 0; gap: 0; padding: 0; min-width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }   /* flex, not grid: the hidden label text would otherwise become a second grid row and push the icon up */
 body.mobile .tools > .btn svg { width: 20px; height: 20px; }
 body.mobile .tools > .btn #mp-count { display: none; }
 body.mobile .speed .btn { min-width: 36px; width: 36px; height: 40px; padding: 0; }
-body.mobile .vitals .pill { min-height: 38px; }
+body.mobile .vitals .pill { min-height: 34px; }
+body.mobile #v-pop { border: 1px solid #4d3d29; background: #2a2017e6; }   /* the same box as its neighbours */
+body.mobile .speed { flex: none; }
+body.mobile .speed .btn { display: flex; align-items: center; justify-content: center; }
 
 /* ---- the ledger: bottom sheet in portrait ---- */
 @media (orientation: portrait) {
@@ -88,8 +94,8 @@ body.mobile .vitals .pill { min-height: 38px; }
   /* a phone turned sideways has no height to spare: one row, no goals list */
   body.phone .topbar { flex-wrap: nowrap; align-items: center; padding-bottom: 6px; }
   body.phone .treasury { flex: 1 1 0; order: 1; }
-  body.phone .vitals { flex: 0 1 auto; max-width: 30vw; }
-  body.phone .tools { margin-left: 0; }
+  body.phone .vitals { flex: 0 1 auto; order: 2; max-width: 30vw; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 16px), transparent); }   /* faded at the edge: a pill is never shown cut in half */
+  body.phone .tools { order: 3; flex: none; margin-left: 0; justify-content: flex-end; }
   body.phone #tool-dock .tool-panel, body.phone #tool-dock #hint { font-size: 13px; }
   /* the shape and level bars would grow taller than the screen: one scrolling row instead */
   body.phone #penbar, body.phone #levelbar { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; max-width: 100%; scrollbar-width: none; touch-action: pan-x; }
