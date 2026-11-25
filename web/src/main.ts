@@ -3862,7 +3862,7 @@ function setupPerf() {
   perf = new Perf(document.body);
   perf.attachGpu(renderer.getContext() as WebGL2RenderingContext);
   const vis = (get: () => THREE.Object3D[]) => (on: boolean) => get().forEach(o => (o.visible = on));
-  perf.setContext(() => { const s = settings(); return { version: VERSION, gpu: rendererName(), softwareRendering, quality: s.quality, shadows: s.shadows, pixelCap: s.pixelCap, drawDistance: s.drawDistance, antialias: s.antialias, fpsCap: effectiveFpsCap(), adaptive: s.adaptive, resolutionScale: +resScale.toFixed(2), pixelRatio: renderer.getPixelRatio() }; });
+  perf.setContext(() => { const s = settings(); return { version: VERSION, gpu: rendererName(), softwareRendering, quality: s.quality, shadows: s.shadows, pixelCap: s.pixelCap, drawDistance: s.drawDistance, antialias: s.antialias, fpsCap: effectiveFpsCap(), fpsCapChosen: s.fpsCap, autoCap30, adaptive: s.adaptive, resolutionScale: +resScale.toFixed(2), pixelRatio: renderer.getPixelRatio() }; });
   perf.setLayers([
     { name: 'Terrain', set: vis(() => [terrain.mesh]) },
     { name: 'Water', set: vis(() => [terrain.water, terrain.riverWater]) },
@@ -3966,12 +3966,15 @@ function adaptResolution(frameMs: number, now: number) {
   else if ((slowMs < 13 || gpuRoom) && resScale < 1) resScale = Math.min(1, resScale + 0.1);
   if (resScale !== was) renderer.setPixelRatio(pixelRatio(devicePixelRatio, resScale));
   // Frames that keep missing 60 fps arrive unevenly (16, 33, 16, 50 ms), which looks worse than a steady 30 and does twice the work. On a touch device that cannot hold
-  // 60 even at the lowest resolution it can reach, or is held back by the processor (where fewer pixels do not help), settle on 30 until the page is reloaded.
-  if (!autoCap30 && isTouchDevice() && settings().fpsCap !== 30 && slowMs > 24 && (resScale <= floor + 0.001 || !gpuBound)) { slowSince ||= now; if (now - slowSince > 4000) { autoCap30 = true; slowMs = 33; } }
+  // 60 even at the lowest resolution it can reach, or is held back by the processor (where fewer pixels do not help), settle on 30 (and try 60 again after a quiet spell, see below).
+  if (!autoCap30 && isTouchDevice() && settings().fpsCap !== 30 && slowMs > 24 && (resScale <= floor + 0.001 || !gpuBound)) { slowSince ||= now; if (now - slowSince > 4000) { autoCap30 = true; slowMs = 33; slowSince = 0; capProbeAt = now + capBackoff; if (capProbing) { capBackoff = Math.min(capBackoff * 2, 300_000); capProbeAt = now + capBackoff; capProbing = false; } } }
   else if (slowMs <= 22) slowSince = 0;
+  // The 30 fps limit is not for good: a slow moment (loading, a burst of building, a shadow redraw) can set it, and a device that has plenty of room afterwards deserves 60 again.
+  // After a quiet spell the limit is lifted to try; if the frames are slow again it comes back, and the next try waits twice as long (up to five minutes).
+  if (autoCap30 && capProbeAt && now >= capProbeAt && busyMs < 13 && slowMs < 36) { autoCap30 = false; capProbing = true; capProbeAt = 0; slowSince = 0; slowMs = 17; }
 }
 /** The frame rate limit in force: the player's, or 30 when the device could not keep up with 60 (see adaptResolution). */
-let autoCap30 = false, slowSince = 0;
+let autoCap30 = false, slowSince = 0, capProbeAt = 0, capBackoff = 15_000, capProbing = false;
 const effectiveFpsCap = () => perf.profiling ? 0 : autoCap30 ? 30 : settings().fpsCap;   // (no limit while the cost test measures the frames)
 
 /** A handful of real point lights, moved each moment to the lanterns nearest the camera: at night they throw warm pools of light on the street.
