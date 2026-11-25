@@ -4,6 +4,18 @@ export interface Release { version: string; date: string; title: string; added: 
 
 export const RELEASES: Release[] = [
   {
+    version: '0.7.1', date: '2026-11-25', title: 'Better house designs',
+    added: [
+      'House designs are rebuilt to fit each house: a second chimney on the ridge, flower boxes under the windows and pots at the door, a lean-to woodshed with a log stack, a dovecote on the ridge, a loft dormer growing out of the roof, a raised kitchen garden behind the house, a carved gable end with bargeboards and a sunburst, and a cellar hatch with stone cheeks. Textured soil, leaves, bark and straw.',
+    ],
+    changed: [
+      'Every house design now has its own price (a chimney wants bricks, a loft room planks, bricks and tools, a carved gable some gold) and a stronger bonus: the loft room houses three, the dovecote brings in two grain a day, the kitchen garden three, each flower box lifts happiness by one (up to six), the carved gable by two, and a cellar also adds 25 to the storage limit. Second-tier designs of other buildings now cost bricks as well.',
+    ],
+    fixed: [
+      'House designs no longer float in the air or overlap each other, whatever combination is chosen. The chapel\'s stained glass and rose window now sit on its walls.',
+    ],
+  },
+  {
     version: '0.7.0', date: '2026-11-24', title: 'A tidier interface',
     added: [
       'One Settings page (the Settings button in the top bar) with tabs for Display, Sound, While away, Controls, Data & network and About. Everything that used to be spread over the Menu, Display settings, Help and Release notes is there.',

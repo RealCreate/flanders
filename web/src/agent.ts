@@ -147,7 +147,7 @@ export function startAgentBridge(host: AgentHost, port: number, token: string) {
       if (code === 0) { host.commit({ op: 'upgrade', idx }); host.afterChange(); } return { ok: code === 0, code, reason: code === 0 ? 'ok' : code === -6 ? 'not enough resources' : code === -10 ? 'already fully upgraded' : 'no such building' };
     },
     option(a) {
-      const idx = int(a.idx, 0, 100000, 'idx'), bit = int(a.bit, 0, 3, 'bit'), on = a.on !== false, world = w(), code = world.set_option(idx, bit, on);
+      const idx = int(a.idx, 0, 100000, 'idx'), bit = int(a.bit, 0, 7, 'bit'), on = a.on !== false, world = w(), code = world.set_option(idx, bit, on);
       if (code === 0) { host.commit({ op: 'option', idx, kind: bit, x: on ? 1 : 0 }); host.afterChange(); } return { ok: code === 0, code, reason: code === 0 ? 'ok' : code === -6 ? 'not enough resources' : code === -10 ? 'needs a better tier first' : 'no such building or option' };
     },
     demolish(a) {

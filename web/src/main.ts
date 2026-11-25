@@ -2975,10 +2975,11 @@ function roadPanelHtml(idx: number, tier: number, stocks: number[]): string {
 function optionsHtml(idx: number, kind: number, tier: number, stocks: number[], title: string): string {
   const opts = defs[kind].opts ?? [];
   if (!opts.length) return '';
-  const w = lv.world, have = w.options_flat()[idx] ?? 0, oc = World.option_cost_flat(kind), ocost: [number, number][] = []; for (let i = 0; i < oc.length; i += 2) ocost.push([oc[i], oc[i + 1]]);
-  const afford = ocost.every(([r, n]) => stocks[r] >= n);
+  const w = lv.world, have = w.options_flat()[idx] ?? 0;
+  /** Each option has its own price. */
+  const priced = (bit: number) => { const oc = World.option_cost_for_flat(kind, bit), c: [number, number][] = []; for (let i = 0; i < oc.length; i += 2) c.push([oc[i], oc[i + 1]]); return c; };
   return `<div><h3>${title}</h3><div class="optlist">` + opts.map((op, i) => {
-    const on = (have & (1 << i)) !== 0, locked = tier < op.t;
+    const on = (have & (1 << i)) !== 0, locked = tier < op.t, ocost = priced(i), afford = ocost.every(([r, n]) => stocks[r] >= n);
     return `<button class="pbtn opt ${on ? 'on' : ''}" data-act="opt:${i}" ${locked || (!on && !afford) ? 'disabled' : ''} title="${op.d}"><span>${icon(on ? 'check' : 'cross', 13, { mono: true })} <b>${op.n}</b></span><small>${locked ? `needs ${tierName(kind, op.t)}` : on ? 'built — click to remove' : ui.costHtml(ocost, stocks)}</small>${kind === 47 || kind === 49 ? `<small class="muted">${op.d}</small>` : ''}</button>`;
   }).join('') + `</div></div>`;
 }

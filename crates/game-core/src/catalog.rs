@@ -189,7 +189,7 @@ pub type Opt = (&'static str, &'static str, u8);
 /// Optional upgrades that slightly change a building's look and use (at most four per building). Each one is drawn inside the footprint of the building itself, so it can never run into a neighbour.
 pub fn options(kind: u8) -> &'static [Opt] {
     match kind {
-        HOUSE => &[("Chimney", "A brick chimney with a curl of smoke. Gives the house room for one more villager.", 0), ("Flower boxes", "Shutters and window boxes full of flowers. Every two raise happiness by 1 (up to +8).", 0), ("Woodshed", "A lean-to for firewood against the wall. Stored firewood: the village burns less in winter.", 0), ("Dovecote", "A little tower for doves on the roof. Brings in one grain a day.", 1), ("Loft room", "A bedroom under the roof. Gives the house room for one more villager.", 2), ("Kitchen garden", "Beans, cabbages and herbs behind the house. Brings in one grain a day.", 2), ("Carved gable", "A carved and painted gable end. +1 happiness (up to +10 from such pride).", 2), ("Cellar", "A stone-lined cellar for firewood and roots. Stored firewood: the village burns less in winter.", 2)],
+        HOUSE => &[("Chimney", "A second brick chimney on the ridge, with a curl of smoke. Gives the house room for one more villager.", 0), ("Flower boxes", "Window boxes and pots full of flowers. Each box adds +1 happiness (up to +6 from flowers).", 0), ("Woodshed", "A lean-to for firewood against the end wall. Stored firewood: the village burns less in winter.", 0), ("Dovecote", "A little tower for doves on the ridge. Brings in two grain a day.", 1), ("Loft room", "A bedroom under a dormer in the roof. Gives the house room for three more villagers.", 2), ("Kitchen garden", "Raised beds of cabbages, beans and herbs behind the house. Brings in three grain a day.", 2), ("Carved gable", "Carved and painted bargeboards and a sunburst on the gable end. +2 happiness (up to +10 from such pride).", 2), ("Cellar", "A stone-lined cellar with a hatch for firewood and roots. Stored firewood: the village burns less in winter, and the stores hold 25 more.", 2)],
         FARM => &[("Scarecrow", "Keeps the crows off the crop. This field works 10% faster.", 0), ("Haystacks", "Golden stacks beside the field. Winter harvest drops to 85% instead of 55%.", 0), ("Fenced yard", "A fence round the yard. This field works 5% faster.", 0), ("Barn", "A small timber barn at the field's edge. This field works 10% faster.", 1), ("Windmill", "A timber windmill grinds and lifts the grain. This field works 10% faster.", 2), ("Granary", "A raised granary on staddle stones. This field works 5% faster.", 2), ("Orchard", "Apple trees along the headland. +1 happiness (up to +10 from such pride).", 2), ("Bee skeps", "Straw hives for the blossom. This field works 5% faster.", 3)],
         WALL => &[("Stairs", "A stone stair up to the wall walk, so guards can climb on to the wall.", 1), ("Banners", "Pennants on the parapet. Defenders fight 1% harder (up to +15% in all).", 0), ("Hoarding", "A timber gallery over the outer face. Pours boiling oil on anyone on a ladder against it.", 2), ("Braziers", "Iron fire baskets for the night watch.", 1)],
         TOWER => &[("Banner", "A pennant on a pole. Defenders fight 1% harder (up to +15% in all).", 0), ("Hoarding", "A timber gallery round the top. Pours boiling oil on anyone climbing the wall below.", 1), ("Spire", "A tall slate spire with a gilded tip on the roof. The village is proud of it: +1 happiness (up to +10 from such pride).", 1), ("Beacon", "A signal fire basket. Signal fire: two more villagers take up arms when raiders come (up to 8).", 0)],
@@ -213,8 +213,24 @@ pub fn options(kind: u8) -> &'static [Opt] {
     }
 }
 
-/// What one optional upgrade costs.
-pub fn option_cost(weight: u32) -> Vec<Amount> { let w = weight as i32; vec![(PL, 4 + 4 * w), (ST, 3 + 3 * w)] }
+/// What one optional upgrade costs. A house's options are priced one by one, by what each is worth (a chimney is a few bricks; a loft room, which houses three, is real building work); the others
+/// scale with the building's weight, and their second tier (bits 4-7, which need a better building) asks for bricks on top of planks and stone.
+pub fn option_cost(kind: u8, bit: u8, weight: u32) -> Vec<Amount> {
+    if kind == HOUSE {
+        return match bit {
+            0 => vec![(PL, 4), (BR, 6)],           // chimney: +1 villager
+            1 => vec![(PL, 3), (CL, 4)],           // flower boxes: +1 happiness
+            2 => vec![(PL, 6), (W, 10)],           // woodshed: firewood
+            3 => vec![(PL, 6), (ST, 4)],           // dovecote: 2 grain a day
+            4 => vec![(PL, 14), (BR, 8), (TL, 2)], // loft room: +3 villagers
+            5 => vec![(PL, 6), (W, 12), (TL, 2)],  // kitchen garden: 3 grain a day
+            6 => vec![(PL, 12), (GD, 4)],          // carved gable: +2 happiness
+            _ => vec![(ST, 12), (PL, 6)],          // cellar: firewood and room for 25 more of everything
+        };
+    }
+    let w = weight as i32;
+    if bit >= TIER2_BIT { vec![(PL, 6 + 6 * w), (ST, 5 + 5 * w), (BR, 3 + 3 * w)] } else { vec![(PL, 4 + 4 * w), (ST, 3 + 3 * w)] }
+}
 
 fn options_json(kind: u8) -> String {
     options(kind).iter().map(|o| format!("{{\"n\":\"{}\",\"d\":\"{}\",\"t\":{}}}", o.0, o.1, o.2)).collect::<Vec<_>>().join(",")
