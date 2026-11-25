@@ -8,6 +8,7 @@ import '@fontsource/alegreya-sans/500.css';
 import '@fontsource/alegreya-sans/700.css';
 import './ui/style.css';
 import './ui/mobile.css';
+import { sceneIsStill, skipFrame } from './idle';
 import { initDevice, deviceClass, touchDefaults, isTouchDevice } from './device';
 import { seedMobilePrefs, initMobileUi } from './ui/mobile';
 { const c = initDevice(); if (c !== 'desktop') seedMobilePrefs(c === 'phone'); }   // marks <body> as mobile/phone/tablet before the interface is built (the stylesheet follows those classes)
@@ -40,7 +41,7 @@ import { Terrain, HALF, STEP, NV } from './render/terrain';
 import { Atmosphere } from './render/sky';
 import { CameraRig } from './render/camera';
 import { Forest } from './render/trees';
-import { buildModel, Effects, type BuildingModel } from './render/buildings';
+import { buildModel, Effects, type BuildingModel, type VillageView } from './render/buildings';
 import { Deposits } from './render/deposits';
 import { Camps } from './render/camps';
 import { depositLabel, depositPanel, parseBuildingDeposit } from './depositinfo';
@@ -557,7 +558,7 @@ function connect() {
         const village = new Village(World.new_legacy(seedBig, o.x, o.z), 'rival:' + h.pub, h.name, false, shared, 0xb03030); village.foeColor = foeColorOf;
         village.onReport = rep => onRivalReport(h.pub, rep);
         r = { key: h.pub, peerId, name: h.name, site: h.site, village, online: true, sync: 'syncing…', tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0 };
-        rivals.set(h.pub, r); ui.toast(`${h.name} has joined the world.`, 'good');
+        rivals.set(h.pub, r); villagesChanged(); ui.toast(`${h.name} has joined the world.`, 'good');
         refreshTerrain(village.world); village.syncFull();
         chainTo(r);
       } else if (r.site !== h.site) {
@@ -1402,7 +1403,7 @@ function pruneGhosts() {
     list.sort((a, b) => Number(b.online) - Number(a.online) || b.village.world.building_count() - a.village.world.building_count() || b.tick - a.tick);
     for (const r of list.slice(1)) {
       if (r.online) continue;   // never drop somebody who is here
-      r.village.dispose(); rivals.delete(r.key); awayFights.delete(r.key); room?.forget(r.key);
+      r.village.dispose(); rivals.delete(r.key); villagesChanged(); awayFights.delete(r.key); room?.forget(r.key);
       for (const [peer, key] of [...byPeer]) if (key === r.key) byPeer.delete(peer);
     }
   }
@@ -1603,7 +1604,7 @@ async function startGame(name: string, username: string, pve = false) {
     const slow = Object.entries(rep.timing.byOp).sort((p, q) => q[1].ms - p[1].ms).slice(0, 4).map(([op, v]) => `${op} ×${v.n}: ${Math.round(v.ms)} ms`).join(', ');
     console.info(`Replayed your history: ${rep.timing.commands} commands and ${rep.timing.ticks} ticks in ${Math.round(rep.timing.totalMs)} ms (ticks alone ${Math.round(rep.timing.stepMs)} ms; slowest commands: ${slow || 'none'}).`);
   }
-  lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf;
+  lv = new Village(w, 'me', myName, true, shared, 0x2f5fa8); lv.foeColor = foeColorOf; villagesChanged();
   if (saved?.paused === true) speed = 0;
   watch.mode = saved?.steward === 'steward' ? 'steward' : 'pause';
   if (!w.estate_active()) {
@@ -2189,7 +2190,7 @@ async function setupPve() {
     const village = new Village(new World(seedBig, o.x, o.z), 'rival:' + key, name, false, shared, n ? 0xb08030 : 0xb03030); village.foeColor = foeColorOf;
     village.onReport = rep => onRivalReport(key, rep);
     const ai = new Ai(seedBig, n, layouts[n] ?? n, tagOf(key));
-    rivals.set(key, { key, peerId: '', name, site, village, online: false, sync: 'computer', tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0, ai });
+    villagesChanged(); rivals.set(key, { key, peerId: '', name, site, village, online: false, sync: 'computer', tick: 0, log: [], track: new ReplicaTrack(), policy: new ResyncPolicy(), versionOk: true, state: 'ok', confirming: false, forked: false, liar: false, desyncs: 0, resyncs: 0, lastDiag: '', bigJumpAt: 0, failedAt: 0, ai });
     village.setWorld(village.world); refreshTerrain(village.world); village.syncFull(); village.markCaughtUp();
     chainTo(rivals.get(key)!);                 // the road between the two cities, for our armies...
     village.world.link_village(lv.ox, lv.oz);  // ... and for theirs
@@ -3851,7 +3852,11 @@ function updateLabels() {
 }
 
 // ---------- performance monitor ----------
-function allVillages() { return [lv, ...[...rivals.values()].map(r => r.village)]; }
+/** Every village in the world, yours first. The array is reused between calls (it was rebuilt several times a frame): `villagesChanged()` drops it when a rival joins or leaves. */
+let villageList: Village[] | null = null, villageViews: VillageView[] | null = null;
+function allVillages() { return villageList ??= [lv, ...[...rivals.values()].map(r => r.village)]; }
+const villagesChanged = () => { villageList = null; villageViews = null; };
+const allViews = () => villageViews ??= allVillages().map(v => v.view);
 function setupPerf() {
   perf = new Perf(document.body);
   perf.attachGpu(renderer.getContext() as WebGL2RenderingContext);
@@ -4060,10 +4065,26 @@ function startBackgroundClock() {
   } catch { /* no workers (a locked-down browser): the village simply waits while its tab is hidden, as before */ }
 }
 
+// ---------- render on demand ----------
+/** While the village is paused and nobody has touched anything for a moment, the picture cannot change (the water, the trees' sway, the people and the fires all run on
+ *  the game clock, which is stopped), so drawing it 60 times a second only heats the device. Such a still scene is drawn a few times a second instead: enough to keep
+ *  the selection ring pulsing, and an input brings the full rate back on the very next frame. */
+let lastInputAt = 0, wasStill = false;
+const perfInfo = { calls: 0, triangles: 0, geometries: 0, textures: 0 };   // one object, filled in every frame
+for (const ev of ['pointerdown', 'pointermove', 'pointerup', 'keydown', 'keyup', 'wheel', 'touchstart', 'touchmove']) addEventListener(ev, () => { lastInputAt = performance.now(); }, { capture: true, passive: true });
+const stillNow = (now: number) => sceneIsStill({
+  paused: speed === 0 && watch.pace(liveSpeed(), livePlayerBattle()) <= 0, msSinceInput: now - lastInputAt,
+  animating: !!replay || !!showroom || rig.following || followedVillager !== null || !!trackFoe || perf.profiling,
+});
+
 function frame(now: number) {
   frameAt = performance.now();
   { const cap = effectiveFpsCap(); if (cap && now - last < 1000 / cap - 2) { requestAnimationFrame(frame); return; } }   // frame rate limit
-  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000)); adaptResolution(now - last, now); last = now;   // never negative, never a big jump
+  const still = stillNow(frameAt);
+  if (skipFrame(still, now - last)) { requestAnimationFrame(frame); return; }   // a still scene: skip most frames (see above)
+  const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
+  // frames spaced out on purpose say nothing about how fast the device is: they must not lower the resolution
+  adaptResolution(still || wasStill ? 16 : now - last, now); wasStill = still; last = now;   // never negative, never a big jump
   perf.start('simulation');
   if (replay) tickReplay(dt);
   runClock(dt, frameAt);
@@ -4117,14 +4138,16 @@ function frame(now: number) {
   if (fx.group.visible || effects.group.visible) effectView.update(rig.cam);
   fx.update(worldDt, fires, rig.cam.position, effectView);
   updatePointLights(dt);
-  effects.update(worldDt, sceneTime, all.map(v => v.view), rig.target.x, rig.target.z, view, effectView);
+  effects.update(worldDt, sceneTime, allViews(), rig.target.x, rig.target.z, view, effectView);
   perf.stop('fire + particles');
   if (selRing.visible) (selRing.material as THREE.MeshBasicMaterial).opacity = 0.65 + Math.sin(now / 250) * 0.25;
   if (hlShown) { const o = 0.55 + Math.sin(now / 300) * 0.3; for (let i = 0; i < hlShown; i++) (hlRings[i].material as THREE.MeshBasicMaterial).opacity = o; }
   perf.start('labels + minimap');
   updateHallLabels(all); updateJourneyLabels();
   updateLabels(); updateCovLabels(); drawBattlefieldPins(); updateBossBar(); updateUnitBars(); updateFoeTrack(now); updateFoeArrow();
-  sound.update(dt, all.reduce((a, v) => a + v.fireData.length / 4, 0), all.some(v => v.world.battle_active()));
+  let fireCount = 0, anyBattle = false;   // (plain loops: no closures or arrays built every frame)
+  for (let i = 0; i < all.length; i++) { fireCount += all[i].fireData.length / 4; if (!anyBattle && all[i].world.battle_active()) anyBattle = true; }
+  sound.update(dt, fireCount, anyBattle);
   if (now - miniT > 250) {
     miniT = now;
     const corners = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => { ndc.set(u * 2 - 1, -(v * 2 - 1)); ray.setFromCamera(ndc, rig.cam); const p = terrain.pick(ray.ray); return p ? { x: p.x, z: p.z } : null; });
@@ -4143,8 +4166,9 @@ function frame(now: number) {
   perf.stop('render (CPU side)');
   lastBusyMs = performance.now() - frameAt;
   if (perf.open && now - noteT > 500) { noteT = now; perf.netNotes(syncNotes()); }
-  perf.counts({ Villagers: lv.people.count, Animals: wildlife.visible, Buildings: lv.world.building_count(), Soldiers: (now - sT > 500 ? (sT = now, sCount = lv.army.positions().length) : sCount) });
-  perf.frame(now, { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures });
+  if (perf.open) perf.counts({ Villagers: lv.people.count, Animals: wildlife.visible, Buildings: lv.world.building_count(), Soldiers: (now - sT > 500 ? (sT = now, sCount = lv.army.positions().length) : sCount) });   // (shown only in the open panel)
+  perfInfo.calls = renderer.info.render.calls; perfInfo.triangles = renderer.info.render.triangles; perfInfo.geometries = renderer.info.memory.geometries; perfInfo.textures = renderer.info.memory.textures;
+  perf.frame(now, perfInfo);
   requestAnimationFrame(frame);
 }
 

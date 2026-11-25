@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { freeze } from './static';
+import { freeze, freezeSubtree } from './static';
 import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { trees_in } from '../wasm/game_core.js';
 import { HALF, type Terrain } from './terrain';
@@ -322,6 +322,7 @@ export class Forest {
       });
     };
     this.rebuild([]);
+    freezeSubtree(this.group);   // nothing in the forest ever moves: no need to walk its ~3,900 objects for matrices every frame
   }
 
   /** Display settings. */

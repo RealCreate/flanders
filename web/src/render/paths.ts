@@ -68,6 +68,9 @@ export class Paths {
 `);
     };
     this.mat.customProgramCacheKey = () => 'paths' + this.mat.id;   // one program per village: each has its own clock uniform (see patchWater)
+    // Transparent, double-sided materials are drawn twice by three.js (back faces, then front faces), and it flags the material for a shader check each time: twice the
+    // draws and a program lookup per frame, per village. A flat decal that writes no depth looks the same drawn once.
+    this.mat.forceSinglePass = this.apronMat.forceSinglePass = true;
     this.tracks = new THREE.Mesh(new THREE.BufferGeometry(), [this.mat, this.apronMat]);
     this.tracks.receiveShadow = true; this.tracks.renderOrder = 2; this.tracks.frustumCulled = false;
     this.group.add(this.tracks);
