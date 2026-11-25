@@ -4103,7 +4103,7 @@ function frame(now: number) {
   lightLamps(all, now);
   for (const v of all) v.people.group.visible = v.army.group.visible = drawCrowd;
   perf.start('camera + world'); rig.update(dt); rig.cam.updateMatrixWorld(true); atmo.follow(rig.target);
-  terrain.animate(sceneTime, now / 1000);
+  terrain.animate(sceneTime, now / 1000); terrain.setLod(rig.cam.position.x, rig.cam.position.z);
   tideLevel = -0.25 + Math.sin(sceneTime * 0.09) * 0.19 + Math.sin(sceneTime * 0.031) * 0.07;
   terrain.setTide(tideLevel); worldShips?.update(worldDt, tideLevel);
   perf.stop('camera + world');

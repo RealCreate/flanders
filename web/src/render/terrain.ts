@@ -59,7 +59,7 @@ export class Terrain {
   private riverCells: Uint8Array;
   /** The ground, cut into square chunks that share one set of vertices: each chunk is culled on its own when it is off screen. */
   mesh: THREE.Group;
-  private chunks: { mesh: THREE.Mesh; i0: number; j0: number; i1: number; j1: number }[] = [];
+  private chunks: { mesh: THREE.Mesh; i0: number; j0: number; i1: number; j1: number; lods: THREE.BufferAttribute[]; lod: number; cx: number; cz: number }[] = [];
   water: THREE.Mesh;
   riverWater = new THREE.Group();
   riverMaterial: THREE.MeshPhysicalMaterial;
@@ -100,11 +100,20 @@ export class Terrain {
     this.mesh = new THREE.Group();
     const CH = 64;   // cells per chunk side
     for (let j0 = 0; j0 < NV - 1; j0 += CH) for (let i0 = 0; i0 < NV - 1; i0 += CH) {
-      const i1 = Math.min(NV - 1, i0 + CH), j1 = Math.min(NV - 1, j0 + CH), idx: number[] = [];
-      for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) { const a = i + NV * j, b = i + NV * (j + 1), c = i + 1 + NV * (j + 1), d = i + 1 + NV * j; idx.push(a, b, d, b, c, d); }
+      const i1 = Math.min(NV - 1, i0 + CH), j1 = Math.min(NV - 1, j0 + CH);
+      // three index buffers over the same vertices: every cell, every second cell, every fourth cell (the far ground is drawn from the coarser ones, see `setLod`)
+      const lods = [1, 2, 4].map(s => {
+        const idx: number[] = [];
+        for (let j = j0; j < j1; j += s) for (let i = i0; i < i1; i += s) {
+          const i2 = Math.min(i1, i + s), j2 = Math.min(j1, j + s);
+          const a = i + NV * j, b = i + NV * j2, c = i2 + NV * j2, d = i2 + NV * j; idx.push(a, b, d, b, c, d);
+        }
+        return new THREE.BufferAttribute(NV * NV > 65535 ? new Uint32Array(idx) : new Uint16Array(idx), 1);
+      });
       const g = new THREE.BufferGeometry(); for (const [name, attr] of Object.entries(this.geo.attributes)) g.setAttribute(name, attr);
-      g.setIndex(idx);
-      const m = new THREE.Mesh(g, mat); m.receiveShadow = true; this.mesh.add(m); this.chunks.push({ mesh: m, i0, j0, i1, j1 });
+      g.setIndex(lods[0]);
+      const m = new THREE.Mesh(g, mat); m.receiveShadow = true; this.mesh.add(m);
+      this.chunks.push({ mesh: m, i0, j0, i1, j1, lods, lod: 0, cx: -HALF + ((i0 + i1) / 2) * STEP, cz: -HALF + ((j0 + j1) / 2) * STEP });
     }
     this.fitChunks(0, 0, NV - 1, NV - 1);
 
@@ -276,6 +285,14 @@ export class Terrain {
       else for (let j = j0; j <= j1; j++) attr.addUpdateRange((j * NV + i0) * 3, (i1 - i0 + 1) * 3);
     }
     if (this.chunks.length) this.fitChunks(i0, j0, i1, j1);
+  }
+
+  /** Far ground is drawn from coarser index buffers (every second or fourth cell): the triangles of a distant chunk are too small to see. Near the camera nothing changes. */
+  setLod(x: number, z: number) {
+    for (const c of this.chunks) {
+      const d = Math.hypot(c.cx - x, c.cz - z), want = d < 380 ? 0 : d < 800 ? 1 : 2;
+      if (want !== c.lod && (want > c.lod || d < (c.lod === 2 ? 760 : 350))) { c.lod = want; c.mesh.geometry.setIndex(c.lods[want]); }
+    }
   }
 
   /** Re-measure the chunks touched by an edit so culling stays right (a sphere round the highest and lowest ground in the chunk). */
