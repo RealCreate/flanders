@@ -405,16 +405,16 @@ const farm: Model = b => {
   const t = b.t, m = M();
   b.box(10.4, 0.1, 8.4, m.field, 0, 0.02, 1.4);
   const bm = t >= 2 ? m.stone : t >= 1 ? m.timber : m.wood;
-  b.box(4, 2.4, 3, bm, -1.2, 0.2, -2.6); b.gable(4, 3, 1.8 + t * 0.2, t >= 1 ? m.tile : m.thatch, -1.2, 2.6, -2.6, 0.45);
-  b.box(1.5, 1.7, 0.12, m.door, -1.2, 0.2, -4.16);   // the door is in the back wall of the barn, away from the fields: the farm's road leaves from there (see doors.rs)
-  if (t >= 1) { b.cyl(0.8, 0.8, 0.9, m.hay, 4.9, 0.1, -3.4, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.6, 0.1, -1.9, 10); } else { b.cyl(0.8, 0.8, 0.9, m.hay, 3.2, 0.1, -3, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.3, 0.1, -2.4, 10); }   // (from tier 1 the silo stands where the bales were, so they move beside it)
-  if (t >= 1) { b.cyl(0.95, 1.0, 4.2, t >= 2 ? m.stone : m.wood, 2.8, 0.1, -3.4, 14); b.cone(1.1, 1.0, m.slate, 2.8, 4.3, -3.4, 14); }
+  b.box(4, 2.4, 3, bm, -1.2, 0.2, -4.4); b.gable(4, 3, 1.8 + t * 0.2, t >= 1 ? m.tile : m.thatch, -1.2, 2.6, -4.4, 0.45);   // (behind the fields, which end at z = -2.8)
+  b.box(1.5, 1.7, 0.12, m.door, -1.2, 0.2, -5.96);   // the door is in the back wall of the barn, away from the fields: the farm's road leaves from there (see doors.rs)
+  if (t >= 1) { b.cyl(0.8, 0.8, 0.9, m.hay, 4.9, 0.1, -3.9, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.9, 0.1, -5.4, 10); } else { b.cyl(0.8, 0.8, 0.9, m.hay, 3.2, 0.1, -4.0, 10); b.cyl(0.65, 0.65, 0.75, m.hay, 4.4, 0.1, -4.4, 10); }   // (from tier 1 the silo stands where the bales were, so they move beside it)
+  if (t >= 1) { b.cyl(0.95, 1.0, 4.2, t >= 2 ? m.stone : m.wood, 2.8, 0.1, -4.2, 14); b.cone(1.1, 1.0, m.slate, 2.8, 4.3, -4.2, 14); }
   if (t >= 2) {
-    b.cyl(0.4, 0.85, 4.2, m.plaster, -4.6, 0.1, 2.8, 12); b.cone(0.75, 1.1, m.thatch, -4.6, 4.3, 2.8, 12);
+    b.cyl(0.4, 0.85, 4.2, m.plaster, -6.5, 0.1, 2.8, 12); b.cone(0.75, 1.1, m.thatch, -6.5, 4.3, 2.8, 12);   // (beside the fields, not on them)
     const bl = new THREE.Group(); for (let i = 0; i < 4; i++) { const arm = new THREE.Mesh(new THREE.BoxGeometry(0.18, 3.4, 0.05), m.wood); arm.position.y = 1.7; const w = new THREE.Group(); w.add(arm); w.rotation.z = i * Math.PI / 2; bl.add(w); }
-    bl.position.set(-4.6, 4.2, 3.7); b.g.add(bl); b.spin.push(bl);
+    bl.position.set(-6.5, 4.2, 3.7); b.g.add(bl); b.spin.push(bl);
   }
-  if (t === 3) b.flag(-1.2, 4.2, -2.6, 1.8);
+  if (t === 3) b.flag(-1.2, 4.2, -4.4, 1.8);
   // a bigger farm works more fields: a second beside the first, a third below it and a fourth in the corner (the farm's footprint grows to make room)
   const crop = (c: number) => new THREE.MeshStandardMaterial({ color: c, roughness: 1 });
   const extra: [number, number, number, number, number][] = [[5.0, 8.4, 7.9, 1.4, 0xc9a43b], [10.4, 4.6, 0, 8.0, 0x6f9a3a], [5.0, 4.6, 7.9, 8.0, 0x8a6a3a]];
@@ -1799,7 +1799,7 @@ function addOption(b: B, kind: number, bit: number, c: OptionCtx) {
       const a = seed * 0.83 + bit * 1.7 + k * 0.62, rad = kind === 49 ? 20 + k * 0.45 : kind === 1 ? fr * 0.7 + k * 0.05 : Math.max(hw, hd) * 0.55 + k * 0.1;   // (the embassy's extras stand outside its wall, never in the courtyard)
       if (rad > (kind === 1 ? fr + FARM_YARD + 1 : reach * 1.25 + 2.2)) break;
       const x = (kind === 1 ? fc!.x : cx) + Math.cos(a) * rad, z = (kind === 1 ? fc!.z : cz) + Math.sin(a) * rad, bb = new THREE.Box3(new THREE.Vector3(x - w / 2 - 0.12, y0, z - d / 2 - 0.12), new THREE.Vector3(x + w / 2 + 0.12, y0 + h, z + d / 2 + 0.12));
-      if (kind === 1 && (bb.min.x < ff!.min.x - FARM_YARD || bb.max.x > ff!.max.x + FARM_YARD || bb.min.z < ff!.min.z - FARM_YARD || bb.max.z > ff!.max.z + FARM_YARD || (bb.max.x > ff!.min.x - 0.3 && bb.min.x < ff!.max.x + 0.3 && bb.max.z > ff!.min.z - 0.3 && bb.min.z < ff!.max.z + 0.3) || (bb.max.x > -2.6 && bb.min.x < 0.2 && bb.min.z < -4.0))) continue;   // a farm's extras stand in the yard round its fields, never on the fields, and never on the strip where its road leaves the barn
+      if (kind === 1 && (bb.min.x < ff!.min.x - FARM_YARD || bb.max.x > ff!.max.x + FARM_YARD || bb.min.z < ff!.min.z - FARM_YARD || bb.max.z > ff!.max.z + FARM_YARD || (bb.max.x > ff!.min.x - 0.3 && bb.min.x < ff!.max.x + 0.3 && bb.max.z > ff!.min.z - 0.3 && bb.min.z < ff!.max.z + 0.3) || (bb.max.x > -2.6 && bb.min.x < 0.2 && bb.min.z < -5.5))) continue;   // a farm's extras stand in the yard round its fields, never on the fields, and never on the strip where its road leaves the barn
       if (kind === 49 && Math.abs(x) < 16 + w / 2 + 1.2 && Math.abs(z) < 18 + d / 2 + 1.2) continue;
       if (kind === 29 && x + w / 2 + 0.4 > 3.0) continue;   // the watermill's extras stay on the land side, never by the wheel
       if (kind === 41 && x + w / 2 + 1.0 > hutLandX(c.tier)) continue;   // the fishing hut's extras stay on the land side, behind the jetty's start (never on the jetty or over the water)
